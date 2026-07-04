@@ -56,7 +56,24 @@ ORT's MIGraphX EP serializes its subgraph (`SerializeToString`) to hand to
 external-data spike (below) confirmed it re-inlines even when the source graph
 keeps weights external: the error persists at ~6.55 GB.
 
-### Real GPU paths (all separate, larger efforts)
+### Direct MIGraphX backend — IMPLEMENTED (commit ebd4f36)
+
+The ROCm GPU path is now a real engine backend (`src/tabfm_migraphx.cpp`,
+`MIGraphXBackend`), selected by a `TabFMBackend` interface: `rocm` -> direct
+MIGraphX, `cuda` -> ORT CUDA EP, `cpu` -> ORT CPU EP. It parses the bundled
+migraphx-ready graph (`resources/graph_migraphx_<task>.onnx`: external-data +
+Shape-rewrite), compiles per shape-bucket with weights read from disk, caches
+the compiled program to a `.mxr`, pads inputs to the bucket (train_size/d mask
+the padding), runs, returns the real rows.
+
+Validated: the `migraphx::parse_onnx -> compile(gpu) -> save/load(.mxr) -> eval`
+cycle (tools/experimental/mgx_smoke.cpp) runs on gfx1201 and returns finite
+logits `[1,16,10]`. Costs to know: first compile per shape-bucket is ~20 min
+(then cached); the `.mxr` **embeds the weights (~6.6 GB each)** — a large,
+weight-containing, user-local cache artifact (never shipped, like the
+safetensors). CPU/CUDA are unaffected (they use ORT).
+
+### Background: the walls that had to fall (kept for reference)
 1. **Direct MIGraphX backend (viable — validated parse).** ORT's MIGraphX EP is
    a dead end (it re-inlines). But migraphx's *own* file-based parser handles the
    >2 GB external-data model **fully** after two graph transforms
