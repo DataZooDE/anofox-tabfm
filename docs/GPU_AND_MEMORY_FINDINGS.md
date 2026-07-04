@@ -57,12 +57,19 @@ external-data spike (below) confirmed it re-inlines even when the source graph
 keeps weights external: the error persists at ~6.55 GB.
 
 ### Real GPU paths (all separate, larger efforts)
-1. **Offline migraphx-native compile** — migraphx's *file-based* `parse_onnx`
-   *does* handle external data. Compile the external-data graph to a `.mxr`
-   offline (`migraphx-driver compile`), load via the EP's compiled-model option,
-   bypassing ORT's proto serialization. Most promising.
+1. **Direct MIGraphX backend (viable — validated parse).** ORT's MIGraphX EP is
+   a dead end (it re-inlines). But migraphx's *own* file-based parser handles the
+   >2 GB external-data model **fully** after two graph transforms
+   (`tools/experimental/make_migraphx_graph.py`): (a) external-data ref to
+   `model.safetensors`, and (b) rewrite degenerate `Shape(start==end)` ops into
+   `Shape`+`Slice` (migraphx's parser rejects the degenerate form). It then
+   parses clean (`@return`, output `{1,16,10}`) and compiles for gfx1201
+   (`migraphx-driver compile/perf --gpu`; static shapes compile far faster than
+   dynamic). **Productionizing = a direct-migraphx execution path in the engine**
+   (link `libmigraphx`, `parse_onnx` → `compile` → `run`, shape buckets), NOT via
+   ORT. Bigger, but no upstream blocker.
 2. **int8 quantization** — fp16 is still 3.3 GB (> 2 GB); only int8 (~1.6 GB)
-   fits the proto. Accuracy/calibration cost.
+   fits the ORT-EP proto. Accuracy/calibration cost.
 3. Newer/patched ORT whose MIGraphX EP keeps subgraphs external (uncertain it
    exists for MIGraphX).
 
