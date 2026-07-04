@@ -8,7 +8,7 @@ bf16) + RX 9070 XT (RDNA4/gfx1201, 64 CUs, 16 GB VRAM) + ROCm 7.2.4 / MIGraphX 7
 
 | Item | Status |
 |---|---|
-| #1 bf16/fp16 GPU precision | **implemented** (`anofox_tabfm_gpu_precision`, `quantize_bf16/fp16`, precision-keyed `.mxr`, dtype-aware output). bf16 compile + accuracy validation in progress. |
+| #1 bf16/fp16 GPU precision | **implemented + validated** (`anofox_tabfm_gpu_precision`, default bf16). Measured (real model, T=10): warm **0.14→0.105 s (~1.33x)**, `.mxr`/VRAM/cold-load **6.59→3.30 GB (half)**, accuracy same predictions with ~0.1% score drift (0.9716/0.9937 → 0.9699/0.9925). bf16 compile is *slower* (~27 vs ~20 min, one-time). The 1.33x is at latency-bound T=10; the compute win grows with batch. |
 | #2 CPU prepacking setting | **implemented + measured** (`anofox_tabfm_cpu_prepack`, default on). ~5% faster warm forward at T=200 (1.94→1.84 s); slower session build. |
 | #6 narrow per-device mutex | **implemented** (tensor materialization moved out of the lock). |
 | #3 bulk/bucket tuning | partially covered (bucket ladder already reaches T=10000); revisit `max_rows` under bf16 VRAM headroom. |
