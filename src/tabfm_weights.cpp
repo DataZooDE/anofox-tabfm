@@ -779,6 +779,9 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", v) && !v.IsNull()) {
 		ctx.gpu_precision = StringUtil::Lower(v.ToString());
 	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", v) && !v.IsNull()) {
+		ctx.mxr_source = v.ToString();
+	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_model_manifest", v) && !v.IsNull()) {
 		ctx.model_manifest_path = v.ToString();
 	}

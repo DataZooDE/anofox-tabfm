@@ -499,8 +499,8 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 		return nullptr;
 	}
 	const auto mxr_dir = fs.JoinPath(ctx.cache_dir, "migraphx");
-	shared_ptr<TabFMBackend> backend =
-	    MakeMIGraphXBackend(graph_path, dir, mxr_dir, device.arch, device.device_ordinal, ctx.gpu_precision);
+	shared_ptr<TabFMBackend> backend = MakeMIGraphXBackend(graph_path, dir, mxr_dir, device.arch,
+	                                                       device.device_ordinal, ctx.gpu_precision, ctx.mxr_source);
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0);
 }
 

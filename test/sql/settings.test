@@ -129,6 +129,20 @@ SET anofox_tabfm_gpu_precision = 'int4'
 statement ok
 SET anofox_tabfm_cpu_prepack = false
 
+# precompiled .mxr staging source: empty by default, accepts a directory path
+query T
+SELECT current_setting('anofox_tabfm_mxr_source')
+----
+(empty)
+
+statement ok
+SET anofox_tabfm_mxr_source = '/srv/tabfm/mxr'
+
+query T
+SELECT current_setting('anofox_tabfm_mxr_source')
+----
+/srv/tabfm/mxr
+
 # --- Function surface exists (full name + alias). Behaviour is covered in the
 # --- per-module suites: tabfm_weights/license/lifecycle (WS-D),
 # --- tabfm_devices (WS-C), tabfm_classify / tabfm_regress.

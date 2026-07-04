@@ -118,6 +118,13 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	config.AddExtensionOption("anofox_tabfm_ep_path",
 	                          "Directory with ONNX Runtime provider / plugin-EP shared libraries",
 	                          LogicalType::VARCHAR, Value(""));
+
+	config.AddExtensionOption(
+	    "anofox_tabfm_mxr_source",
+	    "Directory holding precompiled MIGraphX .mxr programs (offline/CI/shared cache). Before compiling a "
+	    "shape-bucket (~27 min on ROCm), a matching '<model>_<arch>_<precision>_T<t>_H<h>.mxr' here is staged into the "
+	    "cache and reused; empty ('' default) always compiles on-device. Artifacts are arch- and ROCm-version-specific.",
+	    LogicalType::VARCHAR, Value(""));
 }
 
 } // namespace anofox

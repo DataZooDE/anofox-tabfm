@@ -117,6 +117,10 @@ struct PredictContext {
 	//! SET anofox_tabfm_cpu_prepack — ORT weight prepacking on the CPU EP: faster
 	//! matmuls at ~+16% RSS. On by default now that external-data keeps RSS low.
 	bool cpu_prepack = true;
+	//! SET anofox_tabfm_mxr_source — directory of precompiled MIGraphX .mxr programs
+	//! (offline/CI/shared). A matching bucket artifact is staged into the cache
+	//! instead of compiling on-device (~27 min). '' → always compile. ROCm only.
+	string mxr_source;
 };
 
 struct PredictInput {

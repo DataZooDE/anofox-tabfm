@@ -320,6 +320,9 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	if (context.TryGetCurrentSetting("anofox_tabfm_cpu_prepack", setting) && !setting.IsNull()) {
 		bind->context.cpu_prepack = BooleanValue::Get(setting);
 	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
+		bind->context.mxr_source = setting.ToString();
+	}
 
 	// once per query: bind runs once, update/finalize run per group/row
 	PostHogTelemetry::Instance().CaptureFunctionExecution(fname);

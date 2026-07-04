@@ -73,9 +73,10 @@ inline float HalfToFloat(uint16_t h) {
 class MIGraphXBackend : public TabFMBackend {
 public:
 	MIGraphXBackend(string graph_path, string weights_dir, string cache_dir, string arch, int device_ordinal,
-	                string precision)
+	                string precision, string mxr_source)
 	    : graph_path(std::move(graph_path)), weights_dir(std::move(weights_dir)), cache_dir(std::move(cache_dir)),
-	      arch(std::move(arch)), precision(std::move(precision)), device_ordinal(device_ordinal) {
+	      arch(std::move(arch)), precision(std::move(precision)), mxr_source(std::move(mxr_source)),
+	      device_ordinal(device_ordinal) {
 		auto slash = this->graph_path.find_last_of("/\\");
 		auto dot = this->graph_path.find_last_of('.');
 		model_tag = this->graph_path.substr(slash == string::npos ? 0 : slash + 1,
@@ -180,8 +181,28 @@ private:
 			return it->second;
 		}
 		std::filesystem::create_directories(cache_dir);
-		const string mxr = cache_dir + "/" + model_tag + "_" + arch + "_" + precision + "_T" + std::to_string(tp) +
-		                   "_H" + std::to_string(hp) + ".mxr";
+		const string basename = model_tag + "_" + arch + "_" + precision + "_T" + std::to_string(tp) + "_H" +
+		                        std::to_string(hp) + ".mxr";
+		const string mxr = cache_dir + "/" + basename;
+		// Offline/CI/shared precompiled artifact: if the bucket isn't cached
+		// locally but a matching .mxr exists in the configured source, stage it in
+		// (atomic copy) instead of the ~27-min on-device compile. A bad staged file
+		// is caught by the corrupt-recovery below and recompiled.
+		if (!mxr_source.empty() && !std::filesystem::exists(mxr)) {
+			const string src = mxr_source + "/" + basename;
+			std::error_code ec;
+			if (std::filesystem::exists(src, ec)) {
+				const string tmp = mxr + ".staging";
+				std::filesystem::remove(tmp, ec);
+				std::filesystem::copy_file(src, tmp, std::filesystem::copy_options::overwrite_existing, ec);
+				if (!ec) {
+					std::filesystem::rename(tmp, mxr, ec);
+				}
+				if (ec) {
+					std::filesystem::remove(tmp, ec);
+				}
+			}
+		}
 		migraphx::program prog;
 		bool loaded = false;
 		if (std::filesystem::exists(mxr)) {
@@ -236,6 +257,7 @@ private:
 	string cache_dir;
 	string arch;
 	string precision;
+	string mxr_source;
 	string model_tag;
 	int device_ordinal;
 	std::mutex mutex;
@@ -246,14 +268,14 @@ private:
 
 unique_ptr<TabFMBackend> MakeMIGraphXBackend(const string &graph_path, const string &weights_dir,
                                              const string &cache_dir, const string &arch, int device_ordinal,
-                                             const string &precision) {
-	return make_uniq<MIGraphXBackend>(graph_path, weights_dir, cache_dir, arch, device_ordinal, precision);
+                                             const string &precision, const string &mxr_source) {
+	return make_uniq<MIGraphXBackend>(graph_path, weights_dir, cache_dir, arch, device_ordinal, precision, mxr_source);
 }
 
 #else // !TABFM_EP_MIGRAPHX
 
 unique_ptr<TabFMBackend> MakeMIGraphXBackend(const string &, const string &, const string &, const string &, int,
-                                             const string &) {
+                                             const string &, const string &) {
 	throw InvalidInputException("anofox_tabfm: this build has no MIGraphX backend. Install the 'rocm' flavor to run "
 	                            "on an AMD GPU, or SET anofox_tabfm_device='cpu'.");
 }

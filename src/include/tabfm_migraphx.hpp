@@ -31,10 +31,13 @@ namespace anofox {
 //!  - precision: "bf16" | "fp16" | "fp32" — MIGraphX compile precision. bf16/fp16
 //!    run ~2x faster than fp32 on RDNA4 and halve VRAM/.mxr; bf16 keeps fp32's
 //!    exponent range (safest). Part of the .mxr cache key.
+//!  - mxr_source: directory of precompiled .mxr programs (offline/CI/shared). A
+//!    matching bucket artifact there is staged into cache_dir instead of
+//!    compiling on-device (~27 min); "" always compiles. Arch/ROCm-version bound.
 //! Throws InvalidInputException on non-rocm builds.
 unique_ptr<TabFMBackend> MakeMIGraphXBackend(const string &graph_path, const string &weights_dir,
                                              const string &cache_dir, const string &arch, int device_ordinal,
-                                             const string &precision);
+                                             const string &precision, const string &mxr_source);
 
 } // namespace anofox
 } // namespace duckdb
