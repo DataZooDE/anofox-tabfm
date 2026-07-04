@@ -5,8 +5,11 @@
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/expression_executor.hpp"
 #include "duckdb/function/aggregate_function.hpp"
+#include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
 #include "telemetry.hpp"
+
+#include <cstdlib>
 
 #include <cmath>
 
@@ -22,105 +25,10 @@ namespace anofox {
 //         non-window path refuses — see tabfm_predict.hpp for the shape and
 //         current-row rationale)
 //
-// The model behind both is the PredictEngine seam (tabfm_predict.hpp); v1
-// ships the deterministic placeholder, the real TabFM engine lands with WS-F.
+// The model behind both is the PredictEngine seam (tabfm_predict.hpp),
+// implemented by the real TabFM engine (tabfm_engine.cpp).
 
 namespace {
-
-//===--------------------------------------------------------------------===//
-// Placeholder engine
-//===--------------------------------------------------------------------===//
-class PlaceholderPredictEngine : public PredictEngine {
-public:
-	TabFMPredictResult Predict(const vector<vector<Value>> &rows, idx_t target_idx, const LogicalType &target_type,
-	                           const string &target_name, const TabFMPredictOptions &opts) override {
-		// collect the context = rows with a non-NULL target, in row order
-		vector<idx_t> context;
-		for (idx_t i = 0; i < rows.size(); i++) {
-			if (!rows[i][target_idx].IsNull()) {
-				context.push_back(i);
-			}
-		}
-		// context_rows subsampling: placeholder takes the first N context rows
-		if (opts.context_rows > 0 && context.size() > opts.context_rows) {
-			context.resize(opts.context_rows);
-		}
-		D_ASSERT(!context.empty()); // callers enforce the all-NULL guardrail
-
-		TabFMPredictResult result;
-		const auto n = rows.size();
-		if (opts.task == TabFMTask::CLASSIFICATION) {
-			// label statistics in first-appearance order (deterministic ties)
-			vector<pair<Value, idx_t>> labels; // label value, count
-			for (auto row_idx : context) {
-				auto &label = rows[row_idx][target_idx];
-				bool found = false;
-				for (auto &entry : labels) {
-					if (ValuesEqual(entry.first, label)) {
-						entry.second++;
-						found = true;
-						break;
-					}
-				}
-				if (!found) {
-					labels.emplace_back(label, 1);
-				}
-			}
-			if (labels.size() > 10) {
-				// FR-3.4 / SQL-API §5: the label-space cap is a model property
-				throw InvalidInputException(
-				    "target '%s' has %llu distinct labels; TabFM v1 supports at most 10. "
-				    "Consider grouping rare labels.",
-				    target_name, static_cast<unsigned long long>(labels.size()));
-			}
-			idx_t best = 0;
-			for (idx_t l = 1; l < labels.size(); l++) {
-				if (labels[l].second > labels[best].second) {
-					best = l;
-				}
-			}
-			auto majority = labels[best].first;
-			auto score = Value::DOUBLE(static_cast<double>(labels[best].second) /
-			                           static_cast<double>(context.size()));
-			Value proba;
-			if (opts.detail) {
-				vector<Value> keys, vals;
-				for (auto &entry : labels) {
-					keys.emplace_back(Value(entry.first.ToString()));
-					vals.emplace_back(
-					    Value::DOUBLE(static_cast<double>(entry.second) / static_cast<double>(context.size())));
-				}
-				proba = Value::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE, std::move(keys), std::move(vals));
-			}
-			for (idx_t i = 0; i < n; i++) {
-				result.yhat.push_back(majority);
-				result.yhat_score.push_back(score);
-				if (opts.detail) {
-					result.proba.push_back(proba);
-				}
-			}
-		} else {
-			double sum = 0;
-			for (auto row_idx : context) {
-				sum += rows[row_idx][target_idx].DefaultCastAs(LogicalType::DOUBLE).GetValue<double>();
-			}
-			auto mean = Value::DOUBLE(sum / static_cast<double>(context.size()));
-			for (idx_t i = 0; i < n; i++) {
-				result.yhat.push_back(mean);
-				result.yhat_score.emplace_back(LogicalType::DOUBLE); // typed NULL
-			}
-		}
-		return result;
-	}
-
-private:
-	static bool ValuesEqual(const Value &a, const Value &b) {
-		if (a.IsNull() || b.IsNull()) {
-			return a.IsNull() && b.IsNull();
-		}
-		return Value::NotDistinctFrom(a, b);
-	}
-};
 
 //===--------------------------------------------------------------------===//
 // Bind data
@@ -135,6 +43,8 @@ struct PredictBindData : public FunctionData {
 	TabFMPredictOptions options;
 	//! anofox_tabfm_max_rows snapshot (bind-time; enforced incrementally in update)
 	idx_t max_rows = 10000;
+	//! settings + DB handle captured at bind (finalize has no ClientContext)
+	PredictContext context;
 
 	unique_ptr<FunctionData> Copy() const override {
 		return make_uniq<PredictBindData>(*this);
@@ -316,6 +226,17 @@ idx_t ReadSettingUBigint(ClientContext &context, const char *name, idx_t fallbac
 	return fallback;
 }
 
+string ExpandUserHome(const string &path) {
+	if (path.empty() || path[0] != '~') {
+		return path;
+	}
+	const char *home = std::getenv("HOME");
+	if (!home) {
+		return path;
+	}
+	return string(home) + path.substr(1);
+}
+
 unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFunction &function,
                                              vector<unique_ptr<Expression>> &arguments, const string &fname,
                                              bool is_window) {
@@ -378,6 +299,21 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	}
 
 	function.return_type = is_window ? bind->WindowStructType() : bind->ListStructType();
+
+	// capture engine settings + the DB handle now: finalize runs on a worker
+	// thread with no ClientContext (tabfm_engine.cpp reads these).
+	bind->context.db = &DatabaseInstance::GetDatabase(context);
+	bind->context.threads = NumericCast<int64_t>(ReadSettingUBigint(context, "anofox_tabfm_threads", 1));
+	Value setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_model_manifest", setting) && !setting.IsNull()) {
+		bind->context.model_manifest_path = setting.ToString();
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_cache_dir", setting) && !setting.IsNull()) {
+		bind->context.cache_dir = ExpandUserHome(setting.ToString());
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_device", setting) && !setting.IsNull()) {
+		bind->context.device = setting.ToString();
+	}
 
 	// once per query: bind runs once, update/finalize run per group/row
 	PostHogTelemetry::Instance().CaptureFunctionExecution(fname);
@@ -615,8 +551,9 @@ void PredictAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_dat
 		}
 
 		// ENGINE SEAM: one engine call per group (HLD §4.6)
-		auto predictions = GetPredictEngine().Predict(rows, bind.target_idx, bind.target_type, bind.target,
-		                                              bind.options);
+		PredictInput engine_input {rows,           bind.row_type, bind.target_idx, bind.target_type,
+		                           bind.target,     bind.options,  bind.context};
+		auto predictions = GetPredictEngine().Predict(engine_input);
 
 		const idx_t list_start = ListVector::GetListSize(result);
 		const bool emit_proba = bind.EmitProba();
@@ -731,7 +668,9 @@ void PredictWinWindow(AggregateInputData &aggr_input_data, const WindowPartition
 	scored_children[bind.target_idx] = Value(bind.target_type);
 	rows.push_back(std::move(scored_children));
 
-	auto predictions = GetPredictEngine().Predict(rows, bind.target_idx, bind.target_type, bind.target, bind.options);
+	PredictInput engine_input {rows,       bind.row_type, bind.target_idx, bind.target_type,
+	                           bind.target, bind.options,  bind.context};
+	auto predictions = GetPredictEngine().Predict(engine_input);
 	const auto last = rows.size() - 1;
 	WriteWindowResult(result, rid, bind, predictions.yhat[last], predictions.yhat_score[last],
 	                  bind.EmitProba() ? predictions.proba[last] : Value());
@@ -767,11 +706,6 @@ void RegisterPredictSet(ExtensionLoader &loader, const string &full_name, bool i
 }
 
 } // anonymous namespace
-
-PredictEngine &GetPredictEngine() {
-	static PlaceholderPredictEngine placeholder_engine;
-	return placeholder_engine;
-}
 
 // The predict aggregate is the engine boundary the tabfm_classify / tabfm_regress
 // table macros build on (tabfm_macros.cpp). It is registered under an internal

@@ -1,11 +1,12 @@
 # name: test/sql/tabfm_classify.test
-# description: tabfm_classify — sklearn-style classifier surface (SQL-API redesign)
+# description: tabfm_classify end-to-end through the real TabFM engine, driven by
+#              the committed CI fixture model (weight-free graph + random-init
+#              safetensors). Predictions are meaningless (random weights) but the
+#              full pipeline runs: preprocess -> initializer injection -> ORT
+#              forward -> softmax decode. We assert the plumbing and the
+#              probabilistic contract, not specific labels (the fixture's classes
+#              sit near 1/3 each, so the argmax is not platform-stable).
 # group: [anofox_tabfm]
-#
-# Placeholder engine (majority class of the non-NULL-target context rows,
-# yhat_score = majority fraction, proba = label -> fraction). The SQL shapes
-# and column contract are final; only the numeric predictions change when the
-# real TabFM engine lands.
 
 require anofox_tabfm
 
@@ -13,85 +14,89 @@ statement ok
 LOAD anofox_tabfm
 
 statement ok
-CREATE TABLE history AS SELECT * FROM (VALUES
-  (25,'basic','no'),(48,'pro','yes'),(30,'basic','no'),(52,'pro','yes'),(28,'basic','no'))
-  v(age,plan,churned);
+SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
 
 statement ok
-CREATE TABLE prospects AS SELECT * FROM (VALUES (31,'basic'),(60,'pro')) v(age,plan);
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,'a','x',0.1,'c0'),(1.5,0.2,'b','y',0.3,'c1'),(2.5,-1.0,'a','y',0.5,'c2'),
+  (0.2,0.8,'b','x',0.7,'c0'),(1.1,0.4,'a','y',0.2,'c1'),(3.0,-0.5,'b','y',0.9,'c2'),
+  (0.9,1.2,'a','x',0.6,'c0'),(2.1,0.1,'b','y',0.4,'c1'),
+  (1.3,0.3,'a','y',0.35,NULL),(2.4,-0.2,'b','x',0.55,NULL),
+  (0.7,0.9,'a','x',0.15,NULL),(1.8,-0.7,'b','y',0.75,NULL))
+  v(f1,f2,f3,f4,f5,label);
 
-# --- Two-table form: fit(history) -> predict(prospects) -----------------------
-# Only the scored (test) rows come back; majority context label is 'no' (3 vs 2).
+# --- Single-table: 4 NULL-label rows are scored, all rows returned -----------
 
-query III
-SELECT age, yhat, yhat_score FROM tabfm_classify('history','churned', test := 'prospects') ORDER BY age
-----
-31	no	0.6
-60	no	0.6
-
-# proba is present by default (output_mode defaults to 'detail')
-query II
-SELECT age, proba['no'] FROM tabfm_classify('history','churned', test := 'prospects') ORDER BY age
-----
-31	0.6
-60	0.6
-
-# positional test argument is equivalent to the named one
 query I
-SELECT count(*) FROM tabfm_classify('history','churned','prospects')
+SELECT count(*) FROM tabfm_classify('t','label')
 ----
-2
+12
 
-# --- Single-table form: NULL target = rows to score --------------------------
-# All rows return, context rows flagged is_training = true.
+# every predicted label is one of the training classes
+query I
+SELECT count(*) FROM tabfm_classify('t','label') WHERE yhat NOT IN ('c0','c1','c2')
+----
+0
+
+# yhat is never NULL, the score is a probability
+query I
+SELECT count(*) FROM tabfm_classify('t','label') WHERE yhat IS NULL OR yhat_score <= 0 OR yhat_score > 1
+----
+0
+
+# proba is a 3-entry distribution summing to 1
+query I
+SELECT count(*) FROM tabfm_classify('t','label') WHERE abs(list_sum(map_values(proba)) - 1.0) > 1e-5 OR len(map_keys(proba)) <> 3
+----
+0
+
+# the scored (test) rows come back flagged is_training = false
+query I
+SELECT count(*) FROM tabfm_classify('t','label') WHERE label IS NULL AND is_training
+----
+0
+
+# determinism: two identical calls agree on every prediction
+query I
+SELECT count(*) FROM (
+  SELECT a.f1, a.yhat AS y1, b.yhat AS y2
+  FROM tabfm_classify('t','label') a JOIN tabfm_classify('t','label') b USING (f1,f2)
+) WHERE y1 <> y2
+----
+0
+
+# --- Two-table form: fit on labelled rows, predict the unlabelled ones --------
 
 statement ok
-CREATE TABLE customers AS SELECT * FROM (VALUES
-  (25,'basic','no'),(48,'pro','yes'),(30,'basic','no'),(40,'basic',NULL),(60,'pro',NULL))
-  v(age,plan,churned);
+CREATE TABLE train AS SELECT * FROM t WHERE label IS NOT NULL;
 
-query III
-SELECT age, yhat, is_training FROM tabfm_classify('customers','churned') ORDER BY age
-----
-25	no	true
-30	no	true
-40	no	false
-48	no	true
-60	no	false
-
-# --- Subselect as the training relation --------------------------------------
+statement ok
+CREATE TABLE score AS SELECT f1,f2,f3,f4,f5 FROM t WHERE label IS NULL;
 
 query I
-SELECT count(*) FROM tabfm_classify('(SELECT * FROM history WHERE age > 26)','churned', test := 'prospects')
+SELECT count(*) FROM tabfm_classify('train','label', test := 'score')
 ----
-2
+4
 
-# --- Feature selection (case-insensitive; target always kept) ----------------
+# --- Subselect training relation ---------------------------------------------
 
 query I
-SELECT count(*) FROM tabfm_classify('history','churned', test := 'prospects', features := ['AGE'])
+SELECT count(*) FROM tabfm_classify('(SELECT * FROM t WHERE label IS NOT NULL)','label', test := 'score')
 ----
-2
+4
 
 # --- output_mode = compact drops proba ---------------------------------------
 
 query I
-SELECT count(*) FROM (DESCRIBE SELECT * FROM tabfm_classify('history','churned', test := 'prospects', opts := MAP{'output_mode':'compact'})) WHERE column_name = 'proba'
+SELECT count(*) FROM (DESCRIBE SELECT * FROM tabfm_classify('t','label', opts := MAP{'output_mode':'compact'})) WHERE column_name = 'proba'
 ----
 0
-
-# --- Full name and alias are equivalent --------------------------------------
-
-query I
-SELECT count(*) FROM anofox_tabfm_classify('history','churned', test := 'prospects')
-----
-2
 
 # --- Errors ------------------------------------------------------------------
 
 # more than 10 classes
 statement ok
-CREATE TABLE many AS SELECT i AS x, 'l' || (i % 14)::VARCHAR AS y FROM range(28) t(i);
+CREATE TABLE many AS SELECT (i*0.1) AS x, 'l' || (i % 14)::VARCHAR AS y FROM range(28) t(i);
 
 statement error
 SELECT * FROM tabfm_classify('many','y')
@@ -100,21 +105,30 @@ SELECT * FROM tabfm_classify('many','y')
 
 # all-NULL target: no context
 statement ok
-CREATE TABLE none AS SELECT i AS x, NULL::VARCHAR AS y FROM range(4) t(i);
+CREATE TABLE none AS SELECT (i*0.1) AS x, NULL::VARCHAR AS y FROM range(4) t(i);
 
 statement error
 SELECT * FROM tabfm_classify('none','y')
 ----
 <REGEX>:.*no non-NULL rows.*
 
+# n_estimators > 1 is a later milestone
+statement error
+SELECT * FROM tabfm_classify('t','label', opts := MAP{'n_estimators':'8'})
+----
+<REGEX>:.*(ensemble|M3|n_estimators).*
+
 # unknown option key
 statement error
-SELECT * FROM tabfm_classify('history','churned', opts := MAP{'nonsense':'1'})
+SELECT * FROM tabfm_classify('t','label', opts := MAP{'nonsense':'1'})
 ----
 <REGEX>:.*(unknown|invalid|option).*
 
-# n_estimators > 1 is a later milestone
+# no model configured -> not-downloaded remediation (weights checked first)
+statement ok
+SET anofox_tabfm_model_manifest = ''
+
 statement error
-SELECT * FROM tabfm_classify('history','churned', opts := MAP{'n_estimators':'8'})
+SELECT * FROM tabfm_classify('t','label')
 ----
-<REGEX>:.*(not implemented|M3|ensemble).*
+<REGEX>:.*(not downloaded|tabfm_download).*

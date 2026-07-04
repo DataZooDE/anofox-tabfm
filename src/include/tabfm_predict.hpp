@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb.hpp"
+#include "tabfm_manifest.hpp" // TabFMTask
 
 namespace duckdb {
 namespace anofox {
@@ -41,8 +42,8 @@ namespace anofox {
 //   is never part of the context, even when non-NULL.
 //===----------------------------------------------------------------------===//
 
-//! Task resolved at bind time (FR-3.2: type-based, overridable via opts).
-enum class TabFMTask : uint8_t { CLASSIFICATION = 0, REGRESSION = 1 };
+//! Task (TabFMTask) is defined in tabfm_manifest.hpp; it is resolved at bind
+//! time (FR-3.2: type-based, overridable via opts).
 
 //! Options parsed (and fully validated) at bind from the constant opts MAP.
 //! All values arrive as VARCHAR (forecast-style, SQL-API §2 Level 2).
@@ -73,39 +74,64 @@ struct TabFMPredictResult {
 };
 
 //===----------------------------------------------------------------------===//
-// ENGINE SEAM (Phase-2 integration point)
+// ENGINE SEAM
 //
-// The predict surface is final; only this interface's implementation changes
-// when the real TabFM engine lands. WS-F replaces GetPredictEngine()'s
-// placeholder with Preprocessor → OrtEngine forward passes (serialized via the
-// TabFMState engine mutex, HLD §4.6/§6) behind exactly this contract:
+// The predict surface is final; only this interface's implementation changes.
+// The real engine (tabfm_engine.cpp) runs Preprocessor → ORT forward → decode,
+// with the session cached in the DB-instance TabFMState and the forward pass
+// serialized per device (HLD §4.6/§6). Inputs:
 //
 //   * `rows`        — the materialized group (or window context + scored row):
 //                     one entry per input row, the row-struct's field values in
 //                     struct-field order.
+//   * `row_type`    — the row STRUCT type (field names + types).
 //   * `target_idx`  — index of the target field inside each row.
 //   * `target_type` / `target_name` — for output typing and error texts.
 //   * `opts`        — bind-validated options (task already resolved).
+//   * `ctx`         — settings + DatabaseInstance captured at bind time
+//                     (finalize runs off-thread and cannot read the context).
 //
 // Contract: returns one prediction per input row, in input order. Rows with a
-// non-NULL target are the context ("training" rows); the engine must enforce
-// the ≤ 10-class limit (SQL-API §5 text) because the label-space cap is a
-// model property. Callers guarantee at least one non-NULL target row
-// (the aggregate raises the §5 all-NULL error, the window variant soft-NULLs).
+// non-NULL target are the context ("training") rows; the engine enforces the
+// ≤ 10-class limit (SQL-API §5 text). Callers guarantee at least one non-NULL
+// target row (the aggregate raises the §5 all-NULL error, the window
+// variant soft-NULLs).
 //===----------------------------------------------------------------------===//
+
+//! Settings + DB handle captured at bind (finalize has no ClientContext).
+//! DatabaseInstance is a complete type via duckdb.hpp above.
+struct PredictContext {
+	DatabaseInstance *db = nullptr;
+	//! SET anofox_tabfm_model_manifest ('' → the built-in TabFM v1 manifest).
+	string model_manifest_path;
+	//! SET anofox_tabfm_cache_dir (already ~-expanded is not required here).
+	string cache_dir;
+	//! SET anofox_tabfm_threads (ORT intra-op).
+	int64_t threads = 1;
+	//! SET anofox_tabfm_device ('auto'|'cpu'|'cuda'|'rocm').
+	string device = "auto";
+};
+
+struct PredictInput {
+	const vector<vector<Value>> &rows;
+	const LogicalType &row_type;
+	idx_t target_idx;
+	const LogicalType &target_type;
+	const string &target_name;
+	const TabFMPredictOptions &opts;
+	const PredictContext &ctx;
+};
+
 class PredictEngine {
 public:
 	virtual ~PredictEngine() = default;
-
-	virtual TabFMPredictResult Predict(const vector<vector<Value>> &rows, idx_t target_idx,
-	                                   const LogicalType &target_type, const string &target_name,
-	                                   const TabFMPredictOptions &opts) = 0;
+	virtual TabFMPredictResult Predict(const PredictInput &input) = 0;
 };
 
-//! The process-wide engine. v1: a stateless placeholder — classification →
-//! majority class of the non-NULL-target rows (yhat_score = majority fraction,
-//! proba = label→fraction); regression → mean (yhat_score NULL). Deterministic:
-//! ties break toward the first-seen label in row order.
+//! The process-wide TabFM engine (tabfm_engine.cpp): resolves the model from
+//! the manifest, loads/caches an ORT session, preprocesses, runs one forward
+//! pass and decodes. Errors with the SQL-API §5 remediation text when the
+//! model's weights are not available.
 PredictEngine &GetPredictEngine();
 
 } // namespace anofox

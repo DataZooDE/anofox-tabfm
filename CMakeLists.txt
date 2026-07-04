@@ -47,6 +47,7 @@ set(EXTENSION_SOURCES
         src/tabfm_weights.cpp
         src/tabfm_predict_agg.cpp
         src/tabfm_macros.cpp
+        src/tabfm_engine.cpp
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})

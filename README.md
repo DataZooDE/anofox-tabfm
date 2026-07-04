@@ -19,8 +19,10 @@ SELECT * FROM tabfm_classify('history', 'churned', test := 'prospects');
 SELECT * FROM tabfm_classify('customers', 'churned');
 ```
 
-**Status: under construction** — full SQL surface with a placeholder engine;
-the real TabFM forward pass is wired next. See `CLAUDE.md` for the module map.
+**Status: under construction** — the full SQL surface runs the real TabFM
+pipeline (preprocess → ONNX Runtime forward → decode), validated end-to-end
+against the CI fixture model. Real 6.6 GB weights + parity are the next
+milestone. See `CLAUDE.md` for the module map.
 
 ## SQL surface
 

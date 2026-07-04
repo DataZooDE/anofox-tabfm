@@ -24,8 +24,17 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 - ONNX Runtime built with the MIGraphX EP for the ROCm flavor
   (see `docs/rocm-build.md`); verified on gfx1201 (RX 9070 XT).
 
+- Real predict engine (`tabfm_engine.cpp`): the classify/regress surface runs
+  the full TabFM pipeline — preprocess (WS-F) → manifest/graph + safetensors
+  injection (WS-B) → ORT session cached in `TabFMState` (WS-C) → forward pass →
+  softmax/inverse-transform decode — validated end-to-end against the fixture
+  model. Errors with the SQL-API §5 remediation text when weights are missing.
+
 ### Notes
-- The predict engine is currently a deterministic placeholder (majority
-  class / mean) behind the `PredictEngine` seam; the real TabFM forward pass
-  is wired in a later milestone.
+- The user-facing surface is `tabfm_classify` / `tabfm_regress` (upstream
+  `TabFMClassifier` / `TabFMRegressor` shape). The grouped / composable-
+  aggregate / windowed surfaces are held behind an internal aggregate and will
+  be re-exposed when needed.
+- Real 6.6 GB weights, the numeric regression fixture, and NFR-Q1 parity are
+  the next milestone; today's e2e coverage uses the classification CI fixture.
 - Telemetry is a deliberate deviation from spec NFR-S1 — see the README.
