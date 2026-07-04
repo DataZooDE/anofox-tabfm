@@ -679,38 +679,39 @@ public:
 			    in.target_name, static_cast<unsigned long long>(batch.label_decoder.size()));
 		}
 
-		// 2. resolve + load the session (serialized per device)
+		// 2. materialize the input tensors (float32) — CPU-only work, done OUTSIDE
+		// the per-device lock so it can overlap another group's inference on the
+		// same device.
+		vector<float> x(batch.x.size());
+		for (idx_t i = 0; i < batch.x.size(); i++) {
+			x[i] = static_cast<float>(batch.x[i]);
+		}
+		vector<float> y(batch.y.size());
+		for (idx_t i = 0; i < batch.y.size(); i++) {
+			y[i] = static_cast<float>(batch.y[i]);
+		}
+		// std::vector<bool> is bit-packed (no .data()); materialize a real bool array.
+		auto cat_mask = make_unsafe_uniq_array<bool>(batch.cat_mask.size());
+		for (idx_t i = 0; i < batch.cat_mask.size(); i++) {
+			cat_mask[i] = batch.cat_mask[i];
+		}
+		TabFMRunInput run_input;
+		run_input.x = x.data();
+		run_input.y = y.data();
+		run_input.cat_mask = cat_mask.get();
+		run_input.t = NumericCast<int64_t>(batch.T);
+		run_input.h = NumericCast<int64_t>(batch.H);
+		run_input.train_size = NumericCast<int64_t>(batch.train_size);
+		run_input.d = NumericCast<int64_t>(batch.d);
+
+		// 3. resolve + load + forward. Only the session load and the forward pass
+		// are serialized per device (the expensive, non-reentrant parts).
 		auto resolved = ResolveModel(*fs, in.ctx, task);
 		auto state = TabFMState::Get(*in.ctx.db);
-		shared_ptr<LoadedModel> model;
 		TabFMRunOutput out;
 		{
 			lock_guard<mutex> device_guard(state->DeviceMutex(in.ctx.device));
-			model = LoadOrGetSession(*fs, *state, resolved, in.ctx);
-
-			// 3. tensors (float32) + forward pass
-			vector<float> x(batch.x.size());
-			for (idx_t i = 0; i < batch.x.size(); i++) {
-				x[i] = static_cast<float>(batch.x[i]);
-			}
-			vector<float> y(batch.y.size());
-			for (idx_t i = 0; i < batch.y.size(); i++) {
-				y[i] = static_cast<float>(batch.y[i]);
-			}
-			// std::vector<bool> is bit-packed (no .data()); materialize a real
-			// bool array for the run input.
-			auto cat_mask = make_unsafe_uniq_array<bool>(batch.cat_mask.size());
-			for (idx_t i = 0; i < batch.cat_mask.size(); i++) {
-				cat_mask[i] = batch.cat_mask[i];
-			}
-			TabFMRunInput run_input;
-			run_input.x = x.data();
-			run_input.y = y.data();
-			run_input.cat_mask = cat_mask.get();
-			run_input.t = NumericCast<int64_t>(batch.T);
-			run_input.h = NumericCast<int64_t>(batch.H);
-			run_input.train_size = NumericCast<int64_t>(batch.train_size);
-			run_input.d = NumericCast<int64_t>(batch.d);
+			auto model = LoadOrGetSession(*fs, *state, resolved, in.ctx);
 			auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
 			out = backend->Run(run_input);
 		}
