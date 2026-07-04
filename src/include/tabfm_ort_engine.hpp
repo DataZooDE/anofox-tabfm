@@ -171,6 +171,12 @@ using TabFMSessionHandle = shared_ptr<TabFMSession>;
 TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
                                  const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config);
 
+//! Same, but loads the graph from a file PATH. This is what the extension uses
+//! for the shipped weight-free graphs in resources/; the injected initializers
+//! satisfy every external-data reference (the .data file need not exist).
+TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<TabFMTensorRef> &initializers,
+                                         const TabFMSessionConfig &config);
+
 //! One TabFM forward pass. Buffers are non-owning and read-only:
 //!   x [1,T,H] f32, y [1,T] f32, train_size [1] i64, cat_mask [1,H] bool,
 //!   d [1] i64  ->  logits [1,T,C] f32 (HLD §4.4).

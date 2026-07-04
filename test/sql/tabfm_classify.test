@@ -124,9 +124,14 @@ SELECT * FROM tabfm_classify('t','label', opts := MAP{'nonsense':'1'})
 ----
 <REGEX>:.*(unknown|invalid|option).*
 
-# no model configured -> not-downloaded remediation (weights checked first)
+# no model configured -> not-downloaded remediation (weights checked first).
+# Point the cache at an empty temp dir so a locally-downloaded real model
+# does not make this pass for the wrong reason.
 statement ok
 SET anofox_tabfm_model_manifest = ''
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/empty_cache'
 
 statement error
 SELECT * FROM tabfm_classify('t','label')

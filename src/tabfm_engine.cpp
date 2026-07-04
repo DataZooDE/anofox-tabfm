@@ -61,7 +61,16 @@ string ReadWholeFile(FileSystem &fs, const string &path) {
 	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
 	auto size = NumericCast<idx_t>(fs.GetFileSize(*handle));
 	string buffer(size, '\0');
-	fs.Read(*handle, (void *)buffer.data(), NumericCast<int64_t>(size));
+	// Read in bounded chunks with explicit offsets: a single Read() of a
+	// multi-GB file short-reads on Linux (read(2) caps at ~2 GB) and leaves the
+	// tail zero-initialized — which silently corrupts large weight files.
+	constexpr idx_t kChunk = 1ULL << 30; // 1 GiB
+	idx_t done = 0;
+	while (done < size) {
+		idx_t want = MinValue<idx_t>(kChunk, size - done);
+		fs.Read(*handle, (void *)(buffer.data() + done), NumericCast<int64_t>(want), NumericCast<idx_t>(done));
+		done += want;
+	}
 	return buffer;
 }
 
@@ -185,6 +194,16 @@ TabFMTensorDtype ToEngineDtype(SafetensorsDtype dtype) {
 	return dtype == SafetensorsDtype::I64 ? TabFMTensorDtype::I64 : TabFMTensorDtype::F32;
 }
 
+// The ORT session PLUS the source buffers it injected. ORT's
+// AddExternalInitializers keeps references to the user buffers (it does not
+// copy), so the safetensors bytes and the bf16-upcast arena must live exactly
+// as long as the session. This holder ties their lifetimes together.
+struct SessionHolder {
+	string weights;               // safetensors bytes (f32 tensors point in here)
+	F32Arena arena;               // owns bf16->f32 upcast copies
+	TabFMSessionHandle session;   // last: destroyed first, before the buffers
+};
+
 // Build (or reuse) the ORT session for `resolved` and return a snapshot of the
 // LoadedModel. The safetensors buffer + arena live only for the duration of
 // CreateSession (S02: ORT copies), so they are scoped tightly here.
@@ -194,41 +213,33 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		return snapshot;
 	}
 
-	// read the weight-free graph and the weights, inject by tensor-map name
-	auto graph_bytes = ReadWholeFile(fs, resolved.graph_path);
+	// Read the weights (fully — see ReadWholeFile; a short read silently zeroes
+	// the tail of a multi-GB file) and inject each tensor into the weight-free
+	// graph under its ONNX initializer name via AddExternalInitializers.
 	auto weights = ReadWholeFile(fs, resolved.weights_path);
 	auto view = ParseSafetensors(const_data_ptr_cast(weights.data()), weights.size(), resolved.weights_path);
 	auto arena = MaterializeF32Arena(view);
 
+	// Build one injected initializer per safetensors tensor, named by the graph
+	// (ONNX) initializer name. The tensor map is onnx->st; invert it, and fall
+	// back to the "m." wrapper prefix for any tensor the map omits.
+	unordered_map<string, string> st_to_onnx;
+	for (auto &kv : resolved.tensor_map) {
+		st_to_onnx[kv.second] = kv.first;
+	}
 	vector<TabFMTensorRef> initializers;
 	initializers.reserve(view.tensors.size());
 	for (auto &entry : view.tensors) {
-		// tensor map is onnx-initializer-name -> safetensors-key; invert it so
-		// each safetensors tensor is injected under its graph name. When the map
-		// is empty, inject under the safetensors key (identity).
 		const string &st_key = entry.first;
-		auto &materialized = arena.Get(st_key);
+		auto &m = arena.Get(st_key);
 		TabFMTensorRef ref;
-		ref.name = st_key; // default: identity
-		ref.dtype = ToEngineDtype(materialized.dtype);
-		ref.shape = materialized.shape;
-		ref.data = materialized.data;
-		ref.size_bytes = materialized.nbytes;
+		auto it = st_to_onnx.find(st_key);
+		ref.name = it != st_to_onnx.end() ? it->second : ("m." + st_key);
+		ref.dtype = ToEngineDtype(m.dtype);
+		ref.shape = m.shape;
+		ref.data = m.data;
+		ref.size_bytes = m.nbytes;
 		initializers.push_back(std::move(ref));
-	}
-	// remap names onnx<-st using the tensor map (initializers currently named by st key)
-	if (!resolved.tensor_map.empty()) {
-		// invert: st_key -> onnx_name
-		unordered_map<string, string> st_to_onnx;
-		for (auto &kv : resolved.tensor_map) {
-			st_to_onnx[kv.second] = kv.first;
-		}
-		for (auto &ref : initializers) {
-			auto it = st_to_onnx.find(ref.name);
-			if (it != st_to_onnx.end()) {
-				ref.name = it->second;
-			}
-		}
 	}
 
 	TabFMSessionConfig config;
@@ -239,15 +250,22 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	config.device_ordinal = device.device_ordinal;
 	config.model_tag = TabFMTaskName(resolved.manifest.task);
 
-	auto session = CreateSession(graph_bytes.data(), graph_bytes.size(), initializers, config);
-	// arena + weights + graph_bytes drop here (ORT owns copies, S02).
+	const idx_t weight_bytes = weights.size();
+	auto session = CreateSessionFromPath(resolved.graph_path, initializers, config);
+	// ORT keeps references to the injected user buffers (weights + arena) and to
+	// the OrtValues (inside the session) — all must OUTLIVE the session, so keep
+	// the buffers in the holder alongside it.
+	auto holder = make_shared_ptr<SessionHolder>();
+	holder->weights = std::move(weights);
+	holder->arena = std::move(arena);
+	holder->session = std::move(session);
 
 	auto model = make_shared_ptr<LoadedModel>();
 	model->model_key = resolved.cache_key;
-	model->session = shared_ptr<void>(std::move(session)); // implicit up-cast to void
+	model->session = shared_ptr<void>(holder); // implicit up-cast to void
 	model->device_id = config.device_id;
 	model->dtype = "f32";
-	model->bytes = weights.size();
+	model->bytes = weight_bytes;
 	state.Register(resolved.cache_key, model);
 	return model;
 }
@@ -375,8 +393,8 @@ public:
 			run_input.h = NumericCast<int64_t>(batch.H);
 			run_input.train_size = NumericCast<int64_t>(batch.train_size);
 			run_input.d = NumericCast<int64_t>(batch.d);
-			auto *session = reinterpret_cast<TabFMSession *>(model->session.get());
-			out = Run(*session, run_input);
+			auto *holder = reinterpret_cast<SessionHolder *>(model->session.get());
+			out = Run(*holder->session, run_input);
 		}
 
 		// 4. decode logits[1,T,C] -> per-source-row predictions

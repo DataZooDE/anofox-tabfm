@@ -102,9 +102,13 @@ SELECT * FROM tabfm_regress('houses','price')
 ----
 <REGEX>:.*manifest is for task 'classification'.*
 
-# no model configured -> not-downloaded remediation
+# no model configured -> not-downloaded remediation. Point the cache at an
+# empty temp dir so a locally-downloaded real model does not mask this.
 statement ok
 SET anofox_tabfm_model_manifest = ''
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/empty_cache'
 
 statement error
 SELECT * FROM tabfm_regress('houses','price')

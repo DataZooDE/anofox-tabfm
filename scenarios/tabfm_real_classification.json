@@ -1,0 +1,15 @@
+{
+  "model_id": "tabfm-v1",
+  "task": "classification",
+  "repo": "google/tabfm-1.0.0-pytorch",
+  "revision": "main",
+  "graph": "/home/jr/Projects/datazoo/anofox-tabfm/resources/graph_classification.onnx",
+  "graph_id": "tabfm-v1-classification-opset18",
+  "tensor_map": "/home/jr/Projects/datazoo/anofox-tabfm/resources/tensor_map_classification.json",
+  "preprocessing_profile": "tabfm_v1_minimal",
+  "license": "tabfm-non-commercial-v1.0",
+  "engine_profiles": { "cpu": { "dtype": "f32" } },
+  "files": [
+    { "path": "classification/model.safetensors", "bytes": 6557888408 }
+  ]
+}

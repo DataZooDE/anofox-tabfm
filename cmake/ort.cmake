@@ -22,7 +22,8 @@
 # TABFM_ORT_PROVIDERS (list of provider compile definitions).
 
 set(TABFM_FLAVOR "cpu" CACHE STRING "anofox_tabfm flavor: cpu | cuda | rocm")
-set(TABFM_ORT_VERSION "1.22.0" CACHE STRING "ONNX Runtime version for prebuilt archives")
+# 1.23.2 matches the ROCm-flavor ORT build; the CPU prebuilt is used by default.
+set(TABFM_ORT_VERSION "1.23.2" CACHE STRING "ONNX Runtime version for prebuilt archives")
 set(TABFM_ORT_URL "" CACHE STRING "Override URL for the prebuilt ONNX Runtime archive (mirror support)")
 set(TABFM_ORT_ROCM_DIR "" CACHE PATH "Install tree of an ONNX Runtime build with --use_migraphx (rocm flavor)")
 

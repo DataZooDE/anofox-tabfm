@@ -264,8 +264,10 @@ void AppendExecutionProviders(Ort::SessionOptions &options, const TabFMSessionCo
 
 class TabFMSession {
 public:
-	TabFMSession(Ort::Session session_p, TabFMSessionConfig config_p)
-	    : session(std::move(session_p)), config(std::move(config_p)) {
+	TabFMSession(Ort::Session session_p, TabFMSessionConfig config_p, std::vector<std::string> injected_names_p,
+	             std::vector<Ort::Value> injected_values_p)
+	    : session(std::move(session_p)), config(std::move(config_p)),
+	      injected_names(std::move(injected_names_p)), injected_values(std::move(injected_values_p)) {
 		Ort::AllocatorWithDefaultOptions allocator;
 		const auto input_count = session.GetInputCount();
 		for (size_t i = 0; i < input_count; i++) {
@@ -281,31 +283,36 @@ public:
 	TabFMSessionConfig config;
 	vector<string> input_names;
 	vector<string> output_names;
+	// Injected external initializers. ORT's AddExternalInitializers keeps
+	// pointers to these OrtValues (and their user buffers) and reads them
+	// lazily — they MUST outlive the session, not just its construction. At
+	// fixture scale ORT copies eagerly so this does not matter; at real scale
+	// (913 tensors / 6.6 GB) it does, and dropping them yields a session that
+	// silently runs on zeroed weights.
+	std::vector<std::string> injected_names;
+	std::vector<Ort::Value> injected_values;
 };
 
-TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
-                                 const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config) {
-	if (!graph_bytes || graph_size == 0) {
-		throw InvalidInputException("anofox_tabfm: cannot create a session from empty model graph bytes");
-	}
+namespace {
 
-	Ort::SessionOptions options;
+// Shared SessionOptions setup + external-initializer injection. Returns the
+// options; `names`/`values` are OUT params that MUST stay alive until the
+// Ort::Session is constructed (AddExternalInitializers keeps references).
+void PrepareSessionOptions(Ort::SessionOptions &options, const vector<TabFMTensorRef> &initializers,
+                           const TabFMSessionConfig &config, std::vector<std::string> &names,
+                           std::vector<Ort::Value> &values) {
 	options.SetIntraOpNumThreads(static_cast<int>(MaxValue<int64_t>(1, config.intra_op_threads)));
 	options.SetInterOpNumThreads(1); // inference runs inside a single DuckDB task (HLD §4.4)
-	// S02: prepacking costs ~+16% resident memory for the big model; keep the
-	// weights copy ORT makes at injection as the only resident copy.
+	// S02: prepacking costs ~+16% resident memory for the big model.
 	options.AddConfigEntry("session.disable_prepacking", "1");
 	AppendExecutionProviders(options, config);
 
-	// Wrap the caller's buffers as non-owning Ort::Values and hand them to
-	// AddExternalInitializers. ORT copies the bytes during the Ort::Session
-	// constructor below; names/values/source buffers are all dead weight the
-	// moment it returns (S02) — the caller frees the source arena right after.
-	std::vector<std::string> names;
-	std::vector<Ort::Value> values;
+	// Wrap the caller's buffers as non-owning Ort::Values for
+	// AddExternalInitializers. ORT keeps references to these user buffers, so
+	// the source arena must outlive the SESSION (LoadOrGetSession bundles it).
 	names.reserve(initializers.size());
 	values.reserve(initializers.size());
-	auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+	static auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 	for (auto &tensor : initializers) {
 		if (!tensor.data) {
 			throw InvalidInputException("anofox_tabfm: initializer '" + tensor.name + "' has no data buffer");
@@ -323,12 +330,39 @@ TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
 		                                          tensor.shape.data(), tensor.shape.size(),
 		                                          ToOnnxElementType(tensor.dtype)));
 	}
+	if (!names.empty()) {
+		options.AddExternalInitializers(names, values);
+	}
+}
+
+} // namespace
+
+TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
+                                 const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config) {
+	if (!graph_bytes || graph_size == 0) {
+		throw InvalidInputException("anofox_tabfm: cannot create a session from empty model graph bytes");
+	}
+	Ort::SessionOptions options;
+	std::vector<std::string> names;
+	std::vector<Ort::Value> values;
+	PrepareSessionOptions(options, initializers, config, names, values);
 	try {
-		if (!names.empty()) {
-			options.AddExternalInitializers(names, values);
-		}
 		Ort::Session session(GetOrtEnv(), graph_bytes, graph_size, options);
-		return make_shared_ptr<TabFMSession>(std::move(session), config);
+		return make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
+	} catch (const Ort::Exception &error) {
+		ThrowMappedCreateError(error, config);
+	}
+}
+
+TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<TabFMTensorRef> &initializers,
+                                         const TabFMSessionConfig &config) {
+	Ort::SessionOptions options;
+	std::vector<std::string> names;
+	std::vector<Ort::Value> values;
+	PrepareSessionOptions(options, initializers, config, names, values);
+	try {
+		Ort::Session session(GetOrtEnv(), graph_path.c_str(), options);
+		return make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
 	} catch (const Ort::Exception &error) {
 		ThrowMappedCreateError(error, config);
 	}
