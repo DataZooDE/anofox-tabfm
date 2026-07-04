@@ -105,11 +105,14 @@ SET anofox_tabfm_threads = 0
 
 # --- Function surface exists (full name + alias). Behaviour is covered in the
 # --- per-module suites: tabfm_weights/license/lifecycle (WS-D),
-# --- tabfm_devices (WS-C), tabfm_predict* (WS-E).
+# --- tabfm_devices (WS-C), tabfm_classify / tabfm_regress.
 
-# The predict aggregate resolves and runs (placeholder engine until the real
-# TabFM engine is wired in Phase 2).
+# The predict path resolves and runs (placeholder engine until the real TabFM
+# engine is wired in Phase 2).
+statement ok
+CREATE TABLE _s AS SELECT * FROM (VALUES (1,'a'),(2,'a'),(3,NULL)) v(x,y);
+
 query I
-SELECT (tabfm_predict_agg(t, 'y'))[1].yhat FROM (SELECT 1 AS y) t
+SELECT count(*) FROM tabfm_classify('_s','y')
 ----
-1
+3

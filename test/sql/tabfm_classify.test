@@ -1,0 +1,120 @@
+# name: test/sql/tabfm_classify.test
+# description: tabfm_classify — sklearn-style classifier surface (SQL-API redesign)
+# group: [anofox_tabfm]
+#
+# Placeholder engine (majority class of the non-NULL-target context rows,
+# yhat_score = majority fraction, proba = label -> fraction). The SQL shapes
+# and column contract are final; only the numeric predictions change when the
+# real TabFM engine lands.
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CREATE TABLE history AS SELECT * FROM (VALUES
+  (25,'basic','no'),(48,'pro','yes'),(30,'basic','no'),(52,'pro','yes'),(28,'basic','no'))
+  v(age,plan,churned);
+
+statement ok
+CREATE TABLE prospects AS SELECT * FROM (VALUES (31,'basic'),(60,'pro')) v(age,plan);
+
+# --- Two-table form: fit(history) -> predict(prospects) -----------------------
+# Only the scored (test) rows come back; majority context label is 'no' (3 vs 2).
+
+query III
+SELECT age, yhat, yhat_score FROM tabfm_classify('history','churned', test := 'prospects') ORDER BY age
+----
+31	no	0.6
+60	no	0.6
+
+# proba is present by default (output_mode defaults to 'detail')
+query II
+SELECT age, proba['no'] FROM tabfm_classify('history','churned', test := 'prospects') ORDER BY age
+----
+31	0.6
+60	0.6
+
+# positional test argument is equivalent to the named one
+query I
+SELECT count(*) FROM tabfm_classify('history','churned','prospects')
+----
+2
+
+# --- Single-table form: NULL target = rows to score --------------------------
+# All rows return, context rows flagged is_training = true.
+
+statement ok
+CREATE TABLE customers AS SELECT * FROM (VALUES
+  (25,'basic','no'),(48,'pro','yes'),(30,'basic','no'),(40,'basic',NULL),(60,'pro',NULL))
+  v(age,plan,churned);
+
+query III
+SELECT age, yhat, is_training FROM tabfm_classify('customers','churned') ORDER BY age
+----
+25	no	true
+30	no	true
+40	no	false
+48	no	true
+60	no	false
+
+# --- Subselect as the training relation --------------------------------------
+
+query I
+SELECT count(*) FROM tabfm_classify('(SELECT * FROM history WHERE age > 26)','churned', test := 'prospects')
+----
+2
+
+# --- Feature selection (case-insensitive; target always kept) ----------------
+
+query I
+SELECT count(*) FROM tabfm_classify('history','churned', test := 'prospects', features := ['AGE'])
+----
+2
+
+# --- output_mode = compact drops proba ---------------------------------------
+
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM tabfm_classify('history','churned', test := 'prospects', opts := MAP{'output_mode':'compact'})) WHERE column_name = 'proba'
+----
+0
+
+# --- Full name and alias are equivalent --------------------------------------
+
+query I
+SELECT count(*) FROM anofox_tabfm_classify('history','churned', test := 'prospects')
+----
+2
+
+# --- Errors ------------------------------------------------------------------
+
+# more than 10 classes
+statement ok
+CREATE TABLE many AS SELECT i AS x, 'l' || (i % 14)::VARCHAR AS y FROM range(28) t(i);
+
+statement error
+SELECT * FROM tabfm_classify('many','y')
+----
+<REGEX>:.*at most 10.*
+
+# all-NULL target: no context
+statement ok
+CREATE TABLE none AS SELECT i AS x, NULL::VARCHAR AS y FROM range(4) t(i);
+
+statement error
+SELECT * FROM tabfm_classify('none','y')
+----
+<REGEX>:.*no non-NULL rows.*
+
+# unknown option key
+statement error
+SELECT * FROM tabfm_classify('history','churned', opts := MAP{'nonsense':'1'})
+----
+<REGEX>:.*(unknown|invalid|option).*
+
+# n_estimators > 1 is a later milestone
+statement error
+SELECT * FROM tabfm_classify('history','churned', opts := MAP{'n_estimators':'8'})
+----
+<REGEX>:.*(not implemented|M3|ensemble).*

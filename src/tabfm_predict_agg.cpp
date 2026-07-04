@@ -757,24 +757,13 @@ AggregateFunction MakePredictFunction(const string &name, bool with_opts, bool i
 	return function;
 }
 
-void RegisterPredictSet(ExtensionLoader &loader, const string &full_name, const string &alias_name, bool is_window) {
+void RegisterPredictSet(ExtensionLoader &loader, const string &full_name, bool is_window) {
 	AggregateFunctionSet set(full_name);
 	set.AddFunction(MakePredictFunction(full_name, false, is_window));
 	set.AddFunction(MakePredictFunction(full_name, true, is_window));
 
 	CreateAggregateFunctionInfo info(set);
 	loader.RegisterFunction(info);
-
-	// alias: copy-then-rename so all callbacks survive (house style, #51)
-	AggregateFunctionSet alias_set(alias_name);
-	for (auto &function : set.functions) {
-		auto alias_function = function;
-		alias_function.name = alias_name;
-		alias_set.AddFunction(std::move(alias_function));
-	}
-	CreateAggregateFunctionInfo alias_info(std::move(alias_set));
-	alias_info.alias_of = full_name;
-	loader.RegisterFunction(alias_info);
 }
 
 } // anonymous namespace
@@ -784,9 +773,16 @@ PredictEngine &GetPredictEngine() {
 	return placeholder_engine;
 }
 
+// The predict aggregate is the engine boundary the tabfm_classify / tabfm_regress
+// table macros build on (tabfm_macros.cpp). It is registered under an internal
+// `__anofox_tabfm_*` name with no public alias: the user-facing surface in v1 is
+// just classify/regress (SQL-API redesign 2026-07-04). The grouped/aggregate/
+// windowed surfaces (tabfm_predict_by / _agg / _win) are added back on the same
+// engine when needed; the windowed variant is registered (dormant) so its
+// SetWindowCallback path stays compiled and covered.
 void RegisterPredictAggFunction(ExtensionLoader &loader) {
-	RegisterPredictSet(loader, "anofox_tabfm_predict_agg", "tabfm_predict_agg", /*is_window=*/false);
-	RegisterPredictSet(loader, "anofox_tabfm_predict_win", "tabfm_predict_win", /*is_window=*/true);
+	RegisterPredictSet(loader, "__anofox_tabfm_predict_agg", /*is_window=*/false);
+	RegisterPredictSet(loader, "__anofox_tabfm_predict_win", /*is_window=*/true);
 }
 
 } // namespace anofox

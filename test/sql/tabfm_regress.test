@@ -1,0 +1,72 @@
+# name: test/sql/tabfm_regress.test
+# description: tabfm_regress — sklearn-style regressor surface (SQL-API redesign)
+# group: [anofox_tabfm]
+#
+# Placeholder engine: yhat = mean of the non-NULL-target context rows,
+# yhat_score = NULL (no probability for regression), no proba column.
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CREATE TABLE houses AS SELECT * FROM (VALUES
+  (1200,3,200000.0),(2500,5,400000.0),(1500,3,NULL),(3000,6,NULL))
+  v(sqft,beds,price);
+
+# --- Single-table: NULL price = rows to score --------------------------------
+# Placeholder engine returns the context mean (300000) for every row; context
+# rows also get the in-context fitted value and is_training = true.
+
+query III
+SELECT sqft, yhat, is_training FROM tabfm_regress('houses','price') ORDER BY sqft
+----
+1200	300000.0	true
+1500	300000.0	false
+2500	300000.0	true
+3000	300000.0	false
+
+# yhat_score is NULL for regression
+query I
+SELECT DISTINCT yhat_score FROM tabfm_regress('houses','price')
+----
+NULL
+
+# no proba column for regression
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM tabfm_regress('houses','price')) WHERE column_name = 'proba'
+----
+0
+
+# --- Two-table form ----------------------------------------------------------
+
+statement ok
+CREATE TABLE sold AS SELECT * FROM (VALUES (1200,3,200000.0),(2500,5,400000.0)) v(sqft,beds,price);
+
+statement ok
+CREATE TABLE listed AS SELECT * FROM (VALUES (1800,4),(2200,4)) v(sqft,beds);
+
+query II
+SELECT sqft, yhat FROM tabfm_regress('sold','price', test := 'listed') ORDER BY sqft
+----
+1800	300000.0
+2200	300000.0
+
+# --- alias + subselect train -------------------------------------------------
+
+query I
+SELECT count(*) FROM anofox_tabfm_regress('(SELECT * FROM sold)','price', test := 'listed')
+----
+2
+
+# --- Errors ------------------------------------------------------------------
+
+# all-NULL target
+statement ok
+CREATE TABLE noprice AS SELECT sqft, NULL::DOUBLE AS price FROM houses;
+
+statement error
+SELECT * FROM tabfm_regress('noprice','price')
+----
+<REGEX>:.*no non-NULL rows.*

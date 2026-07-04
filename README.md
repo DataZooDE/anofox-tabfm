@@ -11,23 +11,51 @@ LOAD anofox_tabfm;
 SET anofox_tabfm_accept_hf_license = true;
 CALL tabfm_download('classification');
 
--- rows with churned IS NULL get predictions; the others are the in-context "training" set
-SELECT * FROM tabfm_predict('customers', 'churned');
+-- fit on the labelled history, predict the new rows (like
+-- TabFMClassifier.fit(X_train, y_train).predict(X_test))
+SELECT * FROM tabfm_classify('history', 'churned', test := 'prospects');
+
+-- or a single table: rows whose target IS NULL are the ones to score
+SELECT * FROM tabfm_classify('customers', 'churned');
 ```
 
-**Status: under construction** — scaffold + SQL surface stubs. See
-`CLAUDE.md` for the module map and the spec repo for the full design.
+**Status: under construction** — full SQL surface with a placeholder engine;
+the real TabFM forward pass is wired next. See `CLAUDE.md` for the module map.
 
-## SQL surface (target, SQL-API rev 4)
+## SQL surface
+
+Two task-specific functions mirroring upstream `TabFMClassifier` /
+`TabFMRegressor` — classification and regression:
+
+```sql
+tabfm_classify(data, target [, test] [, features] [, opts])
+tabfm_regress (data, target [, test] [, features] [, opts])
+```
+
+- `data` — the context ("training") relation: a **table/view name or a
+  parenthesised subquery** (`'(SELECT … WHERE year = 2025)'`).
+- `test` — optional relation of rows to score. When given, only those rows are
+  returned (their `target` is ignored). When omitted, rows of `data` whose
+  target is `NULL` are scored (all rows come back, flagged `is_training`).
+- `features` — optional `VARCHAR[]` of feature columns (default: all others).
+- `opts` — trailing `MAP(VARCHAR, VARCHAR)` of options (`seed`, `n_estimators`,
+  `output_mode`, `context_rows`, …). The task is fixed by the function.
+- **Named parameters** work: `tabfm_classify('history', 'churned', test := 'prospects', opts := MAP{'seed':'42'})`.
+
+Output: every column of the scored rows plus `yhat` (predicted label/value),
+`yhat_score` (top-class probability; `NULL` for regression), `proba`
+(`MAP(label → probability)`, classification only), and `is_training` in
+single-table mode.
+
+Weights and devices:
 
 | Function | Purpose |
 |---|---|
-| `tabfm_predict(tbl, target[, features][, opts])` | predict NULL-target rows of a table |
-| `tabfm_predict_by(tbl, grp, target[, features][, opts])` | one in-context model per group |
-| `tabfm_predict_agg(row, target[, opts])` | composable aggregate core (CTEs, joins, GROUP BY) |
-| `tabfm_predict_win(row, target[, opts]) OVER (...)` | rolling in-context prediction |
 | `tabfm_download / tabfm_models / tabfm_load / tabfm_unload / tabfm_remove` | SQL-managed weights lifecycle |
 | `tabfm_devices()` | discovered execution devices (CPU/CUDA/ROCm) |
+
+The grouped, composable-aggregate, and windowed surfaces (`tabfm_predict_by` /
+`_agg` / `_win`) will be added on the same engine when needed.
 
 ## Flavors
 
