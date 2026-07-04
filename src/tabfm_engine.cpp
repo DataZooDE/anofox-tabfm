@@ -461,6 +461,7 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 
 	TabFMSessionConfig config;
 	config.intra_op_threads = MaxValue<int64_t>(1, ctx.threads);
+	config.prepack = ctx.cpu_prepack;
 	auto devices = DiscoverDevices();
 	auto device = ResolveDevice(ctx.device, devices);
 	config.device_id = device.device_id;
@@ -499,7 +500,7 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 	}
 	const auto mxr_dir = fs.JoinPath(ctx.cache_dir, "migraphx");
 	shared_ptr<TabFMBackend> backend =
-	    MakeMIGraphXBackend(graph_path, dir, mxr_dir, device.arch, device.device_ordinal);
+	    MakeMIGraphXBackend(graph_path, dir, mxr_dir, device.arch, device.device_ordinal, ctx.gpu_precision);
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0);
 }
 
@@ -565,6 +566,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 
 	TabFMSessionConfig config;
 	config.intra_op_threads = MaxValue<int64_t>(1, ctx.threads);
+	config.prepack = ctx.cpu_prepack;
 	auto devices = DiscoverDevices();
 	auto device = ResolveDevice(ctx.device, devices);
 	config.device_id = device.device_id;

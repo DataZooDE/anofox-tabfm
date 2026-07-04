@@ -25,12 +25,16 @@ namespace anofox {
 //!  - graph_path: migraphx-ready ONNX (external-data -> model.safetensors, with
 //!    degenerate Shape ops rewritten). Parsed per shape-bucket.
 //!  - weights_dir: directory holding model.safetensors (external-data root).
-//!  - cache_dir: where compiled .mxr programs are cached (per arch + bucket).
+//!  - cache_dir: where compiled .mxr programs are cached (per arch + precision + bucket).
 //!  - arch: device arch string ("gfx1201") — part of the .mxr cache key.
 //!  - device_ordinal: HIP device index.
+//!  - precision: "bf16" | "fp16" | "fp32" — MIGraphX compile precision. bf16/fp16
+//!    run ~2x faster than fp32 on RDNA4 and halve VRAM/.mxr; bf16 keeps fp32's
+//!    exponent range (safest). Part of the .mxr cache key.
 //! Throws InvalidInputException on non-rocm builds.
 unique_ptr<TabFMBackend> MakeMIGraphXBackend(const string &graph_path, const string &weights_dir,
-                                             const string &cache_dir, const string &arch, int device_ordinal);
+                                             const string &cache_dir, const string &arch, int device_ordinal,
+                                             const string &precision);
 
 } // namespace anofox
 } // namespace duckdb

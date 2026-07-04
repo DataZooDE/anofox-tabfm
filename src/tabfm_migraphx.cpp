@@ -18,6 +18,7 @@
 #ifdef TABFM_EP_MIGRAPHX
 #include <migraphx/migraphx.hpp>
 
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -33,11 +34,48 @@ namespace anofox {
 
 namespace {
 
+// bf16 (upper 16 bits of an fp32) -> fp32.
+inline float Bf16ToFloat(uint16_t b) {
+	uint32_t bits = static_cast<uint32_t>(b) << 16;
+	float out;
+	std::memcpy(&out, &bits, sizeof(out));
+	return out;
+}
+
+// IEEE half (fp16) -> fp32.
+inline float HalfToFloat(uint16_t h) {
+	uint32_t sign = static_cast<uint32_t>(h & 0x8000u) << 16;
+	uint32_t exp = (h >> 10) & 0x1Fu;
+	uint32_t mant = h & 0x3FFu;
+	uint32_t bits;
+	if (exp == 0) {
+		if (mant == 0) {
+			bits = sign; // +/- 0
+		} else {
+			exp = 127 - 15 + 1; // subnormal -> normalize
+			while ((mant & 0x400u) == 0) {
+				mant <<= 1;
+				exp--;
+			}
+			mant &= 0x3FFu;
+			bits = sign | (exp << 23) | (mant << 13);
+		}
+	} else if (exp == 0x1Fu) {
+		bits = sign | 0x7F800000u | (mant << 13); // inf / nan
+	} else {
+		bits = sign | ((exp - 15 + 127) << 23) | (mant << 13);
+	}
+	float out;
+	std::memcpy(&out, &bits, sizeof(out));
+	return out;
+}
+
 class MIGraphXBackend : public TabFMBackend {
 public:
-	MIGraphXBackend(string graph_path, string weights_dir, string cache_dir, string arch, int device_ordinal)
+	MIGraphXBackend(string graph_path, string weights_dir, string cache_dir, string arch, int device_ordinal,
+	                string precision)
 	    : graph_path(std::move(graph_path)), weights_dir(std::move(weights_dir)), cache_dir(std::move(cache_dir)),
-	      arch(std::move(arch)), device_ordinal(device_ordinal) {
+	      arch(std::move(arch)), precision(std::move(precision)), device_ordinal(device_ordinal) {
 		auto slash = this->graph_path.find_last_of("/\\");
 		auto dot = this->graph_path.find_last_of('.');
 		model_tag = this->graph_path.substr(slash == string::npos ? 0 : slash + 1,
@@ -98,7 +136,20 @@ public:
 			auto os = out_arg.get_shape();
 			auto lens = os.lengths(); // [1, tp, C]
 			const int64_t C = lens.empty() ? 0 : static_cast<int64_t>(lens.back());
-			const auto *logits = reinterpret_cast<const float *>(out_arg.data());
+			const auto out_type = os.type();
+			const char *raw = out_arg.data();
+
+			// Read logit[i*C+c] as fp32 regardless of the compiled output dtype
+			// (bf16/fp16 quantization may leave the output reduced-precision).
+			auto read = [&](int64_t idx) -> float {
+				if (out_type == migraphx_shape_bf16_type) {
+					return Bf16ToFloat(reinterpret_cast<const uint16_t *>(raw)[idx]);
+				}
+				if (out_type == migraphx_shape_half_type) {
+					return HalfToFloat(reinterpret_cast<const uint16_t *>(raw)[idx]);
+				}
+				return reinterpret_cast<const float *>(raw)[idx];
+			};
 
 			// Return only the real rows [0:t] in the engine's [1, T, C] contract.
 			TabFMRunOutput result;
@@ -106,7 +157,7 @@ public:
 			result.logits.resize(static_cast<size_t>(in.t * C));
 			for (int64_t i = 0; i < in.t; i++) {
 				for (int64_t c = 0; c < C; c++) {
-					result.logits[static_cast<size_t>(i * C + c)] = logits[static_cast<size_t>(i * C + c)];
+					result.logits[static_cast<size_t>(i * C + c)] = read(i * C + c);
 				}
 			}
 			return result;
@@ -124,8 +175,8 @@ private:
 			return it->second;
 		}
 		std::filesystem::create_directories(cache_dir);
-		const string mxr = cache_dir + "/" + model_tag + "_" + arch + "_T" + std::to_string(tp) + "_H" +
-		                   std::to_string(hp) + ".mxr";
+		const string mxr = cache_dir + "/" + model_tag + "_" + arch + "_" + precision + "_T" + std::to_string(tp) +
+		                   "_H" + std::to_string(hp) + ".mxr";
 		migraphx::program prog;
 		std::ifstream probe(mxr, std::ios::binary);
 		if (probe.good()) {
@@ -141,6 +192,13 @@ private:
 				opts.set_input_parameter_shape("d", {1});
 				opts.set_external_data_path(weights_dir.c_str());
 				prog = migraphx::parse_onnx(graph_path.c_str(), opts);
+				// Reduce precision before compiling: bf16/fp16 run ~2x faster on
+				// RDNA4 and halve VRAM/.mxr. bf16 keeps fp32's exponent range.
+				if (precision == "bf16") {
+					migraphx::quantize_bf16(prog);
+				} else if (precision == "fp16") {
+					migraphx::quantize_fp16(prog);
+				}
 				migraphx::compile_options co;
 				co.set_offload_copy(true); // pass/return host buffers; migraphx moves them to/from VRAM
 				prog.compile(migraphx::target("gpu"), co);
@@ -159,6 +217,7 @@ private:
 	string weights_dir;
 	string cache_dir;
 	string arch;
+	string precision;
 	string model_tag;
 	int device_ordinal;
 	std::mutex mutex;
@@ -168,13 +227,15 @@ private:
 } // namespace
 
 unique_ptr<TabFMBackend> MakeMIGraphXBackend(const string &graph_path, const string &weights_dir,
-                                             const string &cache_dir, const string &arch, int device_ordinal) {
-	return make_uniq<MIGraphXBackend>(graph_path, weights_dir, cache_dir, arch, device_ordinal);
+                                             const string &cache_dir, const string &arch, int device_ordinal,
+                                             const string &precision) {
+	return make_uniq<MIGraphXBackend>(graph_path, weights_dir, cache_dir, arch, device_ordinal, precision);
 }
 
 #else // !TABFM_EP_MIGRAPHX
 
-unique_ptr<TabFMBackend> MakeMIGraphXBackend(const string &, const string &, const string &, const string &, int) {
+unique_ptr<TabFMBackend> MakeMIGraphXBackend(const string &, const string &, const string &, const string &, int,
+                                             const string &) {
 	throw InvalidInputException("anofox_tabfm: this build has no MIGraphX backend. Install the 'rocm' flavor to run "
 	                            "on an AMD GPU, or SET anofox_tabfm_device='cpu'.");
 }

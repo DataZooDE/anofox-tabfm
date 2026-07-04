@@ -314,6 +314,12 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	if (context.TryGetCurrentSetting("anofox_tabfm_device", setting) && !setting.IsNull()) {
 		bind->context.device = setting.ToString();
 	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", setting) && !setting.IsNull()) {
+		bind->context.gpu_precision = StringUtil::Lower(setting.ToString());
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_cpu_prepack", setting) && !setting.IsNull()) {
+		bind->context.cpu_prepack = BooleanValue::Get(setting);
+	}
 
 	// once per query: bind runs once, update/finalize run per group/row
 	PostHogTelemetry::Instance().CaptureFunctionExecution(fname);

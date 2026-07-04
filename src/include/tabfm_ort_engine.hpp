@@ -158,6 +158,9 @@ struct TabFMSessionConfig {
 	int device_ordinal = 0;
 	//! Human-readable model tag for error messages ("classification", ...).
 	string model_tag;
+	//! ORT weight prepacking (anofox_tabfm_cpu_prepack): faster matmuls at ~+16%
+	//! RSS. Disabling it was the old default when RSS was ~18 GB.
+	bool prepack = true;
 };
 
 //! Opaque engine session (pimpl over Ort::Session; keeps ORT headers out of

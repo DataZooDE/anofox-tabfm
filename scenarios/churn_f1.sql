@@ -42,6 +42,7 @@ CREATE TABLE test_features AS SELECT * EXCLUDE (Churn) FROM test_full;
 CREATE TABLE test_actuals  AS SELECT customerID, Churn FROM test_full;
 
 -- 3. Zero-shot predict the test rows using the train rows as context.
+.timer on
 CREATE TABLE preds AS
 SELECT customerID, yhat AS pred
 FROM tabfm_classify('train', 'Churn', test := 'test_features');

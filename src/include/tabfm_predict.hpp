@@ -110,6 +110,13 @@ struct PredictContext {
 	int64_t threads = 1;
 	//! SET anofox_tabfm_device ('auto'|'cpu'|'cuda'|'rocm').
 	string device = "auto";
+	//! SET anofox_tabfm_gpu_precision ('bf16'|'fp16'|'fp32') — MIGraphX compile
+	//! precision on the ROCm GPU (RDNA4 runs bf16/fp16 at ~2x fp32). bf16 keeps
+	//! fp32's exponent range → safest. Ignored by the CPU/CUDA ORT paths.
+	string gpu_precision = "bf16";
+	//! SET anofox_tabfm_cpu_prepack — ORT weight prepacking on the CPU EP: faster
+	//! matmuls at ~+16% RSS. On by default now that external-data keeps RSS low.
+	bool cpu_prepack = true;
 };
 
 struct PredictInput {

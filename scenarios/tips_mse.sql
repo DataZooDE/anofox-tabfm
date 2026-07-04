@@ -36,6 +36,7 @@ FROM tabfm_regress('train', 'tip', test := 'test_features');
 
 -- 4. MSE / RMSE / MAE, plus a naive mean-predictor baseline, in SQL.
 .print '================ TIPS regression (TabFM zero-shot) ================'
+.timer on
 WITH scored AS (
     SELECT p.pred, a.tip AS actual
     FROM preds p JOIN test_actuals a USING (row_id)

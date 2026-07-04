@@ -306,8 +306,8 @@ void PrepareSessionOptions(Ort::SessionOptions &options, const vector<TabFMTenso
                            std::vector<Ort::Value> &values) {
 	options.SetIntraOpNumThreads(static_cast<int>(MaxValue<int64_t>(1, config.intra_op_threads)));
 	options.SetInterOpNumThreads(1); // inference runs inside a single DuckDB task (HLD §4.4)
-	// S02: prepacking costs ~+16% resident memory for the big model.
-	options.AddConfigEntry("session.disable_prepacking", "1");
+	// Prepacking speeds up matmuls at ~+16% resident memory (anofox_tabfm_cpu_prepack).
+	options.AddConfigEntry("session.disable_prepacking", config.prepack ? "0" : "1");
 	AppendExecutionProviders(options, config);
 
 	// Wrap the caller's buffers as non-owning Ort::Values for

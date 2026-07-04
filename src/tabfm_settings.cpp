@@ -35,6 +35,17 @@ void ValidateTraceLevel(ClientContext &context, SetScope scope, Value &parameter
 	parameter = Value(value);
 }
 
+void ValidateGpuPrecision(ClientContext &context, SetScope scope, Value &parameter) {
+	if (parameter.IsNull()) {
+		throw InvalidInputException("anofox_tabfm_gpu_precision cannot be NULL");
+	}
+	auto value = StringUtil::Lower(StringValue::Get(parameter));
+	if (value != "fp32" && value != "bf16" && value != "fp16") {
+		throw InvalidInputException("anofox_tabfm_gpu_precision must be 'bf16', 'fp16' or 'fp32', got '%s'", value);
+	}
+	parameter = Value(value);
+}
+
 void ValidatePositive(const char *name, ClientContext &context, SetScope scope, Value &parameter) {
 	if (parameter.IsNull()) {
 		throw InvalidInputException("%s cannot be NULL", name);
@@ -87,6 +98,17 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 
 	config.AddExtensionOption("anofox_tabfm_trace_level", "Diagnostic verbosity: error|warn|info|debug|trace",
 	                          LogicalType::VARCHAR, Value("warn"), ValidateTraceLevel);
+
+	config.AddExtensionOption(
+	    "anofox_tabfm_gpu_precision",
+	    "MIGraphX compile precision on the ROCm GPU: bf16|fp16|fp32. bf16 (default) runs ~2x faster than fp32 on "
+	    "RDNA4 and halves VRAM/.mxr, keeping fp32's exponent range; fp32 is the accuracy reference.",
+	    LogicalType::VARCHAR, Value("bf16"), ValidateGpuPrecision);
+
+	config.AddExtensionOption(
+	    "anofox_tabfm_cpu_prepack",
+	    "Enable ONNX Runtime weight prepacking on the CPU EP: faster matmuls at ~+16% resident memory.",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
 
 	config.AddExtensionOption("anofox_tabfm_device",
 	                          "Execution device: auto|cpu|cuda|rocm ('migraphx' alias). Each flavor errors "
