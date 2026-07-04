@@ -13,9 +13,11 @@ namespace anofox {
 // Table macros tabfm_predict / tabfm_predict_by — sugar over
 // anofox_tabfm_predict_agg (SQL-API §2 Levels 1-3). Owned by WS-E.
 //
-// The bodies below are the FINAL S04 RESULTS.md macro bodies, VERBATIM (they
-// ran end-to-end on DuckDB 1.5.4 incl. nested-STRUCT and mixed-case tables).
-// Load-bearing details from the spike run:
+// The bodies below are the FINAL S04 RESULTS.md macro bodies with two
+// integration deviations (documented at their sites): the row-struct alias is
+// anofox_tabfm_row (not `t`, which a user column can shadow), and the feature
+// filter uses the new `lambda c:` syntax (the S04 `c ->` arrow is deprecated
+// and warns on DuckDB 1.5.4). Load-bearing details from the spike run:
 //  - unnest(res, max_depth := 3), NEVER recursive := true — recursive unnest
 //    recurses *into user STRUCT columns* and flattens them away; max_depth
 //    stops exactly at list → result-struct → cols (S04 4f/4g).
@@ -70,7 +72,7 @@ R"(
 R"(
     SELECT unnest(res, max_depth := 3) FROM (
       SELECT tabfm_predict_agg(anofox_tabfm_row, target, opts) AS res
-      FROM (SELECT COLUMNS(c -> list_contains(list_transform(features, f -> lcase(f)), lcase(c))
+      FROM (SELECT COLUMNS(lambda c: list_contains(list_transform(features, lambda f: lcase(f)), lcase(c))
                                 OR lcase(c) = lcase(target))
             FROM query_table(tbl)) anofox_tabfm_row
     )
@@ -98,7 +100,7 @@ R"(
 R"(
     SELECT unnest(res, max_depth := 3) FROM (
       SELECT tabfm_predict_agg(anofox_tabfm_row, target, opts) AS res
-      FROM (SELECT COLUMNS(c -> list_contains(list_transform(features, f -> lcase(f)), lcase(c))
+      FROM (SELECT COLUMNS(lambda c: list_contains(list_transform(features, lambda f: lcase(f)), lcase(c))
                                 OR lcase(c) IN (lcase(target), lcase(grp)))
             FROM query_table(tbl)) anofox_tabfm_row
       GROUP BY struct_extract(anofox_tabfm_row, grp)
