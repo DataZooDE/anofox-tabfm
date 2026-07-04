@@ -178,11 +178,19 @@ private:
 		const string mxr = cache_dir + "/" + model_tag + "_" + arch + "_" + precision + "_T" + std::to_string(tp) +
 		                   "_H" + std::to_string(hp) + ".mxr";
 		migraphx::program prog;
-		std::ifstream probe(mxr, std::ios::binary);
-		if (probe.good()) {
-			probe.close();
-			prog = migraphx::load(mxr.c_str());
-		} else {
+		bool loaded = false;
+		if (std::filesystem::exists(mxr)) {
+			try {
+				prog = migraphx::load(mxr.c_str());
+				loaded = true;
+			} catch (const std::exception &e) {
+				// A truncated/corrupt .mxr (e.g. an interrupted compile) — discard
+				// and recompile rather than failing every predict.
+				std::error_code ec;
+				std::filesystem::remove(mxr, ec);
+			}
+		}
+		if (!loaded) {
 			try {
 				migraphx::onnx_options opts;
 				opts.set_input_parameter_shape("x", {1, static_cast<size_t>(tp), static_cast<size_t>(hp)});
@@ -192,8 +200,8 @@ private:
 				opts.set_input_parameter_shape("d", {1});
 				opts.set_external_data_path(weights_dir.c_str());
 				prog = migraphx::parse_onnx(graph_path.c_str(), opts);
-				// Reduce precision before compiling: bf16/fp16 run ~2x faster on
-				// RDNA4 and halve VRAM/.mxr. bf16 keeps fp32's exponent range.
+				// Reduce precision before compiling: bf16/fp16 halve VRAM/.mxr and,
+				// where the arch has native reduced-precision GEMMs, run faster.
 				if (precision == "bf16") {
 					migraphx::quantize_bf16(prog);
 				} else if (precision == "fp16") {
@@ -202,7 +210,12 @@ private:
 				migraphx::compile_options co;
 				co.set_offload_copy(true); // pass/return host buffers; migraphx moves them to/from VRAM
 				prog.compile(migraphx::target("gpu"), co);
-				migraphx::save(prog, mxr.c_str());
+				// Save atomically (temp + rename) so an interrupted save never leaves
+				// a corrupt .mxr behind.
+				const string tmp = mxr + ".tmp";
+				migraphx::save(prog, tmp.c_str());
+				std::error_code ec;
+				std::filesystem::rename(tmp, mxr, ec);
 			} catch (const std::exception &e) {
 				throw InvalidInputException(
 				    "anofox_tabfm: MIGraphX compile failed for %s (bucket T=%lld,H=%lld): %s. Set "
