@@ -378,7 +378,14 @@ TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<
 	std::vector<Ort::Value> values;
 	PrepareSessionOptions(options, initializers, config, names, values);
 	try {
+		// ORT paths are ORTCHAR_T*: wchar_t on Windows, char elsewhere. Cache
+		// paths are ASCII, so a widening copy is sufficient on Windows.
+#ifdef _WIN32
+		std::wstring ort_path(graph_path.begin(), graph_path.end());
+		Ort::Session session(GetOrtEnv(), ort_path.c_str(), options);
+#else
 		Ort::Session session(GetOrtEnv(), graph_path.c_str(), options);
+#endif
 		return make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
 	} catch (const Ort::Exception &error) {
 		ThrowMappedCreateError(error, config);

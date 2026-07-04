@@ -41,7 +41,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
     set(_ort_ext "tgz")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    set(_ort_platform "osx-arm64")
+    # The DuckDB extension matrix cross-builds osx_amd64 (OSX_BUILD_ARCH=x86_64)
+    # on an arm64 runner, so we cannot key off the host. The universal2 archive
+    # carries both slices → links for either target arch.
+    set(_ort_platform "osx-universal2")
     set(_ort_ext "tgz")
 elseif(WIN32)
     set(_ort_platform "win-x64")
