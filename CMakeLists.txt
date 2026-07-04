@@ -77,6 +77,13 @@ if(APPLE)
     target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
 endif()
 
+# posthog-telemetry's machine id (GetMacAddress -> GetAdaptersInfo) needs the
+# Windows IP Helper API.
+if(WIN32)
+    target_link_libraries(${EXTENSION_NAME} iphlpapi ws2_32)
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} iphlpapi ws2_32)
+endif()
+
 # GCC 14 COMDAT vs non-COMDAT conflict on Linux for DuckDB v1.5+ (see
 # extension_config.cmake for the full explanation).
 if(UNIX AND NOT APPLE)
