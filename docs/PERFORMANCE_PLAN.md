@@ -4,6 +4,20 @@ Consolidated from three independent analyses (Claude + `codex` + `gemini`/Antigr
 plus first-party benchmarks on this box: **Ryzen 3950X (16C/32T, Zen2, AVX2, no
 bf16) + RX 9070 XT (RDNA4/gfx1201, 64 CUs, 16 GB VRAM) + ROCm 7.2.4 / MIGraphX 7.2.3.**
 
+## Implementation status (2026-07-04)
+
+| Item | Status |
+|---|---|
+| #1 bf16/fp16 GPU precision | **implemented** (`anofox_tabfm_gpu_precision`, `quantize_bf16/fp16`, precision-keyed `.mxr`, dtype-aware output). bf16 compile + accuracy validation in progress. |
+| #2 CPU prepacking setting | **implemented + measured** (`anofox_tabfm_cpu_prepack`, default on). ~5% faster warm forward at T=200 (1.94→1.84 s); slower session build. |
+| #6 narrow per-device mutex | **implemented** (tensor materialization moved out of the lock). |
+| #3 bulk/bucket tuning | partially covered (bucket ladder already reaches T=10000); revisit `max_rows` under bf16 VRAM headroom. |
+| #4 precompile `.mxr` offline/at-download | **not yet** — needs CI/hosting + download path. |
+| #5 persistent device buffers | **not yet** — offload_copy→IoBinding-style refactor. |
+| #7 context KV-cache | **not yet** — graph surgery + cache lifecycle (largest effort). |
+
+---
+
 ## The one insight that reframes everything: batch size decides the regime
 
 Measured warm forward (real 6.6 GB fp32 model, single forward, model already loaded):
