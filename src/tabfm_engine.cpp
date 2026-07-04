@@ -25,6 +25,7 @@
 #include "tabfm_manifest.hpp"
 #include "tabfm_safetensors.hpp"
 #include "tabfm_ort_engine.hpp"
+#include "tabfm_bundled_resources.hpp"
 #include "tabfm_state.hpp"
 
 #include "duckdb/common/file_system.hpp"
@@ -78,7 +79,11 @@ string ReadWholeFile(FileSystem &fs, const string &path) {
 struct ResolvedModel {
 	ModelManifest manifest;
 	string manifest_dir;
+	// Exactly one graph source is set: a bundled graph compiled into the binary
+	// (built-in manifest ids like "graph_classification"), or an on-disk path
+	// (custom/scenario/fixture manifests that point at an .onnx file).
 	string graph_path;
+	BundledResource graph_bundle;
 	string weights_path;
 	unordered_map<string, string> tensor_map; // onnx initializer name -> st key
 	string cache_key;
@@ -94,12 +99,21 @@ unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest 
 	if (manifest.tensor_map_path.empty()) {
 		return result; // identity mapping (handled at injection)
 	}
-	auto path = JoinPath(fs, dir, manifest.tensor_map_path);
-	auto json = ReadWholeFile(fs, path);
+	// Prefer a bundled tensor map (built-in manifest names, e.g.
+	// "tensor_map_classification.json"); otherwise read it from disk next to the
+	// manifest. A path never matches the bundle, so custom manifests still work.
+	string json;
+	string source = manifest.tensor_map_path;
+	if (auto bundled = GetBundledResource(manifest.tensor_map_path); bundled.data) {
+		json.assign(bundled.data, bundled.size);
+	} else {
+		source = JoinPath(fs, dir, manifest.tensor_map_path);
+		json = ReadWholeFile(fs, source);
+	}
 	using namespace duckdb_yyjson; // NOLINT
 	auto doc = yyjson_read(json.c_str(), json.size(), 0);
 	if (!doc) {
-		throw InvalidInputException("tabfm: cannot parse tensor map '%s'", path);
+		throw InvalidInputException("tabfm: cannot parse tensor map '%s'", source);
 	}
 	auto root = yyjson_doc_get_root(doc);
 	auto inits = yyjson_obj_get(root, "initializers");
@@ -173,14 +187,20 @@ ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 		}
 	} else {
 		resolved.manifest = BuiltinTabFMManifest(task);
-		// built-in models live in the weights cache; graph beside the extension
-		// (resources/) — resolved relative to the cache slug dir at load.
+		// built-in models: only the weights come from the cache; the weight-free
+		// graph + tensor map are compiled into the binary (bundle) below.
 		resolved.manifest_dir = ctx.cache_dir;
 	}
 	// weights first: "not downloaded" is the common, actionable error (§5).
 	resolved.weights_path =
 	    ResolveWeightsPath(fs, resolved.manifest, resolved.manifest_dir, ctx.cache_dir, task_name);
-	resolved.graph_path = ResolveGraphPath(fs, resolved.manifest, resolved.manifest_dir);
+	// Graph: a bundled id ("graph_classification") resolves to embedded bytes;
+	// anything else is a path resolved next to the manifest.
+	if (auto bundled = GetBundledResource(resolved.manifest.graph); bundled.data) {
+		resolved.graph_bundle = bundled;
+	} else {
+		resolved.graph_path = ResolveGraphPath(fs, resolved.manifest, resolved.manifest_dir);
+	}
 	resolved.tensor_map = LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir);
 	resolved.cache_key = resolved.manifest.model + ":" + task_name + "@" + resolved.manifest.revision;
 	return resolved;
@@ -251,7 +271,9 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	config.model_tag = TabFMTaskName(resolved.manifest.task);
 
 	const idx_t weight_bytes = weights.size();
-	auto session = CreateSessionFromPath(resolved.graph_path, initializers, config);
+	auto session = resolved.graph_bundle.data
+	                   ? CreateSession(resolved.graph_bundle.data, resolved.graph_bundle.size, initializers, config)
+	                   : CreateSessionFromPath(resolved.graph_path, initializers, config);
 	// ORT keeps references to the injected user buffers (weights + arena) and to
 	// the OrtValues (inside the session) — all must OUTLIVE the session, so keep
 	// the buffers in the holder alongside it.

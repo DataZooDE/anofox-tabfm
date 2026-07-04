@@ -14,6 +14,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # ONNX Runtime, flavor-aware (cpu | cuda | rocm) — defines tabfm_onnxruntime.
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort.cmake)
 
+# Embed the weight-free graphs + tensor maps from resources/ into the binary
+# (built-in model flow needs no companion files) — sets
+# TABFM_BUNDLED_RESOURCES_SRC to the generated source.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_resources.cmake)
+
 # --- Telemetry ---
 # Build telemetry as OBJECT library to avoid link order issues with DuckDB symbols.
 find_package(OpenSSL REQUIRED)
@@ -48,6 +53,7 @@ set(EXTENSION_SOURCES
         src/tabfm_predict_agg.cpp
         src/tabfm_macros.cpp
         src/tabfm_engine.cpp
+        ${TABFM_BUNDLED_RESOURCES_SRC}
 )
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
@@ -90,6 +96,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_ort_engine.cpp
     test/cpp/test_tabfm_preprocess.cpp
     test/cpp/test_tabfm_ensemble.cpp
+    test/cpp/test_tabfm_bundled_resources.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     add_library(anofox_tabfm_unittest_tests OBJECT ${TABFM_CPP_TEST_SOURCES})

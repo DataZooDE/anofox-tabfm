@@ -42,16 +42,12 @@ CALL tabfm_download('regression');           -- optional, for tabfm_regress
 └──────────────────────────────┴───────────────────────────────────────┴────────────┴────────────┘
 ```
 
-### 3. Point at the model, then predict
+### 3. Predict
 
-> **Note (v1):** the weight-free graph is not yet bundled for the built-in
-> download flow, so you currently point `anofox_tabfm_model_manifest` at a
-> manifest that references the graph in `resources/`. Graph bundling is on the
-> roadmap; once done this step goes away.
+The weight-free graph is bundled in the extension, so nothing else to configure —
+just predict:
 
 ```sql
-SET anofox_tabfm_model_manifest = 'scenarios/tabfm_real_classification.json';
-
 -- customers with a known churn label are the context; NULL-label rows are scored
 SELECT age, plan, churned, yhat, yhat_score
 FROM tabfm_classify('customers', 'churned')
@@ -135,7 +131,6 @@ and evaluated — **entirely in SQL**:
 
 ```sql
 INSTALL httpfs; LOAD httpfs; LOAD anofox_tabfm;
-SET anofox_tabfm_model_manifest = 'scenarios/tabfm_real_classification.json';
 
 -- 1. load + a deterministic 70/30 split
 CREATE TABLE churn AS
@@ -224,10 +219,11 @@ Run: CALL tabfm_download('classification');
 
 The full SQL surface runs the **real TabFM v1 model** end to end (preprocess →
 ONNX Runtime forward → decode); per-row outputs match the PyTorch reference to
-~1e-5. v1 runs a single estimator on CPU (`cpu` flavor). Not yet wired up:
-the `n_estimators > 1` ensemble, and the grouped / composable-aggregate /
-windowed surfaces (`tabfm_predict_by` / `_agg` / `_win`) — planned on the same
-engine.
+~1e-5. The weight-free graphs are compiled into the extension, so after
+`tabfm_download` the model works with no companion files. v1 runs a single
+estimator on CPU (`cpu` flavor). Not yet wired up: the `n_estimators > 1`
+ensemble, and the grouped / composable-aggregate / windowed surfaces
+(`tabfm_predict_by` / `_agg` / `_win`) — planned on the same engine.
 
 ## Flavors (CPU / GPU)
 
