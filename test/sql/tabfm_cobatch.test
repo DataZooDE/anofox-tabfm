@@ -1,0 +1,88 @@
+# name: test/sql/tabfm_cobatch.test
+# description: Query-row independence — the correctness premise behind bulk
+#              scoring (PERFORMANCE_PLAN.md #3). A single predict batches every
+#              query row into one forward (T). That is only valid if query rows
+#              attend to the training context but NOT to each other: a row's
+#              prediction must be identical whether it is scored alone or
+#              co-batched with unrelated query rows. If this failed, raising
+#              anofox_tabfm_max_rows / bulk co-batching would silently change
+#              predictions. Driven by the committed random-init CI fixture — the
+#              labels are meaningless, but the invariance is a property of the
+#              graph, so it holds (or breaks) regardless of the weights.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
+
+# Independence is a property of the graph, not the backend — assert it on the
+# CPU path so this stays a fast unit test (no per-bucket GPU compile).
+statement ok
+SET anofox_tabfm_device = 'cpu'
+
+# Fixed training context: 9 labelled rows across 3 classes. Identical in every
+# framing below (spliced via UNION ALL from the same table).
+statement ok
+CREATE TABLE ctx AS SELECT * FROM (VALUES
+  (0.5,1.0,'a','x',0.1,'c0'),(1.5,0.2,'b','y',0.3,'c1'),(2.5,-1.0,'a','y',0.5,'c2'),
+  (0.2,0.8,'b','x',0.7,'c0'),(1.1,0.4,'a','y',0.2,'c1'),(3.0,-0.5,'b','y',0.9,'c2'),
+  (0.9,1.2,'a','x',0.6,'c0'),(2.1,0.1,'b','y',0.4,'c1'),(0.3,-0.3,'a','x',0.8,'c2'))
+  v(f1,f2,f3,f4,f5,label);
+
+# Four query rows with recognisable f1 keys (100..103), no labels.
+statement ok
+CREATE TABLE q AS SELECT * FROM (VALUES
+  (100.0,0.3,'a','y',0.35,NULL),(101.0,-0.2,'b','x',0.55,NULL),
+  (102.0,0.9,'a','x',0.15,NULL),(103.0,-0.7,'b','y',0.75,NULL))
+  v(f1,f2,f3,f4,f5,label);
+
+# Co-batched: all four query rows scored in one forward (T includes all 4).
+statement ok
+CREATE TABLE allq AS SELECT * FROM ctx UNION ALL SELECT * FROM q;
+
+# Solo: same context, ONLY the f1=100 query row present (T includes just 1).
+statement ok
+CREATE TABLE solo100 AS SELECT * FROM ctx UNION ALL SELECT * FROM q WHERE f1 = 100.0;
+
+# The f1=100 row must get the same label AND the same score whether scored
+# alone or alongside the other three query rows. Equal label + score within
+# 1e-4 => query rows do not influence each other => bulk co-batching is sound.
+query I
+SELECT CASE
+         WHEN a.yhat = b.yhat AND abs(a.sc - b.sc) < 1e-4 THEN 1 ELSE 0
+       END
+FROM (SELECT yhat, yhat_score AS sc FROM tabfm_classify('allq','label') WHERE f1 = 100.0) a,
+     (SELECT yhat, yhat_score AS sc FROM tabfm_classify('solo100','label') WHERE f1 = 100.0) b
+----
+1
+
+# Generalise: score EACH query row on its own (context + that one row) and
+# compare to its co-batched prediction. Every row must agree — zero rows may
+# differ in label or move more than 1e-4 in score.
+statement ok
+CREATE TABLE solo101 AS SELECT * FROM ctx UNION ALL SELECT * FROM q WHERE f1 = 101.0;
+
+statement ok
+CREATE TABLE solo102 AS SELECT * FROM ctx UNION ALL SELECT * FROM q WHERE f1 = 102.0;
+
+statement ok
+CREATE TABLE solo103 AS SELECT * FROM ctx UNION ALL SELECT * FROM q WHERE f1 = 103.0;
+
+query I
+WITH batched AS (
+  SELECT f1, yhat, yhat_score AS sc FROM tabfm_classify('allq','label') WHERE f1 >= 100.0
+),
+alone AS (
+  SELECT f1, yhat, yhat_score AS sc FROM tabfm_classify('solo100','label')    WHERE f1 = 100.0
+  UNION ALL SELECT f1, yhat, yhat_score FROM tabfm_classify('solo101','label') WHERE f1 = 101.0
+  UNION ALL SELECT f1, yhat, yhat_score FROM tabfm_classify('solo102','label') WHERE f1 = 102.0
+  UNION ALL SELECT f1, yhat, yhat_score FROM tabfm_classify('solo103','label') WHERE f1 = 103.0
+)
+SELECT count(*) FROM batched b JOIN alone a USING (f1)
+WHERE b.yhat <> a.yhat OR abs(b.sc - a.sc) >= 1e-4
+----
+0
