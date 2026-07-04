@@ -26,7 +26,9 @@ set(TABFM_ORT_VERSION "1.22.0" CACHE STRING "ONNX Runtime version for prebuilt a
 set(TABFM_ORT_URL "" CACHE STRING "Override URL for the prebuilt ONNX Runtime archive (mirror support)")
 set(TABFM_ORT_ROCM_DIR "" CACHE PATH "Install tree of an ONNX Runtime build with --use_migraphx (rocm flavor)")
 
-add_library(tabfm_onnxruntime INTERFACE)
+# IMPORTED so the target may be referenced by the exported extension targets
+# (install(EXPORT DuckDBExports) rejects non-imported build-tree targets).
+add_library(tabfm_onnxruntime INTERFACE IMPORTED GLOBAL)
 set(TABFM_ORT_PROVIDERS "")
 
 # Map host arch to the ORT release archive suffix.
