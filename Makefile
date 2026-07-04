@@ -16,6 +16,17 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 TABFM_FLAVOR ?= cpu
 EXT_FLAGS += -DTABFM_FLAVOR=$(TABFM_FLAVOR)
 
+# rocm flavor: install tree of an ONNX Runtime built with --use_migraphx.
+TABFM_ORT_ROCM_DIR ?=
+ifneq ($(TABFM_ORT_ROCM_DIR),)
+EXT_FLAGS += -DTABFM_ORT_ROCM_DIR=$(TABFM_ORT_ROCM_DIR)
+endif
+# Optional mirror override for the prebuilt ORT archive (cpu/cuda flavors).
+TABFM_ORT_URL ?=
+ifneq ($(TABFM_ORT_URL),)
+EXT_FLAGS += -DTABFM_ORT_URL=$(TABFM_ORT_URL)
+endif
+
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
