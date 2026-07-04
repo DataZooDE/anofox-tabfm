@@ -103,6 +103,32 @@ SET anofox_tabfm_threads = 0
 ----
 <REGEX>:.*must be positive.*
 
+# --- performance settings (gpu precision, cpu prepack) -----------------------
+
+query T
+SELECT current_setting('anofox_tabfm_gpu_precision')
+----
+bf16
+
+query T
+SELECT current_setting('anofox_tabfm_cpu_prepack')
+----
+true
+
+statement ok
+SET anofox_tabfm_gpu_precision = 'fp16'
+
+statement ok
+SET anofox_tabfm_gpu_precision = 'fp32'
+
+statement error
+SET anofox_tabfm_gpu_precision = 'int4'
+----
+<REGEX>:.*must be 'bf16', 'fp16' or 'fp32'.*
+
+statement ok
+SET anofox_tabfm_cpu_prepack = false
+
 # --- Function surface exists (full name + alias). Behaviour is covered in the
 # --- per-module suites: tabfm_weights/license/lifecycle (WS-D),
 # --- tabfm_devices (WS-C), tabfm_classify / tabfm_regress.
