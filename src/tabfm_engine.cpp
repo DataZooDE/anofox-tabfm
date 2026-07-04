@@ -37,6 +37,13 @@
 
 #include <cmath>
 
+#ifndef _WIN32
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace duckdb {
 namespace anofox {
 
@@ -214,14 +221,110 @@ TabFMTensorDtype ToEngineDtype(SafetensorsDtype dtype) {
 	return dtype == SafetensorsDtype::I64 ? TabFMTensorDtype::I64 : TabFMTensorDtype::F32;
 }
 
+// A read-only memory-mapping of the safetensors cache file. Preferred over a
+// full read: the multi-GB weights are never copied into an anonymous heap
+// buffer — ORT reads the injected initializers straight from the mapped, file-
+// backed pages (which the OS can reclaim/share), and the up-front 6.6 GB read
+// (and its short-read hazard) disappears. Local files only; POSIX only for now.
+struct MappedFile {
+	const char *data = nullptr;
+	idx_t size = 0;
+#ifndef _WIN32
+	void *base = nullptr;
+	idx_t map_len = 0;
+	int fd = -1;
+#endif
+
+	MappedFile() = default;
+	MappedFile(const MappedFile &) = delete;
+	MappedFile &operator=(const MappedFile &) = delete;
+	MappedFile(MappedFile &&o) noexcept {
+		*this = std::move(o);
+	}
+	MappedFile &operator=(MappedFile &&o) noexcept {
+		if (this != &o) {
+			Reset();
+			data = o.data;
+			size = o.size;
+#ifndef _WIN32
+			base = o.base;
+			map_len = o.map_len;
+			fd = o.fd;
+			o.base = nullptr;
+			o.map_len = 0;
+			o.fd = -1;
+#endif
+			o.data = nullptr;
+			o.size = 0;
+		}
+		return *this;
+	}
+	~MappedFile() {
+		Reset();
+	}
+	bool valid() const {
+		return data != nullptr;
+	}
+	void Reset() {
+#ifndef _WIN32
+		if (base) {
+			munmap(base, map_len);
+			base = nullptr;
+		}
+		if (fd >= 0) {
+			close(fd);
+			fd = -1;
+		}
+#endif
+		data = nullptr;
+		size = 0;
+	}
+};
+
+// mmap `path` read-only; returns an invalid MappedFile if it cannot be mapped
+// (Windows, a non-local/virtual path, or any OS error) so the caller falls back
+// to a full read. TABFM_DISABLE_MMAP forces that fallback (benchmarking/debug).
+MappedFile TryMapFile(const string &path) {
+	MappedFile m;
+#ifndef _WIN32
+	if (std::getenv("TABFM_DISABLE_MMAP")) {
+		return m;
+	}
+	int fd = open(path.c_str(), O_RDONLY);
+	if (fd < 0) {
+		return m;
+	}
+	struct stat st;
+	if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+		close(fd);
+		return m;
+	}
+	void *p = mmap(nullptr, static_cast<size_t>(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
+	if (p == MAP_FAILED) {
+		close(fd);
+		return m;
+	}
+	m.base = p;
+	m.map_len = NumericCast<idx_t>(st.st_size);
+	m.fd = fd;
+	m.data = reinterpret_cast<const char *>(p);
+	m.size = m.map_len;
+#endif
+	return m;
+}
+
 // The ORT session PLUS the source buffers it injected. ORT's
-// AddExternalInitializers keeps references to the user buffers (it does not
-// copy), so the safetensors bytes and the bf16-upcast arena must live exactly
-// as long as the session. This holder ties their lifetimes together.
+// AddExternalInitializers keeps references to the user buffers (and reads them
+// lazily during inference), so the safetensors bytes and the bf16-upcast arena
+// must outlive the session. The bytes come from either the mmap (preferred) or
+// a full read (`weights`); exactly one is populated. Declaration order is the
+// destruction contract: `session` is LAST so it is destroyed FIRST, before the
+// buffers it references.
 struct SessionHolder {
-	string weights;               // safetensors bytes (f32 tensors point in here)
-	F32Arena arena;               // owns bf16->f32 upcast copies
-	TabFMSessionHandle session;   // last: destroyed first, before the buffers
+	string weights;             // fallback: full read (f32 tensors point in here)
+	MappedFile mapping;         // preferred: mmap of the cache file
+	F32Arena arena;             // owns bf16->f32 upcast copies (empty for f32 models)
+	TabFMSessionHandle session; // last: destroyed first, before the buffers
 };
 
 // Build (or reuse) the ORT session for `resolved` and return a snapshot of the
@@ -233,11 +336,24 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		return snapshot;
 	}
 
-	// Read the weights (fully — see ReadWholeFile; a short read silently zeroes
-	// the tail of a multi-GB file) and inject each tensor into the weight-free
-	// graph under its ONNX initializer name via AddExternalInitializers.
-	auto weights = ReadWholeFile(fs, resolved.weights_path);
-	auto view = ParseSafetensors(const_data_ptr_cast(weights.data()), weights.size(), resolved.weights_path);
+	// Prefer an mmap of the (local) cache file: ORT reads the injected
+	// initializers straight from file-backed pages, so the multi-GB weights are
+	// never copied into an anonymous heap buffer. Fall back to a full read for a
+	// non-local/virtual path or any OS that cannot map it (a short read there
+	// silently zeroes the tail of a multi-GB file — see ReadWholeFile).
+	auto mapping = TryMapFile(resolved.weights_path);
+	string weights;
+	const_data_ptr_t bytes;
+	idx_t nbytes;
+	if (mapping.valid()) {
+		bytes = const_data_ptr_cast(mapping.data);
+		nbytes = mapping.size;
+	} else {
+		weights = ReadWholeFile(fs, resolved.weights_path);
+		bytes = const_data_ptr_cast(weights.data());
+		nbytes = weights.size();
+	}
+	auto view = ParseSafetensors(bytes, nbytes, resolved.weights_path);
 	auto arena = MaterializeF32Arena(view);
 
 	// Build one injected initializer per safetensors tensor, named by the graph
@@ -270,15 +386,16 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	config.device_ordinal = device.device_ordinal;
 	config.model_tag = TabFMTaskName(resolved.manifest.task);
 
-	const idx_t weight_bytes = weights.size();
+	const idx_t weight_bytes = nbytes;
 	auto session = resolved.graph_bundle.data
 	                   ? CreateSession(resolved.graph_bundle.data, resolved.graph_bundle.size, initializers, config)
 	                   : CreateSessionFromPath(resolved.graph_path, initializers, config);
-	// ORT keeps references to the injected user buffers (weights + arena) and to
-	// the OrtValues (inside the session) — all must OUTLIVE the session, so keep
-	// the buffers in the holder alongside it.
+	// ORT keeps references to the injected user buffers (the mmap or read buffer +
+	// arena) and to the OrtValues (inside the session) — all must OUTLIVE the
+	// session, so keep the buffers in the holder alongside it.
 	auto holder = make_shared_ptr<SessionHolder>();
 	holder->weights = std::move(weights);
+	holder->mapping = std::move(mapping);
 	holder->arena = std::move(arena);
 	holder->session = std::move(session);
 
