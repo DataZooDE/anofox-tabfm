@@ -69,6 +69,13 @@ if(APPLE)
     target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
 endif()
 
+# posthog-telemetry reads the MAC address via GetAdaptersInfo on Windows
+# (same dep posthog-telemetry's own CMakeLists declares on its target).
+if(WIN32)
+    target_link_libraries(${EXTENSION_NAME} iphlpapi)
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} iphlpapi)
+endif()
+
 # GCC 14 COMDAT vs non-COMDAT conflict on Linux for DuckDB v1.5+ (see
 # extension_config.cmake for the full explanation).
 if(UNIX AND NOT APPLE)
