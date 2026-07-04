@@ -53,6 +53,7 @@ set(EXTENSION_SOURCES
         src/tabfm_predict_agg.cpp
         src/tabfm_macros.cpp
         src/tabfm_engine.cpp
+        src/tabfm_migraphx.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
 )
 

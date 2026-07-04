@@ -19,6 +19,8 @@ set(_tabfm_inputs
     "graph_regression.onnx"
     "graph_ext_classification.onnx"
     "graph_ext_regression.onnx"
+    "graph_migraphx_classification.onnx"
+    "graph_migraphx_regression.onnx"
     "tensor_map_classification.json"
     "tensor_map_regression.json")
 

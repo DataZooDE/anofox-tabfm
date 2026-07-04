@@ -21,6 +21,11 @@ TABFM_ORT_ROCM_DIR ?=
 ifneq ($(TABFM_ORT_ROCM_DIR),)
 EXT_FLAGS += -DTABFM_ORT_ROCM_DIR=$(TABFM_ORT_ROCM_DIR)
 endif
+# MIGraphX prefix for the direct GPU backend (rocm flavor; defaults to /opt/rocm).
+TABFM_MIGRAPHX_DIR ?=
+ifneq ($(TABFM_MIGRAPHX_DIR),)
+EXT_FLAGS += -DTABFM_MIGRAPHX_DIR=$(TABFM_MIGRAPHX_DIR)
+endif
 # Optional mirror override for the prebuilt ORT archive (cpu/cuda flavors).
 TABFM_ORT_URL ?=
 ifneq ($(TABFM_ORT_URL),)

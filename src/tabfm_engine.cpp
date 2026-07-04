@@ -26,6 +26,7 @@
 #include "tabfm_safetensors.hpp"
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_bundled_resources.hpp"
+#include "tabfm_migraphx.hpp"
 #include "tabfm_state.hpp"
 
 #include "duckdb/common/file_system.hpp"
@@ -316,19 +317,39 @@ MappedFile TryMapFile(const string &path) {
 	return m;
 }
 
-// The ORT session PLUS the source buffers it injected. ORT's
-// AddExternalInitializers keeps references to the user buffers (and reads them
-// lazily during inference), so the safetensors bytes and the bf16-upcast arena
-// must outlive the session. The bytes come from either the mmap (preferred) or
-// a full read (`weights`); exactly one is populated. Declaration order is the
-// destruction contract: `session` is LAST so it is destroyed FIRST, before the
-// buffers it references.
-struct SessionHolder {
+// ORT-backed inference backend (CPU EP, or CUDA EP on the cuda flavor): the ORT
+// session PLUS the source buffers it injected. AddExternalInitializers keeps
+// references to the user buffers (and reads them lazily during inference), so
+// the safetensors bytes and the bf16-upcast arena must outlive the session. The
+// bytes come from either the mmap (preferred) or a full read (`weights`), or
+// neither (external-data path: ORT reads weights from disk). Declaration order
+// is the destruction contract: `session` is LAST so it is destroyed FIRST,
+// before the buffers it references.
+struct OrtBackend : public TabFMBackend {
 	string weights;             // fallback: full read (f32 tensors point in here)
 	MappedFile mapping;         // preferred: mmap of the cache file
 	F32Arena arena;             // owns bf16->f32 upcast copies (empty for f32 models)
 	TabFMSessionHandle session; // last: destroyed first, before the buffers
+
+	TabFMRunOutput Run(const TabFMRunInput &input) override {
+		return ::duckdb::anofox::Run(*session, input);
+	}
 };
+
+// Register a freshly built backend in the DB-instance state and return the
+// LoadedModel snapshot. The void handle aliases the TabFMBackend base pointer so
+// the predict loop can recover it and dispatch Run() virtually.
+shared_ptr<LoadedModel> RegisterBackend(TabFMState &state, const string &cache_key,
+                                        shared_ptr<TabFMBackend> backend, const string &device_id, idx_t bytes) {
+	auto model = make_shared_ptr<LoadedModel>();
+	model->model_key = cache_key;
+	model->session = shared_ptr<void>(std::move(backend));
+	model->device_id = device_id;
+	model->dtype = "f32";
+	model->bytes = bytes;
+	state.Register(cache_key, model);
+	return model;
+}
 
 // SHA-256 (hex) of the safetensors JSON header the bundled external-data graphs
 // were generated against (tools/make_external_graph.py prints these). A
@@ -377,6 +398,43 @@ bool ReadWeightsHeaderBytes(FileSystem &fs, const string &path, string &header) 
 	}
 }
 
+// True iff the downloaded safetensors' JSON header is byte-identical to the
+// checkpoint the bundled external-data / migraphx graphs were baked against — so
+// the graphs' baked external offsets are correct. Also requires the weights to be
+// a local file named model.safetensors (the graphs' external-data location).
+bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, TabFMTask task) {
+	const char *expected = ExpectedWeightsHeaderSha(task);
+	if (!expected || !*expected) {
+		return false;
+	}
+	if (StringUtil::Split(weights_path, "/").back() != "model.safetensors") {
+		return false;
+	}
+	string header;
+	if (!ReadWeightsHeaderBytes(fs, weights_path, header)) {
+		return false;
+	}
+	return Sha256Hex(const_data_ptr_cast(header.data()), header.size()) == string(expected);
+}
+
+// Stage a bundled graph next to the weights (idempotent by size) so external-data
+// "model.safetensors" resolves. Returns false if it cannot be written.
+bool StageBundledGraph(FileSystem &fs, const BundledResource &graph, const string &graph_path) {
+	try {
+		if (fs.FileExists(graph_path)) {
+			auto h = fs.OpenFile(graph_path, FileFlags::FILE_FLAGS_READ);
+			if (NumericCast<idx_t>(fs.GetFileSize(*h)) == graph.size) {
+				return true;
+			}
+		}
+	} catch (...) { // NOLINT: any probe failure just means "rewrite"
+	}
+	std::ofstream out(graph_path, std::ios::binary | std::ios::trunc);
+	out.write(graph.data, NumericCast<std::streamsize>(graph.size));
+	out.close();
+	return static_cast<bool>(out);
+}
+
 // Low-memory load path: the graph references the weights as ONNX external-data on
 // disk, so ORT reads them itself (no in-memory injection, no copy). Peak RSS
 // drops ~2.6x on the real model. Only engages when a bundled external-data graph
@@ -390,42 +448,15 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
 	auto graph = GetBundledResource("graph_ext_" + task_name);
-	const char *expected_sha = ExpectedWeightsHeaderSha(resolved.manifest.task);
-	if (!graph.data || !expected_sha || !*expected_sha) {
-		return nullptr; // no external-data graph for this model
-	}
-	// The graph resolves external-data "model.safetensors" relative to its own
-	// directory, so the weights file must be a local file named model.safetensors.
-	if (StringUtil::Split(resolved.weights_path, "/").back() != "model.safetensors") {
+	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task)) {
 		return nullptr;
-	}
-	string header;
-	if (!ReadWeightsHeaderBytes(fs, resolved.weights_path, header)) {
-		return nullptr;
-	}
-	if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != string(expected_sha)) {
-		return nullptr; // different checkpoint layout -> baked offsets would be wrong
 	}
 	// Place the external-data graph next to the weights (idempotent) so ORT can
 	// resolve the relative "model.safetensors" reference.
 	const auto dir = DirName(resolved.weights_path);
 	const auto graph_path = fs.JoinPath(dir, "graph_ext_" + task_name + ".onnx");
-	bool present = false;
-	try {
-		if (fs.FileExists(graph_path)) {
-			auto h = fs.OpenFile(graph_path, FileFlags::FILE_FLAGS_READ);
-			present = NumericCast<idx_t>(fs.GetFileSize(*h)) == graph.size;
-		}
-	} catch (...) {
-		present = false;
-	}
-	if (!present) {
-		std::ofstream out(graph_path, std::ios::binary | std::ios::trunc);
-		out.write(graph.data, NumericCast<std::streamsize>(graph.size));
-		out.close();
-		if (!out) {
-			return nullptr; // cannot stage the graph -> fall back
-		}
+	if (!StageBundledGraph(fs, graph, graph_path)) {
+		return nullptr;
 	}
 
 	TabFMSessionConfig config;
@@ -438,29 +469,54 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 	// No injected initializers: ORT loads them from the safetensors via the
 	// graph's external-data references.
 	auto session = CreateSessionFromPath(graph_path, {}, config);
-	auto holder = make_shared_ptr<SessionHolder>();
-	holder->session = std::move(session);
+	auto backend = make_shared_ptr<OrtBackend>();
+	backend->session = std::move(session);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, 0);
+}
 
-	auto model = make_shared_ptr<LoadedModel>();
-	model->model_key = resolved.cache_key;
-	model->session = shared_ptr<void>(holder);
-	model->device_id = config.device_id;
-	model->dtype = "f32";
-	model->bytes = 0;
-	state.Register(resolved.cache_key, model);
-	return model;
+// Direct AMD MIGraphX GPU backend. ORT's MIGraphX EP cannot run this model
+// (re-inlines weights -> 2 GB proto), so ROCm bypasses ORT: parse the
+// migraphx-ready graph (external-data + Shape-rewrite), compile per shape-bucket
+// (cached to .mxr), run. Engages only when the resolved device is a rocm GPU and
+// a bundled migraphx graph + matching weights exist; nullptr => fall back to the
+// CPU/ORT path.
+shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
+                                           const PredictContext &ctx) {
+	auto devices = DiscoverDevices();
+	auto device = ResolveDevice(ctx.device, devices);
+	if (!StringUtil::StartsWith(device.device_id, "rocm")) {
+		return nullptr; // not the GPU path (cpu / cuda handled by the ORT backend)
+	}
+	const string task_name = TabFMTaskName(resolved.manifest.task);
+	auto graph = GetBundledResource("graph_migraphx_" + task_name);
+	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task)) {
+		return nullptr;
+	}
+	const auto dir = DirName(resolved.weights_path);
+	const auto graph_path = fs.JoinPath(dir, "graph_migraphx_" + task_name + ".onnx");
+	if (!StageBundledGraph(fs, graph, graph_path)) {
+		return nullptr;
+	}
+	const auto mxr_dir = fs.JoinPath(ctx.cache_dir, "migraphx");
+	shared_ptr<TabFMBackend> backend =
+	    MakeMIGraphXBackend(graph_path, dir, mxr_dir, device.arch, device.device_ordinal);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0);
 }
 
 // Build (or reuse) the ORT session for `resolved` and return a snapshot of the
-// LoadedModel. Prefers the low-memory external-data path (ORT reads weights from
-// disk); falls back to reading/mmapping + in-memory injection.
+// LoadedModel. Order: direct MIGraphX (ROCm GPU) -> low-memory external-data
+// (CPU/CUDA, ORT reads weights from disk) -> read/mmap + in-memory injection.
 shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                          const PredictContext &ctx) {
 	if (auto snapshot = state.Snapshot(resolved.cache_key)) {
 		return snapshot;
 	}
 
-	// Low-memory path first (external-data graph; ORT reads weights from disk).
+	// ROCm GPU: direct MIGraphX backend (bypasses ORT's unusable MIGraphX EP).
+	if (auto gpu = TryMIGraphXBackend(fs, state, resolved, ctx)) {
+		return gpu;
+	}
+	// Low-memory path (external-data graph; ORT reads weights from disk).
 	if (auto external = TryExternalDataSession(fs, state, resolved, ctx)) {
 		return external;
 	}
@@ -522,20 +578,12 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	// ORT keeps references to the injected user buffers (the mmap or read buffer +
 	// arena) and to the OrtValues (inside the session) — all must OUTLIVE the
 	// session, so keep the buffers in the holder alongside it.
-	auto holder = make_shared_ptr<SessionHolder>();
-	holder->weights = std::move(weights);
-	holder->mapping = std::move(mapping);
-	holder->arena = std::move(arena);
-	holder->session = std::move(session);
-
-	auto model = make_shared_ptr<LoadedModel>();
-	model->model_key = resolved.cache_key;
-	model->session = shared_ptr<void>(holder); // implicit up-cast to void
-	model->device_id = config.device_id;
-	model->dtype = "f32";
-	model->bytes = weight_bytes;
-	state.Register(resolved.cache_key, model);
-	return model;
+	auto backend = make_shared_ptr<OrtBackend>();
+	backend->weights = std::move(weights);
+	backend->mapping = std::move(mapping);
+	backend->arena = std::move(arena);
+	backend->session = std::move(session);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes);
 }
 
 //===--------------------------------------------------------------------===//
@@ -661,8 +709,8 @@ public:
 			run_input.h = NumericCast<int64_t>(batch.H);
 			run_input.train_size = NumericCast<int64_t>(batch.train_size);
 			run_input.d = NumericCast<int64_t>(batch.d);
-			auto *holder = reinterpret_cast<SessionHolder *>(model->session.get());
-			out = Run(*holder->session, run_input);
+			auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
+			out = backend->Run(run_input);
 		}
 
 		// 4. decode logits[1,T,C] -> per-source-row predictions

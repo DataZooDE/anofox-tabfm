@@ -93,6 +93,15 @@ elseif(TABFM_FLAVOR STREQUAL "rocm")
     target_link_libraries(tabfm_onnxruntime INTERFACE "${TABFM_ORT_LIB}")
     set(TABFM_ORT_LIB_DIR "${TABFM_ORT_ROCM_DIR}/lib")
     list(APPEND TABFM_ORT_PROVIDERS "TABFM_EP_MIGRAPHX=1")
+
+    # Direct MIGraphX backend (tabfm_migraphx.cpp): ORT's MIGraphX EP can't handle
+    # >2 GB models, so ROCm inference goes straight through MIGraphX. Needs the
+    # MIGraphX headers + the C-API lib (migraphx.hpp is a header-only wrapper over
+    # libmigraphx_c). Defaults to /opt/rocm; override for a local extracted prefix.
+    set(TABFM_MIGRAPHX_DIR "/opt/rocm" CACHE PATH "MIGraphX install prefix (include/ + lib/libmigraphx_c)")
+    target_include_directories(tabfm_onnxruntime INTERFACE "${TABFM_MIGRAPHX_DIR}/include")
+    find_library(TABFM_MIGRAPHX_LIB migraphx_c PATHS "${TABFM_MIGRAPHX_DIR}/lib" "${TABFM_MIGRAPHX_DIR}/lib64" NO_DEFAULT_PATH REQUIRED)
+    target_link_libraries(tabfm_onnxruntime INTERFACE "${TABFM_MIGRAPHX_LIB}")
 else()
     message(FATAL_ERROR "anofox_tabfm: unknown TABFM_FLAVOR '${TABFM_FLAVOR}' (expected cpu | cuda | rocm)")
 endif()

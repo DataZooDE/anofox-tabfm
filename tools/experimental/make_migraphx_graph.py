@@ -89,7 +89,8 @@ def main():
     ap.add_argument("task", choices=["classification", "regression"])
     ap.add_argument("--rows", type=int, default=16)
     ap.add_argument("--features", type=int, default=8)
-    ap.add_argument("--dynamic", action="store_true", help="keep dynamic shapes (slow compile)")
+    ap.add_argument("--dynamic", action="store_true", help="keep dynamic shapes (backend sets per-bucket)")
+    ap.add_argument("--out")
     a = ap.parse_args()
     weights = os.path.join(DEF_CACHE, a.task, "model.safetensors")
     m = onnx.load(f"resources/graph_{a.task}.onnx", load_external_data=False)
@@ -97,7 +98,7 @@ def main():
     n = rewrite_shapes(m.graph)
     if not a.dynamic:
         pin_shapes(m.graph, a.rows, a.features)
-    out = os.path.join(DEF_CACHE, a.task, "graph_migraphx.onnx")
+    out = a.out or f"resources/graph_migraphx_{a.task}.onnx"
     onnx.save(m, out)
     dims = [(i.name, [dd.dim_value if dd.HasField("dim_value") else dd.dim_param
                       for dd in i.type.tensor_type.shape.dim]) for i in m.graph.input]

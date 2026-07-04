@@ -207,6 +207,17 @@ struct TabFMRunOutput {
 
 TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input);
 
+//! A compiled, ready-to-run inference backend for one loaded (model, device).
+//! The engine holds one per LoadedModel and calls Run() per forward pass.
+//! Implementations: OrtBackend (CPU + CUDA execution provider, via ORT) and
+//! MIGraphXBackend (direct AMD MIGraphX — ORT's MIGraphX EP cannot handle >2 GB
+//! models, so ROCm bypasses ORT entirely).
+class TabFMBackend {
+public:
+	virtual ~TabFMBackend() = default;
+	virtual TabFMRunOutput Run(const TabFMRunInput &input) = 0;
+};
+
 //! Validate a forward-pass output against the engine contract before it is
 //! decoded (HLD §4.4): shape must be exactly [1, expected_t, C] with
 //! C >= min_classes (>= 1), and logits.size() == expected_t * C. A mismatched
