@@ -12,9 +12,9 @@ bf16) + RX 9070 XT (RDNA4/gfx1201, 64 CUs, 16 GB VRAM) + ROCm 7.2.4 / MIGraphX 7
 | #2 CPU prepacking setting | **implemented + measured** (`anofox_tabfm_cpu_prepack`, default on). ~5% faster warm forward at T=200 (1.94→1.84 s); slower session build. |
 | #6 narrow per-device mutex | **implemented** (tensor materialization moved out of the lock). |
 | #3 bulk/bucket tuning | **correctness premise validated** — `test/sql/tabfm_cobatch.test` proves query rows are mutually independent (row-alone == co-batched, same label + score), so bulk-in-one-forward and any `max_rows` raise are sound. Bucket ladder already reaches T=10000. Remaining (optional): raise `max_rows` under bf16 VRAM headroom after a large-T GPU benchmark. |
-| #4 precompile `.mxr` offline/at-download | **not yet** — needs CI/hosting + download path. |
-| #5 persistent device buffers | **not yet** — offload_copy→IoBinding-style refactor. |
-| #7 context KV-cache | **not yet** — graph surgery + cache lifecycle (largest effort). |
+| #4 precompile `.mxr` offline/at-download | **decision-gated (external)** — the on-device compile already exists; the win is a *hosted* `.mxr` download channel so users skip the ~20-min first-predict compile. Blocked on where artifacts live (CI build + weights channel). Not implementable autonomously. |
+| #5 persistent device buffers | **not recommended on this stack — API-blocked, net-negative.** Investigated (2026-07-04): the public MIGraphX C/C++ API exposes **no** device-alloc or H2D/D2H copy; `offload_copy` is the only sanctioned transfer path (`migraphx_argument_create` merely wraps a host pointer). Dropping it requires raw HIP (`hipMalloc`/`hipMemcpy`, `offload_copy=false`) + a new `libamdhip64` link dep + manual device-memory lifecycle. Payoff is a small-T latency win (0.1 s → ~0.07–0.09 s) that **shrinks at large T** (offload amortizes over the forward) — i.e. concentrated exactly where latency already doesn't matter. Cost/risk (new dep, raw memory mgmt in a community-eligible codebase) > benefit. Revisit only if profiling shows offload as a real bulk-throughput bottleneck. |
+| #7 context KV-cache | **not yet — scoped as its own effort.** Graph surgery (export/accept `past_key_values` per block) + C++ cache lifecycle/invalidation. Largest ceiling (interactive same-context predicts 0.14 s → <0.02 s) but multi-session with real correctness risk. Warrants a dedicated design doc + goal before code. |
 
 ---
 
@@ -109,6 +109,14 @@ Consequences that drive the plan:
 - **Impact:** ~10–30% on the warm forward (bigger at small T where launch overhead
   dominates). **Effort:** medium (buffer lifecycle). **Risk:** none to accuracy.
 - **Validate:** rocprof (fewer H2D/D2H, less host overhead) + identical logits.
+- **⚠️ Investigated 2026-07-04 — not recommended on this stack.** The public
+  MIGraphX C/C++ API exposes no device-alloc or copy-to/from-gpu primitive;
+  `offload_copy` is the only sanctioned host↔device path. Dropping it needs raw
+  HIP (`hipMalloc`/`hipMemcpy`, `offload_copy=false`) + a `libamdhip64` link dep +
+  hand-rolled device-memory lifecycle. And the gain lands at small T (already
+  ~0.1 s) and *shrinks* at large T where offload amortizes over the forward — the
+  wrong end of the workload. Net-negative here; skip unless profiling proves
+  offload is a real bulk bottleneck.
 
 ### 6. Narrow the per-device mutex (overlap CPU prep with GPU)  ⭐ codex
 - **What:** `DeviceMutex` currently wraps preprocess + tensor materialization +
