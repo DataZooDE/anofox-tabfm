@@ -1,9 +1,9 @@
 # name: test/sql/tabfm_regress.test
-# description: tabfm_regress surface + real-engine reachability. The committed CI
-#              fixture is a CLASSIFICATION model, so a numeric regression forward
-#              pass is exercised end-to-end in the real-weights / regression-
-#              fixture job (Phase 3); here we assert the regression path reaches
-#              the engine, resolves the task, and produces the SQL-API §5 errors.
+# description: tabfm_regress end-to-end through the real engine against the
+#              committed regression CI fixture (weight-free graph, random-init
+#              safetensors, output [1,T,1]). Predictions are meaningless (random
+#              weights) but the full numeric pipeline runs: preprocess ->
+#              injection -> ORT forward -> inverse-transform decode.
 # group: [anofox_tabfm]
 
 require anofox_tabfm
@@ -12,35 +12,71 @@ statement ok
 LOAD anofox_tabfm
 
 statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/regression/manifest.json'
+
+statement ok
 CREATE TABLE houses AS SELECT * FROM (VALUES
-  (1200,3,200000.0),(2500,5,400000.0),(1500,3,NULL),(3000,6,NULL))
+  (1200,3,200000.0),(2500,5,400000.0),(1500,3,300000.0),(2000,4,350000.0),
+  (1800,4,280000.0),(2200,5,420000.0),(1400,3,260000.0),(2800,6,520000.0),
+  (1600,4,NULL),(2400,5,NULL),(1300,3,NULL),(2600,5,NULL))
   v(sqft,beds,price);
 
-# --- Regression task is resolved and reaches the engine ----------------------
-# Pointed at the classification fixture, the engine rejects the task mismatch —
-# proof the regression request flowed through preprocess/manifest resolution.
+# --- Single-table: 4 NULL-price rows scored, all rows returned ---------------
 
-statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
-
-statement error
-SELECT * FROM tabfm_regress('houses','price')
+query I
+SELECT count(*) FROM tabfm_regress('houses','price')
 ----
-<REGEX>:.*manifest is for task 'classification'.*
+12
 
-# two-table form resolves the same way
-statement ok
-CREATE TABLE sold AS SELECT * FROM (VALUES (1200,3,200000.0),(2500,5,400000.0)) v(sqft,beds,price);
-
-statement ok
-CREATE TABLE listed AS SELECT * FROM (VALUES (1800,4),(2200,4)) v(sqft,beds);
-
-statement error
-SELECT * FROM tabfm_regress('sold','price', test := 'listed')
+# every yhat is a finite number; regression has no score and no proba
+query I
+SELECT count(*) FROM tabfm_regress('houses','price')
+WHERE yhat IS NULL OR NOT isfinite(yhat) OR yhat_score IS NOT NULL
 ----
-<REGEX>:.*manifest is for task 'classification'.*
+0
 
-# --- Errors that do not need a model -----------------------------------------
+# no proba column for regression
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM tabfm_regress('houses','price')) WHERE column_name = 'proba'
+----
+0
+
+# scored rows flagged is_training = false
+query I
+SELECT count(*) FROM tabfm_regress('houses','price') WHERE price IS NULL AND is_training
+----
+0
+
+# determinism: two calls agree on every prediction
+query I
+SELECT count(*) FROM (
+  SELECT a.yhat AS y1, b.yhat AS y2
+  FROM tabfm_regress('houses','price') a JOIN tabfm_regress('houses','price') b USING (sqft)
+) WHERE y1 <> y2
+----
+0
+
+# --- Two-table form ----------------------------------------------------------
+
+statement ok
+CREATE TABLE sold AS SELECT * FROM houses WHERE price IS NOT NULL;
+
+statement ok
+CREATE TABLE listed AS SELECT sqft, beds FROM houses WHERE price IS NULL;
+
+query I
+SELECT count(*) FROM tabfm_regress('sold','price', test := 'listed')
+----
+4
+
+# --- Subselect training relation ---------------------------------------------
+
+query I
+SELECT count(*) FROM tabfm_regress('(SELECT * FROM sold)','price', test := 'listed')
+----
+4
+
+# --- Errors ------------------------------------------------------------------
 
 # all-NULL target: no context (raised before the model is touched)
 statement ok
@@ -57,8 +93,16 @@ SELECT * FROM tabfm_regress('houses','price', opts := MAP{'n_estimators':'4'})
 ----
 <REGEX>:.*(ensemble|M3|n_estimators).*
 
-# --- No model configured -> not-downloaded remediation -----------------------
+# pointing regress at a CLASSIFICATION model errors on the task mismatch
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
 
+statement error
+SELECT * FROM tabfm_regress('houses','price')
+----
+<REGEX>:.*manifest is for task 'classification'.*
+
+# no model configured -> not-downloaded remediation
 statement ok
 SET anofox_tabfm_model_manifest = ''
 

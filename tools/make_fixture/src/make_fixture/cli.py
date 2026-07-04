@@ -13,11 +13,14 @@ def main_fixture(argv=None) -> int:
   ap = argparse.ArgumentParser(prog="make_fixture")
   ap.add_argument("--out", required=True,
                   help="output dir (the repo's test/fixtures)")
+  ap.add_argument("--task", default="classification",
+                  choices=("classification", "regression"),
+                  help="fixture task (regression -> logits [1, T, 1])")
   ap.add_argument("--skip-roundtrip", action="store_true")
   args = ap.parse_args(argv)
   out = pathlib.Path(args.out)
 
-  hashes = fixture.build(out)
+  hashes = fixture.build(out, task=args.task)
 
   if not args.skip_roundtrip:
     rel = fixture.roundtrip_check(out)

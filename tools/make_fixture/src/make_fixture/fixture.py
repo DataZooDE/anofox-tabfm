@@ -45,12 +45,33 @@ FIXTURE_CFG = dict(
     is_classifier=True,
 )
 
+# Regression fixture: identical dims, but is_classifier=False swaps the class
+# Embedding y-encoder for an MLP over the scalar target and the per-class
+# decoder head for a single-value one, so logits are [1, T, 1] (C=1). The
+# architecture is Apache-2.0, weights are ours (random init) — zero Google
+# bytes, exactly like the classification fixture.
+FIXTURE_CFG_REGRESSION = dict(FIXTURE_CFG, is_classifier=False)
+
+# per-task manifest.repo (points at the committed fixture dir).
+TASK_REPO = {
+    "classification": "local:test/fixtures",
+    "regression": "local:test/fixtures/regression",
+}
+
 FILES = ["graph_fixture.onnx", "model.safetensors",
          "tensor_map_fixture.json", "golden.json", "manifest.json"]
 
 
-def seeded_model() -> TabFM:
-  model = TabFM(**FIXTURE_CFG)
+def _cfg(task: str) -> dict:
+  if task == "classification":
+    return FIXTURE_CFG
+  if task == "regression":
+    return FIXTURE_CFG_REGRESSION
+  raise ValueError(f"task must be classification|regression, got {task!r}")
+
+
+def seeded_model(task: str = "classification") -> TabFM:
+  model = TabFM(**_cfg(task))
   gen = torch.Generator().manual_seed(SEED_WEIGHTS)
   with torch.no_grad():
     sd = model.state_dict()
@@ -71,12 +92,15 @@ def safetensors_bytes_digest(model: TabFM, st_path: pathlib.Path) -> str:
   return hashlib.sha256(st_path.read_bytes()).hexdigest()
 
 
-def golden_inputs():
+def golden_inputs(task: str = "classification"):
   gen = torch.Generator().manual_seed(SEED_GOLDEN_INPUTS)
   t, h, d, train = (GOLDEN_SHAPE[k] for k in ("t", "h", "d", "train"))
   x = torch.randn(1, t, h, generator=gen)
-  y = torch.randint(0, FIXTURE_CFG["max_classes"], (1, t), generator=gen
-                    ).float()
+  if task == "classification":
+    y = torch.randint(0, FIXTURE_CFG["max_classes"], (1, t), generator=gen
+                      ).float()
+  else:  # regression: continuous target (real pipeline z-scores it per column)
+    y = torch.randn(1, t, generator=gen)
   ts = torch.tensor([train], dtype=torch.int64)
   cm = torch.zeros(1, h, dtype=torch.bool)
   cm[0, :2] = True
@@ -88,13 +112,20 @@ def sha256_file(p: pathlib.Path) -> str:
   return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
-def build(out: pathlib.Path) -> dict:
-  """Generate all fixture artifacts into `out`. Returns {file: sha256}."""
+def build(out: pathlib.Path, task: str = "classification") -> dict:
+  """Generate all fixture artifacts into `out`. Returns {file: sha256}.
+
+  task="classification" reproduces the original S06 fixture byte-for-byte
+  (C=max_classes logits); task="regression" builds the sibling regression
+  fixture (is_classifier=False, logits [1, T, 1]).
+  """
+  if task not in ("classification", "regression"):
+    raise ValueError(f"task must be classification|regression, got {task!r}")
   out.mkdir(parents=True, exist_ok=True)
 
   # 1. deterministic seeded model; in-process determinism assertion
-  model = seeded_model()
-  model2 = seeded_model()
+  model = seeded_model(task)
+  model2 = seeded_model(task)
   sd, sd2 = model.state_dict(), model2.state_dict()
   assert sorted(sd) == sorted(sd2)
   for k in sd:
@@ -117,7 +148,7 @@ def build(out: pathlib.Path) -> dict:
                         dim_features=cfg.dim_features, example=cfg.example)
   tensor_map = x_export.postprocess(graph_path, dict(model.state_dict()))
   x_export.write_tensor_map(out / "tensor_map_fixture.json", tensor_map,
-                            task="classification",
+                            task=task,
                             safetensors_rel="model.safetensors")
 
   # 4. sanity parity at a shape different from the export example (S06:
@@ -130,9 +161,20 @@ def build(out: pathlib.Path) -> dict:
   x_export.assert_weight_free(graph_path, tensor_map)
 
   # 6. golden.json — inputs + PyTorch fp32 logits for the C++ parity test
-  x, y, ts, cm, dd = golden_inputs()
+  x, y, ts, cm, dd = golden_inputs(task)
   with torch.no_grad():
     logits = model(x, y, ts, cat_mask=cm, d=dd)
+  if task == "classification":
+    y_convention = ("y rows >= train_size are ignored by the model; here they "
+                    "hold valid class ids, the runtime pads with -100.0")
+  else:
+    y_convention = ("regression: y is the continuous target. The real "
+                    "pipeline z-scores/standardizes it per column; this "
+                    "fixture uses random standard-normal values (a plumbing "
+                    "parity check only, not a trained prediction). Rows >= "
+                    "train_size are ignored by the model; the runtime pads "
+                    "with -100.0. logits are [1, T, 1] (single regressed "
+                    "value per row).")
   (out / "golden.json").write_text(json.dumps({
       "_doc": {
           "purpose": "C++ parity: safetensors -> initializer injection -> "
@@ -143,9 +185,7 @@ def build(out: pathlib.Path) -> dict:
                           "train_size:, :] (all-row comparison also holds "
                           "for this fixture but is not the contract)",
           "rtol": PARITY_RTOL,
-          "y_convention": "y rows >= train_size are ignored by the model; "
-                          "here they hold valid class ids, the runtime pads "
-                          "with -100.0",
+          "y_convention": y_convention,
       },
       "inputs": {
           "x": x.tolist(),
@@ -169,9 +209,9 @@ def build(out: pathlib.Path) -> dict:
   manifest = {
       "manifest_version": 1,
       "model_id": "fixture",
-      "task": "classification",
+      "task": task,
       "license": "fixture-mit",
-      "repo": "local:test/fixtures",
+      "repo": TASK_REPO[task],
       "revision": "fixture-v1",
       "graph": "graph_fixture.onnx",
       "graph_id": "tabfm-v1-fixture-opset18",
