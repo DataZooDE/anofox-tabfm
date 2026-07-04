@@ -84,6 +84,11 @@ endif()
 # into the binary directly.
 set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_scaffold.cpp
+    test/cpp/test_tabfm_safetensors.cpp
+    test/cpp/test_tabfm_manifest.cpp
+    test/cpp/test_tabfm_ort_engine.cpp
+    test/cpp/test_tabfm_preprocess.cpp
+    test/cpp/test_tabfm_ensemble.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     add_library(anofox_tabfm_unittest_tests OBJECT ${TABFM_CPP_TEST_SOURCES})
