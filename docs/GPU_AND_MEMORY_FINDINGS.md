@@ -76,7 +76,18 @@ and ROCm SDKs at build time (this box has no CUDA SDK). **But cpu↔rocm already
 switch at runtime** in the rocm build via `SET anofox_tabfm_device` (CPU EP vs
 MIGraphX EP, same binary). CUDA stays a per-target artifact.
 
-## External-data memory win (validated, not yet productionized)
+## External-data memory win — PRODUCTIONIZED ✅
+
+Shipped as the default CPU loader: peak RSS **18.6 → 6.7 GB (2.76×)** on the real
+model, identical output. `tools/make_external_graph.py` bakes each initializer's
+offset into `resources/graph_ext_<task>.onnx` (weight-free); the engine
+(`TryExternalDataSession`) validates the downloaded safetensors' header SHA-256
+against a baked constant, stages the graph beside the weights, and
+`CreateSessionFromPath` (ORT reads weights from disk — no injection). Any header
+mismatch or non-local path falls back to the inject path; `TABFM_DISABLE_EXTERNAL_DATA`
+forces inject. Fixtures fall back automatically (SHA mismatch).
+
+### Original spike notes (kept for reference)
 
 The safetensors data section is raw, contiguous, row-major tensor bytes, so an
 ONNX external-data offset is simply `8 + header_len + st_data_offset`. Repointing

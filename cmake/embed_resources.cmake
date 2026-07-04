@@ -17,6 +17,8 @@ set(_tabfm_gen "${CMAKE_CURRENT_BINARY_DIR}/tabfm_bundled_resources.cpp")
 set(_tabfm_inputs
     "graph_classification.onnx"
     "graph_regression.onnx"
+    "graph_ext_classification.onnx"
+    "graph_ext_regression.onnx"
     "tensor_map_classification.json"
     "tensor_map_regression.json")
 

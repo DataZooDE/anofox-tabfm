@@ -35,7 +35,10 @@
 
 #include "yyjson.hpp"
 
+#include <openssl/evp.h>
+
 #include <cmath>
+#include <fstream>
 
 #ifndef _WIN32
 #include <fcntl.h>
@@ -327,13 +330,139 @@ struct SessionHolder {
 	TabFMSessionHandle session; // last: destroyed first, before the buffers
 };
 
+// SHA-256 (hex) of the safetensors JSON header the bundled external-data graphs
+// were generated against (tools/make_external_graph.py prints these). A
+// byte-identical header guarantees the graph's baked offsets are correct; any
+// other layout falls back to the injection path. Empty => no external-data graph.
+const char *ExpectedWeightsHeaderSha(TabFMTask task) {
+	switch (task) {
+	case TabFMTask::CLASSIFICATION:
+		return "534d6d38b49b323bb38682858f232573c254689df03d3d9f17e7504716a31d96";
+	case TabFMTask::REGRESSION:
+		return "35c346e4e29f61b493a9e601e66bf0ae241d0fb76623a3336c61408cfc3e88d0";
+	default:
+		return "";
+	}
+}
+
+string Sha256Hex(const_data_ptr_t data, idx_t len) {
+	unsigned char digest[EVP_MAX_MD_SIZE];
+	unsigned int n = 0;
+	EVP_Digest(data, len, digest, &n, EVP_sha256(), nullptr);
+	static const char *hex = "0123456789abcdef";
+	string out;
+	out.reserve(static_cast<size_t>(n) * 2);
+	for (unsigned int i = 0; i < n; i++) {
+		out.push_back(hex[digest[i] >> 4]);
+		out.push_back(hex[digest[i] & 0xf]);
+	}
+	return out;
+}
+
+// Read the safetensors JSON header bytes ([8, 8+header_len)). Returns false on
+// any I/O or sanity failure (caller falls back to injection).
+bool ReadWeightsHeaderBytes(FileSystem &fs, const string &path, string &header) {
+	try {
+		auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+		uint64_t header_len = 0;
+		fs.Read(*handle, &header_len, 8, 0);
+		if (header_len == 0 || header_len > (1ULL << 26)) { // >64 MiB header is nonsense
+			return false;
+		}
+		header.resize(header_len);
+		fs.Read(*handle, (void *)header.data(), NumericCast<int64_t>(header_len), 8);
+		return true;
+	} catch (...) {
+		return false;
+	}
+}
+
+// Low-memory load path: the graph references the weights as ONNX external-data on
+// disk, so ORT reads them itself (no in-memory injection, no copy). Peak RSS
+// drops ~2.6x on the real model. Only engages when a bundled external-data graph
+// exists for the task AND the downloaded safetensors header matches exactly
+// (else the baked offsets could be wrong -> fall back to injection). Returns
+// nullptr to signal "fall back".
+shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
+                                               const PredictContext &ctx) {
+	if (std::getenv("TABFM_DISABLE_EXTERNAL_DATA")) {
+		return nullptr;
+	}
+	const string task_name = TabFMTaskName(resolved.manifest.task);
+	auto graph = GetBundledResource("graph_ext_" + task_name);
+	const char *expected_sha = ExpectedWeightsHeaderSha(resolved.manifest.task);
+	if (!graph.data || !expected_sha || !*expected_sha) {
+		return nullptr; // no external-data graph for this model
+	}
+	// The graph resolves external-data "model.safetensors" relative to its own
+	// directory, so the weights file must be a local file named model.safetensors.
+	if (StringUtil::Split(resolved.weights_path, "/").back() != "model.safetensors") {
+		return nullptr;
+	}
+	string header;
+	if (!ReadWeightsHeaderBytes(fs, resolved.weights_path, header)) {
+		return nullptr;
+	}
+	if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != string(expected_sha)) {
+		return nullptr; // different checkpoint layout -> baked offsets would be wrong
+	}
+	// Place the external-data graph next to the weights (idempotent) so ORT can
+	// resolve the relative "model.safetensors" reference.
+	const auto dir = DirName(resolved.weights_path);
+	const auto graph_path = fs.JoinPath(dir, "graph_ext_" + task_name + ".onnx");
+	bool present = false;
+	try {
+		if (fs.FileExists(graph_path)) {
+			auto h = fs.OpenFile(graph_path, FileFlags::FILE_FLAGS_READ);
+			present = NumericCast<idx_t>(fs.GetFileSize(*h)) == graph.size;
+		}
+	} catch (...) {
+		present = false;
+	}
+	if (!present) {
+		std::ofstream out(graph_path, std::ios::binary | std::ios::trunc);
+		out.write(graph.data, NumericCast<std::streamsize>(graph.size));
+		out.close();
+		if (!out) {
+			return nullptr; // cannot stage the graph -> fall back
+		}
+	}
+
+	TabFMSessionConfig config;
+	config.intra_op_threads = MaxValue<int64_t>(1, ctx.threads);
+	auto devices = DiscoverDevices();
+	auto device = ResolveDevice(ctx.device, devices);
+	config.device_id = device.device_id;
+	config.device_ordinal = device.device_ordinal;
+	config.model_tag = task_name;
+	// No injected initializers: ORT loads them from the safetensors via the
+	// graph's external-data references.
+	auto session = CreateSessionFromPath(graph_path, {}, config);
+	auto holder = make_shared_ptr<SessionHolder>();
+	holder->session = std::move(session);
+
+	auto model = make_shared_ptr<LoadedModel>();
+	model->model_key = resolved.cache_key;
+	model->session = shared_ptr<void>(holder);
+	model->device_id = config.device_id;
+	model->dtype = "f32";
+	model->bytes = 0;
+	state.Register(resolved.cache_key, model);
+	return model;
+}
+
 // Build (or reuse) the ORT session for `resolved` and return a snapshot of the
-// LoadedModel. The safetensors buffer + arena live only for the duration of
-// CreateSession (S02: ORT copies), so they are scoped tightly here.
+// LoadedModel. Prefers the low-memory external-data path (ORT reads weights from
+// disk); falls back to reading/mmapping + in-memory injection.
 shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                          const PredictContext &ctx) {
 	if (auto snapshot = state.Snapshot(resolved.cache_key)) {
 		return snapshot;
+	}
+
+	// Low-memory path first (external-data graph; ORT reads weights from disk).
+	if (auto external = TryExternalDataSession(fs, state, resolved, ctx)) {
+		return external;
 	}
 
 	// Prefer an mmap of the (local) cache file: ORT reads the injected
