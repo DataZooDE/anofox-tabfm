@@ -783,5 +783,21 @@ PredictEngine &GetPredictEngine() {
 	return engine;
 }
 
+void TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows, int64_t features) {
+	if (!ctx.db) {
+		throw InternalException("tabfm: precompile invoked without a database handle");
+	}
+	auto fs = FileSystem::CreateLocal();
+	auto resolved = ResolveModel(*fs, ctx, task);
+	auto state = TabFMState::Get(*ctx.db);
+	// Loads/caches the backend (registered in state) and warms the shape-bucket:
+	// on ROCm this is the expensive MIGraphX compile + .mxr cache; on CPU/CUDA the
+	// no-op default just leaves the freshly-built ORT session warm.
+	lock_guard<mutex> device_guard(state->DeviceMutex(ctx.device));
+	auto model = LoadOrGetSession(*fs, *state, resolved, ctx);
+	auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
+	backend->Precompile(rows, features);
+}
+
 } // namespace anofox
 } // namespace duckdb

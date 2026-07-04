@@ -1,5 +1,6 @@
 #include "tabfm_registration.hpp"
 #include "anofox_function_alias.hpp"
+#include "tabfm_predict.hpp"
 #include "tabfm_state.hpp"
 #include "telemetry.hpp"
 
@@ -736,6 +737,75 @@ void RemoveExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 }
 
 //===--------------------------------------------------------------------===//
+// tabfm_gpu_precompile(task [, rows, features]) — warm the shape-bucket OFF the
+// query path. On ROCm this runs (and caches to .mxr) the MIGraphX compile that
+// otherwise stalls the first predict for minutes; on CPU/CUDA it just warms the
+// ORT session. rows/features default to the smallest bucket.
+//===--------------------------------------------------------------------===//
+
+struct PrecompileBindData : public TableFunctionData {
+	string task;
+	TabFMTask task_enum = TabFMTask::CLASSIFICATION;
+	int64_t rows = 1;
+	int64_t features = 1;
+	PredictContext ctx;
+};
+
+unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBindInput &input,
+                                        vector<LogicalType> &return_types, vector<string> &names) {
+	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_gpu_precompile");
+	auto task = RequireTaskArgument(input, "tabfm_gpu_precompile");
+	FindManifest(context, "tabfm_gpu_precompile", task); // validates the task name
+	auto result = make_uniq<PrecompileBindData>();
+	result->task = task;
+	result->task_enum = task == "regression" ? TabFMTask::REGRESSION : TabFMTask::CLASSIFICATION;
+	if (input.inputs.size() >= 3) {
+		result->rows = input.inputs[1].GetValue<int64_t>();
+		result->features = input.inputs[2].GetValue<int64_t>();
+	}
+	if (result->rows < 1 || result->features < 1) {
+		throw InvalidInputException("tabfm_gpu_precompile: rows and features must be >= 1");
+	}
+	auto &ctx = result->ctx;
+	ctx.db = &DatabaseInstance::GetDatabase(context);
+	ctx.cache_dir = GetCacheDir(context);
+	Value v;
+	if (context.TryGetCurrentSetting("anofox_tabfm_threads", v) && !v.IsNull()) {
+		ctx.threads = v.GetValue<int64_t>();
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_device", v) && !v.IsNull()) {
+		ctx.device = v.ToString();
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", v) && !v.IsNull()) {
+		ctx.gpu_precision = StringUtil::Lower(v.ToString());
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_model_manifest", v) && !v.IsNull()) {
+		ctx.model_manifest_path = v.ToString();
+	}
+	names = {"task", "rows", "features", "device", "status"};
+	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR,
+	                LogicalType::VARCHAR};
+	return std::move(result);
+}
+
+void PrecompileExecute(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<LifecycleGlobalState>();
+	if (state.done) {
+		output.SetCardinality(0);
+		return;
+	}
+	state.done = true;
+	auto &bind = data.bind_data->Cast<PrecompileBindData>();
+	TabFMGpuPrecompile(bind.ctx, bind.task_enum, bind.rows, bind.features); // the (slow) compile happens here
+	output.SetValue(0, 0, Value(bind.task));
+	output.SetValue(1, 0, Value::BIGINT(bind.rows));
+	output.SetValue(2, 0, Value::BIGINT(bind.features));
+	output.SetValue(3, 0, Value(bind.ctx.device));
+	output.SetValue(4, 0, Value("compiled"));
+	output.SetCardinality(1);
+}
+
+//===--------------------------------------------------------------------===//
 // Registration
 //===--------------------------------------------------------------------===//
 
@@ -769,6 +839,10 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	RegisterSet(loader, "anofox_tabfm_remove", "tabfm_remove",
 	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::VARCHAR}}, RemoveBind, RemoveInit,
 	            RemoveExecute);
+	// CALL tabfm_gpu_precompile(task [, rows, features]);
+	RegisterSet(loader, "anofox_tabfm_gpu_precompile", "tabfm_gpu_precompile",
+	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT}},
+	            PrecompileBind, LifecycleInit, PrecompileExecute);
 }
 
 } // namespace anofox

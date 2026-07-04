@@ -166,6 +166,11 @@ public:
 		}
 	}
 
+	void Precompile(int64_t rows, int64_t features) override {
+		auto bucket = MIGraphXShapeBucket(rows, features);
+		GetProgram(bucket.padded_t, bucket.padded_h); // compile + cache the .mxr
+	}
+
 private:
 	migraphx::program &GetProgram(int64_t tp, int64_t hp) {
 		std::lock_guard<std::mutex> guard(mutex);

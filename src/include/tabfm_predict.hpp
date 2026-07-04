@@ -141,5 +141,11 @@ public:
 //! model's weights are not available.
 PredictEngine &GetPredictEngine();
 
+//! Warm the model for a (rows, features) shape without predicting: loads/caches
+//! the session and, on the ROCm GPU, compiles + caches the MIGraphX .mxr for the
+//! matching shape-bucket (minutes) so the first real query does not stall. On
+//! CPU/CUDA it just warms the ORT session. Backs CALL tabfm_gpu_precompile(...).
+void TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows, int64_t features);
+
 } // namespace anofox
 } // namespace duckdb

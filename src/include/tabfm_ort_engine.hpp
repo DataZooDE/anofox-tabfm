@@ -219,6 +219,11 @@ class TabFMBackend {
 public:
 	virtual ~TabFMBackend() = default;
 	virtual TabFMRunOutput Run(const TabFMRunInput &input) = 0;
+	//! Warm the backend for a (rows, features) shape without predicting — used by
+	//! tabfm_gpu_precompile to move MIGraphX's per-bucket compile (minutes) off
+	//! the first query. Default: no-op (ORT has no per-shape compile).
+	virtual void Precompile(int64_t rows, int64_t features) {
+	}
 };
 
 //! Validate a forward-pass output against the engine contract before it is
