@@ -1,5 +1,6 @@
 #include "tabfm_registration.hpp"
 #include "anofox_function_alias.hpp"
+#include "tabfm_state.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -494,6 +495,7 @@ unique_ptr<FunctionData> ModelsBind(ClientContext &context, TableFunctionBindInp
 
 unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFunctionInitInput &) {
 	auto state = make_uniq<ModelsGlobalState>();
+	auto tabfm_state = TabFMState::Get(context); // the live loaded-model map
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto cache_dir = GetCacheDir(context);
 	if (!fs.DirectoryExists(cache_dir)) {
@@ -516,8 +518,11 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 			row.task = manifest.task;
 			row.revision = revision;
 			row.license = manifest.license;
-			// integration: 'loaded' joins WS-C's TabFMState (loaded-model map); false until then
-			row.loaded = false;
+			// 'loaded' reflects the real DB-instance TabFMState: a model is loaded
+			// once a predict (or lifecycle load) has warmed its session. The key
+			// format is shared with the engine via TabFMModelCacheKey.
+			row.loaded =
+			    tabfm_state->Snapshot(TabFMModelCacheKey(manifest.model, manifest.task, revision)) != nullptr;
 			bool complete = true;
 			for (idx_t i = 0; i < manifest.files.size(); i++) {
 				auto path = base_dir + "/" + manifest.files[i].path;
@@ -595,7 +600,9 @@ unique_ptr<FunctionData> LoadBind(ClientContext &context, TableFunctionBindInput
 
 	auto result = make_uniq<LifecycleBindData>();
 	result->task = task;
-	// integration: actual engine warm-up goes through WS-C's TabFMState here
+	// tabfm_load verifies the weights are present and ready (the §5 contract).
+	// The heavy ORT session is warmed lazily on the first predict and shows up in
+	// tabfm_models().loaded / is released by tabfm_unload from that point on.
 	result->status = "loaded";
 	SetLifecycleColumns(return_types, names);
 	return std::move(result);
@@ -605,13 +612,16 @@ unique_ptr<FunctionData> UnloadBind(ClientContext &context, TableFunctionBindInp
                                     vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_unload");
 	auto result = make_uniq<LifecycleBindData>();
+	auto tabfm_state = TabFMState::Get(context);
 	if (input.inputs.empty()) {
 		result->task = "all";
+		tabfm_state->UnloadAll(); // free every warmed session for this DB instance
 	} else {
 		result->task = RequireTaskArgument(input, "tabfm_unload");
-		FindManifest(context, "tabfm_unload", result->task); // validates the task name
+		auto manifest = FindManifest(context, "tabfm_unload", result->task); // validates the task name
+		// free the warmed session, if any (predict / tabfm_load registered it).
+		tabfm_state->Unload(TabFMModelCacheKey(manifest.model, result->task, manifest.revision));
 	}
-	// integration: actual weight release goes through WS-C's TabFMState here
 	result->status = "unloaded";
 	SetLifecycleColumns(return_types, names);
 	return std::move(result);

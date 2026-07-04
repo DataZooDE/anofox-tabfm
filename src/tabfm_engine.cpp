@@ -202,7 +202,7 @@ ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 		resolved.graph_path = ResolveGraphPath(fs, resolved.manifest, resolved.manifest_dir);
 	}
 	resolved.tensor_map = LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir);
-	resolved.cache_key = resolved.manifest.model + ":" + task_name + "@" + resolved.manifest.revision;
+	resolved.cache_key = TabFMModelCacheKey(resolved.manifest.model, task_name, resolved.manifest.revision);
 	return resolved;
 }
 
@@ -428,7 +428,13 @@ private:
 	                                 const TabFMRunOutput &out, TabFMTask task) {
 		const idx_t T = batch.T;
 		const idx_t n_rows = in.rows.size();
-		const idx_t C = out.shape.empty() ? 0 : NumericCast<idx_t>(out.shape.back());
+		const idx_t n_classes = batch.label_decoder.size();
+		// Fail loudly on any graph whose output does not match the contract
+		// [1, T, C] rather than indexing out of bounds or decoding with the wrong
+		// stride / zero-filled classes (classification needs C >= #labels,
+		// regression needs C >= 1).
+		ValidateTabFMOutput(out, T, task == TabFMTask::CLASSIFICATION ? n_classes : 1, TabFMTaskName(task));
+		const idx_t C = NumericCast<idx_t>(out.shape.back());
 
 		TabFMPredictResult result;
 		result.yhat.resize(n_rows);
@@ -437,7 +443,6 @@ private:
 			result.proba.resize(n_rows);
 		}
 
-		const idx_t n_classes = batch.label_decoder.size();
 		for (idx_t t = 0; t < T; t++) {
 			const idx_t src = batch.row_source_index[t];
 			if (task == TabFMTask::CLASSIFICATION) {

@@ -626,6 +626,12 @@ void PredictWinWindow(AggregateInputData &aggr_input_data, const WindowPartition
                       data_ptr_t l_state, const SubFrames &frames, Vector &result, idx_t rid) {
 	auto &bind = aggr_input_data.bind_data->Cast<PredictBindData>();
 	auto &state = *reinterpret_cast<PredictAggState *>(l_state);
+	// DuckDB may skip the Destroy callback when a query errors mid-window, so any
+	// throw below (row read, session load, inference) would leak this state's heap
+	// buffers. FreeState is idempotent (it nulls both pointers), so freeing here
+	// and again at Destroy is safe. The normal path keeps `reader` for reuse
+	// across window calls; only an exception releases it early.
+	try {
 	if (!state.reader) {
 		state.reader = new WindowRowReader();
 	}
@@ -674,6 +680,10 @@ void PredictWinWindow(AggregateInputData &aggr_input_data, const WindowPartition
 	const auto last = rows.size() - 1;
 	WriteWindowResult(result, rid, bind, predictions.yhat[last], predictions.yhat_score[last],
 	                  bind.EmitProba() ? predictions.proba[last] : Value());
+	} catch (...) {
+		FreeState(state); // release heap buffers before the error propagates
+		throw;
+	}
 }
 
 //===--------------------------------------------------------------------===//

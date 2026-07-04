@@ -10,6 +10,10 @@
 namespace duckdb {
 namespace anofox {
 
+string TabFMModelCacheKey(const string &model, const string &task_name, const string &revision) {
+	return model + ":" + task_name + "@" + revision;
+}
+
 shared_ptr<TabFMState> TabFMState::Get(DatabaseInstance &db) {
 	return db.GetObjectCache().GetOrCreate<TabFMState>(OBJECT_CACHE_KEY);
 }

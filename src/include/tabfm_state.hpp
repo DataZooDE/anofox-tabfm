@@ -32,9 +32,10 @@ class DatabaseInstance;
 namespace anofox {
 
 //! One loaded model. `session` is deliberately an opaque shared_ptr<void>
-//! (holds a TabFMSessionHandle) so the state layer never depends on ORT
-//! headers; the safetensors arena behind it was already freed right after
-//! session creation (S02: ORT owns a copy).
+//! (holds a SessionHolder with the TabFMSessionHandle) so the state layer never
+//! depends on ORT headers; the safetensors arena behind it is kept alive by
+//! that holder for the whole session lifetime — ORT reads the injected weight
+//! buffers lazily during inference, so they must outlive the session.
 struct LoadedModel {
 	//! Model key, e.g. "classification" or "classification@main"
 	string model_key;
@@ -50,6 +51,12 @@ struct LoadedModel {
 	//! snapshots will not see this model anymore.
 	atomic<bool> evicted {false};
 };
+
+//! Canonical loaded-model key for a (model, task, revision). The engine (which
+//! registers sessions during predict) and the lifecycle SQL (tabfm_models /
+//! tabfm_unload, which report and free them) MUST agree on this format, so both
+//! build the key here. Format: "<model>:<task>@<revision>".
+string TabFMModelCacheKey(const string &model, const string &task_name, const string &revision);
 
 class TabFMState : public ObjectCacheEntry {
 public:

@@ -127,6 +127,17 @@ TEST_CASE("safetensors: scalar tensor (rank 0) is valid", "[tabfm][safetensors]"
 	REQUIRE(info.nbytes == 8);
 }
 
+TEST_CASE("safetensors: overflowing shape product is rejected, not silently wrapped", "[tabfm][safetensors]") {
+	// A crafted header could declare dimensions whose idx_t product wraps to a
+	// small value matching a tiny data_offsets range, smuggling a huge shape past
+	// validation over a too-small backing buffer (OOB reads downstream). The
+	// checked product must reject it instead.
+	auto buffer =
+	    MakeSafetensors(R"({"w":{"dtype":"F32","shape":[9223372036854775807,4],"data_offsets":[0,16]}})", string(16, '\0'));
+	REQUIRE_THROWS_AS(Parse(buffer), InvalidInputException);
+	REQUIRE_THROWS_WITH(Parse(buffer), Contains("overflow"));
+}
+
 TEST_CASE("safetensors: error paths", "[tabfm][safetensors]") {
 	SECTION("truncated header length") {
 		string tiny = "\x01\x02\x03";

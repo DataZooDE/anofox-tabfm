@@ -399,6 +399,34 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 }
 
 //===----------------------------------------------------------------------===//
+// Output validation (guards decode against malformed/mismatched graphs)
+//===----------------------------------------------------------------------===//
+
+TEST_CASE("tabfm_ort_engine: ValidateTabFMOutput enforces the [1,T,C] contract", "[tabfm][ort_engine]") {
+	auto make = [](vector<int64_t> shape, idx_t n) {
+		TabFMRunOutput o;
+		o.shape = std::move(shape);
+		o.logits.assign(n, 0.0f);
+		return o;
+	};
+	// valid: [1, T, C] with enough class columns and matching logit count
+	REQUIRE_NOTHROW(ValidateTabFMOutput(make({1, 3, 4}, 12), 3, 2, "classification"));
+	REQUIRE_NOTHROW(ValidateTabFMOutput(make({1, 3, 4}, 12), 3, 4, "classification"));
+	REQUIRE_NOTHROW(ValidateTabFMOutput(make({1, 5, 1}, 5), 5, 1, "regression"));
+
+	// transposed [1, C, T]: shape[1] != T (would decode with the wrong stride)
+	REQUIRE_THROWS_AS(ValidateTabFMOutput(make({1, 4, 3}, 12), 3, 4, "classification"), InvalidInputException);
+	// too few class columns: missing logits would zero-fill -> phantom argmax class
+	REQUIRE_THROWS_AS(ValidateTabFMOutput(make({1, 3, 2}, 6), 3, 3, "classification"), InvalidInputException);
+	// regression with an empty value axis -> every yhat collapses to the mean
+	REQUIRE_THROWS_AS(ValidateTabFMOutput(make({1, 3, 0}, 0), 3, 1, "regression"), InvalidInputException);
+	// wrong rank, wrong batch dim, truncated logits
+	REQUIRE_THROWS_AS(ValidateTabFMOutput(make({3, 4}, 12), 3, 4, "classification"), InvalidInputException);
+	REQUIRE_THROWS_AS(ValidateTabFMOutput(make({2, 3, 4}, 24), 3, 4, "classification"), InvalidInputException);
+	REQUIRE_THROWS_AS(ValidateTabFMOutput(make({1, 3, 4}, 10), 3, 4, "classification"), InvalidInputException);
+}
+
+//===----------------------------------------------------------------------===//
 // Engine: session creation + forward pass (MLP fixture)
 //===----------------------------------------------------------------------===//
 

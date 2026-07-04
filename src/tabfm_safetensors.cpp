@@ -234,7 +234,24 @@ SafetensorsView ParseSafetensors(const_data_ptr_t buffer, idx_t buffer_size, con
 		info.data = view.data_section + begin;
 		info.nbytes = end - begin;
 
-		auto expected_bytes = info.ElementCount() * SafetensorsDtypeSize(info.dtype);
+		// Overflow-checked shape product: a crafted header could otherwise declare
+		// dimensions whose product wraps idx_t to a small value that matches a tiny
+		// data_offsets range, smuggling a huge shape past validation and over a
+		// too-small backing buffer (OOB reads downstream in ORT).
+		idx_t element_count = 1;
+		for (auto dim : info.shape) {
+			auto d = static_cast<idx_t>(dim); // dim already validated non-negative
+			if (d != 0 && element_count > NumericLimits<idx_t>::Maximum() / d) {
+				throw InvalidInputException("Safetensors '%s': tensor '%s' shape %s product overflows", source, name,
+				                            ShapeToString(info.shape));
+			}
+			element_count *= d;
+		}
+		const idx_t dtype_size = SafetensorsDtypeSize(info.dtype);
+		if (element_count != 0 && element_count > NumericLimits<idx_t>::Maximum() / dtype_size) {
+			throw InvalidInputException("Safetensors '%s': tensor '%s' byte size overflows", source, name);
+		}
+		auto expected_bytes = element_count * dtype_size;
 		if (info.nbytes != expected_bytes) {
 			throw InvalidInputException("Safetensors '%s': tensor '%s' declares %llu bytes but shape %s with "
 			                            "dtype %s requires %llu bytes",

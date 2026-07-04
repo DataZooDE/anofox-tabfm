@@ -85,18 +85,43 @@ static int64_t DatetimeDayIndex(const Value &v, const LogicalType &type,
 	if (type.id() == LogicalTypeId::DATE) {
 		date_t d = DateValue::Get(v);
 		int64_t day = d.days;
-		epoch_ns_out = static_cast<double>(day * kNsPerDay);
+		// double, not int64: day * kNsPerDay overflows int64 for far-future dates
+		// (signed overflow is UB). The day index itself needs no scaling.
+		epoch_ns_out = static_cast<double>(day) * static_cast<double>(kNsPerDay);
 		return day;
 	}
-	// Normalise every timestamp flavour to micros, then to ns.
-	Value ts_val = v.DefaultCastAs(LogicalType::TIMESTAMP);
-	timestamp_t ts = TimestampValue::Get(ts_val);
-	int64_t micros = ts.value;
-	int64_t ns = micros * 1000;
-	epoch_ns_out = static_cast<double>(ns);
+	// Read the timestamp in its NATIVE unit (the physical int64) instead of
+	// downcasting every flavour to microseconds — that downcast silently dropped
+	// sub-microsecond resolution for TIMESTAMP_NS. The day index is an exact
+	// integer floor-division in the native unit (no overflow); the epoch value is
+	// scaled to nanoseconds in double (int64 ns overflows past ~year 2262).
+	int64_t raw = v.GetValueUnsafe<int64_t>();
+	int64_t units_per_day;
+	double ns_per_unit;
+	switch (type.id()) {
+	case LogicalTypeId::TIMESTAMP_SEC:
+		units_per_day = 86400LL;
+		ns_per_unit = 1e9;
+		break;
+	case LogicalTypeId::TIMESTAMP_MS:
+		units_per_day = 86400LL * 1000LL;
+		ns_per_unit = 1e6;
+		break;
+	case LogicalTypeId::TIMESTAMP_NS:
+		units_per_day = 86400LL * 1000000000LL;
+		ns_per_unit = 1.0;
+		break;
+	case LogicalTypeId::TIMESTAMP:
+	case LogicalTypeId::TIMESTAMP_TZ:
+	default:
+		units_per_day = 86400LL * 1000000LL; // micros
+		ns_per_unit = 1e3;
+		break;
+	}
+	epoch_ns_out = static_cast<double>(raw) * ns_per_unit;
 	// Floor division for the UTC calendar day.
-	int64_t day = ns / kNsPerDay;
-	if (ns < 0 && ns % kNsPerDay != 0) {
+	int64_t day = raw / units_per_day;
+	if (raw < 0 && raw % units_per_day != 0) {
 		day -= 1;
 	}
 	return day;
@@ -283,9 +308,15 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 		idx_t cnt = 0;
 		for (idx_t i = 0; i < n_train; i++) {
 			Value v = rows.GetValue(fc.source_col, train_rows[i]);
+			// A non-finite value (NaN/Inf) is non-NULL but would poison the mean
+			// and, downstream, the z-score statistics for the whole column — treat
+			// it as missing, exactly like NULL (SimpleImputer skips it).
 			if (!v.IsNull()) {
-				sum += v.GetValue<double>();
-				cnt++;
+				double dv = v.GetValue<double>();
+				if (std::isfinite(dv)) {
+					sum += dv;
+					cnt++;
+				}
 			}
 		}
 		double mean = cnt > 0 ? sum / (double)cnt : 0.0;
@@ -299,7 +330,11 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 
 		auto encode = [&](idx_t source_row) -> double {
 			Value v = rows.GetValue(fc.source_col, source_row);
-			return v.IsNull() ? mean : v.GetValue<double>();
+			if (v.IsNull()) {
+				return mean;
+			}
+			double dv = v.GetValue<double>();
+			return std::isfinite(dv) ? dv : mean; // impute NaN/Inf like NULL
 		};
 		for (idx_t i = 0; i < n_train; i++) {
 			stages.encoded_train[i * n_encoded + out_col] = encode(train_rows[i]);

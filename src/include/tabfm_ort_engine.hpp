@@ -8,9 +8,16 @@
 // inputs — no dependency on the safetensors/manifest readers (WS-B); the
 // integration layer wires those together.
 //
-// Lifetime contract (S02, license-critical): AddExternalInitializers COPIES
-// every injected tensor during session initialization. The buffers behind
-// TabFMTensorRef must stay valid only until CreateSession() RETURNS; the
+// Lifetime contract (license-critical): AddExternalInitializers keeps
+// REFERENCES to every injected tensor (and reads them lazily during
+// inference), so at real scale the buffers behind TabFMTensorRef must outlive
+// the SESSION, not just CreateSession(). The returned TabFMSession owns the
+// injected OrtValues and the caller keeps the source arena alive alongside it
+// (see SessionHolder in tabfm_engine.cpp). Historically believed to copy — it
+// does at fixture scale, which masked the bug; at 913 tensors / 6.6 GB it does
+// not, and dropping the buffers yields a session that runs on zeroed weights.
+// The buffers behind TabFMTensorRef must stay valid until CreateSession()
+// RETURNS at minimum, and the OrtValues until the session is destroyed; the
 // caller MUST free/munmap the source arena right after that to avoid paying
 // 2x weights of resident memory (HLD §6 as amended by S02 RESULTS).
 //===----------------------------------------------------------------------===//
@@ -166,8 +173,10 @@ using TabFMSessionHandle = shared_ptr<TabFMSession>;
 //!     weights are not loaded" with the CALL tabfm_load/tabfm_download hint;
 //!     FAIL on initializer replacement (dims/dtype mismatch) -> corrupted
 //!     checkpoint error naming the tensor when extractable.
-//! The graph bytes and all initializer buffers may be freed as soon as this
-//! returns (ORT owns copies — S02).
+//! The graph bytes may be freed as soon as this returns, but the initializer
+//! buffers must OUTLIVE the returned session (ORT keeps references and reads
+//! them lazily during inference — the returned TabFMSession owns the wrapping
+//! OrtValues; the caller must keep the underlying arena alive alongside it).
 TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
                                  const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config);
 
@@ -197,6 +206,15 @@ struct TabFMRunOutput {
 };
 
 TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input);
+
+//! Validate a forward-pass output against the engine contract before it is
+//! decoded (HLD §4.4): shape must be exactly [1, expected_t, C] with
+//! C >= min_classes (>= 1), and logits.size() == expected_t * C. A mismatched
+//! or custom graph would otherwise be indexed out of bounds, or silently
+//! decoded with the wrong stride / zero-filled classes. Throws
+//! InvalidInputException naming the contract on any mismatch. `task_name` is
+//! "classification"/"regression" for the message.
+void ValidateTabFMOutput(const TabFMRunOutput &out, idx_t expected_t, idx_t min_classes, const char *task_name);
 
 } // namespace anofox
 } // namespace duckdb

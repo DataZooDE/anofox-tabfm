@@ -19,6 +19,8 @@
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/date.hpp"
 
+#include <cmath>
+#include <limits>
 #include <vector>
 
 using namespace duckdb;
@@ -89,6 +91,30 @@ void CheckMask(const vector<bool> &actual, const std::vector<bool> &expected) {
 }
 
 } // namespace
+
+TEST_CASE("preprocess: NaN numeric feature is imputed like NULL (never poisons stats)", "[tabfm][preprocess]") {
+	// A single non-NULL NaN in a numeric column would, if summed into the mean,
+	// turn the imputation mean and then the z-score statistics NaN, poisoning the
+	// whole feature column across context AND query rows.
+	vector<LogicalType> types = {LogicalType::DOUBLE, LogicalType::VARCHAR};
+	std::vector<std::vector<Value>> rows = {
+	    {VDouble(1.0), VStr("a")},
+	    {Value::DOUBLE(std::numeric_limits<double>::quiet_NaN()), VStr("b")}, // NaN context value
+	    {VDouble(3.0), VStr("a")},
+	    {VDouble(5.0), VStr("b")},
+	    {VDouble(2.0), VNullStr()}, // query row (NULL target)
+	};
+	auto data = MakeCollection(types, rows);
+	vector<PreprocessColumnSpec> cols = {
+	    {"num", LogicalType::DOUBLE, false, true},
+	    {"target", LogicalType::VARCHAR, true, false},
+	};
+	auto batch = PreprocessBatch(*data, cols, PreprocessTask::CLASSIFICATION);
+	for (double v : batch.x) {
+		INFO("x contains a non-finite value — NaN leaked through preprocessing");
+		REQUIRE(std::isfinite(v));
+	}
+}
 
 TEST_CASE("preprocess: profile id and task inference", "[tabfm][preprocess]") {
 	REQUIRE(string(kPreprocessProfileId) == "tabfm_v1_minimal");

@@ -88,7 +88,7 @@ R"(
             CASE WHEN test IS NULL
                  THEN 'FROM ' || data
                  ELSE 'SELECT * FROM (FROM ' || data || ') UNION ALL BY NAME '
-                      || 'SELECT *, NULL AS ' || target || ' FROM (FROM ' || test || ')'
+                      || 'SELECT *, NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
             END)
         ) anofox_tabfm_row
       )
@@ -112,7 +112,7 @@ R"(
             CASE WHEN test IS NULL
                  THEN 'FROM ' || data
                  ELSE 'SELECT * FROM (FROM ' || data || ') UNION ALL BY NAME '
-                      || 'SELECT *, NULL AS ' || target || ' FROM (FROM ' || test || ')'
+                      || 'SELECT *, NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
             END)
         ) anofox_tabfm_row
       )

@@ -10,6 +10,7 @@
 #include "tabfm_ort_engine.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/string_util.hpp"
 
 #include <onnxruntime_cxx_api.h>
@@ -266,8 +267,8 @@ class TabFMSession {
 public:
 	TabFMSession(Ort::Session session_p, TabFMSessionConfig config_p, std::vector<std::string> injected_names_p,
 	             std::vector<Ort::Value> injected_values_p)
-	    : session(std::move(session_p)), config(std::move(config_p)),
-	      injected_names(std::move(injected_names_p)), injected_values(std::move(injected_values_p)) {
+	    : config(std::move(config_p)), injected_names(std::move(injected_names_p)),
+	      injected_values(std::move(injected_values_p)), session(std::move(session_p)) {
 		Ort::AllocatorWithDefaultOptions allocator;
 		const auto input_count = session.GetInputCount();
 		for (size_t i = 0; i < input_count; i++) {
@@ -279,18 +280,20 @@ public:
 		}
 	}
 
-	Ort::Session session;
+	// Member DECLARATION ORDER is the destruction contract here. ORT's
+	// AddExternalInitializers keeps references to the injected OrtValues (and
+	// their user buffers) for the whole session lifetime, so the Ort::Session
+	// must be destroyed BEFORE `injected_values`/`injected_names`. Members are
+	// destroyed in reverse declaration order, so `session` is declared LAST.
+	// (At fixture scale ORT copies eagerly and this is moot; at real scale —
+	// 913 tensors / 6.6 GB — dropping the values early is a use-after-free /
+	// zeroed-weights hazard.) The constructor init-list mirrors this order.
 	TabFMSessionConfig config;
 	vector<string> input_names;
 	vector<string> output_names;
-	// Injected external initializers. ORT's AddExternalInitializers keeps
-	// pointers to these OrtValues (and their user buffers) and reads them
-	// lazily — they MUST outlive the session, not just its construction. At
-	// fixture scale ORT copies eagerly so this does not matter; at real scale
-	// (913 tensors / 6.6 GB) it does, and dropping them yields a session that
-	// silently runs on zeroed weights.
 	std::vector<std::string> injected_names;
 	std::vector<Ort::Value> injected_values;
+	Ort::Session session;
 };
 
 namespace {
@@ -319,9 +322,23 @@ void PrepareSessionOptions(Ort::SessionOptions &options, const vector<TabFMTenso
 		}
 		idx_t element_count = 1;
 		for (auto dim : tensor.shape) {
-			element_count *= static_cast<idx_t>(dim);
+			if (dim < 0) {
+				throw InvalidInputException("anofox_tabfm: initializer '" + tensor.name +
+				                            "' has a negative dimension — corrupted checkpoint?");
+			}
+			auto d = static_cast<idx_t>(dim);
+			if (d != 0 && element_count > NumericLimits<idx_t>::Maximum() / d) {
+				throw InvalidInputException("anofox_tabfm: initializer '" + tensor.name +
+				                            "' shape product overflows — corrupted checkpoint?");
+			}
+			element_count *= d;
 		}
-		if (element_count * TabFMDtypeSize(tensor.dtype) != tensor.size_bytes) {
+		const idx_t dtype_size = TabFMDtypeSize(tensor.dtype);
+		if (element_count != 0 && element_count > NumericLimits<idx_t>::Maximum() / dtype_size) {
+			throw InvalidInputException("anofox_tabfm: initializer '" + tensor.name +
+			                            "' byte size overflows — corrupted checkpoint?");
+		}
+		if (element_count * dtype_size != tensor.size_bytes) {
 			throw InvalidInputException("anofox_tabfm: initializer '" + tensor.name +
 			                            "' byte size does not match its shape — corrupted checkpoint?");
 		}
@@ -422,6 +439,11 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 		}
 	}
 
+	if (session.output_names.empty()) {
+		throw InvalidInputException(
+		    "anofox_tabfm: model graph declares no outputs; expected a 'logits' output (HLD §4.4). If you set "
+		    "anofox_tabfm_model_manifest, point it at a compatible weight-free graph.");
+	}
 	// Prefer the output named "logits"; otherwise take the first output.
 	idx_t output_index = 0;
 	for (idx_t i = 0; i < session.output_names.size(); i++) {
@@ -451,6 +473,40 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 	} catch (const Ort::Exception &error) {
 		throw InvalidInputException("anofox_tabfm: inference failed (ORT error code " +
 		                            std::to_string(error.GetOrtErrorCode()) + "): " + string(error.what()));
+	}
+}
+
+void ValidateTabFMOutput(const TabFMRunOutput &out, idx_t expected_t, idx_t min_classes, const char *task_name) {
+	auto shape_str = [&]() {
+		string s = "[";
+		for (idx_t i = 0; i < out.shape.size(); i++) {
+			s += (i ? ", " : "") + std::to_string(out.shape[i]);
+		}
+		return s + "]";
+	};
+	if (out.shape.size() != 3 || out.shape[0] != 1 ||
+	    out.shape[1] != NumericCast<int64_t>(expected_t)) {
+		throw InvalidInputException(
+		    "anofox_tabfm: model produced logits of shape %s, but the engine contract is [1, %llu, C] for %s "
+		    "(HLD §4.4). The configured graph does not match the engine — check anofox_tabfm_model_manifest.",
+		    shape_str(), static_cast<unsigned long long>(expected_t), task_name);
+	}
+	const auto C = NumericCast<idx_t>(out.shape[2]);
+	if (C < 1 || C < min_classes) {
+		throw InvalidInputException(
+		    "anofox_tabfm: model output has %llu class column(s) but %s needs at least %llu — the graph's "
+		    "class head does not match the data. Check anofox_tabfm_model_manifest.",
+		    static_cast<unsigned long long>(C), task_name, static_cast<unsigned long long>(min_classes));
+	}
+	// shape[0] == 1, so the element count is expected_t * C (both bounded by the
+	// row/feature guardrails, no overflow).
+	const idx_t expected = expected_t * C;
+	if (out.logits.size() != expected) {
+		throw InvalidInputException(
+		    "anofox_tabfm: model returned %llu logits but the [1, %llu, %llu] output requires %llu — truncated or "
+		    "malformed model output.",
+		    static_cast<unsigned long long>(out.logits.size()), static_cast<unsigned long long>(expected_t),
+		    static_cast<unsigned long long>(C), static_cast<unsigned long long>(expected));
 	}
 }
 
