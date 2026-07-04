@@ -1,0 +1,10 @@
+{
+	"model": "tabfm-free",
+	"task": "classification",
+	"repo": "acme/tabfm-free",
+	"revision": "main",
+	"license": "none",
+	"files": [
+		{"path": "classification/model.safetensors", "url": "test/fixtures/weights_test/model_a.bin", "bytes": 4096}
+	]
+}

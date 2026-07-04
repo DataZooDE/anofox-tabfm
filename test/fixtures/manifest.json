@@ -1,0 +1,34 @@
+{
+  "manifest_version": 1,
+  "model_id": "fixture",
+  "task": "classification",
+  "license": "fixture-mit",
+  "repo": "local:test/fixtures",
+  "revision": "fixture-v1",
+  "graph": "graph_fixture.onnx",
+  "graph_id": "tabfm-v1-fixture-opset18",
+  "tensor_map": "tensor_map_fixture.json",
+  "preprocessing_profile": "tabfm_v1_minimal",
+  "engine_profiles": {
+    "cpu": {
+      "dtype": "f32"
+    }
+  },
+  "files": [
+    {
+      "path": "model.safetensors",
+      "bytes": 103324,
+      "sha256": "2f9aa929dec3865bc7725e4eadc96834820c48732e73e03e937b5941099ef34d"
+    },
+    {
+      "path": "graph_fixture.onnx",
+      "bytes": 421476,
+      "sha256": "6fb5743b9c53b99d35cdac7c5204d17fb173e94229fc2110f427072f1edde290"
+    },
+    {
+      "path": "tensor_map_fixture.json",
+      "bytes": 36072,
+      "sha256": "077db8bff5a5b5e6f8638657095718fe534b5b35c1f99f2efa20867225e7ed46"
+    }
+  ]
+}

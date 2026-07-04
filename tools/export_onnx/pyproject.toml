@@ -1,0 +1,45 @@
+# WS-A: S01 shipping pipeline — weight-free ONNX graph + tensor map exporter.
+#
+#   uv sync
+#   uv run export_onnx --task classification --config tiny --out ./out
+#   uv run pytest
+#
+# torch is pinned to the upstream requirement (2.12.1) and resolved from the
+# PyTorch CPU index (2.12.1+cpu) so no CUDA wheels are pulled.
+[project]
+name = "export-onnx"
+version = "0.1.0"
+description = "anofox-tabfm S01 exporter: TabFM -> weight-free ONNX graph + tensor-name map"
+requires-python = ">=3.11"
+dependencies = [
+    "torch==2.12.1",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "onnxscript>=0.2",
+    "numpy",
+    "safetensors",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[project.scripts]
+export_onnx = "export_onnx.cli:main"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/export_onnx"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

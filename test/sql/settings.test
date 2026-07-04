@@ -103,39 +103,13 @@ SET anofox_tabfm_threads = 0
 ----
 <REGEX>:.*must be positive.*
 
-# --- Stub surface: every SQL function exists (full name + alias) and reports
-# --- a clear not-implemented error until its workstream lands.
+# --- Function surface exists (full name + alias). Behaviour is covered in the
+# --- per-module suites: tabfm_weights/license/lifecycle (WS-D),
+# --- tabfm_devices (WS-C), tabfm_predict* (WS-E).
 
-foreach fn anofox_tabfm_models tabfm_models anofox_tabfm_devices tabfm_devices
-
-statement error
-SELECT * FROM ${fn}()
+# The predict aggregate resolves and runs (placeholder engine until the real
+# TabFM engine is wired in Phase 2).
+query I
+SELECT (tabfm_predict_agg(t, 'y'))[1].yhat FROM (SELECT 1 AS y) t
 ----
-<REGEX>:.*not implemented yet.*
-
-endloop
-
-statement error
-CALL tabfm_download('classification')
-----
-<REGEX>:.*not implemented yet.*
-
-statement error
-CALL tabfm_load('classification')
-----
-<REGEX>:.*not implemented yet.*
-
-statement error
-CALL tabfm_unload('classification')
-----
-<REGEX>:.*not implemented yet.*
-
-statement error
-CALL tabfm_remove('classification')
-----
-<REGEX>:.*not implemented yet.*
-
-statement error
-SELECT tabfm_predict_agg(t, 'y') FROM (SELECT 1 AS y) t
-----
-<REGEX>:.*not implemented yet.*
+1

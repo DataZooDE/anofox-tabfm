@@ -1,0 +1,17 @@
+{
+  "col_nhead": 4,
+  "col_num_blocks": 3,
+  "col_num_inds": 256,
+  "decoder_hidden": null,
+  "embed_dim": 256,
+  "feature_group_size": 3,
+  "ff_factor": 4,
+  "icl_nhead": 8,
+  "icl_num_blocks": 24,
+  "is_classifier": true,
+  "max_classes": 10,
+  "num_freq": 32,
+  "row_nhead": 8,
+  "row_num_blocks": 3,
+  "row_num_cls": 8
+}

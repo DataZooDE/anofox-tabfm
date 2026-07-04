@@ -1,0 +1,126 @@
+# name: test/sql/tabfm_lifecycle.test
+# description: FR-4 lifecycle — tabfm_load / tabfm_unload / tabfm_remove argument + error surface
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+SET autoinstall_known_extensions = false
+
+statement ok
+SET autoload_known_extensions = false
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/lifecycle_cache'
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_ok.json'
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true
+
+# --- load before download → §5 'not downloaded' ----------------------------------
+
+statement error
+CALL tabfm_load('classification')
+----
+tabfm_load: model 'classification' is not downloaded. Run: CALL tabfm_download('classification');
+
+statement error
+CALL tabfm_load('nope')
+----
+tabfm_load: unknown task 'nope'. Valid tasks: classification, regression
+
+statement error
+CALL tabfm_load(NULL)
+----
+task cannot be NULL
+
+# --- unload argument surface ------------------------------------------------------
+
+statement error
+CALL tabfm_unload('nope')
+----
+tabfm_unload: unknown task 'nope'. Valid tasks: classification, regression
+
+# unload without weights loaded is a no-op, not an error
+query TT
+CALL tabfm_unload()
+----
+all	unloaded
+
+# --- remove with nothing cached errors clearly ------------------------------------
+
+statement error
+CALL tabfm_remove('classification')
+----
+tabfm_remove: no cached weights for task 'classification' (revision 'main')
+
+statement error
+CALL tabfm_remove('nope')
+----
+tabfm_remove: unknown task 'nope'. Valid tasks: classification, regression
+
+# --- download, then the whole lifecycle works -------------------------------------
+
+query T
+SELECT status FROM tabfm_download('classification') ORDER BY 1
+----
+downloaded
+downloaded
+
+query TT
+CALL tabfm_load('classification')
+----
+classification	loaded
+
+query TT
+CALL tabfm_unload('classification')
+----
+classification	unloaded
+
+# full names are registered too
+query TT
+CALL anofox_tabfm_load('classification')
+----
+classification	loaded
+
+query TT
+CALL anofox_tabfm_unload()
+----
+all	unloaded
+
+# --- remove deletes the cached files + empty directories --------------------------
+
+query T
+SELECT status FROM tabfm_remove('classification') ORDER BY 1
+----
+removed
+removed
+
+query I
+SELECT count(*) FROM tabfm_models()
+----
+0
+
+# the model directory tree is gone entirely
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/lifecycle_cache/acme__tabfm-test@main/**')
+----
+0
+
+# load after remove errors again
+statement error
+CALL tabfm_load('classification')
+----
+tabfm_load: model 'classification' is not downloaded. Run: CALL tabfm_download('classification');
+
+# and a re-download starts from scratch
+query T
+SELECT status FROM tabfm_download('classification') ORDER BY 1
+----
+downloaded
+downloaded

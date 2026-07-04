@@ -1,0 +1,61 @@
+# WS-A: S06 CI fixture generator + golden preprocessing/ensemble vectors.
+#
+#   uv sync
+#   uv run make_fixture --out ../../test/fixtures
+#   uv run golden_preprocess --out ../../test/fixtures/golden_preprocess.json
+#   uv run pytest
+#
+# Reuses the S01 exporter (tools/export_onnx) as a path dependency so the
+# fixture goes through the exact same export code path as the real model.
+# pandas/scikit-learn/scipy/jaxtyping/typeguard/absl are needed only to run
+# the UPSTREAM preprocessing/ensemble code (vendor/tabfm) for the golden
+# vectors — imported standalone, never the vendor package __init__.
+[project]
+name = "make-fixture"
+version = "0.1.0"
+description = "anofox-tabfm S06 fixture model + golden preprocess/ensemble vectors"
+requires-python = ">=3.11"
+dependencies = [
+    "export-onnx",
+    "torch==2.12.1",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "numpy",
+    "safetensors",
+    # match the vendor pins: jaxtyping 0.2.x integrates with typeguard 2.x;
+    # typeguard 4.x rejects jaxtyping's shape-string annotations
+    # (vendor/tabfm/pyproject.toml). sklearn/pandas/scipy pinned to the
+    # vendor requirements.txt versions so the golden vectors reproduce.
+    "pandas==2.2.3",
+    "scikit-learn==1.6.0",
+    "scipy==1.17.1",
+    "absl-py",
+    "jaxtyping<0.3",
+    "typeguard<3",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[project.scripts]
+make_fixture = "make_fixture.cli:main_fixture"
+golden_preprocess = "make_fixture.cli:main_golden_preprocess"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+export-onnx = { path = "../export_onnx", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/make_fixture"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

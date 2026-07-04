@@ -1,0 +1,2132 @@
+{
+ "_docs": {
+  "tables[].columns": "raw column values as a DuckDB table would hold them; null == SQL NULL. duckdb_type_hint maps to the HLD 4.5 type table.",
+  "tables[].target": "classification: labels are encoded with CategoricalOrdinalEncoder(mode=alphabetical) \u2014 classes sorted ascending, y_encoded are their indices. regression: y z-scored with StandardScaler (mean, std ddof=0).",
+  "tables[].encoder.column_classification": "upstream column typing: datetime64 dtype or text-that-parses-as-dates -> datetime; other numeric dtypes -> numeric; everything else (incl. object bool with NULLs) -> categorical.",
+  "tables[].encoder.encoded_column_names": "column order of the encoded matrix: ALL categorical (ordinal codes) first, then numeric (mean-imputed), then per datetime column [epoch_ns, year, month, day, dayofweek]. epoch_ns is int64 nanoseconds cast to float64 (precision loss above 2^53 is upstream behavior the port must replicate by casting int64 ns -> double).",
+  "tables[].encoder.cat_categories_first_appearance": "kept categories per column in FIRST-APPEARANCE order over the train rows; categories with < min_cat_frequency occurrences, NULLs and unseen test values all encode to -1.",
+  "tables[].encoder.datetime_fill_train_mean": "NaT/unparseable dates are replaced by the TRAIN mean timestamp (learned at fit, reused at transform).",
+  "tables[].minimal_pipeline": "EnsembleGenerator(n_estimators=1, norm_methods=['none'], random_state=42) on the encoded matrix: UniqueFeatureFilter (drop <=1 unique value on train) -> CustomStandardScaler (z-score with std(ddof=0)+1e-6, clip to [-100,100]) -> OutlierRemover (two-stage 4-sigma log clipping). x = [train; test] rows after that chain with the identity feature permutation; y_train = encoded/scaled train labels; y_full_padded pads to T with -100.0; cat_mask marks kept categorical columns; d = active feature count. Cast x/y to float32 before the model feed (tensors here are the float64 pipeline outputs).",
+  "tables[].minimal_pipeline.outlier_remover": "transform clips as X = max(X, -log1p(|X|) + lower) then X = min(X, log1p(|X|) + upper); bounds/means/stds are the second-stage (outliers-removed) statistics from fit.",
+  "ensemble.cases[].members_flattened_order": "the EXACT member configs EnsembleGenerator draws for seed 42, in prepare_ensemble_tensors' flattened order (grouped by norm method: all 'none' members first, then 'power'). feature_permutation indexes the unique-filtered encoded columns; x_member = x[:, permutation]. class_shift_offset: y_context = (y_enc + offset) % n_classes; after the forward pass, un-shift the logits with out = concat(out[..., offset:], out[..., :offset]). norm_method is the scaler choice ('none' -> minimal chain above, 'power' -> PowerTransformer(yeo-johnson) inserted between scaler and outlier stage). Member x tensors for 'power' are NOT emitted (sklearn-version-sensitive); assert configs, not transforms, for those.",
+  "blend.nnls_*": "NNLS blend fitting (enable_nnls preset): weights from scipy nnls on out-of-fold predictions, normalized, then blended with the uniform vector via nnls_beta=0.75.",
+  "blend.softmax_temperature": "temperature 0.9 softmax applied to per-member logits BEFORE probability averaging / NNLS blending (classification)."
+ },
+ "generator": {
+  "tool": "tools/make_fixture (golden_preprocess)",
+  "seed": 42,
+  "upstream": "vendor/tabfm/tabfm/src/classifier_and_regressor.py (unmodified, imported standalone)",
+  "versions": {
+   "numpy": "2.4.6",
+   "pandas": "2.2.3",
+   "scikit-learn": "1.6.0",
+   "scipy": "1.17.1"
+  }
+ },
+ "tables": [
+  {
+   "name": "mixed_types",
+   "notes": [
+    "cat_c: train counts red=3 blue=2 green=1 violet=1 NULL=1; min_cat_frequency=2 (TransformToNumerical default) keeps only [red, blue] in first-appearance order; green/violet (rare) and NULL and unseen test 'purple' all encode to unknown_value=-1",
+    "bool_d: pandas OBJECT column (bools + NULL) -> categorical path, categories in first-appearance order [True, False]; NULL -> -1. NOTE: a bool column WITHOUT nulls has pandas dtype bool == numeric upstream (imputer path, cat_mask=0); HLD 4.5 maps DuckDB BOOLEAN to categorical \u2014 the C++ port should follow upstream on encoded values but be aware of this upstream dtype quirk",
+    "date_e: datetime64 column with NaT in train and test; NaT filled with the TRAIN mean timestamp learned at fit"
+   ],
+   "n_train": 8,
+   "n_test": 4,
+   "columns": [
+    {
+     "name": "num_a",
+     "duckdb_type_hint": "double",
+     "values": [
+      1.5,
+      null,
+      3.25,
+      4.0,
+      2.75,
+      5.5,
+      1.25,
+      3.0,
+      2.0,
+      null,
+      4.5,
+      3.5
+     ]
+    },
+    {
+     "name": "num_b",
+     "duckdb_type_hint": "bigint",
+     "values": [
+      10,
+      12,
+      11,
+      15,
+      14,
+      13,
+      10,
+      12,
+      11,
+      14,
+      15,
+      10
+     ]
+    },
+    {
+     "name": "cat_c",
+     "duckdb_type_hint": "varchar_or_bool",
+     "values": [
+      "red",
+      "blue",
+      "red",
+      "green",
+      "blue",
+      "red",
+      null,
+      "violet",
+      "green",
+      "red",
+      "purple",
+      null
+     ]
+    },
+    {
+     "name": "bool_d",
+     "duckdb_type_hint": "varchar_or_bool",
+     "values": [
+      true,
+      false,
+      true,
+      null,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      null,
+      false
+     ]
+    },
+    {
+     "name": "date_e",
+     "duckdb_type_hint": "date",
+     "values": [
+      "2023-01-15",
+      "2023-06-30",
+      null,
+      "2024-02-29",
+      "2023-11-05",
+      "2024-07-04",
+      "2023-03-10",
+      "2024-12-01",
+      "2024-03-15",
+      null,
+      "2023-08-20",
+      "2024-05-05"
+     ]
+    }
+   ],
+   "target": {
+    "task": "classification",
+    "train_values": [
+     "cat",
+     "dog",
+     "bird",
+     "cat",
+     "dog",
+     "cat",
+     "bird",
+     "dog"
+    ],
+    "classes_alphabetical": [
+     "bird",
+     "cat",
+     "dog"
+    ],
+    "y_encoded": [
+     1,
+     2,
+     0,
+     1,
+     2,
+     1,
+     0,
+     2
+    ]
+   },
+   "encoder": {
+    "column_classification": {
+     "categorical": [
+      "cat_c",
+      "bool_d"
+     ],
+     "numeric": [
+      "num_a",
+      "num_b"
+     ],
+     "datetime": [
+      "date_e"
+     ]
+    },
+    "encoded_column_names": [
+     "cat_c",
+     "bool_d",
+     "num_a",
+     "num_b",
+     "date_e.epoch_ns",
+     "date_e.year",
+     "date_e.month",
+     "date_e.day",
+     "date_e.dayofweek"
+    ],
+    "cat_categories_first_appearance": {
+     "cat_c": [
+      "red",
+      "blue"
+     ],
+     "bool_d": [
+      true,
+      false
+     ]
+    },
+    "cat_unknown_value": -1,
+    "min_cat_frequency": 2,
+    "numeric_impute_mean": {
+     "num_a": 3.0357142857142856,
+     "num_b": 12.125
+    },
+    "datetime_fill_train_mean": {
+     "date_e": {
+      "iso": "2023-11-17T13:42:51.428571392+00:00",
+      "epoch_ns": 1700228571428571392
+     }
+    },
+    "datetime_derived_features": [
+     "epoch_ns",
+     "year",
+     "month",
+     "day",
+     "dayofweek"
+    ],
+    "train_matrix": [
+     [
+      0.0,
+      0.0,
+      1.5,
+      10.0,
+      1.6737408e+18,
+      2023.0,
+      1.0,
+      15.0,
+      6.0
+     ],
+     [
+      1.0,
+      1.0,
+      3.0357142857142856,
+      12.0,
+      1.6880832e+18,
+      2023.0,
+      6.0,
+      30.0,
+      4.0
+     ],
+     [
+      0.0,
+      0.0,
+      3.25,
+      11.0,
+      1.7002285714285714e+18,
+      2023.0,
+      11.0,
+      17.0,
+      4.0
+     ],
+     [
+      -1.0,
+      -1.0,
+      4.0,
+      15.0,
+      1.7091648e+18,
+      2024.0,
+      2.0,
+      29.0,
+      3.0
+     ],
+     [
+      1.0,
+      1.0,
+      2.75,
+      14.0,
+      1.6991424e+18,
+      2023.0,
+      11.0,
+      5.0,
+      6.0
+     ],
+     [
+      0.0,
+      0.0,
+      5.5,
+      13.0,
+      1.7200512e+18,
+      2024.0,
+      7.0,
+      4.0,
+      3.0
+     ],
+     [
+      -1.0,
+      0.0,
+      1.25,
+      10.0,
+      1.6784064e+18,
+      2023.0,
+      3.0,
+      10.0,
+      4.0
+     ],
+     [
+      -1.0,
+      1.0,
+      3.0,
+      12.0,
+      1.7330112e+18,
+      2024.0,
+      12.0,
+      1.0,
+      6.0
+     ]
+    ],
+    "test_matrix": [
+     [
+      -1.0,
+      1.0,
+      2.0,
+      11.0,
+      1.7104608e+18,
+      2024.0,
+      3.0,
+      15.0,
+      4.0
+     ],
+     [
+      0.0,
+      0.0,
+      3.0357142857142856,
+      14.0,
+      1.7002285714285714e+18,
+      2023.0,
+      11.0,
+      17.0,
+      4.0
+     ],
+     [
+      -1.0,
+      -1.0,
+      4.5,
+      15.0,
+      1.6924896e+18,
+      2023.0,
+      8.0,
+      20.0,
+      6.0
+     ],
+     [
+      -1.0,
+      1.0,
+      3.5,
+      10.0,
+      1.7148672e+18,
+      2024.0,
+      5.0,
+      5.0,
+      6.0
+     ]
+    ]
+   },
+   "minimal_pipeline": {
+    "seed": 42,
+    "n_estimators": 1,
+    "norm_method": "none",
+    "unique_filter_keep": [
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true,
+     true
+    ],
+    "cat_feature_indices_kept": [
+     0,
+     1
+    ],
+    "feature_permutation": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ],
+    "standard_scaler": {
+     "mean": [
+      -0.125,
+      0.25,
+      3.0357142857142856,
+      12.125,
+      1.7002285714285714e+18,
+      2023.375,
+      6.625,
+      13.875,
+      4.5
+     ],
+     "scale_std_ddof0_plus_eps": [
+      0.7806257497997998,
+      0.6614388277661477,
+      1.2588979094296118,
+      1.6909696573085853,
+      1.8953866812718868e+16,
+      0.4841239182759271,
+      4.090768042988393,
+      10.349366922606078,
+      1.2247458713915889
+     ],
+     "epsilon": 1e-06,
+     "clip_min": -100.0,
+     "clip_max": 100.0
+    },
+    "outlier_remover": {
+     "threshold": 4.0,
+     "means": [
+      0.0,
+      2.7755575615628914e-17,
+      1.0495077029659683e-16,
+      2.6020852139652106e-17,
+      1.6653345369377348e-15,
+      0.0,
+      2.7755575615628914e-17,
+      5.551115123125783e-17,
+      -2.7755575615628914e-17
+     ],
+     "stds": [
+      1.0690435981778759,
+      1.0690433514080697,
+      1.0690441184585444,
+      1.0690443354414476,
+      1.0690449676496976,
+      1.0690427594444691,
+      1.0690447063185842,
+      1.0690448643540105,
+      1.0690440947788495
+     ],
+     "lower_bounds": [
+      -4.2761743927115035,
+      -4.276173405632279,
+      -4.276176473834178,
+      -4.2761773417657905,
+      -4.276179870598789,
+      -4.2761710377778765,
+      -4.276178825274337,
+      -4.276179457416042,
+      -4.276176379115398
+     ],
+     "upper_bounds": [
+      4.2761743927115035,
+      4.276173405632279,
+      4.276176473834178,
+      4.2761773417657905,
+      4.276179870598792,
+      4.2761710377778765,
+      4.276178825274337,
+      4.276179457416042,
+      4.276176379115398
+     ]
+    },
+    "x": [
+     [
+      0.16012794867714478,
+      -0.37796390158151966,
+      -1.2198878671663655,
+      -1.2566754174538144,
+      -1.3974864174310304,
+      -0.7745950692447884,
+      -1.3750474094079452,
+      0.10870230115647628,
+      1.2247438713924057
+     ],
+     [
+      1.441151538094303,
+      1.1338917047445591,
+      0.0,
+      -0.07392208337963614,
+      -0.6407859435005273,
+      -0.7745950692447884,
+      -0.1527830454897717,
+      1.55806631657616,
+      -0.4082479571308019
+     ],
+     [
+      0.16012794867714478,
+      -0.37796390158151966,
+      0.17021691169763253,
+      -0.6652987504167253,
+      0.0,
+      -0.7745950692447884,
+      1.069481318428402,
+      0.30195083654576743,
+      -0.4082479571308019
+     ],
+     [
+      -1.1208956407400135,
+      -1.8898195079075983,
+      0.765976102639346,
+      1.7002079177316314,
+      0.47147258444551327,
+      1.2909917820746473,
+      -1.1305945366243106,
+      1.4614420488815143,
+      -1.2247438713924057
+     ],
+     [
+      1.441151538094303,
+      1.1338917047445591,
+      -0.2269558822635098,
+      1.1088312506945421,
+      -0.05730605998785028,
+      -0.7745950692447884,
+      1.069481318428402,
+      -0.8575403757899794,
+      1.2247438713924057
+     ],
+     [
+      0.16012794867714478,
+      -0.37796390158151966,
+      1.9574944845227729,
+      0.517454583657453,
+      1.0458355947783047,
+      1.2909917820746473,
+      0.09166982729386301,
+      -0.954164643484625,
+      -1.2247438713924057
+     ],
+     [
+      -1.1208956407400135,
+      -0.37796390158151966,
+      -1.4184742641469368,
+      -1.2566754174538144,
+      -1.1513308415741197,
+      -0.7745950692447884,
+      -0.8861416638406758,
+      -0.3744190373167516,
+      -0.4082479571308019
+     ],
+     [
+      -1.1208956407400135,
+      1.1338917047445591,
+      -0.028369485282938638,
+      -0.07392208337963614,
+      1.729601083269723,
+      1.2909917820746473,
+      1.3139341912120366,
+      -1.2440374465685617,
+      1.2247438713924057
+     ],
+     [
+      -1.1208956407400135,
+      1.1338917047445591,
+      -0.8227150732052233,
+      -0.6652987504167253,
+      0.5398491332946551,
+      1.2909917820746473,
+      -0.8861416638406758,
+      0.10870230115647628,
+      -0.4082479571308019
+     ],
+     [
+      0.16012794867714478,
+      -0.37796390158151966,
+      0.0,
+      1.1088312506945421,
+      0.0,
+      -0.7745950692447884,
+      1.069481318428402,
+      0.30195083654576743,
+      -0.4082479571308019
+     ],
+     [
+      -1.1208956407400135,
+      -1.8898195079075983,
+      1.1631488966004884,
+      1.7002079177316314,
+      -0.40830567741344503,
+      -0.7745950692447884,
+      0.3361227000774977,
+      0.5918236396297042,
+      1.2247438713924057
+     ],
+     [
+      -1.1208956407400135,
+      1.1338917047445591,
+      0.36880330867820366,
+      -1.2566754174538144,
+      0.7723293993817374,
+      1.2909917820746473,
+      -0.39723591827340643,
+      -0.8575403757899794,
+      1.2247438713924057
+     ]
+    ],
+    "y_train": [
+     1,
+     2,
+     0,
+     1,
+     2,
+     1,
+     0,
+     2
+    ],
+    "y_full_padded": [
+     1.0,
+     2.0,
+     0.0,
+     1.0,
+     2.0,
+     1.0,
+     0.0,
+     2.0,
+     -100.0,
+     -100.0,
+     -100.0,
+     -100.0
+    ],
+    "train_size": 8,
+    "cat_mask": [
+     true,
+     true,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false
+    ],
+    "d": 9
+   }
+  },
+  {
+   "name": "constant_and_rare",
+   "notes": [
+    "num_const is constant on the 8 train rows -> UniqueFeatureFilter drops it (encoded index 1); the kept-column mask and the remapped cat_features_ index are in unique_filter_keep / cat_feature_indices_kept",
+    "test category 'C' is unseen -> -1"
+   ],
+   "n_train": 8,
+   "n_test": 4,
+   "columns": [
+    {
+     "name": "num_const",
+     "duckdb_type_hint": "double",
+     "values": [
+      7.0,
+      7.0,
+      7.0,
+      7.0,
+      7.0,
+      7.0,
+      7.0,
+      7.0,
+      7.0,
+      7.0,
+      7.0,
+      7.0
+     ]
+    },
+    {
+     "name": "num_x",
+     "duckdb_type_hint": "double",
+     "values": [
+      0.5,
+      1.5,
+      null,
+      2.5,
+      0.75,
+      1.25,
+      2.0,
+      0.25,
+      1.0,
+      null,
+      2.25,
+      0.5
+     ]
+    },
+    {
+     "name": "cat_y",
+     "duckdb_type_hint": "varchar_or_bool",
+     "values": [
+      "A",
+      "A",
+      "B",
+      "B",
+      "A",
+      "B",
+      "A",
+      "A",
+      "B",
+      "A",
+      "C",
+      "B"
+     ]
+    }
+   ],
+   "target": {
+    "task": "classification",
+    "train_values": [
+     "no",
+     "yes",
+     "yes",
+     "no",
+     "no",
+     "yes",
+     "no",
+     "no"
+    ],
+    "classes_alphabetical": [
+     "no",
+     "yes"
+    ],
+    "y_encoded": [
+     0,
+     1,
+     1,
+     0,
+     0,
+     1,
+     0,
+     0
+    ]
+   },
+   "encoder": {
+    "column_classification": {
+     "categorical": [
+      "cat_y"
+     ],
+     "numeric": [
+      "num_const",
+      "num_x"
+     ],
+     "datetime": []
+    },
+    "encoded_column_names": [
+     "cat_y",
+     "num_const",
+     "num_x"
+    ],
+    "cat_categories_first_appearance": {
+     "cat_y": [
+      "A",
+      "B"
+     ]
+    },
+    "cat_unknown_value": -1,
+    "min_cat_frequency": 2,
+    "numeric_impute_mean": {
+     "num_const": 7.0,
+     "num_x": 1.25
+    },
+    "datetime_fill_train_mean": {},
+    "datetime_derived_features": [],
+    "train_matrix": [
+     [
+      0.0,
+      7.0,
+      0.5
+     ],
+     [
+      0.0,
+      7.0,
+      1.5
+     ],
+     [
+      1.0,
+      7.0,
+      1.25
+     ],
+     [
+      1.0,
+      7.0,
+      2.5
+     ],
+     [
+      0.0,
+      7.0,
+      0.75
+     ],
+     [
+      1.0,
+      7.0,
+      1.25
+     ],
+     [
+      0.0,
+      7.0,
+      2.0
+     ],
+     [
+      0.0,
+      7.0,
+      0.25
+     ]
+    ],
+    "test_matrix": [
+     [
+      1.0,
+      7.0,
+      1.0
+     ],
+     [
+      0.0,
+      7.0,
+      1.25
+     ],
+     [
+      -1.0,
+      7.0,
+      2.25
+     ],
+     [
+      1.0,
+      7.0,
+      0.5
+     ]
+    ]
+   },
+   "minimal_pipeline": {
+    "seed": 42,
+    "n_estimators": 1,
+    "norm_method": "none",
+    "unique_filter_keep": [
+     true,
+     false,
+     true
+    ],
+    "cat_feature_indices_kept": [
+     0
+    ],
+    "feature_permutation": [
+     0,
+     1
+    ],
+    "standard_scaler": {
+     "mean": [
+      0.375,
+      1.25
+     ],
+     "scale_std_ddof0_plus_eps": [
+      0.4841239182759271,
+      0.7071077811865476
+     ],
+     "epsilon": 1e-06,
+     "clip_min": -100.0,
+     "clip_max": 100.0
+    },
+    "outlier_remover": {
+     "threshold": 4.0,
+     "means": [
+      -2.7755575615628914e-17,
+      2.7755575615628914e-17
+     ],
+     "stds": [
+      1.0690427594444691,
+      1.0690434557939434
+     ],
+     "lower_bounds": [
+      -4.2761710377778765,
+      -4.276173823175774
+     ],
+     "upper_bounds": [
+      4.2761710377778765,
+      4.276173823175774
+     ]
+    },
+    "x": [
+     [
+      -0.7745950692447884,
+      -1.0606586717819424
+     ],
+     [
+      -0.7745950692447884,
+      0.3535528905939808
+     ],
+     [
+      1.2909917820746473,
+      0.0
+     ],
+     [
+      1.2909917820746473,
+      1.7677644529699041
+     ],
+     [
+      -0.7745950692447884,
+      -0.7071057811879616
+     ],
+     [
+      1.2909917820746473,
+      0.0
+     ],
+     [
+      -0.7745950692447884,
+      1.0606586717819424
+     ],
+     [
+      -0.7745950692447884,
+      -1.4142115623759233
+     ],
+     [
+      1.2909917820746473,
+      -0.3535528905939808
+     ],
+     [
+      -0.7745950692447884,
+      0.0
+     ],
+     [
+      -2.840181920564224,
+      1.4142115623759233
+     ],
+     [
+      1.2909917820746473,
+      -1.0606586717819424
+     ]
+    ],
+    "y_train": [
+     0,
+     1,
+     1,
+     0,
+     0,
+     1,
+     0,
+     0
+    ],
+    "y_full_padded": [
+     0.0,
+     1.0,
+     1.0,
+     0.0,
+     0.0,
+     1.0,
+     0.0,
+     0.0,
+     -100.0,
+     -100.0,
+     -100.0,
+     -100.0
+    ],
+    "train_size": 8,
+    "cat_mask": [
+     true,
+     false
+    ],
+    "d": 2
+   }
+  },
+  {
+   "name": "regression_dates",
+   "notes": [
+    "date_s is a VARCHAR column of ISO dates -> upstream detects it as datetime via the text heuristic; the C++ port receives DuckDB DATE/TIMESTAMP types directly and should treat them as the datetime path",
+    "regression target is z-scored with sklearn StandardScaler (ddof=0 std); mean/scale in y_scaler; predictions are inverse-transformed"
+   ],
+   "n_train": 8,
+   "n_test": 4,
+   "columns": [
+    {
+     "name": "num_p",
+     "duckdb_type_hint": "double",
+     "values": [
+      10.0,
+      20.0,
+      null,
+      40.0,
+      50.0,
+      60.0,
+      70.0,
+      80.0,
+      15.0,
+      25.0,
+      null,
+      55.0
+     ]
+    },
+    {
+     "name": "num_q",
+     "duckdb_type_hint": "double",
+     "values": [
+      -1.0,
+      0.5,
+      1.5,
+      -0.5,
+      2.0,
+      0.0,
+      1.0,
+      -1.5,
+      0.25,
+      -0.75,
+      1.75,
+      0.5
+     ]
+    },
+    {
+     "name": "cat_r",
+     "duckdb_type_hint": "varchar_or_bool",
+     "values": [
+      "x",
+      "y",
+      "x",
+      "z",
+      "y",
+      "x",
+      "z",
+      "y",
+      "z",
+      "x",
+      "y",
+      "w"
+     ]
+    },
+    {
+     "name": "date_s",
+     "duckdb_type_hint": "varchar_or_bool",
+     "values": [
+      "2024-01-05",
+      "2024-02-10",
+      null,
+      "2024-04-20",
+      "2024-05-25",
+      "2024-06-30",
+      "2024-08-04",
+      "2024-09-09",
+      "2024-10-14",
+      null,
+      "2024-12-24",
+      "2025-01-28"
+     ]
+    }
+   ],
+   "target": {
+    "task": "regression",
+    "train_values": [
+     100.0,
+     110.0,
+     95.0,
+     130.0,
+     140.0,
+     150.0,
+     160.0,
+     170.0
+    ],
+    "y_scaler": {
+     "mean": 131.875,
+     "scale_std_ddof0": 26.21277121938846
+    },
+    "y_scaled": [
+     -1.2160103078465596,
+     -0.8345168779339135,
+     -1.4067570228028827,
+     -0.07153001810862115,
+     0.309963411804025,
+     0.6914568417166711,
+     1.0729502716293173,
+     1.4544437015419633
+    ]
+   },
+   "encoder": {
+    "column_classification": {
+     "categorical": [
+      "cat_r"
+     ],
+     "numeric": [
+      "num_p",
+      "num_q"
+     ],
+     "datetime": [
+      "date_s"
+     ]
+    },
+    "encoded_column_names": [
+     "cat_r",
+     "num_p",
+     "num_q",
+     "date_s.epoch_ns",
+     "date_s.year",
+     "date_s.month",
+     "date_s.day",
+     "date_s.dayofweek"
+    ],
+    "cat_categories_first_appearance": {
+     "cat_r": [
+      "x",
+      "y",
+      "z"
+     ]
+    },
+    "cat_unknown_value": -1,
+    "min_cat_frequency": 2,
+    "numeric_impute_mean": {
+     "num_p": 47.142857142857146,
+     "num_q": 0.25
+    },
+    "datetime_fill_train_mean": {
+     "date_s": {
+      "iso": "2024-05-15T10:17:08.571428608+00:00",
+      "epoch_ns": 1715768228571428608
+     }
+    },
+    "datetime_derived_features": [
+     "epoch_ns",
+     "year",
+     "month",
+     "day",
+     "dayofweek"
+    ],
+    "train_matrix": [
+     [
+      0.0,
+      10.0,
+      -1.0,
+      1.7044128e+18,
+      2024.0,
+      1.0,
+      5.0,
+      4.0
+     ],
+     [
+      1.0,
+      20.0,
+      0.5,
+      1.7075232e+18,
+      2024.0,
+      2.0,
+      10.0,
+      5.0
+     ],
+     [
+      0.0,
+      47.142857142857146,
+      1.5,
+      1.7157682285714286e+18,
+      2024.0,
+      5.0,
+      15.0,
+      2.0
+     ],
+     [
+      2.0,
+      40.0,
+      -0.5,
+      1.7135712e+18,
+      2024.0,
+      4.0,
+      20.0,
+      5.0
+     ],
+     [
+      1.0,
+      50.0,
+      2.0,
+      1.7165952e+18,
+      2024.0,
+      5.0,
+      25.0,
+      5.0
+     ],
+     [
+      0.0,
+      60.0,
+      0.0,
+      1.7197056e+18,
+      2024.0,
+      6.0,
+      30.0,
+      6.0
+     ],
+     [
+      2.0,
+      70.0,
+      1.0,
+      1.7227296e+18,
+      2024.0,
+      8.0,
+      4.0,
+      6.0
+     ],
+     [
+      1.0,
+      80.0,
+      -1.5,
+      1.72584e+18,
+      2024.0,
+      9.0,
+      9.0,
+      0.0
+     ]
+    ],
+    "test_matrix": [
+     [
+      2.0,
+      15.0,
+      0.25,
+      1.728864e+18,
+      2024.0,
+      10.0,
+      14.0,
+      0.0
+     ],
+     [
+      0.0,
+      25.0,
+      -0.75,
+      1.7157682285714286e+18,
+      2024.0,
+      5.0,
+      15.0,
+      2.0
+     ],
+     [
+      1.0,
+      47.142857142857146,
+      1.75,
+      1.7349984e+18,
+      2024.0,
+      12.0,
+      24.0,
+      1.0
+     ],
+     [
+      -1.0,
+      55.0,
+      0.5,
+      1.7380224e+18,
+      2025.0,
+      1.0,
+      28.0,
+      1.0
+     ]
+    ]
+   },
+   "minimal_pipeline": {
+    "seed": 42,
+    "n_estimators": 1,
+    "norm_method": "none",
+    "unique_filter_keep": [
+     true,
+     true,
+     true,
+     true,
+     false,
+     true,
+     true,
+     true
+    ],
+    "cat_feature_indices_kept": [
+     0
+    ],
+    "feature_permutation": [
+     0,
+     1,
+     2,
+     3,
+     4,
+     5,
+     6
+    ],
+    "standard_scaler": {
+     "mean": [
+      0.875,
+      47.14285714285714,
+      0.25,
+      1.7157682285714286e+18,
+      5.0,
+      14.75,
+      4.125
+     ],
+     "scale_std_ddof0_plus_eps": [
+      0.7806257497997998,
+      22.20038709702865,
+      1.1456449237389599,
+      6780866796677673.0,
+      2.5495107567963924,
+      8.88467882195843,
+      1.9645302056877139
+     ],
+     "epsilon": 1e-06,
+     "clip_min": -100.0,
+     "clip_max": 100.0
+    },
+    "outlier_remover": {
+     "threshold": 4.0,
+     "means": [
+      3.469446951953614e-18,
+      2.498001805406602e-16,
+      0.0,
+      -4.718447854656915e-15,
+      -2.7755575615628914e-17,
+      1.3877787807814457e-17,
+      5.551115123125783e-17
+     ],
+     "stds": [
+      1.0690435981778759,
+      1.0690449194953584,
+      1.0690440345115626,
+      1.0690449676496974,
+      1.0690445483359274,
+      1.0690448473251493,
+      1.0690444234763554
+     ],
+     "lower_bounds": [
+      -4.2761743927115035,
+      -4.276179677981434,
+      -4.27617613804625,
+      -4.276179870598794,
+      -4.27617819334371,
+      -4.276179389300597,
+      -4.276177693905422
+     ],
+     "upper_bounds": [
+      4.2761743927115035,
+      4.276179677981434,
+      4.27617613804625,
+      4.276179870598785,
+      4.27617819334371,
+      4.276179389300597,
+      4.276177693905422
+     ]
+    },
+    "x": [
+     [
+      -1.1208956407400135,
+      -1.6730725000659301,
+      -1.091088498799841,
+      -1.67462787751446,
+      -1.5689284657210982,
+      -1.0973947618571123,
+      -0.0636284439089303
+     ],
+     [
+      0.16012794867714478,
+      -1.2226299038943336,
+      0.2182176997599682,
+      -1.2159254588909356,
+      -1.1766963492908238,
+      -0.5346282173150034,
+      0.4453991073625121
+     ],
+     [
+      -1.1208956407400135,
+      3.200587145866483e-16,
+      1.091088498799841,
+      0.0,
+      0.0,
+      0.028138327227105443,
+      -1.081683546451815
+     ],
+     [
+      1.441151538094303,
+      -0.32174471155114026,
+      -0.6546530992799046,
+      -0.32400408934519337,
+      -0.39223211643027456,
+      0.5909048717692144,
+      0.4453991073625121
+     ],
+     [
+      0.16012794867714478,
+      0.12869788462045637,
+      1.5275238983197774,
+      0.12195659542767773,
+      0.0,
+      1.1536714163113233,
+      0.4453991073625121
+     ],
+     [
+      -1.1208956407400135,
+      0.5791404807920529,
+      -0.2182176997599682,
+      0.5806590140512022,
+      0.39223211643027456,
+      1.7164379608534321,
+      0.9544266586339545
+     ],
+     [
+      1.441151538094303,
+      1.0295830769636496,
+      0.6546530992799046,
+      1.0266196988240734,
+      1.1766963492908238,
+      -1.2099480707655341,
+      0.9544266586339545
+     ],
+     [
+      0.16012794867714478,
+      1.4800256731352461,
+      -1.5275238983197774,
+      1.485322117447598,
+      1.5689284657210982,
+      -0.6471815262234252,
+      -2.0997386489946996
+     ],
+     [
+      1.441151538094303,
+      -1.4478512019801317,
+      0.0,
+      1.931282802220469,
+      1.961160582151373,
+      -0.08441498168131634,
+      -2.0997386489946996
+     ],
+     [
+      -1.1208956407400135,
+      -0.9974086058085352,
+      -0.8728707990398727,
+      0.0,
+      0.0,
+      0.028138327227105443,
+      -1.081683546451815
+     ],
+     [
+      0.16012794867714478,
+      3.200587145866483e-16,
+      1.3093061985598091,
+      2.8359459056168648,
+      2.745624815011922,
+      1.0411181074029014,
+      -1.5907110977232575
+     ],
+     [
+      -2.4019192301571715,
+      0.35391918270625466,
+      0.2182176997599682,
+      3.281906590389736,
+      -1.5689284657210982,
+      1.4913313430365887,
+      -1.5907110977232575
+     ]
+    ],
+    "y_train": [
+     -1.2160103078465596,
+     -0.8345168779339135,
+     -1.4067570228028827,
+     -0.07153001810862115,
+     0.309963411804025,
+     0.6914568417166711,
+     1.0729502716293173,
+     1.4544437015419633
+    ],
+    "y_full_padded": [
+     -1.2160103078465596,
+     -0.8345168779339135,
+     -1.4067570228028827,
+     -0.07153001810862115,
+     0.309963411804025,
+     0.6914568417166711,
+     1.0729502716293173,
+     1.4544437015419633,
+     -100.0,
+     -100.0,
+     -100.0,
+     -100.0
+    ],
+    "train_size": 8,
+    "cat_mask": [
+     true,
+     false,
+     false,
+     false,
+     false,
+     false,
+     false
+    ],
+    "d": 7
+   }
+  }
+ ],
+ "ensemble": {
+  "seed": 42,
+  "cases": [
+   {
+    "n_estimators": 1,
+    "table": "mixed_types",
+    "n_features_after_filter": 9,
+    "n_classes": 3,
+    "norm_methods_default": [
+     "none",
+     "power"
+    ],
+    "members_flattened_order": [
+     {
+      "member_index_flat": 0,
+      "norm_method": "none",
+      "feature_permutation": [
+       0,
+       1,
+       2,
+       3,
+       4,
+       5,
+       6,
+       7,
+       8
+      ],
+      "class_shift_offset": 0,
+      "cat_permutation": null,
+      "row_subsample": null,
+      "d": 9,
+      "cat_mask": [
+       true,
+       true,
+       false,
+       false,
+       false,
+       false,
+       false,
+       false,
+       false
+      ],
+      "y_context_shifted": [
+       1,
+       2,
+       0,
+       1,
+       2,
+       1,
+       0,
+       2
+      ]
+     }
+    ]
+   },
+   {
+    "n_estimators": 4,
+    "table": "mixed_types",
+    "n_features_after_filter": 9,
+    "n_classes": 3,
+    "norm_methods_default": [
+     "none",
+     "power"
+    ],
+    "members_flattened_order": [
+     {
+      "member_index_flat": 0,
+      "norm_method": "none",
+      "feature_permutation": [
+       6,
+       0,
+       7,
+       8,
+       1,
+       4,
+       2,
+       5,
+       3
+      ],
+      "class_shift_offset": 0,
+      "cat_permutation": null,
+      "row_subsample": null,
+      "d": 9,
+      "cat_mask": [
+       false,
+       true,
+       false,
+       false,
+       true,
+       false,
+       false,
+       false,
+       false
+      ],
+      "y_context_shifted": [
+       1,
+       2,
+       0,
+       1,
+       2,
+       1,
+       0,
+       2
+      ]
+     },
+     {
+      "member_index_flat": 1,
+      "norm_method": "none",
+      "feature_permutation": [
+       1,
+       0,
+       5,
+       2,
+       8,
+       4,
+       7,
+       6,
+       3
+      ],
+      "class_shift_offset": 2,
+      "cat_permutation": null,
+      "row_subsample": null,
+      "d": 9,
+      "cat_mask": [
+       true,
+       true,
+       false,
+       false,
+       false,
+       false,
+       false,
+       false,
+       false
+      ],
+      "y_context_shifted": [
+       0,
+       1,
+       2,
+       0,
+       1,
+       0,
+       2,
+       1
+      ]
+     },
+     {
+      "member_index_flat": 2,
+      "norm_method": "power",
+      "feature_permutation": [
+       5,
+       4,
+       1,
+       6,
+       2,
+       0,
+       3,
+       8,
+       7
+      ],
+      "class_shift_offset": 2,
+      "cat_permutation": null,
+      "row_subsample": null,
+      "d": 9,
+      "cat_mask": [
+       false,
+       false,
+       true,
+       false,
+       false,
+       true,
+       false,
+       false,
+       false
+      ],
+      "y_context_shifted": [
+       0,
+       1,
+       2,
+       0,
+       1,
+       0,
+       2,
+       1
+      ]
+     },
+     {
+      "member_index_flat": 3,
+      "norm_method": "power",
+      "feature_permutation": [
+       8,
+       6,
+       1,
+       3,
+       4,
+       2,
+       0,
+       5,
+       7
+      ],
+      "class_shift_offset": 1,
+      "cat_permutation": null,
+      "row_subsample": null,
+      "d": 9,
+      "cat_mask": [
+       false,
+       false,
+       true,
+       false,
+       false,
+       false,
+       true,
+       false,
+       false
+      ],
+      "y_context_shifted": [
+       2,
+       0,
+       1,
+       2,
+       0,
+       2,
+       1,
+       0
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "blend": {
+  "softmax_temperature": {
+   "temperature": 0.9,
+   "formula": "softmax(logits / temperature) with max-subtraction for stability (upstream TabFMClassifier.softmax)",
+   "logits": [
+    [
+     2.0,
+     1.0,
+     0.5
+    ],
+    [
+     -1.0,
+     0.0,
+     1.0
+    ],
+    [
+     0.3,
+     0.3,
+     0.3
+    ]
+   ],
+   "probs": [
+    [
+     0.6587317636120843,
+     0.216849877427433,
+     0.1244183589604827
+    ],
+    [
+     0.07538325148667331,
+     0.22899409853365954,
+     0.6956226499796672
+    ],
+    [
+     0.3333333333333333,
+     0.3333333333333333,
+     0.3333333333333333
+    ]
+   ]
+  },
+  "nnls_classification": {
+   "formula": "w_raw = nnls(oof_probs.reshape(E, N*K).T, one_hot(y).flatten()); w = w_raw/sum(w_raw) (uniform if sum==0); final = nnls_beta*w + (1-nnls_beta)/E; blended probs = tensordot(final, probs_all, (0,0))",
+   "nnls_beta": 0.75,
+   "oof_logits": [
+    [
+     [
+      0.304717,
+      -1.039984,
+      0.750451
+     ],
+     [
+      0.940565,
+      -1.951035,
+      -1.30218
+     ],
+     [
+      0.12784,
+      -0.316243,
+      -0.016801
+     ],
+     [
+      -0.853044,
+      0.879398,
+      0.777792
+     ],
+     [
+      0.066031,
+      1.127241,
+      0.467509
+     ],
+     [
+      -0.859292,
+      0.368751,
+      -0.958883
+     ]
+    ],
+    [
+     [
+      0.87845,
+      -0.049926,
+      -0.184862
+     ],
+     [
+      -0.68093,
+      1.222541,
+      -0.154529
+     ],
+     [
+      -0.428328,
+      -0.352134,
+      0.532309
+     ],
+     [
+      0.365444,
+      0.412733,
+      0.430821
+     ],
+     [
+      2.141648,
+      -0.406415,
+      -0.512243
+     ],
+     [
+      -0.813773,
+      0.615979,
+      1.128972
+     ]
+    ],
+    [
+     [
+      -0.113947,
+      -0.840156,
+      -0.824481
+     ],
+     [
+      0.650593,
+      0.743254,
+      0.543154
+     ],
+     [
+      -0.66551,
+      0.232161,
+      0.116686
+     ],
+     [
+      0.218689,
+      0.871429,
+      0.223596
+     ],
+     [
+      0.678914,
+      0.067579,
+      0.289119
+     ],
+     [
+      0.631288,
+      -1.457156,
+      -0.319671
+     ]
+    ],
+    [
+     [
+      -0.470373,
+      -0.638878,
+      -0.275142
+     ],
+     [
+      1.494941,
+      -0.865831,
+      0.968278
+     ],
+     [
+      -1.68287,
+      -0.334885,
+      0.162753
+     ],
+     [
+      0.586222,
+      0.711227,
+      0.793347
+     ],
+     [
+      -0.348725,
+      -0.462352,
+      0.857976
+     ],
+     [
+      -0.191304,
+      -1.275686,
+      -1.133287
+     ]
+    ]
+   ],
+   "oof_probs_softmax_t0p9": [
+    [
+     [
+      0.3489947520131356,
+      0.07833109594434347,
+      0.5726741520425209
+     ],
+     [
+      0.890480224667062,
+      0.03583309854318312,
+      0.07368667678975488
+     ],
+     [
+      0.40616254375314415,
+      0.24797498595608397,
+      0.345862470290772
+     ],
+     [
+      0.07154287459960627,
+      0.49040543644180923,
+      0.4380516889585845
+     ],
+     [
+      0.17200733120617043,
+      0.5592850778465773,
+      0.2687075909472523
+     ],
+     [
+      0.1721472230230901,
+      0.6737386531394437,
+      0.1541141238374662
+     ]
+    ],
+    [
+     [
+      0.6012171010878891,
+      0.21431078192476988,
+      0.18447211698734117
+     ],
+     [
+      0.09021922379895582,
+      0.7478558954670521,
+      0.16192488073399222
+     ],
+     [
+      0.20015684230886724,
+      0.21784009201425458,
+      0.5820030656768782
+     ],
+     [
+      0.319561023304296,
+      0.3368007755848981,
+      0.34363820111080595
+     ],
+     [
+      0.8998086192237411,
+      0.05303759407617554,
+      0.04715378670008332
+     ],
+     [
+      0.0687001525225742,
+      0.3364214712756469,
+      0.594878376201779
+     ]
+    ],
+    [
+     [
+      0.5262272701029431,
+      0.23482353166520645,
+      0.2389491982318504
+     ],
+     [
+      0.3337876370419346,
+      0.3699846950992644,
+      0.2962276678588009
+     ],
+     [
+      0.16404102300240916,
+      0.44475730840517624,
+      0.3912016685924147
+     ],
+     [
+      0.24565504511272734,
+      0.5073468859734476,
+      0.2469980689138251
+     ],
+     [
+      0.46393303391740265,
+      0.23521008823156517,
+      0.3008568778510321
+     ],
+     [
+      0.6916329842702713,
+      0.06793573005793951,
+      0.24043128567178917
+     ]
+    ],
+    [
+     [
+      0.32557343289478136,
+      0.26998334143825387,
+      0.40444322566696483
+     ],
+     [
+      0.6136535655696407,
+      0.04453834677831483,
+      0.34180808765204446
+     ],
+     [
+      0.07550049444517501,
+      0.3376130159346365,
+      0.5868864896201885
+     ],
+     [
+      0.29344637659653167,
+      0.33717071128562165,
+      0.36938291211784663
+     ],
+     [
+      0.17533364894740722,
+      0.15453776527821564,
+      0.6701285857743772
+     ],
+     [
+      0.6057507254134445,
+      0.18156244939975918,
+      0.21268682518679619
+     ]
+    ]
+   ],
+   "y": [
+    0,
+    1,
+    2,
+    0,
+    1,
+    1
+   ],
+   "y_one_hot_flat": [
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    1.0,
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0,
+    0.0,
+    1.0,
+    0.0
+   ],
+   "weights_raw": [
+    0.29821718990717355,
+    0.6967279237429832,
+    0.0,
+    0.0
+   ],
+   "nnls_residual_norm": 1.8851054848390127,
+   "weights_normalized": [
+    0.2997323026323569,
+    0.700267697367643,
+    0.0,
+    0.0
+   ],
+   "weights_final": [
+    0.2872992269742677,
+    0.5877007730257323,
+    0.0625,
+    0.0625
+   ],
+   "blended_probs": [
+    [
+     0.5068392214744502,
+     0.18000550508675975,
+     0.3131552734387902
+    ],
+    [
+     0.3680712629143705,
+     0.47571799950673577,
+     0.15621073757889387
+    ],
+    [
+     0.24929386063796538,
+     0.24816595751815018,
+     0.5025401818438845
+    ],
+    [
+     0.24205431184964135,
+     0.39161352878931277,
+     0.36633215936104585
+    ],
+    [
+     0.6181899620614997,
+     0.21621164640591944,
+     0.16559839153258085
+    ],
+    [
+     0.17091937870003546,
+     0.4068733891769045,
+     0.4222072321230601
+    ]
+   ]
+  },
+  "nnls_regression": {
+   "formula": "w_raw = nnls(y_oof.T, y_orig) on inverse-transformed member predictions; normalize; blend with uniform via nnls_beta; final prediction = final_weights @ member_predictions (inverse-transformed)",
+   "nnls_beta": 0.75,
+   "y_orig": [
+    1.0,
+    2.0,
+    3.0,
+    4.0,
+    5.0,
+    6.0
+   ],
+   "y_oof_members": [
+    [
+     0.724164,
+     2.149148,
+     3.042728,
+     4.207146,
+     4.871824,
+     6.047562
+    ],
+    [
+     1.3,
+     2.4000000000000004,
+     3.5000000000000004,
+     4.6000000000000005,
+     5.7,
+     6.800000000000001
+    ],
+    [
+     3.5,
+     3.5,
+     3.5,
+     3.5,
+     3.5,
+     3.5
+    ]
+   ],
+   "weights_raw": [
+    0.23194062177122302,
+    0.6685131341162237,
+    0.0
+   ],
+   "weights_normalized": [
+    0.2575819360569303,
+    0.7424180639430698,
+    0.0
+   ],
+   "weights_final": [
+    0.27651978537603106,
+    0.6401468812906357,
+    0.08333333333333333
+   ],
+   "blended_prediction": [
+    1.3241032862015412,
+    2.422301125465519,
+    3.373555244701532,
+    4.399701429569219,
+    5.287659616893087,
+    6.316936005731232
+   ]
+  }
+ }
+}

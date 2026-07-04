@@ -1,0 +1,185 @@
+# name: test/sql/tabfm_weights.test
+# description: tabfm_download / tabfm_models — FR-1 weights management (offline, fixture-backed)
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# Keep everything offline & deterministic: never autoload/autoinstall httpfs.
+statement ok
+SET autoinstall_known_extensions = false
+
+statement ok
+SET autoload_known_extensions = false
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/weights_cache'
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_ok.json'
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true
+
+# --- Argument validation --------------------------------------------------------
+
+statement error
+CALL tabfm_download('sentiment')
+----
+tabfm_download: unknown task 'sentiment'. Valid tasks: classification, regression
+
+statement error
+CALL tabfm_download(NULL)
+----
+task cannot be NULL
+
+# --- Nothing cached yet → tabfm_models() is empty -------------------------------
+
+query I
+SELECT count(*) FROM tabfm_models()
+----
+0
+
+# --- Fresh download: one row per manifest file, status 'downloaded' -------------
+
+query TI
+SELECT status, bytes FROM tabfm_download('classification') ORDER BY bytes
+----
+downloaded	128
+downloaded	4096
+
+# URLs are echoed host+path only (local fixture paths pass through unchanged)
+query T
+SELECT url FROM tabfm_download('classification') WHERE file LIKE '%model.safetensors' ORDER BY url
+----
+test/fixtures/weights_test/model_a.bin
+
+# --- Re-download: everything already cached -------------------------------------
+
+query TI
+SELECT status, bytes FROM tabfm_download('classification') ORDER BY bytes
+----
+cached	128
+cached	4096
+
+# Cache layout: <cache_dir>/<repo with / -> __>@<revision>/<file path>
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/weights_cache/acme__tabfm-test@main/classification/*')
+----
+2
+
+# No stray .part files after a successful download (atomic rename, FR-1.6)
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/weights_cache/acme__tabfm-test@main/classification/*.part')
+----
+0
+
+# --- tabfm_models(): columns model, task, revision, path, bytes, loaded, license -
+
+query TTTIIT
+SELECT model, task, revision, bytes, loaded, license FROM tabfm_models()
+----
+tabfm-test	classification	main	4224	false	tabfm-non-commercial-v1.0
+
+query I
+SELECT path LIKE '%acme__tabfm-test@main/classification/model.safetensors' FROM tabfm_models()
+----
+true
+
+# Full-name alias returns the same surface
+query I
+SELECT count(*) FROM anofox_tabfm_models()
+----
+1
+
+# --- Explicit revision (2nd positional arg) creates a separate cache entry ------
+
+query T
+SELECT status FROM tabfm_download('classification', 'v2') ORDER BY 1
+----
+downloaded
+downloaded
+
+query I
+SELECT count(*) FROM tabfm_models()
+----
+2
+
+query T
+SELECT revision FROM tabfm_models() ORDER BY revision
+----
+main
+v2
+
+query T
+SELECT status FROM tabfm_remove('classification', 'v2') ORDER BY 1
+----
+removed
+removed
+
+query I
+SELECT count(*) FROM tabfm_models()
+----
+1
+
+# --- Size mismatch (manifest bytes wrong) → IOException, no partial file --------
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_badsize.json'
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/badsize_cache'
+
+statement error
+CALL tabfm_download('classification')
+----
+size mismatch
+
+# neither the file nor a .part remnant may exist (FR-1.6: never a loadable partial)
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/badsize_cache/acme__tabfm-badsize@main/classification/*')
+----
+0
+
+# --- Air-gap (FR-1.5): manifest without urls, pre-seeded cache dir works --------
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_nourl.json'
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/weights_cache'
+
+query T
+SELECT status FROM tabfm_download('classification') ORDER BY 1
+----
+cached
+cached
+
+query I
+SELECT count(*) FROM tabfm_models()
+----
+1
+
+# ... but with an empty cache and no url there is nothing to fetch
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/empty_cache'
+
+statement error
+CALL tabfm_download('classification')
+----
+no download url
+
+# --- httpfs missing: DuckDB's own MissingExtensionException propagates ----------
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_https.json'
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/https_cache'
+
+statement error
+CALL tabfm_download('classification')
+----
+httpfs

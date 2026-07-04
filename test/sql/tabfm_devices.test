@@ -1,0 +1,45 @@
+# name: test/sql/tabfm_devices.test
+# description: tabfm_devices() — device discovery output shape (SQL-API §3, HLD §9)
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# At least one device is always discovered (the cpu row exists in every flavor)
+query I
+SELECT count(*) >= 1 FROM tabfm_devices();
+----
+true
+
+# Full name and alias return the same relation
+query I
+SELECT count(*) = (SELECT count(*) FROM anofox_tabfm_devices()) FROM tabfm_devices();
+----
+true
+
+# The cpu row: fixed id/ep, always usable, no VRAM semantics, non-empty name
+query IIIIIII
+SELECT device_id, ep, usable, vram_total IS NULL, vram_free IS NULL, name <> '', arch = ''
+FROM tabfm_devices()
+WHERE device_id = 'cpu';
+----
+cpu	CPUExecutionProvider	true	true	true	true	true
+
+# Column names and types exactly as specified (SQL-API §3)
+query II
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM tabfm_devices());
+----
+device_id	VARCHAR
+ep	VARCHAR
+name	VARCHAR
+arch	VARCHAR
+vram_total	BIGINT
+vram_free	BIGINT
+driver	VARCHAR
+usable	BOOLEAN
+
+# Works via CALL too (management-call convention, SQL-API §3)
+statement ok
+CALL tabfm_devices();

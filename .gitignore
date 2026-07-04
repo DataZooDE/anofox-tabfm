@@ -10,3 +10,4 @@ vcpkg_installed/
 .venv/
 __pycache__/
 *.onnx.data
+build-*/

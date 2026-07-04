@@ -1,0 +1,163 @@
+# name: test/sql/tabfm_predict_agg.test
+# description: anofox_tabfm_predict_agg aggregate core — SQL-API §2 Level 4 composition
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CREATE TABLE customers(age INTEGER, plan VARCHAR, usage_gb DOUBLE, churned VARCHAR);
+
+statement ok
+INSERT INTO customers VALUES
+    (25, 'basic',  3.2, 'no'),
+    (30, 'basic',  4.1, 'no'),
+    (41, 'pro',   12.0, 'no'),
+    (48, 'pro',   18.0, 'yes'),
+    (33, 'basic',  5.0, NULL),
+    (52, 'pro',   20.0, NULL);
+
+# --- direct aggregate + unnest(max_depth := 3) — NEVER recursive := true (S04) -
+
+query IIII
+SELECT age, churned, yhat, is_training FROM (
+    SELECT unnest(res, max_depth := 3) FROM (
+        SELECT tabfm_predict_agg(t, 'churned') AS res FROM customers t
+    )
+) ORDER BY age
+----
+25	no	no	true
+30	no	no	true
+33	NULL	no	false
+41	no	no	true
+48	yes	no	true
+52	NULL	no	false
+
+# the aggregate returns LIST(STRUCT(...)) — one element per input row
+query I
+SELECT len(res) FROM (SELECT tabfm_predict_agg(t, 'churned') AS res FROM customers t)
+----
+6
+
+# full name
+query I
+SELECT len(res) FROM (SELECT anofox_tabfm_predict_agg(t, 'churned') AS res FROM customers t)
+----
+6
+
+# --- CTE input (same-pipeline execution) ---------------------------------------
+
+query II
+WITH features AS (
+    SELECT age, plan, churned FROM customers WHERE age < 50
+)
+SELECT age, yhat FROM (
+    SELECT unnest(tabfm_predict_agg(f, 'churned'), max_depth := 3) FROM features f
+) ORDER BY age
+----
+25	no
+30	no
+33	no
+41	no
+48	no
+
+# --- two-table workflow: UNION ALL idiom (context elsewhere) --------------------
+
+statement ok
+CREATE TABLE history_2025(age INTEGER, plan VARCHAR, churned VARCHAR);
+
+statement ok
+INSERT INTO history_2025 VALUES (20, 'basic', 'no'), (21, 'basic', 'no'), (22, 'pro', 'no'), (23, 'pro', 'yes');
+
+statement ok
+CREATE TABLE prospects(age INTEGER, plan VARCHAR);
+
+statement ok
+INSERT INTO prospects VALUES (60, 'pro'), (61, 'basic');
+
+query III
+SELECT age, yhat, yhat_score FROM (
+    SELECT unnest(tabfm_predict_agg(t, 'churned'), max_depth := 3)
+    FROM (
+        SELECT age, plan, churned      FROM history_2025
+        UNION ALL
+        SELECT age, plan, NULL         FROM prospects
+    ) t
+)
+WHERE NOT is_training ORDER BY age
+----
+60	no	0.75
+61	no	0.75
+
+# --- GROUP BY composition: one in-context model per group ----------------------
+
+statement ok
+CREATE TABLE grouped(region VARCHAR, x INTEGER, label VARCHAR);
+
+statement ok
+INSERT INTO grouped VALUES
+    ('e', 1, 'a'), ('e', 2, 'a'), ('e', 3, 'a'), ('e', 4, 'b'), ('e', 5, NULL),
+    ('w', 1, 'b'), ('w', 2, 'b'), ('w', 3, 'b'), ('w', 4, 'a'), ('w', 5, NULL);
+
+query III
+SELECT region, x, yhat FROM (
+    SELECT region, unnest(preds, max_depth := 3)
+    FROM (
+        SELECT region, tabfm_predict_agg(t, 'label') AS preds
+        FROM grouped t
+        GROUP BY region
+    )
+) ORDER BY region, x
+----
+e	1	a
+e	2	a
+e	3	a
+e	4	a
+e	5	a
+w	1	b
+w	2	b
+w	3	b
+w	4	b
+w	5	b
+
+# --- temp table input ----------------------------------------------------------
+
+statement ok
+CREATE TEMP TABLE tmp_ctx AS SELECT * FROM customers;
+
+query I
+SELECT count(*) FROM (
+    SELECT unnest(tabfm_predict_agg(t, 'churned'), max_depth := 3) FROM tmp_ctx t
+)
+----
+6
+
+# --- detail mode through the aggregate ------------------------------------------
+
+query II
+SELECT age, proba['yes'] FROM (
+    SELECT unnest(tabfm_predict_agg(t, 'churned', MAP{'output_mode': 'detail'}), max_depth := 3)
+    FROM customers t
+) ORDER BY age LIMIT 2
+----
+25	0.25
+30	0.25
+
+# opts constant-folds from expressions too (bind-time evaluation)
+query I
+SELECT len(res) FROM (
+    SELECT tabfm_predict_agg(t, 'churned', MAP{'seed': (21 * 2)::VARCHAR}) AS res FROM customers t
+)
+----
+6
+
+# --- FILTER clause composes as with any aggregate --------------------------------
+
+query I
+SELECT len(res) FROM (
+    SELECT tabfm_predict_agg(t, 'churned') FILTER (WHERE age < 50) AS res FROM customers t
+)
+----
+5

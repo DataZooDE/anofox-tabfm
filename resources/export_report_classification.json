@@ -1,0 +1,78 @@
+{
+  "command": [
+    "export_onnx",
+    "--task",
+    "classification",
+    "--config",
+    "real",
+    "--out",
+    "../../resources"
+  ],
+  "task": "classification",
+  "config": "real",
+  "config_source": {
+    "origin": "https://huggingface.co/google/tabfm-1.0.0-pytorch/resolve/main/classification/config.json",
+    "sha256": "d61e14960ab879bf9d0d23a10acac6e09f780ea548deac2fe3999eb131377e16"
+  },
+  "model_kwargs": {
+    "col_nhead": 4,
+    "col_num_blocks": 3,
+    "col_num_inds": 256,
+    "embed_dim": 256,
+    "feature_group_size": 3,
+    "ff_factor": 4,
+    "icl_nhead": 8,
+    "icl_num_blocks": 24,
+    "max_classes": 10,
+    "num_freq": 32,
+    "row_nhead": 8,
+    "row_num_blocks": 3,
+    "row_num_cls": 8
+  },
+  "n_params": 1639444298,
+  "seed": 0,
+  "opset": 18,
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    2,
+    512
+  ],
+  "example_input_THdtrain": [
+    64,
+    12,
+    10,
+    48
+  ],
+  "graph_bytes": 1100818,
+  "n_initializers_mapped": 913,
+  "n_transforms": 0,
+  "unmatched_small_inline": [
+    "m.icl_predictor.y_encoder.lifted_tensor_0"
+  ],
+  "parity": {
+    "ok": true,
+    "worst": 6.534159183502197e-06,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 16,
+        "H": 4,
+        "d": 4,
+        "train": 12,
+        "max_abs_delta_test_rows": 6.534159183502197e-06,
+        "ort_ms": 2819.135904312134
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0",
+    "onnxscript": "0.7.1"
+  }
+}

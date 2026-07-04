@@ -1,0 +1,189 @@
+# name: test/sql/tabfm_predict_errors.test
+# description: predict surface error catalog — SQL-API §5 + S04 dispatch pitfalls
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CREATE TABLE customers(age INTEGER, plan VARCHAR, usage_gb DOUBLE, churned VARCHAR);
+
+statement ok
+INSERT INTO customers VALUES
+    (25, 'basic',  3.2, 'no'),
+    (30, 'basic',  4.1, 'no'),
+    (41, 'pro',   12.0, 'no'),
+    (48, 'pro',   18.0, 'yes'),
+    (33, 'basic',  5.0, NULL),
+    (52, 'pro',   20.0, NULL);
+
+# --- arity-only macro dispatch: VARCHAR[] in the opts slot redirects (S04 3c) ---
+
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', ['age', 'plan'])
+----
+options must be a MAP — for a feature list use tabfm_predict(tbl, target, features, opts)
+
+statement error
+SELECT tabfm_predict_agg(t, 'churned', ['age', 'plan']) FROM customers t
+----
+options must be a MAP — for a feature list use tabfm_predict(tbl, target, features, opts)
+
+# --- first argument must be the whole-row STRUCT --------------------------------
+
+statement error
+SELECT tabfm_predict_agg(age, 'churned') FROM customers
+----
+whole-row STRUCT
+
+# --- target validation -----------------------------------------------------------
+
+# non-constant target
+statement error
+SELECT tabfm_predict_agg(t, plan) FROM customers t
+----
+target must be a constant
+
+# unknown target column
+statement error
+SELECT * FROM tabfm_predict('customers', 'does_not_exist')
+----
+not found
+
+# --- options validation -----------------------------------------------------------
+
+# unknown key errors and lists the valid keys
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'estimators': '4'})
+----
+valid options are task, n_estimators, seed, output_mode, context_rows, softmax_temperature, model
+
+# invalid task value
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'task': 'clustering'})
+----
+task must be
+
+# task regression needs a numeric target
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'task': 'regression'})
+----
+requires a numeric target
+
+# invalid output_mode
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'output_mode': 'verbose'})
+----
+output_mode must be
+
+# n_estimators parses the full 1..32 range; out-of-range or non-numeric errors
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'n_estimators': '0'})
+----
+n_estimators must be an integer between 1 and 32
+
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'n_estimators': '33'})
+----
+n_estimators must be an integer between 1 and 32
+
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'n_estimators': 'many'})
+----
+n_estimators must be an integer between 1 and 32
+
+# n_estimators > 1 is a valid value but the ensemble arrives with the TabFM
+# engine integration (milestone M3)
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'n_estimators': '8'})
+----
+milestone M3
+
+# invalid seed / context_rows / softmax_temperature
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'seed': 'lucky'})
+----
+seed must be an integer
+
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'context_rows': '-1'})
+----
+context_rows must be
+
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned', MAP{'softmax_temperature': '0'})
+----
+softmax_temperature must be a positive number
+
+# --- guardrails (FR-3.4) -----------------------------------------------------------
+
+# > 10 distinct classes
+statement ok
+CREATE TABLE many_classes AS
+SELECT i AS x, 'label_' || (i % 14)::VARCHAR AS y FROM range(28) t(i);
+
+statement error
+SELECT * FROM tabfm_predict('many_classes', 'y')
+----
+target 'y' has 14 distinct labels; TabFM v1 supports at most 10
+
+# all-NULL target
+statement ok
+CREATE TABLE no_context(x INTEGER, y VARCHAR);
+
+statement ok
+INSERT INTO no_context VALUES (1, NULL), (2, NULL);
+
+statement error
+SELECT * FROM tabfm_predict('no_context', 'y')
+----
+target 'y' has no non-NULL rows to use as context
+
+# max rows guardrail names the setting
+statement ok
+SET anofox_tabfm_max_rows = 5;
+
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned')
+----
+anofox_tabfm_max_rows
+
+statement ok
+RESET anofox_tabfm_max_rows;
+
+query I
+SELECT count(*) FROM tabfm_predict('customers', 'churned')
+----
+6
+
+# max features guardrail names the setting
+statement ok
+SET anofox_tabfm_max_features = 2;
+
+statement error
+SELECT * FROM tabfm_predict('customers', 'churned')
+----
+anofox_tabfm_max_features
+
+statement ok
+RESET anofox_tabfm_max_features;
+
+# a feature-trimmed call fits under the limit again
+statement ok
+SET anofox_tabfm_max_features = 2;
+
+query I
+SELECT count(*) FROM tabfm_predict('customers', 'churned', ['age', 'plan'], MAP{})
+----
+6
+
+statement ok
+RESET anofox_tabfm_max_features;
+
+# non-constant options MAP
+statement error
+SELECT tabfm_predict_agg(t, 'churned', MAP{'seed': plan}) FROM customers t
+----
+constant

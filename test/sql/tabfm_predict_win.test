@@ -1,0 +1,148 @@
+# name: test/sql/tabfm_predict_win.test
+# description: tabfm_predict_win — rolling in-context prediction, frame = context (FR-3.8)
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# Contract: the window frame is the context (training rows) and must end at
+# 1 PRECEDING; the scored row is the row immediately AFTER the frame — i.e.
+# the current row for ROWS BETWEEN N PRECEDING AND 1 PRECEDING. The return
+# value is the scalar STRUCT(yhat, yhat_score[, proba]) — one prediction per
+# row, no LIST/unnest gymnastics.
+
+# --- gapped-frame classification: the current row is OUTSIDE the frame ---------
+# labels: rows 1-4 'a', rows 5-6 'b'. Frame = 4 PRECEDING .. 1 PRECEDING.
+#   row 5: frame = {a,a,a,a}   -> yhat 'a', score 1.0  (if the current row 'b'
+#          leaked into the context the score would be 0.8)
+#   row 6: frame = {a,a,a,b}   -> yhat 'a', score 0.75 (leak would give 0.6)
+# row 1 has an empty frame -> NULL prediction.
+
+statement ok
+CREATE TABLE clicks(id INTEGER, label VARCHAR);
+
+statement ok
+INSERT INTO clicks VALUES (1, 'a'), (2, 'a'), (3, 'a'), (4, 'a'), (5, 'b'), (6, 'b');
+
+query III
+SELECT id, (p).yhat, (p).yhat_score FROM (
+    SELECT id, tabfm_predict_win(t, 'label')
+               OVER (ORDER BY id ROWS BETWEEN 4 PRECEDING AND 1 PRECEDING) AS p
+    FROM clicks t
+) ORDER BY id
+----
+1	NULL	NULL
+2	a	1.0
+3	a	1.0
+4	a	1.0
+5	a	1.0
+6	a	0.75
+
+# --- regression: yhat == mean(frame) for every row -----------------------------
+# values 1,2,4,8,16 with frame 2 PRECEDING .. 1 PRECEDING; every mean is unique
+# per row, so this asserts both frame-only context AND output/row alignment.
+
+statement ok
+CREATE TABLE series(ts INTEGER, y DOUBLE);
+
+statement ok
+INSERT INTO series VALUES (1, 1.0), (2, 2.0), (3, 4.0), (4, 8.0), (5, 16.0);
+
+query II
+SELECT ts, (p).yhat FROM (
+    SELECT ts, tabfm_predict_win(t, 'y')
+               OVER (ORDER BY ts ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) AS p
+    FROM series t
+) ORDER BY ts
+----
+1	NULL
+2	1.0
+3	1.5
+4	3.0
+5	6.0
+
+# --- PARTITION BY isolation: context never crosses the partition ----------------
+
+statement ok
+CREATE TABLE panel(g VARCHAR, ts INTEGER, y DOUBLE);
+
+statement ok
+INSERT INTO panel VALUES
+    ('a', 1, 10.0), ('a', 2, 20.0), ('a', 3, 40.0),
+    ('b', 1, 100.0), ('b', 2, 200.0), ('b', 3, 400.0);
+
+query III
+SELECT g, ts, (p).yhat FROM (
+    SELECT g, ts, tabfm_predict_win(t, 'y')
+                  OVER (PARTITION BY g ORDER BY ts ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) AS p
+    FROM panel t
+) ORDER BY g, ts
+----
+a	1	NULL
+a	2	10.0
+a	3	15.0
+b	1	NULL
+b	2	100.0
+b	3	150.0
+
+# --- NULL-target rows inside the frame are not context ---------------------------
+
+statement ok
+CREATE TABLE holey(ts INTEGER, y DOUBLE);
+
+statement ok
+INSERT INTO holey VALUES (1, 6.0), (2, NULL), (3, 12.0), (4, NULL);
+
+# row 4: frame = rows 1..3 -> context {6, 12} -> mean 9.0
+query II
+SELECT ts, (p).yhat FROM (
+    SELECT ts, tabfm_predict_win(t, 'y')
+               OVER (ORDER BY ts ROWS BETWEEN 3 PRECEDING AND 1 PRECEDING) AS p
+    FROM holey t
+) ORDER BY ts
+----
+1	NULL
+2	6.0
+3	6.0
+4	9.0
+
+# an all-NULL-target frame is a soft NULL in the window variant (not an error)
+query I
+SELECT (p).yhat FROM (
+    SELECT ts, tabfm_predict_win(t, 'y')
+               OVER (ORDER BY ts ROWS BETWEEN 1 PRECEDING AND 1 PRECEDING) AS p
+    FROM holey t
+) WHERE ts = 3
+----
+NULL
+
+# --- detail mode in the window variant -------------------------------------------
+
+query II
+SELECT id, (p).proba['a'] FROM (
+    SELECT id, tabfm_predict_win(t, 'label', MAP{'output_mode': 'detail'})
+               OVER (ORDER BY id ROWS BETWEEN 4 PRECEDING AND 1 PRECEDING) AS p
+    FROM clicks t
+) WHERE id = 6 ORDER BY id
+----
+6	0.75
+
+# --- window function set is its own surface ---------------------------------------
+
+# without an OVER clause the aggregate path refuses
+statement error
+SELECT tabfm_predict_win(t, 'label') FROM clicks t
+----
+tabfm_predict_win requires an OVER clause
+
+# full name works
+query I
+SELECT count(*) FROM (
+    SELECT anofox_tabfm_predict_win(t, 'y')
+           OVER (ORDER BY ts ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) AS p
+    FROM series t
+)
+----
+5

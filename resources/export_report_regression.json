@@ -1,0 +1,76 @@
+{
+  "command": [
+    "export_onnx",
+    "--task",
+    "regression",
+    "--config",
+    "real",
+    "--out",
+    "../../resources"
+  ],
+  "task": "regression",
+  "config": "real",
+  "config_source": {
+    "origin": "https://huggingface.co/google/tabfm-1.0.0-pytorch/resolve/main/regression/config.json",
+    "sha256": "169c7a935965b45c4ed9d981201392743e498115ceddb29931eccd37e0c8f6ad"
+  },
+  "model_kwargs": {
+    "col_nhead": 4,
+    "col_num_blocks": 3,
+    "col_num_inds": 256,
+    "embed_dim": 256,
+    "feature_group_size": 3,
+    "ff_factor": 4,
+    "icl_nhead": 8,
+    "icl_num_blocks": 24,
+    "max_classes": 10,
+    "num_freq": 32,
+    "row_nhead": 8,
+    "row_num_blocks": 3,
+    "row_num_cls": 8
+  },
+  "n_params": 1647782989,
+  "seed": 0,
+  "opset": 18,
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    2,
+    512
+  ],
+  "example_input_THdtrain": [
+    64,
+    12,
+    10,
+    48
+  ],
+  "graph_bytes": 1098500,
+  "n_initializers_mapped": 918,
+  "n_transforms": 0,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 1.862645149230957e-06,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 16,
+        "H": 4,
+        "d": 4,
+        "train": 12,
+        "max_abs_delta_test_rows": 1.862645149230957e-06,
+        "ort_ms": 921.6547012329102
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0",
+    "onnxscript": "0.7.1"
+  }
+}

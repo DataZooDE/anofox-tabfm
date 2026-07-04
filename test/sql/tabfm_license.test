@@ -1,0 +1,101 @@
+# name: test/sql/tabfm_license.test
+# description: FR-2 license gate — blocks before any network, acceptance persisted to manifest-lock.json
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+SET autoinstall_known_extensions = false
+
+statement ok
+SET autoload_known_extensions = false
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/license_cache'
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_ok.json'
+
+# --- Gate blocks with the SQL-API §5 text while the setting is false (default) --
+
+query I
+SELECT current_setting('anofox_tabfm_accept_hf_license')
+----
+false
+
+statement error
+CALL tabfm_download('classification')
+----
+licensed 'tabfm-non-commercial-v1.0' (non-commercial, no redistribution). Run: SET anofox_tabfm_accept_hf_license = true;
+
+# The gate fires at bind time, before any file/network I/O: no cache dir appears.
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/license_cache/*')
+----
+0
+
+# The built-in Google tasks are gated the same way (no network involved: bind fails)
+statement error
+CALL tabfm_download('regression')
+----
+licensed 'tabfm-non-commercial-v1.0' (non-commercial, no redistribution). Run: SET anofox_tabfm_accept_hf_license = true;
+
+# --- Accept → download proceeds --------------------------------------------------
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true
+
+query T
+SELECT status FROM tabfm_download('classification') ORDER BY 1
+----
+downloaded
+downloaded
+
+# --- Acceptance is recorded in <cache_dir>/manifest-lock.json (FR-2.1) ----------
+
+query I
+SELECT content LIKE '%"license": "tabfm-non-commercial-v1.0"%' FROM read_text('__TEST_DIR__/license_cache/manifest-lock.json')
+----
+true
+
+query I
+SELECT content LIKE '%"revision": "main"%' FROM read_text('__TEST_DIR__/license_cache/manifest-lock.json')
+----
+true
+
+query I
+SELECT content LIKE '%"timestamp": "20%' FROM read_text('__TEST_DIR__/license_cache/manifest-lock.json')
+----
+true
+
+# --- tabfm_models() exposes the license tag (FR-2.3) -----------------------------
+
+query T
+SELECT license FROM tabfm_models()
+----
+tabfm-non-commercial-v1.0
+
+# --- Ungated manifests (license 'none') skip the gate entirely -------------------
+
+statement ok
+SET anofox_tabfm_accept_hf_license = false
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_free.json'
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/free_cache'
+
+query T
+SELECT status FROM tabfm_download('classification')
+----
+downloaded
+
+# ... and no acceptance metadata is written for ungated downloads
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/free_cache/manifest-lock.json')
+----
+0
