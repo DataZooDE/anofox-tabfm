@@ -66,11 +66,18 @@ Shape-rewrite), compiles per shape-bucket with weights read from disk, caches
 the compiled program to a `.mxr`, pads inputs to the bucket (train_size/d mask
 the padding), runs, returns the real rows.
 
-Validated: the `migraphx::parse_onnx -> compile(gpu) -> save/load(.mxr) -> eval`
-cycle (tools/experimental/mgx_smoke.cpp) runs on gfx1201 and returns finite
-logits `[1,16,10]`. Costs to know: first compile per shape-bucket is ~20 min
-(then cached); the `.mxr` **embeds the weights (~6.6 GB each)** — a large,
-weight-containing, user-local cache artifact (never shipped, like the
+**Verified end-to-end (commit pending):** `SET anofox_tabfm_device='rocm'` through
+the integrated backend gives **identical output to CPU** on the real model
+(age 27 -> false 0.9716; age 61 -> true 0.9937 — exact parity). The compiled
+program cached as `graph_migraphx_classification_gfx1201_T128_H16.mxr`.
+
+Performance profile:
+- first predict per shape-bucket: ~20 min (compile + save `.mxr`),
+- cold start with a cached `.mxr`: ~27 s (load the 6.6 GB program),
+- warm session (program cached in memory): fast.
+
+Costs to know: the `.mxr` **embeds the weights (~6.6 GB per bucket per arch)** — a
+large, weight-containing, user-local cache artifact (never shipped, like the
 safetensors). CPU/CUDA are unaffected (they use ORT).
 
 ### Background: the walls that had to fall (kept for reference)
