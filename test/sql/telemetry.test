@@ -1,0 +1,32 @@
+# name: test/sql/telemetry.test
+# description: Telemetry configuration options (house-style PostHog, opt-out)
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# Telemetry options exist and can be toggled
+statement ok
+SET anofox_telemetry_enabled = false
+
+statement ok
+SET anofox_telemetry_enabled = true
+
+# Telemetry key can be updated
+statement ok
+SET anofox_telemetry_key = 'test_key_12345'
+
+# Reset to default
+statement ok
+SET anofox_telemetry_key = 'phc_t3wwRLtpyEmLHYaZCSszG0MqVr74J6wnCrj9D41zk2t'
+
+# NULL is rejected with a clear message
+statement error
+SET anofox_telemetry_enabled = NULL
+----
+
+# Turn off for the remainder of any session that sources this file
+statement ok
+SET anofox_telemetry_enabled = false

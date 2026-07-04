@@ -1,0 +1,12 @@
+build
+.idea
+cmake-build-debug
+duckdb_unittest_tempdir/
+.DS_Store
+testext
+.Rhistory
+vcpkg_installed/
+.cache/
+.venv/
+__pycache__/
+*.onnx.data

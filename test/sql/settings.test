@@ -1,0 +1,141 @@
+# name: test/sql/settings.test
+# description: anofox_tabfm_* settings — defaults, validation, aliases (SQL-API §4)
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# --- Defaults -----------------------------------------------------------------
+
+query I
+SELECT current_setting('anofox_tabfm_accept_hf_license')
+----
+false
+
+query I
+SELECT current_setting('anofox_tabfm_cache_dir')
+----
+~/.cache/anofox-tabfm
+
+query I
+SELECT current_setting('anofox_tabfm_max_rows')
+----
+10000
+
+query I
+SELECT current_setting('anofox_tabfm_max_features')
+----
+500
+
+query I
+SELECT current_setting('anofox_tabfm_model_manifest')
+----
+(empty)
+
+query I
+SELECT current_setting('anofox_tabfm_trace_level')
+----
+warn
+
+query I
+SELECT current_setting('anofox_tabfm_device')
+----
+auto
+
+query I
+SELECT current_setting('anofox_tabfm_ep_path')
+----
+(empty)
+
+# threads defaults to a positive machine-dependent value
+query I
+SELECT current_setting('anofox_tabfm_threads') > 0
+----
+true
+
+# --- Set + read back ------------------------------------------------------------
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true
+
+statement ok
+SET anofox_tabfm_cache_dir = '/tmp/tabfm-cache'
+
+statement ok
+SET anofox_tabfm_max_rows = 500
+
+statement ok
+SET anofox_tabfm_threads = 2
+
+# --- Validation ----------------------------------------------------------------
+
+statement error
+SET anofox_tabfm_device = 'tpu'
+----
+<REGEX>:.*must be one of 'auto', 'cpu', 'cuda', 'rocm'.*
+
+# 'migraphx' is accepted as an alias and normalizes to 'rocm'
+statement ok
+SET anofox_tabfm_device = 'migraphx'
+
+query I
+SELECT current_setting('anofox_tabfm_device')
+----
+rocm
+
+statement ok
+SET anofox_tabfm_device = 'auto'
+
+statement error
+SET anofox_tabfm_trace_level = 'loud'
+----
+<REGEX>:.*must be one of 'error', 'warn', 'info', 'debug', 'trace'.*
+
+statement error
+SET anofox_tabfm_max_rows = -1
+----
+<REGEX>:.*must be positive.*
+
+statement error
+SET anofox_tabfm_threads = 0
+----
+<REGEX>:.*must be positive.*
+
+# --- Stub surface: every SQL function exists (full name + alias) and reports
+# --- a clear not-implemented error until its workstream lands.
+
+foreach fn anofox_tabfm_models tabfm_models anofox_tabfm_devices tabfm_devices
+
+statement error
+SELECT * FROM ${fn}()
+----
+<REGEX>:.*not implemented yet.*
+
+endloop
+
+statement error
+CALL tabfm_download('classification')
+----
+<REGEX>:.*not implemented yet.*
+
+statement error
+CALL tabfm_load('classification')
+----
+<REGEX>:.*not implemented yet.*
+
+statement error
+CALL tabfm_unload('classification')
+----
+<REGEX>:.*not implemented yet.*
+
+statement error
+CALL tabfm_remove('classification')
+----
+<REGEX>:.*not implemented yet.*
+
+statement error
+SELECT tabfm_predict_agg(t, 'y') FROM (SELECT 1 AS y) t
+----
+<REGEX>:.*not implemented yet.*

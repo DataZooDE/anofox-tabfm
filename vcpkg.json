@@ -1,0 +1,29 @@
+{
+	"name": "anofox-tabfm",
+	"version-string": "0.1.0",
+	"description": "DuckDB extension embedding the TabFM tabular foundation model (ONNX Runtime backend)",
+	"dependencies": [
+		"openssl"
+	],
+	"features": {
+		"ort-vcpkg": {
+			"description": "Build ONNX Runtime (CPU EP) from the vcpkg port instead of using a prebuilt archive. Heavy first build; CI uses binary caching.",
+			"dependencies": [
+				{
+					"name": "onnxruntime",
+					"default-features": false
+				}
+			]
+		}
+	},
+	"vcpkg-configuration": {
+		"overlay-ports": [
+			"./vcpkg_ports",
+			"./extension-ci-tools/vcpkg_ports"
+		],
+		"overlay-triplets": [
+			"./toolchains",
+			"./extension-ci-tools/toolchains"
+		]
+	}
+}

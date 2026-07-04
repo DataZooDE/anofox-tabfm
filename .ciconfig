@@ -1,0 +1,5 @@
+# CI Configuration for anofox_tabfm extension
+# Disable WASM builds - ONNX Runtime and multi-GB model inference are not
+# WASM-compatible (NFR-C1 explicitly excludes wasm and musl).
+
+exclude_archs: wasm_mvp;wasm_eh;wasm_threads
