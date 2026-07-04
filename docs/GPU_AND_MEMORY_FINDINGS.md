@@ -63,11 +63,17 @@ keeps weights external: the error persists at ~6.55 GB.
    (`tools/experimental/make_migraphx_graph.py`): (a) external-data ref to
    `model.safetensors`, and (b) rewrite degenerate `Shape(start==end)` ops into
    `Shape`+`Slice` (migraphx's parser rejects the degenerate form). It then
-   parses clean (`@return`, output `{1,16,10}`) and compiles for gfx1201
-   (`migraphx-driver compile/perf --gpu`; static shapes compile far faster than
-   dynamic). **Productionizing = a direct-migraphx execution path in the engine**
-   (link `libmigraphx`, `parse_onnx` → `compile` → `run`, shape buckets), NOT via
-   ORT. Bigger, but no upstream blocker.
+   parses clean (`@return`, output `{1,16,10}`) and **compiles AND runs on
+   gfx1201** — confirmed end-to-end via `migraphx-driver perf --gpu` (static
+   shape rows=16, features=8): real GPU kernels execute
+   (`gpu::code_object::reduce_max_sub_exp_reduce_sum_div` = softmax, attention
+   `dot`s, layernorm, `hip::hip_allocate_memory`), at **~99 ms/inference
+   (10 inf/s)**, ~55 ms of it GPU instruction time. One-time compile ~22 min for
+   a new arch (cache as `.mxr` in production). So GPU execution of TabFM on RDNA4
+   **works** — just not through ORT's EP. **Productionizing = a direct-migraphx
+   execution path in the engine** (link `libmigraphx`, `parse_onnx` -> `compile`
+   (cache `.mxr`) -> `run`, with shape buckets for the dynamic rows/features
+   dims), NOT via ORT. Bigger, but no upstream blocker remains.
 2. **int8 quantization** — fp16 is still 3.3 GB (> 2 GB); only int8 (~1.6 GB)
    fits the ORT-EP proto. Accuracy/calibration cost.
 3. Newer/patched ORT whose MIGraphX EP keeps subgraphs external (uncertain it
