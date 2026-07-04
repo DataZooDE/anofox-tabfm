@@ -67,3 +67,34 @@ Multi-day: export-graph surgery (torch + re-export + parity), two-program
 backends, cache lifecycle with a correctness-critical hash. Highest ceiling of
 any item, but rushing it risks silent wrong predictions — hence its own goal
 with the export gate verified first.
+
+## Gate verification — EXECUTED 2026-07-04 (result: PASS, with a correction)
+
+Read `vendor/tabfm/tabfm/src/pytorch/model.py` directly. The gate ("keys masked
+to context so query rows are neither attended-to nor attend to each other") is
+**confirmed**, but the cache-structure claim above needs a correction.
+
+**Confirmed — caching is valid.** `ICLearning.forward` builds
+`tm = arange(t) < train_size` and passes `mask = tm[:,None,None,:]` (key axis) to
+`self.tf_icl`. Every row attends **only to context rows**; query rows are never
+keys, so nothing attends to them. Context rows' per-layer representations are
+therefore query-independent → cacheable. This is the mechanism behind the
+empirical `tabfm_cobatch.test` proof.
+
+**Correction — the ICL stage is a plain SAB `Encoder`, NOT an ISAB.**
+`self.tf_icl = Encoder(...)` (line ~396) — each layer is self-attention
+`mab(q=r, k=r, v=r, mask)`. So for the *in-context learner* there are **no
+inducing points**; the cacheable state is the **per-layer context key/value
+projections** (or equivalently the context rows' per-layer input reps), size
+`∝ num_context × d_model × num_blocks` — it **scales with context size**, it is
+not a fixed small tensor. Inducing points (ISAB) live only in the upstream
+column/row `SetTransformer` embedders (`tf_col`/`tf_row`), whose train_size-masked
+outputs are *also* context-derived and cacheable (and there the per-column
+inducing state is small). So "encode" must cache: (a) the context-derived column
+state from the embedders, and (b) the per-ICL-layer context K/V. Update step 1's
+`context_state` shape accordingly and budget VRAM for an O(num_context) cache,
+not an O(1) one — this changes the LRU sizing and the large-context trade-off.
+
+**Net:** #7 is feasible and the independence premise holds; the export must expose
+context K/V per ICL layer (+ column state), and the cache is context-sized. No
+blocker found — ready for its own implementation goal.
