@@ -145,22 +145,6 @@ SELECT current_setting('anofox_tabfm_mxr_source')
 
 # --- Function surface exists (full name + alias). Behaviour is covered in the
 # --- per-module suites: tabfm_weights/license/lifecycle (WS-D),
-# --- tabfm_devices (WS-C), tabfm_classify / tabfm_regress.
-
-# The predict path runs end-to-end through the real engine against the CI
-# fixture model (full coverage in tabfm_classify.test / tabfm_regress.test).
-statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
-
-statement ok
-CREATE TABLE _s AS SELECT * FROM (VALUES
-  (0.5,'a'),(1.5,'b'),(2.5,'a'),(0.2,'b'),(1.1,'a'),(3.0,'b'),(0.9,NULL),(2.1,NULL))
-  v(x,y);
-
-query I
-SELECT count(*) FROM tabfm_classify('_s','y')
-----
-8
-
-statement ok
-SET anofox_tabfm_model_manifest = ''
+# --- tabfm_devices (WS-C), tabfm_classify / tabfm_regress. The end-to-end
+# --- forward pass against the CI fixture lives in those suites (not here) so
+# --- this settings suite stays engine-free and portable to every CI platform.
