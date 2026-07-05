@@ -93,6 +93,13 @@ constexpr bool TabFMFlavorHasMIGraphX() {
 	return false;
 #endif
 }
+constexpr bool TabFMFlavorHasCoreML() {
+#ifdef TABFM_EP_COREML
+	return true;
+#else
+	return false;
+#endif
+}
 inline const char *TabFMFlavorName() {
 #ifdef TABFM_FLAVOR_NAME
 	return TABFM_FLAVOR_NAME;
@@ -114,7 +121,8 @@ vector<TabFMDeviceInfo> DiscoverDevices();
 //! defaults, which reflect the compiled flavor.
 TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDeviceInfo> &devices,
                               bool flavor_has_cuda = TabFMFlavorHasCuda(),
-                              bool flavor_has_rocm = TabFMFlavorHasMIGraphX());
+                              bool flavor_has_rocm = TabFMFlavorHasMIGraphX(),
+                              bool flavor_has_coreml = TabFMFlavorHasCoreML());
 
 //===----------------------------------------------------------------------===//
 // MIGraphX shape buckets (HLD §9: static-shape preference)

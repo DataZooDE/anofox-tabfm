@@ -396,6 +396,49 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		REQUIRE_THROWS(ResolveDevice("rocm", devices, false, true));
 		REQUIRE(ResolveDevice("auto", devices, false, true).device_id == "cpu");
 	}
+
+	TabFMDeviceInfo coreml0;
+	coreml0.device_id = "coreml:0";
+	coreml0.ep = "CoreMLExecutionProvider";
+	coreml0.arch = "Apple M3";
+	coreml0.usable = true;
+
+	SECTION("cpu flavor rejects coreml with an actionable message") {
+		vector<TabFMDeviceInfo> devices {cpu};
+		try {
+			ResolveDevice("coreml", devices, false, false, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("does not carry 'coreml'") != string::npos);
+			REQUIRE(message.find("install the 'coreml' flavor") != string::npos);
+			REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
+		}
+	}
+
+	SECTION("coreml flavor with a usable device") {
+		vector<TabFMDeviceInfo> devices {cpu, coreml0};
+		REQUIRE(ResolveDevice("coreml", devices, false, false, true).device_id == "coreml:0");
+		REQUIRE(ResolveDevice("auto", devices, false, false, true).device_id == "coreml:0");
+		REQUIRE(ResolveDevice("cpu", devices, false, false, true).device_id == "cpu");
+		// carried coreml flavor but a GPU vendor requested: not carried -> throws
+		REQUIRE_THROWS(ResolveDevice("cuda", devices, false, false, true));
+		REQUIRE_THROWS(ResolveDevice("rocm", devices, false, false, true));
+	}
+
+	SECTION("coreml flavor, device present but not usable") {
+		coreml0.usable = false;
+		vector<TabFMDeviceInfo> devices {cpu, coreml0};
+		try {
+			ResolveDevice("coreml", devices, false, false, true);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("tabfm_devices()") != string::npos);
+		}
+		// auto falls back to the cpu lane when coreml is unusable
+		REQUIRE(ResolveDevice("auto", devices, false, false, true).device_id == "cpu");
+	}
 }
 
 //===----------------------------------------------------------------------===//
@@ -444,6 +487,59 @@ TEST_CASE("tabfm_ort_engine: create session with injection and run", "[tabfm][or
 	auto output = Run(*session, fixture.RunInput());
 	REQUIRE(output.shape == vector<int64_t> {1, fixture.t, fixture.c});
 	RequireLogitsClose(output.logits, fixture.logits, fixture.rtol, 1e-6);
+}
+
+TEST_CASE("tabfm_ort_engine: coreml device on a non-coreml flavor gives the actionable flavor error",
+          "[tabfm][ort_engine]") {
+	// Under the cpu/cuda/rocm flavors, requesting the coreml lane must not fall
+	// through to the generic 'unknown device' path — it must name the coreml
+	// flavor and the cpu fallback (SQL-API §5). Under the coreml flavor this
+	// branch instead registers the EP (covered by the [.coreml] case below), so
+	// skip the assertion there.
+	if (TabFMFlavorHasCoreML()) {
+		SUCCEED("coreml flavor: append registers the EP, see the [.coreml] parity case");
+		return;
+	}
+	auto fixture = LoadMlpFixture();
+	TabFMSessionConfig config;
+	config.device_id = "coreml";
+	config.model_tag = "mlp-fixture";
+	try {
+		CreateSession(fixture.graph.data(), fixture.graph.size(), fixture.Initializers(), config);
+		FAIL("expected an exception");
+	} catch (std::exception &error) {
+		string message = error.what();
+		REQUIRE(message.find("does not carry 'coreml'") != string::npos);
+		REQUIRE(message.find("install the 'coreml' flavor") != string::npos);
+		REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
+	}
+}
+
+// Hidden by default ([.coreml] tag): needs the coreml flavor + Apple Silicon.
+// Run with:  TABFM_FLAVOR=coreml ... unittest "[.coreml]"
+TEST_CASE("tabfm_ort_engine: CoreML EP runs the fixture and matches the CPU golden logits",
+          "[tabfm][ort_engine][.coreml]") {
+	// [.coreml] hides this from the default run, but an explicit tag filter (e.g.
+	// "[ort_engine]") still selects it — skip unless this really is the coreml
+	// flavor, where the EP is registered.
+	if (!TabFMFlavorHasCoreML()) {
+		SUCCEED("not the coreml flavor — CoreML EP unavailable, skipping");
+		return;
+	}
+	auto fixture = LoadMlpFixture();
+	TabFMSessionConfig config;
+	config.intra_op_threads = 2;
+	config.device_id = "coreml";
+	config.model_tag = "mlp-fixture";
+
+	auto session = CreateSession(fixture.graph.data(), fixture.graph.size(), fixture.Initializers(), config);
+	REQUIRE(session);
+
+	auto output = Run(*session, fixture.RunInput());
+	REQUIRE(output.shape == vector<int64_t> {1, fixture.t, fixture.c});
+	// CoreML partitions the graph; unsupported ops fall back to the CPU EP. The
+	// end-to-end result must still match the pure-CPU golden within tolerance.
+	RequireLogitsClose(output.logits, fixture.logits, fixture.rtol, 1e-4);
 }
 
 TEST_CASE("tabfm_ort_engine: source arena freed after creation, reruns bit-identical (S02)",
@@ -568,8 +664,13 @@ TEST_CASE("tabfm_state: load / snapshot / unload-while-in-use / refcount release
 }
 
 TEST_CASE("tabfm_state: re-register replaces and evicts the old model", "[tabfm][ort_engine][state]") {
-	auto state = make_shared_ptr<TabFMState>();
+	// `freed_*` MUST outlive `state`: the new model stays registered at scope
+	// exit (asserted !freed_new below), so its deleter writes freed_new during
+	// state's destruction. Declaring the flags first makes state destruct first
+	// (reverse declaration order) — otherwise the deleter writes a dead stack
+	// slot (ASan stack-use-after-scope).
 	bool freed_old = false, freed_new = false;
+	auto state = make_shared_ptr<TabFMState>();
 
 	state->Register("regression", MakeFakeModel(freed_old));
 	auto old_snapshot = state->Snapshot("regression");

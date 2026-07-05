@@ -85,6 +85,16 @@ SELECT current_setting('anofox_tabfm_device')
 ----
 rocm
 
+# 'coreml' is a valid device on every flavor (ResolveDevice errors helpfully at
+# use time on flavors that do not carry it — like cuda/rocm)
+statement ok
+SET anofox_tabfm_device = 'coreml'
+
+query I
+SELECT current_setting('anofox_tabfm_device')
+----
+coreml
+
 statement ok
 SET anofox_tabfm_device = 'auto'
 

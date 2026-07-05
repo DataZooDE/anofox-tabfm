@@ -15,8 +15,9 @@ void ValidateDevice(ClientContext &context, SetScope scope, Value &parameter) {
 		throw InvalidInputException("anofox_tabfm_device cannot be NULL");
 	}
 	auto value = StringUtil::Lower(StringValue::Get(parameter));
-	if (value != "auto" && value != "cpu" && value != "cuda" && value != "rocm" && value != "migraphx") {
-		throw InvalidInputException("anofox_tabfm_device must be one of 'auto', 'cpu', 'cuda', 'rocm' "
+	if (value != "auto" && value != "cpu" && value != "cuda" && value != "rocm" && value != "migraphx" &&
+	    value != "coreml") {
+		throw InvalidInputException("anofox_tabfm_device must be one of 'auto', 'cpu', 'cuda', 'rocm', 'coreml' "
 		                            "('migraphx' is accepted as an alias for 'rocm'), got '%s'",
 		                            value);
 	}
@@ -111,7 +112,7 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
 
 	config.AddExtensionOption("anofox_tabfm_device",
-	                          "Execution device: auto|cpu|cuda|rocm ('migraphx' alias). Each flavor errors "
+	                          "Execution device: auto|cpu|cuda|rocm|coreml ('migraphx' alias). Each flavor errors "
 	                          "helpfully on devices it does not carry.",
 	                          LogicalType::VARCHAR, Value("auto"), ValidateDevice);
 
