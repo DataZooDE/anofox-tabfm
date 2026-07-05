@@ -60,7 +60,7 @@ Consequences that drive the plan:
   'bf16'|'fp16'|'fp32'|'auto'` (default `bf16`).
 - **Risk:** accuracy — must validate. bf16: expected negligible. Keep softmax /
   layernorm / the logit output in fp32 if MIGraphX allows mixed precision.
-- **Validate:** run `scenarios/` (churn F1, tips MSE) + a logit-divergence check
+- **Validate:** run `examples/` (churn F1, iris accuracy, tips MSE) + a logit-divergence check
   vs the fp32 oracle; gate on ≥99.5% class agreement and no material F1/MSE move.
 - **Not for CPU:** Zen2 has no native bf16 and no AVX-512-fp16 → reduced precision
   would add upcast overhead and likely *slow* the CPU. Keep CPU fp32.
@@ -171,7 +171,7 @@ Consequences that drive the plan:
 
 ## Recommended sequence
 
-1. **bf16 GPU** (#1) — validate accuracy on `scenarios/`, ship behind
+1. **bf16 GPU** (#1) — validate accuracy on `examples/`, ship behind
    `anofox_tabfm_gpu_precision`. Biggest, well-scoped win; also unblocks #3/#4.
 2. **CPU prepack setting** (#2) — trivial, immediate CPU gain.
 3. **Bulk-forward/bucket tuning** (#3) — cheap, and the batch data shows it's where

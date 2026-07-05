@@ -3,9 +3,9 @@
   "task": "regression",
   "repo": "google/tabfm-1.0.0-pytorch",
   "revision": "main",
-  "graph": "/home/jr/Projects/datazoo/anofox-tabfm/resources/graph_regression.onnx",
+  "graph": "../resources/graph_regression.onnx",
   "graph_id": "tabfm-v1-regression-opset18",
-  "tensor_map": "/home/jr/Projects/datazoo/anofox-tabfm/resources/tensor_map_regression.json",
+  "tensor_map": "../resources/tensor_map_regression.json",
   "preprocessing_profile": "tabfm_v1_minimal",
   "license": "tabfm-non-commercial-v1.0",
   "engine_profiles": {

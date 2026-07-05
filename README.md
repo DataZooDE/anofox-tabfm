@@ -137,8 +137,8 @@ CREATE TABLE churn AS
 SELECT *, hash(customerID) % 100 AS bucket
 FROM 'hf://datasets/scikit-learn/churn-prediction/**/*.csv';
 
-CREATE TABLE train AS SELECT * EXCLUDE (bucket) FROM (FROM churn WHERE bucket < 70) USING SAMPLE 500;
-CREATE TABLE test  AS SELECT * EXCLUDE (bucket) FROM (FROM churn WHERE bucket >= 70) USING SAMPLE 150;
+CREATE TABLE train AS SELECT * EXCLUDE (bucket) FROM (FROM churn WHERE bucket < 70) USING SAMPLE 500 ROWS (reservoir, 42);
+CREATE TABLE test  AS SELECT * EXCLUDE (bucket) FROM (FROM churn WHERE bucket >= 70) USING SAMPLE 150 ROWS (reservoir, 42);
 CREATE TABLE test_features AS SELECT * EXCLUDE (Churn) FROM test;   -- no target for the test rows
 
 -- 2. predict the test rows using the train rows as context
@@ -155,10 +155,12 @@ WITH cm AS (
 SELECT 2.0*tp / nullif(2.0*tp + fp + fn, 0) AS f1 FROM cm;
 ```
 
-On this dataset the zero-shot model reaches **F1 0.667 / accuracy 0.827**; the
-regression counterpart on `scikit-learn/tips` reaches **MSE 0.971** vs a
-mean-predictor baseline of 1.68. The runnable scripts and full numbers are in
-[`scenarios/`](scenarios/README.md).
+On this dataset the zero-shot model reaches **F1 0.667 / accuracy 0.827**. The
+same three-line recipe generalizes: multiclass `scikit-learn/iris` reaches
+**accuracy 0.943**, and the regression counterpart on `scikit-learn/tips` reaches
+**MSE 0.971** vs a mean-predictor baseline of 1.68. The runnable scripts
+(`classification_churn.sql`, `classification_iris.sql`, `regression_tips.sql`)
+and full numbers are in [`examples/`](examples/README.md).
 
 ---
 
@@ -267,4 +269,4 @@ make test_release             # sqllogictests + C++ unit tests
 Requires CMake ≥ 3.19 and a C++17 toolchain. ONNX Runtime is fetched as a
 prebuilt archive by default; enable the `ort-vcpkg` manifest feature to build it
 from source. See [`CLAUDE.md`](CLAUDE.md) for the module map and
-[`scenarios/`](scenarios/README.md) for end-to-end examples.
+[`examples/`](examples/README.md) for end-to-end examples.

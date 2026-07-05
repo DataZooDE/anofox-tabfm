@@ -3,13 +3,13 @@
 -- The train split is the in-context set, the test split is scored. We compute
 -- the mean squared error (and RMSE / MAE) of the predicted tip entirely in SQL.
 --
--- Run:  duckdb :memory: < scenarios/tips_mse.sql
+-- Run:  duckdb :memory: < examples/regression_tips.sql
 -- Needs: real regression weights downloaded (CALL tabfm_download('regression'))
---        and the resources/ graph (see scenarios/tabfm_real_regression.json).
+--        and the resources/ graph (see examples/tabfm_real_regression.json).
 
 INSTALL httpfs; LOAD httpfs;
 LOAD anofox_tabfm;
-SET anofox_tabfm_model_manifest = 'scenarios/tabfm_real_regression.json';
+SET anofox_tabfm_model_manifest = 'examples/tabfm_real_regression.json';
 
 -- 1. Load; add a VARCHAR row id (categorical → inert as an unseen value in the
 --    test split, so it is safe to carry through for the join-back).

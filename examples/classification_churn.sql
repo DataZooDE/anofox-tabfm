@@ -3,13 +3,13 @@
 -- TabFM is in-context: the train split is the context, the test split is scored.
 -- We compute the F1 score of the positive class (churned) entirely in SQL.
 --
--- Run:  duckdb :memory: < scenarios/churn_f1.sql
+-- Run:  duckdb :memory: < examples/classification_churn.sql
 -- Needs: real classification weights downloaded (CALL tabfm_download('classification'))
---        and the resources/ graph (see scenarios/tabfm_real_classification.json).
+--        and the resources/ graph (see examples/tabfm_real_classification.json).
 
 INSTALL httpfs; LOAD httpfs;
 LOAD anofox_tabfm;
-SET anofox_tabfm_model_manifest = 'scenarios/tabfm_real_classification.json';
+SET anofox_tabfm_model_manifest = 'examples/tabfm_real_classification.json';
 SET anofox_tabfm_max_rows = 20000;
 
 -- 1. Load, clean, and take a manageable, reproducible sample.
