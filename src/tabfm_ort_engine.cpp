@@ -17,6 +17,7 @@
 
 #include <array>
 #include <cstring>
+#include <unordered_map>
 
 namespace duckdb {
 namespace anofox {
@@ -274,8 +275,26 @@ void AppendExecutionProviders(Ort::SessionOptions &options, const TabFMSessionCo
 		ThrowFlavorMissingDeviceLocal("rocm");
 #endif
 	}
+	if (StringUtil::StartsWith(device, "coreml")) {
+#ifdef TABFM_EP_COREML
+		// MLProgram backend (fp16-capable, current CoreML format); use all
+		// compute units (ANE/GPU/CPU). Unsupported ops partition back to the CPU
+		// EP automatically (docs/COREML_PLAN.md). We pad inputs to static shapes
+		// via the shape buckets, but do NOT set RequireStaticInputShapes — that
+		// would drop dynamic-shape subgraphs onto the CPU EP wholesale; letting
+		// CoreML take what it can and fall back per-node is the safe default.
+		std::unordered_map<std::string, std::string> coreml_options {
+		    {"ModelFormat", "MLProgram"},
+		    {"MLComputeUnits", "ALL"},
+		};
+		options.AppendExecutionProvider("CoreML", coreml_options);
+		return;
+#else
+		ThrowFlavorMissingDeviceLocal("coreml");
+#endif
+	}
 	throw InvalidInputException("anofox_tabfm: unknown execution device '" + device +
-	                            "' — expected 'cpu', 'cuda[:n]' or 'rocm[:n]'");
+	                            "' — expected 'cpu', 'cuda[:n]', 'rocm[:n]' or 'coreml'");
 }
 
 } // anonymous namespace

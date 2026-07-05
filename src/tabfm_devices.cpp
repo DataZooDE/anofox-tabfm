@@ -21,7 +21,7 @@
 #include <cstdlib>
 #include <fstream>
 
-#if defined(TABFM_EP_CUDA) || defined(TABFM_EP_MIGRAPHX)
+#if defined(TABFM_EP_CUDA) || defined(TABFM_EP_MIGRAPHX) || defined(TABFM_EP_COREML)
 #include <onnxruntime_cxx_api.h>
 #endif
 
@@ -83,7 +83,7 @@ TabFMDeviceInfo MakeCpuDevice() {
 	return device;
 }
 
-#if defined(TABFM_EP_CUDA) || defined(TABFM_EP_MIGRAPHX)
+#if defined(TABFM_EP_CUDA) || defined(TABFM_EP_MIGRAPHX) || defined(TABFM_EP_COREML)
 bool OrtProviderAvailable(const char *provider_name) {
 	for (auto &provider : Ort::GetAvailableProviders()) {
 		if (provider == provider_name) {
@@ -337,6 +337,35 @@ void ProbeRocmDevices(vector<TabFMDeviceInfo> &devices) {
 
 #endif // TABFM_EP_MIGRAPHX
 
+//===----------------------------------------------------------------------===//
+// CoreML discovery (coreml flavor only)
+//
+// The CoreML EP is compiled into the prebuilt osx-universal2 ORT core, so its
+// availability is a build fact, not a driver probe. We emit a single logical
+// `coreml:0` row for the Apple SoC. `usable` is honest: true only on Apple
+// Silicon (arm64, where the ANE/GPU actually accelerate) with the EP registered
+// — an Intel Mac reports the row usable=false (CoreML would run CPU-only there).
+//===----------------------------------------------------------------------===//
+#ifdef TABFM_EP_COREML
+void ProbeCoreMLDevices(vector<TabFMDeviceInfo> &devices) {
+	const bool ep_available = OrtProviderAvailable("CoreMLExecutionProvider");
+	const string soc = CpuModelName(); // e.g. "Apple M3"
+	const bool apple_silicon = StringUtil::Contains(StringUtil::Lower(soc), "apple");
+
+	TabFMDeviceInfo device;
+	device.device_id = "coreml:0";
+	device.ep = "CoreMLExecutionProvider";
+	device.name = soc;
+	device.arch = soc;
+	device.vram_total = -1; // unified memory; no discrete VRAM semantics
+	device.vram_free = -1;
+	device.driver = "";
+	device.usable = ep_available && apple_silicon;
+	device.device_ordinal = 0;
+	devices.push_back(std::move(device));
+}
+#endif // TABFM_EP_COREML
+
 } // anonymous namespace
 
 //===----------------------------------------------------------------------===//
@@ -352,11 +381,14 @@ vector<TabFMDeviceInfo> DiscoverDevices() {
 #ifdef TABFM_EP_MIGRAPHX
 	ProbeRocmDevices(devices);
 #endif
+#ifdef TABFM_EP_COREML
+	ProbeCoreMLDevices(devices);
+#endif
 	return devices;
 }
 
 TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDeviceInfo> &devices, bool flavor_has_cuda,
-                              bool flavor_has_rocm) {
+                              bool flavor_has_rocm, bool flavor_has_coreml) {
 	auto setting = StringUtil::Lower(setting_value);
 	if (setting == "migraphx") { // validator normalizes, but stay forgiving
 		setting = "rocm";
@@ -364,7 +396,7 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 
 	// Flavor name as implied by the capability flags (== compiled flavor in
 	// production; explicit flags keep this a pure, unit-testable function).
-	const string flavor = flavor_has_cuda ? "cuda" : (flavor_has_rocm ? "rocm" : "cpu");
+	const string flavor = flavor_has_cuda ? "cuda" : (flavor_has_rocm ? "rocm" : (flavor_has_coreml ? "coreml" : "cpu"));
 
 	auto find_usable = [&](const string &prefix) -> const TabFMDeviceInfo * {
 		for (auto &device : devices) {
@@ -383,8 +415,9 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 		}
 		return MakeCpuDevice();
 	}
-	if (setting == "cuda" || setting == "rocm") {
-		const bool carried = setting == "cuda" ? flavor_has_cuda : flavor_has_rocm;
+	if (setting == "cuda" || setting == "rocm" || setting == "coreml") {
+		const bool carried =
+		    setting == "cuda" ? flavor_has_cuda : (setting == "rocm" ? flavor_has_rocm : flavor_has_coreml);
 		if (!carried) {
 			throw InvalidInputException(
 			    "anofox_tabfm: this build is the '" + flavor + "' flavor and does not carry '" + setting +
@@ -413,6 +446,11 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 				return *device;
 			}
 		}
+		if (flavor_has_coreml) {
+			if (auto *device = find_usable("coreml")) {
+				return *device;
+			}
+		}
 		for (auto &device : devices) {
 			if (device.device_id == "cpu") {
 				return device;
@@ -421,7 +459,7 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 		return MakeCpuDevice();
 	}
 	throw InvalidInputException("anofox_tabfm: unknown device setting '" + setting_value +
-	                            "' — anofox_tabfm_device must be one of 'auto', 'cpu', 'cuda', 'rocm'");
+	                            "' — anofox_tabfm_device must be one of 'auto', 'cpu', 'cuda', 'rocm', 'coreml'");
 }
 
 //===----------------------------------------------------------------------===//

@@ -79,6 +79,27 @@ if(TABFM_FLAVOR STREQUAL "cpu")
         message(STATUS "anofox_tabfm: ONNX Runtime from prebuilt archive v${TABFM_ORT_VERSION} (CPU EP)")
         _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}")
     endif()
+elseif(TABFM_FLAVOR STREQUAL "coreml")
+    # Apple Silicon acceleration via ORT's CoreML EP (docs/COREML_PLAN.md).
+    # Same osx-universal2 prebuilt as the cpu flavor — the CoreML EP is compiled
+    # into that core (Gate 0: the dylib exports
+    # OrtSessionOptionsAppendExecutionProvider_CoreML). Only the flavor macro and
+    # the framework link differ, so the default macOS cpu flavor stays pure-CPU
+    # (community-extension eligibility, HLD D9).
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+        message(FATAL_ERROR "anofox_tabfm: coreml flavor is only available on macOS / Apple Silicon (got ${CMAKE_SYSTEM_NAME})")
+    endif()
+    message(STATUS "anofox_tabfm: ONNX Runtime with CoreML EP from prebuilt archive v${TABFM_ORT_VERSION} (${_ort_platform})")
+    find_package(onnxruntime CONFIG QUIET)
+    if(onnxruntime_FOUND)
+        target_link_libraries(tabfm_onnxruntime INTERFACE onnxruntime::onnxruntime)
+    else()
+        _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}")
+    endif()
+    # The CoreML EP lives inside libonnxruntime and links these itself; declaring
+    # them here keeps the transitive dependency explicit for the loadable extension.
+    target_link_libraries(tabfm_onnxruntime INTERFACE "-framework CoreML" "-framework Foundation")
+    list(APPEND TABFM_ORT_PROVIDERS "TABFM_EP_COREML=1")
 elseif(TABFM_FLAVOR STREQUAL "cuda")
     if(NOT _ort_platform MATCHES "linux-x64|win-x64")
         message(FATAL_ERROR "anofox_tabfm: cuda flavor is only available on linux_amd64/windows_amd64 (got ${_ort_platform})")
