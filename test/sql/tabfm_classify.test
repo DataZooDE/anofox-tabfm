@@ -10,13 +10,6 @@
 
 require anofox_tabfm
 
-# The ORT CPU forward pass currently SIGSEGVs on Windows (the extension builds
-# and loads; the crash is inside the native inference call — see docs/
-# WINDOWS_INFERENCE.md). Linux + macOS validate the full engine path. Skip the
-# forward-pass suites on Windows until the native crash is fixed on a Windows
-# host with a debugger/crash dump.
-require notwindows
-
 statement ok
 LOAD anofox_tabfm
 

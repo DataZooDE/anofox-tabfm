@@ -13,10 +13,6 @@
 
 require anofox_tabfm
 
-# ORT CPU forward pass SIGSEGVs on Windows (see docs/WINDOWS_INFERENCE.md);
-# Linux + macOS cover this. Skip until the native crash is fixed.
-require notwindows
-
 statement ok
 LOAD anofox_tabfm
 

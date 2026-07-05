@@ -132,6 +132,27 @@ Ort::Env &GetOrtEnv() {
 	return *env;
 }
 
+// Guard the FIRST ORT API use. If the onnxruntime shared library resolved at
+// runtime is older than the headers this was compiled against,
+// OrtGetApiBase()->GetApi(ORT_API_VERSION) returns null and the very next ORT
+// call dereferences a null API table (a bare SIGSEGV). This most commonly bites
+// on Windows, where Windows ML ships an old C:\Windows\System32\onnxruntime.dll
+// that the loader can find before our bundled copy. Turn that crash into an
+// actionable error.
+void EnsureUsableOrtApi() {
+	const OrtApiBase *base = OrtGetApiBase();
+	if (base && base->GetApi(ORT_API_VERSION)) {
+		return;
+	}
+	const char *ver = (base && base->GetVersionString) ? base->GetVersionString() : "unknown";
+	throw IOException(
+	    "anofox_tabfm: the ONNX Runtime loaded at runtime is version %s, too old for this build (needs ORT API "
+	    "version %d — ONNX Runtime >= 1.23). A stale onnxruntime.dll is being resolved before the bundled one "
+	    "(on Windows this is usually C:\\Windows\\System32\\onnxruntime.dll from Windows ML). Put the extension's "
+	    "own onnxruntime.dll first on the DLL search path (next to the host executable).",
+	    ver, static_cast<int>(ORT_API_VERSION));
+}
+
 ONNXTensorElementDataType ToOnnxElementType(TabFMTensorDtype dtype) {
 	switch (dtype) {
 	case TabFMTensorDtype::F32:
@@ -359,6 +380,7 @@ TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
 	if (!graph_bytes || graph_size == 0) {
 		throw InvalidInputException("anofox_tabfm: cannot create a session from empty model graph bytes");
 	}
+	EnsureUsableOrtApi();
 	Ort::SessionOptions options;
 	std::vector<std::string> names;
 	std::vector<Ort::Value> values;
@@ -373,6 +395,7 @@ TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
 
 TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<TabFMTensorRef> &initializers,
                                          const TabFMSessionConfig &config) {
+	EnsureUsableOrtApi();
 	Ort::SessionOptions options;
 	std::vector<std::string> names;
 	std::vector<Ort::Value> values;

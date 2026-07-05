@@ -84,6 +84,24 @@ if(WIN32)
     target_link_libraries(${LOADABLE_EXTENSION_NAME} iphlpapi ws2_32)
 endif()
 
+# The extension links onnxruntime.dll (dynamic). On Windows the loader searches
+# the host EXE's directory before System32 — but Windows ML ships an OLD
+# C:\Windows\System32\onnxruntime.dll (v1.17) that otherwise loads first and
+# returns a null OrtApi for our compiled ORT_API_VERSION, crashing on first use
+# (docs/WINDOWS_INFERENCE.md). Stage our prebuilt onnxruntime.dll next to the
+# test + shell binaries so ours wins the search. TABFM_ORT_LIB_DIR is set by
+# cmake/ort.cmake on the prebuilt-archive path (the CI cpu-flavor default).
+if(WIN32 AND TABFM_ORT_LIB_DIR)
+    file(GLOB _tabfm_ort_dlls "${TABFM_ORT_LIB_DIR}/*.dll")
+    if(_tabfm_ort_dlls)
+        add_custom_command(TARGET ${LOADABLE_EXTENSION_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_tabfm_ort_dlls} "${CMAKE_BINARY_DIR}/test/"
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_tabfm_ort_dlls} "${CMAKE_BINARY_DIR}/"
+            COMMENT "anofox_tabfm: staging ONNX Runtime DLL(s) next to test/shell binaries (Windows DLL search)")
+    endif()
+endif()
+
 # GCC 14 COMDAT vs non-COMDAT conflict on Linux for DuckDB v1.5+ (see
 # extension_config.cmake for the full explanation).
 if(UNIX AND NOT APPLE)
