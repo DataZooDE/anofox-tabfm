@@ -1,9 +1,21 @@
 # Apple Silicon acceleration via the CoreML EP — plan
 
-**Status:** not started. This scopes adding GPU/Neural-Engine acceleration on
-Apple Silicon through ONNX Runtime's **CoreML execution provider** (the only
-general ORT path to Apple hardware — there is no Metal/MPS EP for arbitrary
-models). It follows the existing `cuda` / `rocm` flavor pattern.
+**Status: IMPLEMENTED (2026-07-05, PR #2).** The four seams below all landed as a
+`coreml` flavor — see `docs/COREML_LOCAL_PLAN.md` for the executed red-green TDD
+log (on an Apple M3) and the code (`cmake/ort.cmake` coreml block,
+`AppendExecutionProviders` CoreML branch in `tabfm_ort_engine.cpp`, `coreml`
+device discovery in `tabfm_devices.cpp`, `coreml` in the `anofox_tabfm_device`
+validator). Gate 0 passed — the `osx-universal2` prebuilt already exports the
+CoreML EP, so no custom ORT build is needed. **Gate 1 (the make-or-break
+partition/wall-time measurement below) remains the real question**: the graph is
+dynamic-shape-heavy, so verify CoreML actually beats the CPU EP on real hardware
+before treating the flavor as a win. This document is retained as the design
+rationale that shaped the implementation.
+
+This scopes adding GPU/Neural-Engine acceleration on Apple Silicon through ONNX
+Runtime's **CoreML execution provider** (the only general ORT path to Apple
+hardware — there is no Metal/MPS EP for arbitrary models). It follows the
+existing `cuda` / `rocm` flavor pattern.
 
 ## Current state (grounded)
 

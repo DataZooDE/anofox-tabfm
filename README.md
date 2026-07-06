@@ -202,7 +202,7 @@ CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_…', SCOPE 'https://huggingface.c
 | `anofox_tabfm_cpu_prepack` | `true` | prepack weights for faster CPU matmuls (~+16% RSS) |
 | `anofox_tabfm_max_rows` | `10000` | guardrail per predict / group |
 | `anofox_tabfm_max_features` | `500` | guardrail |
-| `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` (`migraphx` alias for `rocm`) |
+| `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `coreml` (`migraphx` alias for `rocm`) |
 | `anofox_tabfm_gpu_precision` | `bf16` | GPU dtype: `bf16` / `fp16` / `fp32` |
 | `anofox_tabfm_model_manifest` | `''` | point at a custom model manifest |
 | `anofox_tabfm_mxr_source` | `''` | directory of precompiled ROCm `.mxr` programs to stage from |
@@ -235,10 +235,12 @@ ensemble, and the grouped / composable-aggregate / windowed surfaces
 
 ## Flavors (CPU / GPU)
 
-One codebase, three builds (`TABFM_FLAVOR`): `cpu` (default, community-extension
+One codebase, four builds (`TABFM_FLAVOR`): `cpu` (default, community-extension
 eligible), `cuda` (NVIDIA, bf16), `rocm` (AMD via a **direct MIGraphX backend** —
 ONNX Runtime's MIGraphX EP can't load the >2 GB model, so ROCm bypasses it and
-drives libMIGraphX directly, with a compiled-program `.mxr` cache). GPU builds
+drives libMIGraphX directly, with a compiled-program `.mxr` cache), and `coreml`
+(Apple Silicon via ONNX Runtime's CoreML EP — same macOS archive as `cpu`, GPU/ANE
+where the graph is supported, CPU fallback otherwise). GPU builds
 link no vendor runtime — CUDA/cuDNN or ROCm resolve from your system, and
 `tabfm_devices()` reports what was found. GPU dtype is set by
 `anofox_tabfm_gpu_precision` (default `bf16`); `CALL tabfm_gpu_precompile(task)`
