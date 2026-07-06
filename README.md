@@ -181,7 +181,7 @@ SELECT * FROM tabfm_models();     -- what's cached / loaded
 CALL tabfm_load('classification');    -- warm the model (else lazy on first predict)
 CALL tabfm_unload();                  -- free the weights, memory returns to baseline
 CALL tabfm_remove('regression');      -- delete from the cache
-SELECT * FROM tabfm_devices();         -- discovered execution devices (CPU / CUDA / ROCm)
+SELECT * FROM tabfm_devices();         -- discovered execution devices (CPU / CUDA / ROCm / CoreML)
 ```
 
 For a gated or private HF repo, add a bearer token — no custom credential store:
@@ -228,8 +228,8 @@ The full SQL surface runs the **real TabFM v1 model** end to end (preprocess →
 ONNX Runtime forward → decode); per-row outputs match the PyTorch reference to
 ~1e-5. The weight-free graphs are compiled into the extension, so after
 `tabfm_download` the model works with no companion files. v1 runs a single
-estimator; it ships CPU (`cpu`) plus GPU flavors (`cuda`, and `rocm` via a direct
-MIGraphX backend — see below). Not yet wired up: the `n_estimators > 1`
+estimator; it ships CPU (`cpu`) plus accelerated flavors (`cuda`, `rocm` via a
+direct MIGraphX backend, and `coreml` for Apple Silicon — see below). Not yet wired up: the `n_estimators > 1`
 ensemble, and the grouped / composable-aggregate / windowed surfaces
 (`tabfm_predict_by` / `_agg` / `_win`) — planned on the same engine.
 
