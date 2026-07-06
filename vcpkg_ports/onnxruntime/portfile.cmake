@@ -27,28 +27,42 @@ vcpkg_find_acquire_program(PYTHON3)
 get_filename_component(PYTHON_PATH "${PYTHON3}" PATH)
 message(STATUS "Using python3: ${PYTHON3}")
 
-# --- anofox-tabfm overlay: provide the Python 'flatbuffers' module -----------
-# onnxruntime's compile_schema.py scripts below `import flatbuffers`, but the
-# DuckDB extension build image ships a bare python3 without it. Create an
-# isolated venv from the acquired interpreter, install flatbuffers into it, and
-# use that interpreter for the schema-codegen steps (and onnxruntime's build).
-# Windows' vcpkg-acquired python is an embeddable distribution without venv/pip,
-# so it is handled separately if/when the Windows target is enabled.
-if(NOT CMAKE_HOST_WIN32)
-    set(_tabfm_venv "${CURRENT_BUILDTREES_DIR}/tabfm-flatbuffers-venv")
-    file(REMOVE_RECURSE "${_tabfm_venv}")
-    vcpkg_execute_required_process(
-        COMMAND "${PYTHON3}" -m venv "${_tabfm_venv}"
-        LOGNAME tabfm-venv-create-${TARGET_TRIPLET}
-        WORKING_DIRECTORY "${CURRENT_BUILDTREES_DIR}"
-    )
-    set(PYTHON3 "${_tabfm_venv}/bin/python")
-    vcpkg_execute_required_process(
-        COMMAND "${PYTHON3}" -m pip install --disable-pip-version-check --no-input flatbuffers
-        LOGNAME tabfm-pip-flatbuffers-${TARGET_TRIPLET}
-        WORKING_DIRECTORY "${CURRENT_BUILDTREES_DIR}"
-    )
-    message(STATUS "anofox-tabfm overlay: using python3 with flatbuffers: ${PYTHON3}")
+# --- anofox-tabfm overlay: use a Python >= 3.9 for the schema codegen --------
+# onnxruntime's compile_schema.py (invoked below) uses PEP 585 builtin-generic
+# annotations (`dict[str, str]`) without `from __future__ import annotations`,
+# so importing it requires Python >= 3.9. DuckDB's Linux extension build image
+# is manylinux2014, whose /usr/bin/python3 (what vcpkg_find_acquire_program
+# returns) is 3.6 — it fails at import with
+#   TypeError: 'type' object is not subscriptable
+# which surfaces only as "compile_schema.py ... Error code: 1" (BUILD_FAILED).
+# Locate a newer interpreter (manylinux ships several under /opt/python) and use
+# it for the codegen steps. The acquired PYTHON3 is kept as a fallback.
+execute_process(
+    COMMAND "${PYTHON3}" -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, 9) else 1)"
+    RESULT_VARIABLE _tabfm_py_ok)
+if(NOT _tabfm_py_ok EQUAL 0)
+    set(_tabfm_py_candidates "")
+    # manylinux CPython installs, newest first
+    file(GLOB _tabfm_manylinux "/opt/python/cp3*/bin/python3.*")
+    list(SORT _tabfm_manylinux)
+    list(REVERSE _tabfm_manylinux)
+    list(APPEND _tabfm_py_candidates ${_tabfm_manylinux}
+        python3.13 python3.12 python3.11 python3.10 python3.9)
+    set(_tabfm_py_found FALSE)
+    foreach(_cand IN LISTS _tabfm_py_candidates)
+        execute_process(
+            COMMAND "${_cand}" -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, 9) else 1)"
+            RESULT_VARIABLE _cand_ok OUTPUT_QUIET ERROR_QUIET)
+        if(_cand_ok EQUAL 0)
+            set(PYTHON3 "${_cand}")
+            set(_tabfm_py_found TRUE)
+            break()
+        endif()
+    endforeach()
+    if(NOT _tabfm_py_found)
+        message(FATAL_ERROR "anofox-tabfm overlay: onnxruntime compile_schema.py needs Python >= 3.9 but none was found on this image (acquired python3 is too old)")
+    endif()
+    message(STATUS "anofox-tabfm overlay: schema codegen python -> ${PYTHON3}")
 endif()
 # --- end anofox-tabfm overlay ------------------------------------------------
 
