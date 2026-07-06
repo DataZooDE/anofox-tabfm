@@ -32,19 +32,52 @@ but CoreML **fails to compile at least one subgraph** (`ios16.reduce_sum`,
 output still matches golden. This confirms the partition+fallback path works and
 previews the fragmentation the parent plan predicts for the real 8 760-node graph.
 
-**Follow-ups (not blocking the seams; require license-gated real weights):**
-- **Gate 1a (real graph):** partition report on `resources/graph_classification.onnx`
-  with shaped-random or downloaded weights + `ORT_LOGGING_LEVEL_VERBOSE`.
-- **Gate 1b:** CoreML-vs-CPU wall-time on `examples/` after `tabfm_download`. This
-  is the ship/enable decision — fragmentation may make CoreML slower than CPU.
-- **coreml fp16 engine profile** in the real manifests (`ParseEngineProfiles`);
-  only relevant once Gate 1b is green.
-- **`auto` preference:** consistent with the cuda/rocm convention, `auto` on the
-  coreml flavor prefers a *usable* `coreml:0` over cpu (`ResolveDevice`). `usable`
-  today means "EP registered on Apple Silicon" — capability, not proven speed.
-  **Gate 1b may flip this**: if CoreML loses on wall-clock, either make coreml
-  opt-in only (drop it from the `auto` branch) or gate `usable` on a measured
-  Gate-1 result. Revisit alongside the Gate-1b verdict.
+## Gate 1b — MEASURED on this M3 (2026-07-06): ❌ CoreML cannot run the real model
+
+Ran `examples/regression_tips.sql` (real 6.1 GB regression `model.safetensors`
+downloaded via the built-in HF manifest, license accepted) on a **release**
+coreml-flavor build — the coreml binary carries both EPs, so `SET
+anofox_tabfm_device` picks the lane. tips dataset, 56 scored rows:
+
+| Device | Predict wall-time | Outcome | RMSE | MAE |
+|---|---|---|---|---|
+| `cpu` (ORT CPU EP) | **27.6 s** | ✅ ran (beats mean baseline: MSE 0.97 vs 1.68) | 0.986 | 0.730 |
+| `coreml` (ORT CoreML EP) | 18.1 s → **hard error** | ❌ **session init fails** | — | — |
+
+CoreML **throws during session initialization** on the real graph — it does NOT
+fall back gracefully:
+
+```
+[onnxruntime] Exception during initialization: common.h:32 HandleNegativeAxis
+  axis 2 is not in valid range [-2,1]
+Invalid Input Error: ONNX Runtime failed to create the session for 'regression'
+  (ORT error code 6)
+```
+
+The **identical graph runs fine on the CPU EP** (27.6 s, correct output), so this
+is specifically a CoreML-EP limitation: its partitioner/compiler chokes on an
+axis/rank mismatch in one of the dynamic-shape ops. The small random-init fixture
+runs under CoreML (test suite `[.coreml]` case) only because it lacks those ops.
+
+**Verdict: on Apple Silicon (M3), ORT's CoreML EP is a dead end for the real
+TabFM graph** — analogous to how ORT's MIGraphX EP was a dead end for ROCm (which
+needed the direct MIGraphX backend, `GPU_AND_MEMORY_FINDINGS.md`). Do **not**
+enable/recommend the coreml flavor for production on the strength of the EP.
+
+**Follow-ups this dictates:**
+- **Robustness (recommended next):** wrap the coreml session-init; on failure,
+  fall back to the CPU EP so `SET anofox_tabfm_device='coreml'` **degrades to a
+  warning + CPU run** instead of hard-erroring (`AppendExecutionProviders` /
+  `LoadOrGetSession` in `tabfm_ort_engine.cpp`).
+- **Honesty on `usable`:** `coreml:0 / usable=true` today means only "EP registered
+  on Apple Silicon" — this Gate-1b run shows it's optimistic for the real model.
+  Gate `usable` on a successful trial session-init, or mark `coreml` experimental.
+  Correspondingly, drop `coreml` from the `auto` branch of `ResolveDevice` (keep
+  it opt-in only) until an EP path actually runs the model.
+- **Real acceleration** (if still wanted) = a **direct CoreML/MPSGraph backend**,
+  the Apple analog of `tabfm_migraphx.cpp` — sidesteps ORT's partitioner, but a
+  multi-week effort. This is the only path that could make TabFM use the ANE/GPU.
+- **coreml fp16 engine profile** — moot unless a working EP/backend exists.
 
 Known caveat surfaced: fixed a **pre-existing** ASan stack-use-after-scope in the
 `tabfm_state` re-register test (unrelated to CoreML; `state` outlived the
