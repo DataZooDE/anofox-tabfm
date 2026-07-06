@@ -814,13 +814,24 @@ void PrecompileExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 
 void RegisterSet(ExtensionLoader &loader, const string &full_name, const string &alias,
                  const vector<vector<LogicalType>> &overloads, table_function_bind_t bind,
-                 table_function_init_global_t init, table_function_t execute) {
+                 table_function_init_global_t init, table_function_t execute, const char *description = nullptr,
+                 const char *example = nullptr) {
 	TableFunctionSet set(full_name);
 	for (auto &arguments : overloads) {
 		TableFunction func(full_name, arguments, execute, bind, init);
 		set.AddFunction(std::move(func));
 	}
-	RegisterTableFunctionSetWithAlias(loader, std::move(set), alias);
+	// Surface the function in duckdb_functions() with a description + example.
+	vector<FunctionDescription> descriptions;
+	if (description) {
+		FunctionDescription fd;
+		fd.description = description;
+		if (example) {
+			fd.examples = {example};
+		}
+		descriptions.push_back(std::move(fd));
+	}
+	RegisterTableFunctionSetWithAlias(loader, std::move(set), alias, std::move(descriptions));
 }
 
 } // anonymous namespace
@@ -829,23 +840,42 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	// CALL tabfm_download(task [, revision]) — one result row per file.
 	RegisterSet(loader, "anofox_tabfm_download", "tabfm_download",
 	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::VARCHAR}}, DownloadBind, DownloadInit,
-	            DownloadExecute);
+	            DownloadExecute,
+	            "Download the TabFM model weights for a task ('classification' or 'regression') from Hugging Face "
+	            "into the local cache. Requires SET anofox_tabfm_accept_hf_license = true. Returns one row per file "
+	            "(file, url, bytes, status).",
+	            "CALL tabfm_download('classification');");
 	// SELECT * FROM tabfm_models();
-	RegisterSet(loader, "anofox_tabfm_models", "tabfm_models", {{}}, ModelsBind, ModelsInit, ModelsExecute);
+	RegisterSet(loader, "anofox_tabfm_models", "tabfm_models", {{}}, ModelsBind, ModelsInit, ModelsExecute,
+	            "List the TabFM models known to the local cache (model, task, revision, path, bytes, loaded, "
+	            "license).",
+	            "SELECT * FROM tabfm_models();");
 	// CALL tabfm_load(task);
 	RegisterSet(loader, "anofox_tabfm_load", "tabfm_load", {{LogicalType::VARCHAR}}, LoadBind, LifecycleInit,
-	            LifecycleExecute);
+	            LifecycleExecute,
+	            "Eagerly load a downloaded TabFM model for a task into memory so the first predict is warm "
+	            "(otherwise the model loads lazily on first use).",
+	            "CALL tabfm_load('classification');");
 	// CALL tabfm_unload([task]);
 	RegisterSet(loader, "anofox_tabfm_unload", "tabfm_unload", {{}, {LogicalType::VARCHAR}}, UnloadBind,
-	            LifecycleInit, LifecycleExecute);
+	            LifecycleInit, LifecycleExecute,
+	            "Unload a loaded TabFM model from memory (all models if no task is given), freeing its RAM/VRAM.",
+	            "CALL tabfm_unload('classification');");
 	// CALL tabfm_remove(task [, revision]);
 	RegisterSet(loader, "anofox_tabfm_remove", "tabfm_remove",
 	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::VARCHAR}}, RemoveBind, RemoveInit,
-	            RemoveExecute);
+	            RemoveExecute,
+	            "Delete a downloaded TabFM model's weights from the local cache (by task, optionally a specific "
+	            "revision).",
+	            "CALL tabfm_remove('classification');");
 	// CALL tabfm_gpu_precompile(task [, rows, features]);
 	RegisterSet(loader, "anofox_tabfm_gpu_precompile", "tabfm_gpu_precompile",
 	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT}},
-	            PrecompileBind, LifecycleInit, PrecompileExecute);
+	            PrecompileBind, LifecycleInit, PrecompileExecute,
+	            "Warm the GPU path for a task by compiling the model for a shape bucket ahead of the first predict "
+	            "(on ROCm this builds and caches the .mxr program; a no-op cost on CPU/CUDA). Returns task, rows, "
+	            "features, device, status.",
+	            "CALL tabfm_gpu_precompile('classification', 1000, 50);");
 }
 
 } // namespace anofox

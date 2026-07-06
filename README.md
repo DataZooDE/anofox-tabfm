@@ -199,10 +199,15 @@ CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_…', SCOPE 'https://huggingface.c
 | `anofox_tabfm_accept_hf_license` | `false` | license gate — downloads fail without it |
 | `anofox_tabfm_cache_dir` | `~/.cache/anofox-tabfm` | weight cache root (pre-seed for air-gapped use) |
 | `anofox_tabfm_threads` | cores / 2 | ONNX Runtime intra-op threads |
+| `anofox_tabfm_cpu_prepack` | `true` | prepack weights for faster CPU matmuls (~+16% RSS) |
 | `anofox_tabfm_max_rows` | `10000` | guardrail per predict / group |
 | `anofox_tabfm_max_features` | `500` | guardrail |
-| `anofox_tabfm_device` | `auto` | `cpu` / `cuda` / `rocm` execution device |
+| `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` (`migraphx` alias for `rocm`) |
+| `anofox_tabfm_gpu_precision` | `bf16` | GPU dtype: `bf16` / `fp16` / `fp32` |
 | `anofox_tabfm_model_manifest` | `''` | point at a custom model manifest |
+| `anofox_tabfm_mxr_source` | `''` | directory of precompiled ROCm `.mxr` programs to stage from |
+| `anofox_tabfm_ep_path` | `''` | extra search path for execution-provider shared libraries |
+| `anofox_tabfm_trace_level` | `warn` | log verbosity: `error` / `warn` / `info` / `debug` / `trace` |
 
 Options (the trailing `opts` MAP, all values VARCHAR): `task`, `n_estimators`
 (v1: `1`), `seed`, `output_mode` (`compact` / `detail`), `context_rows`,
@@ -223,17 +228,23 @@ The full SQL surface runs the **real TabFM v1 model** end to end (preprocess →
 ONNX Runtime forward → decode); per-row outputs match the PyTorch reference to
 ~1e-5. The weight-free graphs are compiled into the extension, so after
 `tabfm_download` the model works with no companion files. v1 runs a single
-estimator on CPU (`cpu` flavor). Not yet wired up: the `n_estimators > 1`
+estimator; it ships CPU (`cpu`) plus GPU flavors (`cuda`, and `rocm` via a direct
+MIGraphX backend — see below). Not yet wired up: the `n_estimators > 1`
 ensemble, and the grouped / composable-aggregate / windowed surfaces
 (`tabfm_predict_by` / `_agg` / `_win`) — planned on the same engine.
 
 ## Flavors (CPU / GPU)
 
 One codebase, three builds (`TABFM_FLAVOR`): `cpu` (default, community-extension
-eligible), `cuda` (NVIDIA, bf16), `rocm` (AMD via ONNX Runtime's MIGraphX EP).
-GPU builds link no vendor runtime — CUDA/cuDNN or ROCm resolve from your system,
-and `tabfm_devices()` reports what was found. GPU flavors ship from the anofox
-extension repository (`SET custom_extension_repository = 'https://ext.anofox.com/tabfm/<flavor>'`).
+eligible), `cuda` (NVIDIA, bf16), `rocm` (AMD via a **direct MIGraphX backend** —
+ONNX Runtime's MIGraphX EP can't load the >2 GB model, so ROCm bypasses it and
+drives libMIGraphX directly, with a compiled-program `.mxr` cache). GPU builds
+link no vendor runtime — CUDA/cuDNN or ROCm resolve from your system, and
+`tabfm_devices()` reports what was found. GPU dtype is set by
+`anofox_tabfm_gpu_precision` (default `bf16`); `CALL tabfm_gpu_precompile(task)`
+warms a shape bucket ahead of the first predict (builds/caches the ROCm `.mxr`).
+GPU flavors ship from the anofox extension repository
+(`SET custom_extension_repository = 'https://ext.anofox.com/tabfm/<flavor>'`).
 
 ## License
 
@@ -266,7 +277,8 @@ GEN=ninja make release        # cpu flavor
 make test_release             # sqllogictests + C++ unit tests
 ```
 
-Requires CMake ≥ 3.19 and a C++17 toolchain. ONNX Runtime is fetched as a
+Requires CMake ≥ 3.10 (≥ 3.19 to also build the bundled C++ unit tests) and a
+C++17 toolchain. ONNX Runtime is fetched as a
 prebuilt archive by default; enable the `ort-vcpkg` manifest feature to build it
 from source. See [`CLAUDE.md`](CLAUDE.md) for the module map and
 [`examples/`](examples/README.md) for end-to-end examples.

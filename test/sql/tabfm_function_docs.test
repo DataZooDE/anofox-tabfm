@@ -1,0 +1,39 @@
+# name: test/sql/tabfm_function_docs.test
+# description: Every user-facing tabfm_* function surfaces a description (and the
+#              predict macros an example) in duckdb_functions(), so `SELECT * FROM
+#              duckdb_functions()` / autocomplete documents the surface. Guards
+#              against a registration that forgets its FunctionDescription.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# All nine user-facing functions carry a non-empty description.
+query I
+SELECT count(DISTINCT function_name)
+FROM duckdb_functions()
+WHERE function_name IN ('tabfm_classify','tabfm_regress','tabfm_download','tabfm_models',
+                        'tabfm_load','tabfm_unload','tabfm_remove','tabfm_devices','tabfm_gpu_precompile')
+  AND description IS NOT NULL AND length(description) > 0
+----
+9
+
+# No tabfm_* / anofox_tabfm_* function is left with an empty description.
+query I
+SELECT count(*)
+FROM duckdb_functions()
+WHERE (function_name LIKE 'tabfm_%' OR function_name LIKE 'anofox_tabfm_%')
+  AND (description IS NULL OR length(description) = 0)
+----
+0
+
+# The predict macros ship a runnable example.
+query I
+SELECT count(DISTINCT function_name)
+FROM duckdb_functions()
+WHERE function_name IN ('tabfm_classify','tabfm_regress')
+  AND len(examples) > 0
+----
+2

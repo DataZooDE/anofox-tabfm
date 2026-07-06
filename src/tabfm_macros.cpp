@@ -64,6 +64,8 @@ struct PredictMacroDef {
 	const char *parameters[8];       // positional param names, nullptr-terminated
 	const char *default_params[8];   // "name=sql_default" for trailing optionals, nullptr-terminated
 	const char *body;
+	const char *description;         // shown in duckdb_functions()
+	const char *example;             // shown in duckdb_functions()
 };
 
 // clang-format off
@@ -93,7 +95,13 @@ R"(
         ) anofox_tabfm_row
       )
     ) WHERE (test IS NULL) OR (NOT is_training)
-)"};
+)",
+    "Zero-shot tabular classification with the TabFM foundation model. Uses the labelled rows of `data` as "
+    "in-context examples to score the rows whose `target` is NULL (single-relation form) or every row of the "
+    "`test` relation (train/test form). Returns one row per scored row with yhat, yhat_score, is_training and "
+    "(detail mode) a proba MAP. Optional `features` restricts the feature columns; `opts` is a MAP of options "
+    "(seed, softmax_temperature, output_mode, ...).",
+    "SELECT age, plan, yhat, yhat_score FROM tabfm_classify('customers', 'churned') WHERE churned IS NULL;"};
 
 static const PredictMacroDef REGRESS_MACRO = {
     {"data", "target", nullptr},
@@ -117,7 +125,12 @@ R"(
         ) anofox_tabfm_row
       )
     ) WHERE (test IS NULL) OR (NOT is_training)
-)"};
+)",
+    "Zero-shot tabular regression with the TabFM foundation model. Uses the rows of `data` with a known numeric "
+    "`target` as in-context examples to predict the target for rows where it is NULL (single-relation form) or "
+    "every row of the `test` relation (train/test form). Returns one row per scored row with yhat (yhat_score is "
+    "NULL for regression). Optional `features` restricts the feature columns; `opts` is a MAP of options.",
+    "SELECT * FROM tabfm_regress('sold_homes', 'price', test := 'listings');"};
 // clang-format on
 
 unique_ptr<MacroFunction> BuildTableMacroFunction(const PredictMacroDef &def) {
@@ -159,6 +172,16 @@ unique_ptr<CreateMacroInfo> BuildMacroInfo(const string &name, const PredictMacr
 	info->internal = true;
 	info->alias_of = alias_of;
 	info->macros.push_back(BuildTableMacroFunction(def));
+
+	// Surface the signature in duckdb_functions() (description + parameter names
+	// + a runnable example).
+	FunctionDescription fd;
+	fd.parameter_names = {"data", "target", "test", "features", "opts"};
+	fd.description = def.description;
+	if (def.example) {
+		fd.examples = {def.example};
+	}
+	info->descriptions.push_back(std::move(fd));
 	return info;
 }
 

@@ -458,7 +458,7 @@ void PredictAggUpdate(Vector inputs[], AggregateInputData &aggr_input_data, idx_
 		// incremental guardrail: anofox_tabfm_max_rows per predict/group (FR-3.4)
 		if (state.rows->collection.Count() >= bind.max_rows) {
 			throw InvalidInputException(
-			    "tabfm_predict: predict group exceeds anofox_tabfm_max_rows (%llu). Raise it with "
+			    "tabfm: predict group exceeds anofox_tabfm_max_rows (%llu). Raise it with "
 			    "SET anofox_tabfm_max_rows = <n>; or split the group",
 			    static_cast<unsigned long long>(bind.max_rows));
 		}
@@ -496,7 +496,7 @@ void PredictAggCombine(Vector &source_vector, Vector &target_vector, AggregateIn
 		source.rows = nullptr;
 		if (target.rows->collection.Count() > bind.max_rows) {
 			throw InvalidInputException(
-			    "tabfm_predict: predict group exceeds anofox_tabfm_max_rows (%llu). Raise it with "
+			    "tabfm: predict group exceeds anofox_tabfm_max_rows (%llu). Raise it with "
 			    "SET anofox_tabfm_max_rows = <n>; or split the group",
 			    static_cast<unsigned long long>(bind.max_rows));
 		}
@@ -555,7 +555,7 @@ void PredictAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_dat
 		if (!has_context) {
 			// FR-3.4 / SQL-API §5 (the no-NULL-targets case, in contrast, is a
 			// valid result: every row comes back with is_training = true)
-			throw InvalidInputException("tabfm_predict: target '%s' has no non-NULL rows to use as context",
+			throw InvalidInputException("tabfm: target '%s' has no non-NULL rows to use as context",
 			                            bind.target);
 		}
 

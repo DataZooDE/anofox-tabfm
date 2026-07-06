@@ -542,7 +542,13 @@ void DevicesFunction(ClientContext &context, TableFunctionInput &data, DataChunk
 
 void RegisterDevicesFunctions(ExtensionLoader &loader) {
 	TableFunction func("anofox_tabfm_devices", {}, DevicesFunction, DevicesBind, DevicesInitGlobal);
-	RegisterTableFunctionWithAlias(loader, std::move(func), "tabfm_devices");
+	FunctionDescription fd;
+	fd.description =
+	    "List the inference devices this build can see (device_id, ep, name, arch, vram, driver, usable). The cpu "
+	    "row always exists; GPU rows appear only in the matching flavor (cuda/rocm) and report usable=false when a "
+	    "device is present but unsupported.";
+	fd.examples = {"SELECT * FROM tabfm_devices();"};
+	RegisterTableFunctionWithAlias(loader, std::move(func), "tabfm_devices", {std::move(fd)});
 }
 
 } // namespace anofox
