@@ -75,6 +75,15 @@ if(TABFM_FLAVOR STREQUAL "cpu")
     if(onnxruntime_FOUND)
         message(STATUS "anofox_tabfm: ONNX Runtime from vcpkg/system package (CPU EP)")
         target_link_libraries(tabfm_onnxruntime INTERFACE onnxruntime::onnxruntime)
+        # vcpkg installs the public ORT headers under include/onnxruntime/, but our
+        # sources include them flat (<onnxruntime_cxx_api.h>) to match the prebuilt
+        # archive layout. The imported target's include dir does not reliably reach
+        # our INTERFACE IMPORTED target, so add the subdir explicitly.
+        find_path(TABFM_ORT_VCPKG_INCLUDE_DIR
+            NAMES onnxruntime_cxx_api.h PATH_SUFFIXES onnxruntime)
+        if(TABFM_ORT_VCPKG_INCLUDE_DIR)
+            target_include_directories(tabfm_onnxruntime INTERFACE "${TABFM_ORT_VCPKG_INCLUDE_DIR}")
+        endif()
     else()
         message(STATUS "anofox_tabfm: ONNX Runtime from prebuilt archive v${TABFM_ORT_VERSION} (CPU EP)")
         _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}")
