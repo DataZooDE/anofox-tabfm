@@ -35,16 +35,21 @@ message(STATUS "Using python3: ${PYTHON3}")
 # here without the `python` feature, so only the C++ headers are needed; pass
 # `-l cpp` to skip the crashing Python generation. (The lora schema script is
 # already C++-only, but we pass -l cpp there too for symmetry.)
-vcpkg_execute_required_process(
-    COMMAND "${PYTHON3}" onnxruntime/core/flatbuffers/schema/compile_schema.py --flatc "${FLATC}" -l cpp
-    LOGNAME compile_schema_core
-    WORKING_DIRECTORY "${SOURCE_PATH}"
-)
-vcpkg_execute_required_process(
-    COMMAND "${PYTHON3}" onnxruntime/lora/adapter_format/compile_schema.py --flatc "${FLATC}" -l cpp
-    LOGNAME compile_schema_lora
-    WORKING_DIRECTORY "${SOURCE_PATH}"
-)
+execute_process(COMMAND "${FLATC}" --version OUTPUT_VARIABLE _tabfm_fv ERROR_VARIABLE _tabfm_fv2)
+message(STATUS "anofox-tabfm: flatc=[${_tabfm_fv}${_tabfm_fv2}] python3=${PYTHON3}")
+foreach(_tabfm_cs
+        "onnxruntime/core/flatbuffers/schema/compile_schema.py"
+        "onnxruntime/lora/adapter_format/compile_schema.py")
+    execute_process(
+        COMMAND "${PYTHON3}" "${_tabfm_cs}" --flatc "${FLATC}" -l cpp
+        WORKING_DIRECTORY "${SOURCE_PATH}"
+        RESULT_VARIABLE _tabfm_cs_rc
+        OUTPUT_VARIABLE _tabfm_cs_out
+        ERROR_VARIABLE _tabfm_cs_err)
+    if(NOT _tabfm_cs_rc EQUAL 0)
+        message(FATAL_ERROR "anofox-tabfm: ${_tabfm_cs} failed (rc=${_tabfm_cs_rc})\n=== STDOUT ===\n${_tabfm_cs_out}\n=== STDERR ===\n${_tabfm_cs_err}")
+    endif()
+endforeach()
 # --- end anofox-tabfm overlay ------------------------------------------------
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
