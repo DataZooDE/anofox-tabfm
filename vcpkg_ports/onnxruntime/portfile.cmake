@@ -27,62 +27,24 @@ vcpkg_find_acquire_program(PYTHON3)
 get_filename_component(PYTHON_PATH "${PYTHON3}" PATH)
 message(STATUS "Using python3: ${PYTHON3}")
 
-# --- anofox-tabfm overlay: use a Python >= 3.9 for the schema codegen --------
-# onnxruntime's compile_schema.py (invoked below) uses PEP 585 builtin-generic
-# annotations (`dict[str, str]`) without `from __future__ import annotations`,
-# so importing it requires Python >= 3.9. DuckDB's Linux extension build image
-# is manylinux2014, whose /usr/bin/python3 (what vcpkg_find_acquire_program
-# returns) is 3.6 — it fails at import with
-#   TypeError: 'type' object is not subscriptable
-# which surfaces only as "compile_schema.py ... Error code: 1" (BUILD_FAILED).
-# Locate a newer interpreter (manylinux ships several under /opt/python) and use
-# it for the codegen steps. The acquired PYTHON3 is kept as a fallback.
-execute_process(
-    COMMAND "${PYTHON3}" -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, 9) else 1)"
-    RESULT_VARIABLE _tabfm_py_ok)
-if(NOT _tabfm_py_ok EQUAL 0)
-    set(_tabfm_py_candidates "")
-    # manylinux CPython installs, newest first
-    file(GLOB _tabfm_manylinux "/opt/python/cp3*/bin/python3.*")
-    list(SORT _tabfm_manylinux)
-    list(REVERSE _tabfm_manylinux)
-    list(APPEND _tabfm_py_candidates ${_tabfm_manylinux}
-        python3.13 python3.12 python3.11 python3.10 python3.9)
-    set(_tabfm_py_found FALSE)
-    foreach(_cand IN LISTS _tabfm_py_candidates)
-        execute_process(
-            COMMAND "${_cand}" -c "import sys; sys.exit(0 if sys.version_info[:2] >= (3, 9) else 1)"
-            RESULT_VARIABLE _cand_ok OUTPUT_QUIET ERROR_QUIET)
-        if(_cand_ok EQUAL 0)
-            set(PYTHON3 "${_cand}")
-            set(_tabfm_py_found TRUE)
-            break()
-        endif()
-    endforeach()
-    if(NOT _tabfm_py_found)
-        message(FATAL_ERROR "anofox-tabfm overlay: onnxruntime compile_schema.py needs Python >= 3.9 but none was found on this image (acquired python3 is too old)")
-    endif()
-    message(STATUS "anofox-tabfm overlay: schema codegen python -> ${PYTHON3}")
-endif()
-# --- end anofox-tabfm overlay ------------------------------------------------
-
-# --- anofox-tabfm overlay: run codegen with captured output for diagnosis -----
-execute_process(COMMAND "${PYTHON3}" -V OUTPUT_VARIABLE _tabfm_pv ERROR_VARIABLE _tabfm_pv2)
-message(STATUS "anofox-tabfm DIAG: PYTHON3=${PYTHON3} version=[${_tabfm_pv}${_tabfm_pv2}] FLATC=${FLATC}")
-foreach(_tabfm_cs
-        "onnxruntime/core/flatbuffers/schema/compile_schema.py"
-        "onnxruntime/lora/adapter_format/compile_schema.py")
-    execute_process(
-        COMMAND "${PYTHON3}" "${_tabfm_cs}" --flatc "${FLATC}"
-        WORKING_DIRECTORY "${SOURCE_PATH}"
-        RESULT_VARIABLE _tabfm_cs_rc
-        OUTPUT_VARIABLE _tabfm_cs_out
-        ERROR_VARIABLE _tabfm_cs_err)
-    message(STATUS "anofox-tabfm DIAG: ${_tabfm_cs} rc=${_tabfm_cs_rc}")
-    if(NOT _tabfm_cs_rc EQUAL 0)
-        message(FATAL_ERROR "anofox-tabfm DIAG: ${_tabfm_cs} failed (rc=${_tabfm_cs_rc})\n=== STDOUT ===\n${_tabfm_cs_out}\n=== STDERR ===\n${_tabfm_cs_err}")
-    endif()
-endforeach()
+# --- anofox-tabfm overlay: generate the C++ flatbuffers bindings only --------
+# The vcpkg-built flatc (v25.9.23, static release triplet) SIGSEGVs during
+# `--python` codegen. The stock port runs compile_schema.py with no language
+# filter, so it generates both python and cpp and crashes — surfacing only as
+# "compile_schema.py ... Error code: 1" (BUILD_FAILED). onnxruntime is built
+# here without the `python` feature, so only the C++ headers are needed; pass
+# `-l cpp` to skip the crashing Python generation. (The lora schema script is
+# already C++-only, but we pass -l cpp there too for symmetry.)
+vcpkg_execute_required_process(
+    COMMAND "${PYTHON3}" onnxruntime/core/flatbuffers/schema/compile_schema.py --flatc "${FLATC}" -l cpp
+    LOGNAME compile_schema_core
+    WORKING_DIRECTORY "${SOURCE_PATH}"
+)
+vcpkg_execute_required_process(
+    COMMAND "${PYTHON3}" onnxruntime/lora/adapter_format/compile_schema.py --flatc "${FLATC}" -l cpp
+    LOGNAME compile_schema_lora
+    WORKING_DIRECTORY "${SOURCE_PATH}"
+)
 # --- end anofox-tabfm overlay ------------------------------------------------
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
