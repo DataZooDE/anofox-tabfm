@@ -27,29 +27,24 @@ vcpkg_find_acquire_program(PYTHON3)
 get_filename_component(PYTHON_PATH "${PYTHON3}" PATH)
 message(STATUS "Using python3: ${PYTHON3}")
 
-# --- anofox-tabfm overlay: generate the C++ flatbuffers bindings only --------
-# The vcpkg-built flatc (v25.9.23, static release triplet) SIGSEGVs during
-# `--python` codegen. The stock port runs compile_schema.py with no language
-# filter, so it generates both python and cpp and crashes — surfacing only as
-# "compile_schema.py ... Error code: 1" (BUILD_FAILED). onnxruntime is built
-# here without the `python` feature, so only the C++ headers are needed; pass
-# `-l cpp` to skip the crashing Python generation. (The lora schema script is
-# already C++-only, but we pass -l cpp there too for symmetry.)
-execute_process(COMMAND "${FLATC}" --version OUTPUT_VARIABLE _tabfm_fv ERROR_VARIABLE _tabfm_fv2)
-message(STATUS "anofox-tabfm: flatc=[${_tabfm_fv}${_tabfm_fv2}] python3=${PYTHON3}")
-foreach(_tabfm_cs
-        "onnxruntime/core/flatbuffers/schema/compile_schema.py"
-        "onnxruntime/lora/adapter_format/compile_schema.py")
-    execute_process(
-        COMMAND "${PYTHON3}" "${_tabfm_cs}" --flatc "${FLATC}" -l cpp
-        WORKING_DIRECTORY "${SOURCE_PATH}"
-        RESULT_VARIABLE _tabfm_cs_rc
-        OUTPUT_VARIABLE _tabfm_cs_out
-        ERROR_VARIABLE _tabfm_cs_err)
-    if(NOT _tabfm_cs_rc EQUAL 0)
-        message(FATAL_ERROR "anofox-tabfm: ${_tabfm_cs} failed (rc=${_tabfm_cs_rc})\n=== STDOUT ===\n${_tabfm_cs_out}\n=== STDERR ===\n${_tabfm_cs_err}")
+# --- anofox-tabfm overlay: skip flatc codegen, use checked-in headers --------
+# The vcpkg-built flatc SIGSEGVs on *any* invocation (even --version) in DuckDB's
+# AlmaLinux 8 build image — a toolchain miscompile, not a flatbuffers version bug
+# (both 23.5.26 and 25.9.23 crash; protoc from vcpkg works fine). onnxruntime
+# v1.23.2 already ships the generated C++ flatbuffers headers in its source tree,
+# and compile_schema.py above only *regenerates* them. We pin flatbuffers to
+# 23.5.26 (the version those headers were generated against — see the upstream
+# cmake/deps.txt) so the linked runtime matches, and skip the flatc codegen
+# entirely. Verify the pre-generated headers are present.
+foreach(_tabfm_hdr
+        "onnxruntime/core/flatbuffers/schema/ort.fbs.h"
+        "onnxruntime/core/flatbuffers/schema/ort_training_checkpoint.fbs.h"
+        "onnxruntime/lora/adapter_format/adapter_schema.fbs.h")
+    if(NOT EXISTS "${SOURCE_PATH}/${_tabfm_hdr}")
+        message(FATAL_ERROR "anofox-tabfm overlay: expected pre-generated ${_tabfm_hdr} is missing; cannot skip flatc codegen")
     endif()
 endforeach()
+message(STATUS "anofox-tabfm overlay: using onnxruntime's checked-in flatbuffers headers (flatc codegen skipped — vcpkg flatc crashes on this image)")
 # --- end anofox-tabfm overlay ------------------------------------------------
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
