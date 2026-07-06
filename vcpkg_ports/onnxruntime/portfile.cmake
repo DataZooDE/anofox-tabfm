@@ -66,16 +66,24 @@ if(NOT _tabfm_py_ok EQUAL 0)
 endif()
 # --- end anofox-tabfm overlay ------------------------------------------------
 
-vcpkg_execute_required_process(
-    COMMAND "${PYTHON3}" onnxruntime/core/flatbuffers/schema/compile_schema.py --flatc "${FLATC}"
-    LOGNAME compile_schema_core
-    WORKING_DIRECTORY "${SOURCE_PATH}"
-)
-vcpkg_execute_required_process(
-    COMMAND "${PYTHON3}" onnxruntime/lora/adapter_format/compile_schema.py --flatc "${FLATC}"
-    LOGNAME compile_schema_lora
-    WORKING_DIRECTORY "${SOURCE_PATH}"
-)
+# --- anofox-tabfm overlay: run codegen with captured output for diagnosis -----
+execute_process(COMMAND "${PYTHON3}" -V OUTPUT_VARIABLE _tabfm_pv ERROR_VARIABLE _tabfm_pv2)
+message(STATUS "anofox-tabfm DIAG: PYTHON3=${PYTHON3} version=[${_tabfm_pv}${_tabfm_pv2}] FLATC=${FLATC}")
+foreach(_tabfm_cs
+        "onnxruntime/core/flatbuffers/schema/compile_schema.py"
+        "onnxruntime/lora/adapter_format/compile_schema.py")
+    execute_process(
+        COMMAND "${PYTHON3}" "${_tabfm_cs}" --flatc "${FLATC}"
+        WORKING_DIRECTORY "${SOURCE_PATH}"
+        RESULT_VARIABLE _tabfm_cs_rc
+        OUTPUT_VARIABLE _tabfm_cs_out
+        ERROR_VARIABLE _tabfm_cs_err)
+    message(STATUS "anofox-tabfm DIAG: ${_tabfm_cs} rc=${_tabfm_cs_rc}")
+    if(NOT _tabfm_cs_rc EQUAL 0)
+        message(FATAL_ERROR "anofox-tabfm DIAG: ${_tabfm_cs} failed (rc=${_tabfm_cs_rc})\n=== STDOUT ===\n${_tabfm_cs_out}\n=== STDERR ===\n${_tabfm_cs_err}")
+    endif()
+endforeach()
+# --- end anofox-tabfm overlay ------------------------------------------------
 
 vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
     FEATURES
