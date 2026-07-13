@@ -337,7 +337,7 @@ struct DownloadGlobalState : public GlobalTableFunctionState {
 
 unique_ptr<FunctionData> DownloadBind(ClientContext &context, TableFunctionBindInput &input,
                                       vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_download");
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_download");
 
 	auto task = RequireTaskArgument(input, "tabfm_download");
 	auto result = make_uniq<DownloadBindData>();
@@ -487,7 +487,7 @@ struct ModelsGlobalState : public GlobalTableFunctionState {
 
 unique_ptr<FunctionData> ModelsBind(ClientContext &context, TableFunctionBindInput &input,
                                     vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_models");
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_models");
 	names = {"model", "task", "revision", "path", "bytes", "loaded", "license"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                LogicalType::BIGINT,  LogicalType::BOOLEAN, LogicalType::VARCHAR};
@@ -585,7 +585,7 @@ void SetLifecycleColumns(vector<LogicalType> &return_types, vector<string> &name
 
 unique_ptr<FunctionData> LoadBind(ClientContext &context, TableFunctionBindInput &input,
                                   vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_load");
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_load");
 	auto task = RequireTaskArgument(input, "tabfm_load");
 	auto manifest = FindManifest(context, "tabfm_load", task);
 
@@ -611,7 +611,7 @@ unique_ptr<FunctionData> LoadBind(ClientContext &context, TableFunctionBindInput
 
 unique_ptr<FunctionData> UnloadBind(ClientContext &context, TableFunctionBindInput &input,
                                     vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_unload");
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_unload");
 	auto result = make_uniq<LifecycleBindData>();
 	auto tabfm_state = TabFMState::Get(context);
 	if (input.inputs.empty()) {
@@ -666,7 +666,7 @@ struct RemoveGlobalState : public GlobalTableFunctionState {
 
 unique_ptr<FunctionData> RemoveBind(ClientContext &context, TableFunctionBindInput &input,
                                     vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_remove");
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_remove");
 	auto task = RequireTaskArgument(input, "tabfm_remove");
 	auto manifest = FindManifest(context, "tabfm_remove", task);
 
@@ -753,7 +753,7 @@ struct PrecompileBindData : public TableFunctionData {
 
 unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBindInput &input,
                                         vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_gpu_precompile");
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_gpu_precompile");
 	auto task = RequireTaskArgument(input, "tabfm_gpu_precompile");
 	FindManifest(context, "tabfm_gpu_precompile", task); // validates the task name
 	auto result = make_uniq<PrecompileBindData>();

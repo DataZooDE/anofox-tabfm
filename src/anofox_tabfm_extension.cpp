@@ -104,6 +104,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 		if (db.TryGetCurrentSetting("anofox_telemetry_key", key_value) && !key_value.IsNull()) {
 			telemetry.SetAPIKey(StringValue::Get(key_value.DefaultCastAs(LogicalType::VARCHAR)));
 		}
+		telemetry.SetProduct("anofox_tabfm", version, "oss");
+		telemetry.AssociateGroup("deployment", PostHogTelemetry::GetDistinctId());
 		telemetry.CaptureExtensionLoad("anofox_tabfm", version);
 	} else {
 		// Still record the extension name so later re-enabling via SQL produces
