@@ -416,6 +416,27 @@ static void ValidateDeclaredContract(const TabFMSession &session, const TabFMSes
 			}
 		}
 	};
+	// The engine feeds exactly these graph inputs (see Run): a contract that
+	// declares any other input name describes a graph this engine cannot drive.
+	// Reject it now with an actionable error rather than let Run() fail with an
+	// opaque "unexpected input" deep in inference. (A future contract-driven
+	// feeding path would relax this.)
+	static const char *kFeedable[] = {"x", "y", "train_size", "cat_mask", "d"};
+	for (auto &d : config.contract_inputs) {
+		bool feedable = false;
+		for (auto *f : kFeedable) {
+			if (d == f) {
+				feedable = true;
+				break;
+			}
+		}
+		if (!feedable) {
+			throw InvalidInputException(
+			    "anofox_tabfm: the manifest's tensor_contract declares input '%s', which this engine cannot feed. "
+			    "TabFM graphs must use the inputs x, y, train_size, cat_mask, d.",
+			    d);
+		}
+	}
 	check(config.contract_inputs, session.input_names, "input");
 	check(config.contract_outputs, session.output_names, "output");
 }

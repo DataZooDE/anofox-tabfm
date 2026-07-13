@@ -158,6 +158,19 @@ real test before acting (the reproduce-don't-trust discipline).
   (network-fetched) second model exists, where the risk is real. Tracked as a
   hardening follow-up.
 
+## codex P4/P5 review — disposition (2026-07-13)
+
+Final gate on the tensor-contract change + review fixes. One finding:
+
+- **Fixed — contract accepted non-feedable input names** (P2). The P4 validation
+  checked that declared contract inputs *exist in the graph*, but the engine
+  feeds only the hard-coded `x, y, train_size, cat_mask, d` (see `Run`). A
+  contract truthfully declaring a *renamed* input would pass load-time validation
+  yet fail at inference with an opaque "unexpected input". `ValidateDeclaredContract`
+  now also rejects any declared input the engine cannot feed, with an actionable
+  message naming the required inputs. (A future contract-driven feeding path would
+  relax this.) Covered by `tabfm_contract.test`.
+
 ## Definition of done (this round)
 Registry live with `google-tabfm-v1` + a real second fixture model; `model :=`,
 `tabfm_list_models()`, per-model weights, capability gating, tensor-contract
