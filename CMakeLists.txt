@@ -44,6 +44,7 @@ set(EXTENSION_SOURCES
         src/tabfm_settings.cpp
         src/tabfm_state.cpp
         src/tabfm_manifest.cpp
+        src/tabfm_model_spec.cpp
         src/tabfm_safetensors.cpp
         src/tabfm_ort_engine.cpp
         src/tabfm_devices.cpp
@@ -120,6 +121,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_safetensors.cpp
     test/cpp/test_tabfm_manifest.cpp
     test/cpp/test_tabfm_ort_engine.cpp
+    test/cpp/test_tabfm_model_spec.cpp
     test/cpp/test_tabfm_preprocess.cpp
     test/cpp/test_tabfm_ensemble.cpp
     test/cpp/test_tabfm_bundled_resources.cpp
