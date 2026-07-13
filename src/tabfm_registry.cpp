@@ -9,6 +9,9 @@
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/string_util.hpp"
 
+#include <algorithm>
+#include <set>
+
 namespace duckdb {
 namespace anofox {
 
@@ -79,14 +82,27 @@ ModelRegistry ModelRegistry::Build(const string &manifest_source) {
 	}
 	auto fs = FileSystem::CreateLocal();
 	if (fs->DirectoryExists(manifest_source)) {
-		// A directory of manifests: register every *.json (merged, no implicit default).
+		// A directory of manifests: register every *.json (merged, no implicit
+		// default). Sort the file list so loading is deterministic, and reject two
+		// user manifests that declare the same id (a user file MAY shadow a
+		// built-in, but two user files with one id is nondeterministic → error).
+		vector<string> names;
 		fs->ListFiles(manifest_source, [&](const string &name, bool is_dir) {
-			if (is_dir || !StringUtil::EndsWith(StringUtil::Lower(name), ".json")) {
-				return;
+			if (!is_dir && StringUtil::EndsWith(StringUtil::Lower(name), ".json")) {
+				names.push_back(name);
 			}
-			auto spec = LoadModelSpecFile(fs->JoinPath(manifest_source, name));
-			registry.models_[spec.id] = std::move(spec);
 		});
+		std::sort(names.begin(), names.end());
+		std::set<string> user_ids;
+		for (auto &name : names) {
+			auto spec = LoadModelSpecFile(fs->JoinPath(manifest_source, name));
+			if (!user_ids.insert(spec.id).second) {
+				throw InvalidInputException(
+				    "tabfm: two manifests in directory '%s' both declare model id '%s' — ids must be unique",
+				    manifest_source, spec.id);
+			}
+			registry.models_[spec.id] = std::move(spec);
+		}
 	} else if (fs->FileExists(manifest_source)) {
 		// A single file selects that model as the active default (back-compat).
 		auto spec = LoadModelSpecFile(manifest_source);

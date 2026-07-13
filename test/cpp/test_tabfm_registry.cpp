@@ -98,3 +98,14 @@ TEST_CASE("registry: a DIRECTORY of manifests merges without an implicit default
 
 	std::filesystem::remove_all(dir);
 }
+
+TEST_CASE("registry: two manifests in a dir with the same id is an error", "[tabfm][registry]") {
+	auto dir = UniqueTmp("dup_id_dir");
+	std::filesystem::create_directories(dir);
+	WriteFile(dir / "a.json", kMitraV2);
+	WriteFile(dir / "b.json", kMitraV2); // both declare id "mitra"
+
+	REQUIRE_THROWS_WITH(ModelRegistry::Build(dir.string()), Contains("mitra") && Contains("unique"));
+
+	std::filesystem::remove_all(dir);
+}
