@@ -1,0 +1,73 @@
+# name: test/sql/tabfm_multimodel.test
+# description: The multi-model registry surface — model := selection, precedence
+#              over opts['model'], unknown-model + capability errors — driven by
+#              the committed CI fixture (a second model 'fixture' alongside the
+#              built-in 'tabfm-v1'). Real engine, no mocks.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# The classification fixture registers a model 'fixture' AND becomes the active
+# default (single-file manifest); the built-in 'tabfm-v1' is also registered.
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,'a','x',0.1,'c0'),(1.5,0.2,'b','y',0.3,'c1'),(2.5,-1.0,'a','y',0.5,'c2'),
+  (0.2,0.8,'b','x',0.7,'c0'),(1.1,0.4,'a','y',0.2,'c1'),(3.0,-0.5,'b','y',0.9,'c2'),
+  (0.9,1.2,'a','x',0.6,'c0'),(2.1,0.1,'b','y',0.4,'c1'),
+  (1.3,0.3,'a','y',0.35,NULL),(2.4,-0.2,'b','x',0.55,NULL),
+  (0.7,0.9,'a','x',0.15,NULL),(1.8,-0.7,'b','y',0.75,NULL))
+  v(f1,f2,f3,f4,f5,label);
+
+# default resolution (no model :=) picks the single-file manifest model = fixture
+query I
+SELECT count(*) FROM tabfm_classify('t','label')
+----
+12
+
+# model := selects the fixture explicitly — same result
+query I
+SELECT count(*) FROM tabfm_classify('t','label', model := 'fixture')
+----
+12
+
+# the deprecated opts['model'] alias still works
+query I
+SELECT count(*) FROM tabfm_classify('t','label', opts := MAP{'model':'fixture'})
+----
+12
+
+# model := wins over opts['model'] (precedence): fixture runs even though opts
+# names a bogus model
+query I
+SELECT count(*) FROM tabfm_classify('t','label', model := 'fixture', opts := MAP{'model':'nope'})
+----
+12
+
+# unknown model → actionable error listing the registered ids
+statement error
+SELECT * FROM tabfm_classify('t','label', model := 'nope')
+----
+<REGEX>:.*unknown model 'nope'.*fixture.*
+
+# NOTE: selecting the built-in 'tabfm-v1' is intentionally not asserted here — it
+# errors "not downloaded" on a fresh machine but runs the real forward pass where
+# the ~6.6 GB weights are already cached, so the outcome is environment-dependent.
+
+# capability: the classification-only fixture cannot regress. A numeric target
+# with NULLs gives scored rows, so the engine's capability check is reached.
+statement ok
+CREATE TABLE tr AS SELECT * FROM (VALUES
+  (0.5,1.0),(1.5,0.2),(2.5,3.0),(0.9,NULL),(1.1,NULL)) v(x,y);
+
+statement error
+SELECT * FROM tabfm_regress('tr','y', model := 'fixture')
+----
+<REGEX>:.*model 'fixture' does not support task 'regression'.*
