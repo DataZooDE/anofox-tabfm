@@ -99,6 +99,10 @@ struct ResolvedModel {
 	string weights_path;
 	unordered_map<string, string> tensor_map; // onnx initializer name -> st key
 	string cache_key;
+	// Manifest-declared tensor contract (P4): graph input/output names to verify
+	// against the actual graph at load. Empty = no declared contract.
+	vector<string> contract_inputs;
+	vector<string> contract_outputs;
 };
 
 // Load {onnx -> safetensors} from the manifest: inline map, or the
@@ -218,6 +222,12 @@ ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 		    spec.id, task_name, task == TabFMTask::CLASSIFICATION ? "classify" : "regress");
 	}
 	resolved.manifest = SpecTaskToManifest(spec, task);
+	for (auto &e : spec.tensor_contract.inputs) {
+		resolved.contract_inputs.push_back(e.name);
+	}
+	for (auto &e : spec.tensor_contract.outputs) {
+		resolved.contract_outputs.push_back(e.name);
+	}
 	// Built-ins carry a bundled graph (resolved below) + cache weights → cache_dir;
 	// a user manifest's relative paths resolve against its own directory.
 	resolved.manifest_dir = spec.source_dir.empty() ? ctx.cache_dir : spec.source_dir;
@@ -591,6 +601,8 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	config.device_id = device.device_id;
 	config.device_ordinal = device.device_ordinal;
 	config.model_tag = TabFMTaskName(resolved.manifest.task);
+	config.contract_inputs = resolved.contract_inputs;
+	config.contract_outputs = resolved.contract_outputs;
 
 	const idx_t weight_bytes = nbytes;
 	auto session = resolved.graph_bundle.data

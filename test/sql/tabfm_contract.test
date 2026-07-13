@@ -1,0 +1,43 @@
+# name: test/sql/tabfm_contract.test
+# description: P4 — a manifest-declared tensor_contract is enforced against the
+#              model's actual weight-free graph at session creation. A manifest
+#              that lies about its graph (declares an input the graph does not
+#              have) must fail fast with an actionable, non-crashing error — not
+#              a segfault deep in the engine. The positive case (a truthful
+#              contract runs end-to-end) is covered by tabfm_multimodel_v2.test,
+#              whose fixture now carries the real x/y/train_size/cat_mask/d
+#              contract and executes a forward pass against it.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# a single-file manifest whose tensor_contract declares input 'not_a_real_input'
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/multi_bad/fixture_badcontract.json'
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,'a','x',0.1,'c0'),(1.5,0.2,'b','y',0.3,'c1'),(2.5,-1.0,'a','y',0.5,'c2'),
+  (0.2,0.8,'b','x',0.7,'c0'),(1.1,0.4,'a','y',0.2,'c1'),(3.0,-0.5,'b','y',0.9,'c2'),
+  (0.9,1.2,'a','x',0.6,'c0'),(2.1,0.1,'b','y',0.4,'c1'),
+  (1.3,0.3,'a','y',0.35,NULL),(2.4,-0.2,'b','x',0.55,NULL))
+  v(f1,f2,f3,f4,f5,label);
+
+# the model registers and lists fine — the contract is only enforced at load
+# (a single-file manifest is the implicit default, alongside the built-in)
+query TT
+SELECT model, family FROM tabfm_list_models() ORDER BY model
+----
+fixture-badcontract	icl-transformer
+tabfm-v1	icl-transformer
+
+# predicting with the lying model fails fast: the declared input is not in the graph
+statement error
+SELECT count(*) FROM tabfm_classify('t','label', model := 'fixture-badcontract')
+----
+<REGEX>:.*tensor_contract declares input 'not_a_real_input'.*

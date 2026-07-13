@@ -275,9 +275,10 @@ void ParseV2(yyjson_val *root, ModelSpec &spec, const string &path) {
 		Fail(path, "v2 \"weights\" must be a non-empty object keyed by task");
 	}
 	auto graph = yyjson_obj_get(root, "graph");
-	string shared_tensor_map;
+	// The shared tensor map may be a path string OR an inline {onnx -> st} object.
+	ModelTaskArtifacts shared_map;
 	if (graph && yyjson_is_obj(graph)) {
-		shared_tensor_map = OptStr(graph, "tensor_map", "", path);
+		ParseTensorMapInto(yyjson_obj_get(graph, "tensor_map"), shared_map, path);
 	}
 	yyjson_obj_iter wit;
 	yyjson_obj_iter_init(weights, &wit);
@@ -300,7 +301,8 @@ void ParseV2(yyjson_val *root, ModelSpec &spec, const string &path) {
 		if (art.graph.empty()) {
 			Fail(path, "v2 \"graph\" has no entry for task '" + task_name + "'");
 		}
-		art.tensor_map_path = shared_tensor_map;
+		art.tensor_map_path = shared_map.tensor_map_path;
+		art.tensor_map = shared_map.tensor_map;
 		spec.tasks.emplace(task, std::move(art));
 	}
 

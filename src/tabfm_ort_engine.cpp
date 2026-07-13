@@ -394,6 +394,32 @@ void PrepareSessionOptions(Ort::SessionOptions &options, const vector<TabFMTenso
 
 } // namespace
 
+// P4: verify the graph's actual input/output names match the manifest-declared
+// tensor_contract (when one is declared), so a manifest that lies about its
+// weight-free graph fails fast at load with an actionable error.
+static void ValidateDeclaredContract(const TabFMSession &session, const TabFMSessionConfig &config) {
+	auto has = [](const vector<string> &names, const string &n) {
+		for (auto &x : names) {
+			if (x == n) {
+				return true;
+			}
+		}
+		return false;
+	};
+	auto check = [&](const vector<string> &declared, const vector<string> &actual, const char *kind) {
+		for (auto &d : declared) {
+			if (!has(actual, d)) {
+				throw InvalidInputException(
+				    "anofox_tabfm: the manifest's tensor_contract declares %s '%s', but the model graph has no such "
+				    "%s — the manifest does not match its weight-free graph.",
+				    kind, d, kind);
+			}
+		}
+	};
+	check(config.contract_inputs, session.input_names, "input");
+	check(config.contract_outputs, session.output_names, "output");
+}
+
 TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
                                  const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config) {
 	if (!graph_bytes || graph_size == 0) {
@@ -406,7 +432,9 @@ TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
 	PrepareSessionOptions(options, initializers, config, names, values);
 	try {
 		Ort::Session session(GetOrtEnv(), graph_bytes, graph_size, options);
-		return make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
+		auto handle = make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
+		ValidateDeclaredContract(*handle, config);
+		return handle;
 	} catch (const Ort::Exception &error) {
 		ThrowMappedCreateError(error, config);
 	}
@@ -428,7 +456,9 @@ TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<
 #else
 		Ort::Session session(GetOrtEnv(), graph_path.c_str(), options);
 #endif
-		return make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
+		auto handle = make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
+		ValidateDeclaredContract(*handle, config);
+		return handle;
 	} catch (const Ort::Exception &error) {
 		ThrowMappedCreateError(error, config);
 	}
