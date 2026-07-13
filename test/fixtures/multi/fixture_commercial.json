@@ -1,0 +1,28 @@
+{
+  "schema_version": 2,
+  "id": "fixture-commercial",
+  "display_name": "Fixture (commercial, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "apache-2.0",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "tabfm_v1_minimal",
+  "weights": {
+    "classification": {
+      "files": [
+        { "path": "../model.safetensors", "bytes": 103324 }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "../graph_fixture.onnx",
+    "tensor_map": "../tensor_map_fixture.json"
+  },
+  "capabilities": ["classify"],
+  "size_regime": { "max_rows": 5000, "max_features": 100, "max_classes": 10 },
+  "compute": { "cpu": "f32" },
+  "_note": "A second CI fixture model — v2 schema, commercial (ungated) license — that REUSES the committed classification fixture graph/weights via ../ paths. Zero new artifacts, no Mitra bytes; proves the registry runs a v2 manifest end-to-end (FR-5.1 / M4)."
+}
