@@ -1,0 +1,11 @@
+{
+	"model": "tabfm-test",
+	"task": "classification",
+	"repo": "acme/tabfm-test",
+	"revision": "main",
+	"license": "tabfm-non-commercial-v1.0",
+	"files": [
+		{"path": "classification/model.safetensors", "url": "test/fixtures/weights_test/model_a.bin", "bytes": 4096},
+		{"path": "classification/config.json", "url": "test/fixtures/weights_test/config_a.json", "bytes": 99999}
+	]
+}

@@ -12,6 +12,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/numeric_utils.hpp"
+#include "duckdb/common/string_util.hpp"
 
 #include "yyjson.hpp"
 
@@ -211,6 +212,23 @@ void ParseContractSide(yyjson_val *side, vector<TensorContractEntry> &out, const
 // v1
 //===----------------------------------------------------------------------===//
 
+// True when a v1 `license` id needs no acceptance gate: "none"/absent, or a
+// well-known permissive license. Case-insensitive on the SPDX-style id.
+bool LicenseIsUngated(const string &license_id) {
+	if (license_id.empty() || license_id == "none") {
+		return true;
+	}
+	auto id = StringUtil::Lower(license_id);
+	static const char *kPermissive[] = {"apache-2.0", "mit",       "bsd-2-clause", "bsd-3-clause", "isc",
+	                                    "cc0-1.0",    "cc-by-4.0", "mpl-2.0",      "unlicense",    "zlib"};
+	for (auto *p : kPermissive) {
+		if (id == p) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void ParseV1(yyjson_val *root, ModelSpec &spec, const string &path) {
 	if (yyjson_obj_get(root, "model")) {
 		spec.id = ReqStr(root, "model", path);
@@ -220,14 +238,16 @@ void ParseV1(yyjson_val *root, ModelSpec &spec, const string &path) {
 		Fail(path, "missing required field \"model\" (or its alias \"model_id\")");
 	}
 	spec.family = OptStr(root, "family", "", path);
-	// license optional (download-only manifests may omit it). v1 heuristic: a
-	// named license is gated (matches the old download gate); "none"/absent is
-	// ungated. v2 uses the explicit license object instead.
+	// license optional (download-only manifests may omit it). v1 heuristic:
+	// "none"/absent is ungated; a well-known PERMISSIVE license (apache-2.0, mit,
+	// bsd, …) is commercial/ungated; any other *named* license stays gated behind
+	// accept_hf_license (conservative — this preserves the built-in HF weight
+	// gate and is safe for unknown restrictive licenses). v2 models declare the
+	// license explicitly (object) and never take this path.
 	spec.license.id = OptStr(root, "license", "none", path);
-	const bool gated = spec.license.id != "none" && !spec.license.id.empty();
-	spec.license.commercial = !gated;
-	spec.license.redistributable = !gated;
-	spec.license.gate_setting = gated ? "accept_hf_license" : "";
+	spec.license.commercial = LicenseIsUngated(spec.license.id);
+	spec.license.redistributable = spec.license.commercial;
+	spec.license.gate_setting = spec.license.commercial ? "" : "accept_hf_license";
 
 	auto task = ParseTaskName(ReqStr(root, "task", path), path);
 	ModelTaskArtifacts art;

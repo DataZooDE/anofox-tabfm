@@ -1,0 +1,71 @@
+# name: test/sql/tabfm_registry_meta.test
+# description: Registry metadata correctness surfaced by tabfm_list_models()
+#             (codex P3 review). (1) The v1 license heuristic must treat a
+#             well-known PERMISSIVE license (apache-2.0) as commercial/ungated,
+#             not gate it like the built-in HF weights. (2) `downloaded` must be
+#             size-verified — a cache file whose size does not match the manifest
+#             must NOT report as downloaded (parity with the download path).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# --- Finding 3: a permissive v1 license is commercial/ungated -------------------
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_apache.json'
+
+# apache-2.0 must report commercial = true (not the old "any named license = gated")
+query TTT
+SELECT model, license, commercial FROM tabfm_list_models() WHERE model = 'acme-apache'
+----
+acme-apache	apache-2.0	true
+
+# an ungated model needs no license acceptance to be listed/selected
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,'a','x',0.1,'c0'),(1.5,0.2,'b','y',0.3,'c1'),(2.5,-1.0,'a','y',0.5,'c2'),
+  (0.2,0.8,'b','x',0.7,'c0'))
+  v(f1,f2,f3,f4,f5,label);
+
+# --- Finding 4: `downloaded` is size-verified -----------------------------------
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_ok.json'
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/meta_cache'
+
+# manifest_ok is the gated built-in-style license — accept it to download
+statement ok
+SET anofox_tabfm_accept_hf_license = true
+
+# nothing cached yet
+query T
+SELECT downloaded FROM tabfm_list_models() WHERE model = 'tabfm-test'
+----
+false
+
+statement ok
+SELECT count(*) FROM tabfm_download('classification')
+
+# a complete, size-matching cache reports downloaded = true
+query T
+SELECT downloaded FROM tabfm_list_models() WHERE model = 'tabfm-test'
+----
+true
+
+# same cache slug, but the manifest now declares a wrong size for config.json:
+# the size mismatch must make it report NOT downloaded (a truncated/stale file
+# is not a usable download)
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_ok_wrongsize.json'
+
+query T
+SELECT downloaded FROM tabfm_list_models() WHERE model = 'tabfm-test'
+----
+false

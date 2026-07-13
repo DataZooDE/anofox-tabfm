@@ -161,7 +161,10 @@ WeightsManifest FindManifest(ClientContext &context, const char *func_name, cons
 	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"));
 	const ModelSpec &spec = registry.Resolve(model_id, StringSetting(context, "anofox_tabfm_default_model"));
 	if (!spec.HasTask(tfm_task)) {
-		throw InvalidInputException("%s: model '%s' does not support task '%s'.", func_name, spec.id, task);
+		throw InvalidInputException(
+		    "%s: model '%s' does not support task '%s'. Point anofox_tabfm_model_manifest at a model that supports "
+		    "'%s' (or unset it to use the built-in); see tabfm_list_models().",
+		    func_name, spec.id, task, task);
 	}
 	return WeightsFromSpec(spec, tfm_task);
 }
@@ -513,6 +516,29 @@ struct ListModelsGlobalState : public GlobalTableFunctionState {
 	}
 };
 
+// A task's weights are "complete" in the cache iff every file exists AND (when
+// the manifest declares a byte count) its size matches. This mirrors the
+// download path, which only trusts size-matching files — a truncated or
+// zero-byte artifact must not report as downloaded (list_models parity).
+bool TaskWeightsComplete(FileSystem &fs, const string &base_dir, const vector<WeightsFileEntry> &files) {
+	if (files.empty()) {
+		return false;
+	}
+	for (auto &f : files) {
+		auto path = base_dir + "/" + f.path;
+		if (!fs.FileExists(path)) {
+			return false;
+		}
+		if (f.bytes >= 0) {
+			auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+			if (fs.GetFileSize(*handle) != f.bytes) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 unique_ptr<FunctionData> ListModelsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
                                         vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_list_models");
@@ -540,18 +566,11 @@ unique_ptr<GlobalTableFunctionState> ListModelsInit(ClientContext &context, Tabl
 		row.max_rows = spec.size_regime.max_rows;
 		row.max_features = spec.size_regime.max_features;
 		row.max_classes = spec.size_regime.max_classes;
-		// downloaded = any task's weights are complete in the cache
+		// downloaded = any task's weights are complete (present AND size-matched)
 		for (auto &task_kv : spec.tasks) {
 			auto wm = WeightsFromSpec(spec, task_kv.first);
 			auto base = cache_dir + "/" + wm.CacheSlug(wm.revision);
-			bool complete = !wm.files.empty();
-			for (auto &f : wm.files) {
-				if (!fs.FileExists(base + "/" + f.path)) {
-					complete = false;
-					break;
-				}
-			}
-			if (complete) {
+			if (TaskWeightsComplete(fs, base, wm.files)) {
 				row.downloaded = true;
 				break;
 			}

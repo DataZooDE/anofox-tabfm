@@ -118,6 +118,46 @@ Each gate: `codex exec < /dev/null` and an antigravity pass on the diff since th
 last gate; trisect/confirm each finding against a real test before acting on it
 (the Windows-crash discipline: reproduce, don't trust the claim).
 
+## codex P3 review — dispositions (2026-07-13)
+
+Ran `codex exec review` on the P3 surface. Six findings; each verified against a
+real test before acting (the reproduce-don't-trust discipline).
+
+- **Fixed — repo-less model cache resolution** (High). `ResolveWeightsPath` only
+  consulted the cache when `repo` was non-empty, but the download side keys the
+  cache on `model` when `repo` is empty (`CacheSlug`). A repo-less user manifest
+  (per-file `url`, no `repo`) could download yet still resolve as "not
+  downloaded". Now the resolver reconstructs the same slug the download writes.
+- **Fixed — permissive v1 license mislabeled** (Medium). The v1 heuristic gated
+  *every* named license, so `apache-2.0` / `mit` were reported non-commercial and
+  gated in `tabfm_list_models()`. Added a permissive allowlist
+  (`LicenseIsUngated`): known-permissive → commercial/ungated; unknown *named*
+  license stays gated (conservative — preserves the built-in HF weight gate).
+  Covered by `tabfm_registry_meta.test`.
+- **Fixed — `downloaded` not size-verified** (Medium). `tabfm_list_models()`
+  marked a task downloaded on file *existence* alone; a truncated/zero-byte
+  artifact read as ready. Now size-verified (`TaskWeightsComplete`), matching the
+  download path. Covered by `tabfm_registry_meta.test` (same-slug wrong-size
+  manifest → `downloaded = false`).
+- **Fixed — lifecycle capability error actionability** (High, reframed). The
+  strict "model does not support task" error on a single-file manifest is kept
+  (deliberate: an explicit custom model should not silently pull built-in Google
+  weights), but the lifecycle message now names the remedy (point/unset
+  `anofox_tabfm_model_manifest`; see `tabfm_list_models()`). The predict-path
+  message was already actionable.
+- **Deferred — model-level `downloaded` is true when *any* task is complete**
+  (Medium/design). For a multi-task model, one cached checkpoint marks the whole
+  row downloaded while the row advertises combined capabilities. Acceptable for
+  this round (built-ins are per-task manifests in practice); revisit with a
+  `downloaded_tasks` / per-task view when a real multi-task downloadable model
+  lands (Mitra follow-up).
+- **Deferred — manifest `files[].path` traversal** (Low/hardening). A `../` in a
+  cache file path can escape the cache subtree. The committed v2 fixtures *rely*
+  on `../` for local manifest-relative artifact reuse, so a blanket reject would
+  break them; proper containment normalization is deferred until a downloadable
+  (network-fetched) second model exists, where the risk is real. Tracked as a
+  hardening follow-up.
+
 ## Definition of done (this round)
 Registry live with `google-tabfm-v1` + a real second fixture model; `model :=`,
 `tabfm_list_models()`, per-model weights, capability gating, tensor-contract

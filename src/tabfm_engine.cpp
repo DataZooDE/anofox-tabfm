@@ -172,9 +172,13 @@ string ResolveWeightsPath(FileSystem &fs, const ModelManifest &manifest, const s
 	}
 	const auto &file = manifest.files.front();
 	vector<string> candidates;
-	if (!cache_dir.empty() && !manifest.repo.empty()) {
-		auto slug = StringUtil::Replace(manifest.repo, "/", "__") + "@" + manifest.revision;
-		candidates.push_back(fs.JoinPath(fs.JoinPath(cache_dir, slug), file.path));
+	if (!cache_dir.empty()) {
+		// Match the download-side cache slug (WeightsManifest::CacheSlug): a
+		// repo-less model (e.g. a user manifest with per-file urls) caches under
+		// its model id, not a repo path. Resolve must look there too, else a
+		// downloaded repo-less model reads as "not downloaded".
+		auto slug_base = manifest.repo.empty() ? manifest.model : StringUtil::Replace(manifest.repo, "/", "__");
+		candidates.push_back(fs.JoinPath(fs.JoinPath(cache_dir, slug_base + "@" + manifest.revision), file.path));
 	}
 	candidates.push_back(JoinPath(fs, dir, file.path));
 	// fixture layout: a bare model.safetensors beside the manifest
