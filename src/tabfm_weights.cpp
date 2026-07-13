@@ -1,6 +1,7 @@
 #include "tabfm_registration.hpp"
 #include "anofox_function_alias.hpp"
 #include "tabfm_predict.hpp"
+#include "tabfm_registry.hpp"
 #include "tabfm_state.hpp"
 #include "telemetry.hpp"
 
@@ -125,91 +126,46 @@ string JsonString(duckdb_yyjson::yyjson_val *obj, const char *key, const string 
 	return duckdb_yyjson::yyjson_get_str(val);
 }
 
-WeightsManifest ParseManifestJson(const string &json, const string &manifest_path) {
-	using namespace duckdb_yyjson; // NOLINT
-	auto doc = yyjson_read(json.c_str(), json.size(), 0);
-	if (!doc) {
-		throw InvalidInputException("tabfm: cannot parse model manifest '%s': invalid JSON", manifest_path);
-	}
+// Build the weights-view of one (model, task) from a registry ModelSpec. The
+// single manifest parser is now ParseModelSpec (tabfm_model_spec.cpp); this
+// module no longer parses manifest JSON — it shares the registry with predict.
+WeightsManifest WeightsFromSpec(const ModelSpec &spec, TabFMTask task) {
 	WeightsManifest result;
-	auto root = yyjson_doc_get_root(doc);
-	if (!root || !yyjson_is_obj(root)) {
-		yyjson_doc_free(doc);
-		throw InvalidInputException("tabfm: cannot parse model manifest '%s': root must be a JSON object",
-		                            manifest_path);
-	}
-	result.model = JsonString(root, "model", JsonString(root, "model_id", "unnamed"));
-	result.task = JsonString(root, "task", "");
-	result.repo = JsonString(root, "repo", "");
-	result.revision = JsonString(root, "revision", "main");
-	result.license = JsonString(root, "license", "none");
-	auto files = yyjson_obj_get(root, "files");
-	if (files && yyjson_is_arr(files)) {
-		size_t idx, max;
-		yyjson_val *file;
-		yyjson_arr_foreach(files, idx, max, file) {
-			if (!yyjson_is_obj(file)) {
-				continue;
-			}
-			WeightsFileEntry entry;
-			entry.path = JsonString(file, "path", "");
-			entry.url = JsonString(file, "url", "");
-			auto bytes = yyjson_obj_get(file, "bytes");
-			if (bytes && yyjson_is_int(bytes)) {
-				entry.bytes = yyjson_get_sint(bytes);
-			}
-			if (!entry.path.empty()) {
-				result.files.push_back(std::move(entry));
-			}
-		}
-	}
-	yyjson_doc_free(doc);
-	if (result.task.empty()) {
-		throw InvalidInputException("tabfm: model manifest '%s' is missing the 'task' field", manifest_path);
-	}
-	if (result.files.empty()) {
-		throw InvalidInputException("tabfm: model manifest '%s' lists no files", manifest_path);
+	result.model = spec.id;
+	result.task = TabFMTaskName(task);
+	const auto &art = spec.tasks.at(task);
+	result.repo = art.repo;
+	result.revision = art.revision;
+	// Gated iff the license declares a gate_setting (e.g. accept_hf_license).
+	result.license = spec.license.gate_setting.empty() ? "none" : spec.license.id;
+	result.builtin = spec.source_dir.empty(); // built-ins carry no source dir
+	for (auto &f : art.files) {
+		WeightsFileEntry entry;
+		entry.path = f.path;
+		entry.url = f.url;
+		entry.bytes = f.bytes == 0 ? -1 : NumericCast<int64_t>(f.bytes);
+		result.files.push_back(std::move(entry));
 	}
 	return result;
 }
 
-WeightsManifest BuiltinManifest(const string &task) {
-	WeightsManifest result;
-	result.model = kBuiltinModel;
-	result.task = task;
-	result.repo = kBuiltinRepo;
-	result.revision = "main";
-	result.license = kBuiltinLicense;
-	result.builtin = true;
-	WeightsFileEntry entry;
-	entry.path = task + "/model.safetensors";
-	// URL is derived from repo + revision at bind time (revision may be overridden).
-	result.files.push_back(std::move(entry));
-	return result;
-}
-
-// All manifests visible in this session: the pluggable manifest from
-// SET anofox_tabfm_model_manifest (if any) shadows a built-in task of the
-// same name; the hardcoded Google tasks are always present otherwise.
-vector<WeightsManifest> ResolveManifests(ClientContext &context) {
-	vector<WeightsManifest> result;
+string StringSetting(ClientContext &context, const char *name) {
 	Value value;
-	if (context.TryGetCurrentSetting("anofox_tabfm_model_manifest", value) && !value.IsNull()) {
-		auto path = value.ToString();
-		if (!path.empty()) {
-			result.push_back(ParseManifestJson(ReadTextFile(context, path), path));
-		}
+	if (context.TryGetCurrentSetting(name, value) && !value.IsNull()) {
+		return value.ToString();
 	}
-	for (auto task : {"classification", "regression"}) {
-		bool shadowed = false;
-		for (auto &m : result) {
-			if (m.task == task) {
-				shadowed = true;
-				break;
-			}
-		}
-		if (!shadowed) {
-			result.push_back(BuiltinManifest(task));
+	return "";
+}
+
+// Every (model, task) the registry knows this session — built-ins + user
+// manifests (file or dir) from anofox_tabfm_model_manifest. The single source of
+// truth, shared with the predict path.
+vector<WeightsManifest> ResolveManifests(ClientContext &context) {
+	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"));
+	vector<WeightsManifest> result;
+	for (auto &kv : registry.Models()) {
+		for (auto &task_kv : kv.second.tasks) {
+			result.push_back(WeightsFromSpec(kv.second, task_kv.first));
 		}
 	}
 	return result;
@@ -226,14 +182,27 @@ string ValidTaskList(const vector<WeightsManifest> &manifests) {
 	return StringUtil::Join(tasks, ", ");
 }
 
-WeightsManifest FindManifest(ClientContext &context, const char *func_name, const string &task) {
-	auto manifests = ResolveManifests(context);
-	for (auto &m : manifests) {
-		if (m.task == task) {
-			return m;
-		}
+TabFMTask ParseTaskArg(const string &task, const char *func_name) {
+	if (task == "classification") {
+		return TabFMTask::CLASSIFICATION;
 	}
-	throw InvalidInputException("%s: unknown task '%s'. Valid tasks: %s", func_name, task, ValidTaskList(manifests));
+	if (task == "regression") {
+		return TabFMTask::REGRESSION;
+	}
+	throw InvalidInputException("%s: unknown task '%s'. Valid tasks: classification, regression", func_name, task);
+}
+
+// Resolve one (model, task) via the registry: the resolved model (model_id, may
+// be "" → default_model / single-file manifest / sole model) for `task`.
+WeightsManifest FindManifest(ClientContext &context, const char *func_name, const string &model_id,
+                             const string &task) {
+	auto tfm_task = ParseTaskArg(task, func_name);
+	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"));
+	const ModelSpec &spec = registry.Resolve(model_id, StringSetting(context, "anofox_tabfm_default_model"));
+	if (!spec.HasTask(tfm_task)) {
+		throw InvalidInputException("%s: model '%s' does not support task '%s'.", func_name, spec.id, task);
+	}
+	return WeightsFromSpec(spec, tfm_task);
 }
 
 string RequireTaskArgument(const TableFunctionBindInput &input, const char *func_name) {
@@ -254,10 +223,12 @@ string FileUrl(const WeightsManifest &manifest, const WeightsFileEntry &file, co
 	if (!file.url.empty()) {
 		return file.url;
 	}
+	// Built-in models derive the HF URL from repo/revision/path. User manifests
+	// are air-gapped unless a file carries an explicit url (FR-1.5); a future
+	// downloadable provider (e.g. Mitra) will carry per-file urls / url_template.
 	if (manifest.builtin) {
 		return "https://huggingface.co/" + manifest.repo + "/resolve/" + revision + "/" + file.path;
 	}
-	// custom manifest without url: air-gapped, cache must be pre-seeded (FR-1.5)
 	return "";
 }
 
@@ -341,7 +312,7 @@ unique_ptr<FunctionData> DownloadBind(ClientContext &context, TableFunctionBindI
 
 	auto task = RequireTaskArgument(input, "tabfm_download");
 	auto result = make_uniq<DownloadBindData>();
-	result->manifest = FindManifest(context, "tabfm_download", task);
+	result->manifest = FindManifest(context, "tabfm_download", string(), task);
 	result->revision = result->manifest.revision;
 	if (input.inputs.size() > 1) {
 		if (input.inputs[1].IsNull()) {
@@ -587,7 +558,7 @@ unique_ptr<FunctionData> LoadBind(ClientContext &context, TableFunctionBindInput
                                   vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_load");
 	auto task = RequireTaskArgument(input, "tabfm_load");
-	auto manifest = FindManifest(context, "tabfm_load", task);
+	auto manifest = FindManifest(context, "tabfm_load", string(), task);
 
 	// cache presence check — the §5 'not downloaded' contract
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -619,7 +590,7 @@ unique_ptr<FunctionData> UnloadBind(ClientContext &context, TableFunctionBindInp
 		tabfm_state->UnloadAll(); // free every warmed session for this DB instance
 	} else {
 		result->task = RequireTaskArgument(input, "tabfm_unload");
-		auto manifest = FindManifest(context, "tabfm_unload", result->task); // validates the task name
+		auto manifest = FindManifest(context, "tabfm_unload", string(), result->task); // validates the task name
 		// free the warmed session, if any (predict / tabfm_load registered it).
 		tabfm_state->Unload(TabFMModelCacheKey(manifest.model, result->task, manifest.revision));
 	}
@@ -668,7 +639,7 @@ unique_ptr<FunctionData> RemoveBind(ClientContext &context, TableFunctionBindInp
                                     vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_remove");
 	auto task = RequireTaskArgument(input, "tabfm_remove");
-	auto manifest = FindManifest(context, "tabfm_remove", task);
+	auto manifest = FindManifest(context, "tabfm_remove", string(), task);
 
 	auto result = make_uniq<RemoveBindData>();
 	result->task = task;
@@ -755,7 +726,7 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
                                         vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_gpu_precompile");
 	auto task = RequireTaskArgument(input, "tabfm_gpu_precompile");
-	FindManifest(context, "tabfm_gpu_precompile", task); // validates the task name
+	FindManifest(context, "tabfm_gpu_precompile", string(), task); // validates the task name
 	auto result = make_uniq<PrecompileBindData>();
 	result->task = task;
 	result->task_enum = task == "regression" ? TabFMTask::REGRESSION : TabFMTask::CLASSIFICATION;

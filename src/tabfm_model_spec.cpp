@@ -220,18 +220,26 @@ void ParseV1(yyjson_val *root, ModelSpec &spec, const string &path) {
 		Fail(path, "missing required field \"model\" (or its alias \"model_id\")");
 	}
 	spec.family = OptStr(root, "family", "", path);
-	spec.license.id = ReqStr(root, "license", path);
-	spec.license.commercial = false; // conservative: the only v1 model is gated
-	spec.license.redistributable = false;
+	// license optional (download-only manifests may omit it). v1 heuristic: a
+	// named license is gated (matches the old download gate); "none"/absent is
+	// ungated. v2 uses the explicit license object instead.
+	spec.license.id = OptStr(root, "license", "none", path);
+	const bool gated = spec.license.id != "none" && !spec.license.id.empty();
+	spec.license.commercial = !gated;
+	spec.license.redistributable = !gated;
+	spec.license.gate_setting = gated ? "accept_hf_license" : "";
 
 	auto task = ParseTaskName(ReqStr(root, "task", path), path);
 	ModelTaskArtifacts art;
 	art.repo = OptStr(root, "repo", "", path);
 	art.revision = OptStr(root, "revision", "main", path);
 	art.files = ParseFileArray(yyjson_obj_get(root, "files"), path);
-	art.graph = ReqStr(root, "graph", path);
+	// graph + preprocessing_profile are optional here (a download/weights-only
+	// manifest need not carry them); the engine validates the graph when it needs
+	// one (ResolveGraphPath errors clearly if it is missing).
+	art.graph = OptStr(root, "graph", "", path);
 	ParseTensorMapInto(yyjson_obj_get(root, "tensor_map"), art, path);
-	art.preprocessing_profile = ReqStr(root, "preprocessing_profile", path);
+	art.preprocessing_profile = OptStr(root, "preprocessing_profile", "", path);
 	spec.preprocessing_profile = art.preprocessing_profile;
 	spec.tasks.emplace(task, std::move(art));
 
