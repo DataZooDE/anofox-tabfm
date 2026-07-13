@@ -41,9 +41,6 @@ namespace anofox {
 namespace {
 
 constexpr idx_t kChunkBytes = 8ULL * 1024 * 1024;
-constexpr const char *kBuiltinRepo = "google/tabfm-1.0.0-pytorch";
-constexpr const char *kBuiltinLicense = "tabfm-non-commercial-v1.0";
-constexpr const char *kBuiltinModel = "tabfm-v1";
 
 //===--------------------------------------------------------------------===//
 // Manifest resolution
@@ -101,31 +98,6 @@ bool LicenseAccepted(ClientContext &context) {
 	return BooleanValue::Get(value.DefaultCastAs(LogicalType::BOOLEAN));
 }
 
-string ReadTextFile(ClientContext &context, const string &path) {
-	auto &fs = FileSystem::GetFileSystem(context);
-	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
-	auto size = NumericCast<idx_t>(fs.GetFileSize(*handle));
-	string result(size, '\0');
-	idx_t offset = 0;
-	while (offset < size) {
-		auto n = handle->Read((void *)(result.data() + offset), size - offset);
-		if (n <= 0) {
-			break;
-		}
-		offset += NumericCast<idx_t>(n);
-	}
-	result.resize(offset);
-	return result;
-}
-
-string JsonString(duckdb_yyjson::yyjson_val *obj, const char *key, const string &fallback) {
-	auto val = duckdb_yyjson::yyjson_obj_get(obj, key);
-	if (!val || !duckdb_yyjson::yyjson_is_str(val)) {
-		return fallback;
-	}
-	return duckdb_yyjson::yyjson_get_str(val);
-}
-
 // Build the weights-view of one (model, task) from a registry ModelSpec. The
 // single manifest parser is now ParseModelSpec (tabfm_model_spec.cpp); this
 // module no longer parses manifest JSON — it shares the registry with predict.
@@ -169,17 +141,6 @@ vector<WeightsManifest> ResolveManifests(ClientContext &context) {
 		}
 	}
 	return result;
-}
-
-string ValidTaskList(const vector<WeightsManifest> &manifests) {
-	vector<string> tasks;
-	for (auto &m : manifests) {
-		if (std::find(tasks.begin(), tasks.end(), m.task) == tasks.end()) {
-			tasks.push_back(m.task);
-		}
-	}
-	std::sort(tasks.begin(), tasks.end());
-	return StringUtil::Join(tasks, ", ");
 }
 
 TabFMTask ParseTaskArg(const string &task, const char *func_name) {
@@ -534,6 +495,93 @@ void ModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 }
 
 //===--------------------------------------------------------------------===//
+// tabfm_list_models() — the REGISTRY view: every known model, downloaded or not
+//===--------------------------------------------------------------------===//
+
+struct ListModelsRow {
+	string model, family, capabilities, license;
+	bool commercial = false;
+	int64_t max_rows = -1, max_features = -1, max_classes = -1;
+	bool downloaded = false;
+};
+
+struct ListModelsGlobalState : public GlobalTableFunctionState {
+	vector<ListModelsRow> rows;
+	idx_t next = 0;
+	idx_t MaxThreads() const override {
+		return 1;
+	}
+};
+
+unique_ptr<FunctionData> ListModelsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
+                                        vector<string> &names) {
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_list_models");
+	names = {"model",    "family",       "capabilities", "license",   "commercial",
+	         "max_rows", "max_features", "max_classes",  "downloaded"};
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                LogicalType::VARCHAR, LogicalType::BOOLEAN, LogicalType::BIGINT,
+	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BOOLEAN};
+	return make_uniq<ModelsBindData>();
+}
+
+unique_ptr<GlobalTableFunctionState> ListModelsInit(ClientContext &context, TableFunctionInitInput &) {
+	auto state = make_uniq<ListModelsGlobalState>();
+	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"));
+	auto &fs = FileSystem::GetFileSystem(context);
+	auto cache_dir = GetCacheDir(context);
+	for (auto &kv : registry.Models()) {
+		const auto &spec = kv.second;
+		ListModelsRow row;
+		row.model = spec.id;
+		row.family = spec.family;
+		row.capabilities = StringUtil::Join(spec.capabilities, ", ");
+		row.license = spec.license.id;
+		row.commercial = spec.license.commercial;
+		row.max_rows = spec.size_regime.max_rows;
+		row.max_features = spec.size_regime.max_features;
+		row.max_classes = spec.size_regime.max_classes;
+		// downloaded = any task's weights are complete in the cache
+		for (auto &task_kv : spec.tasks) {
+			auto wm = WeightsFromSpec(spec, task_kv.first);
+			auto base = cache_dir + "/" + wm.CacheSlug(wm.revision);
+			bool complete = !wm.files.empty();
+			for (auto &f : wm.files) {
+				if (!fs.FileExists(base + "/" + f.path)) {
+					complete = false;
+					break;
+				}
+			}
+			if (complete) {
+				row.downloaded = true;
+				break;
+			}
+		}
+		state->rows.push_back(std::move(row));
+	}
+	return std::move(state);
+}
+
+void ListModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<ListModelsGlobalState>();
+	auto nbig = [](int64_t v) { return v < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(v); };
+	idx_t out = 0;
+	while (state.next < state.rows.size() && out < STANDARD_VECTOR_SIZE) {
+		auto &r = state.rows[state.next++];
+		output.SetValue(0, out, Value(r.model));
+		output.SetValue(1, out, Value(r.family));
+		output.SetValue(2, out, Value(r.capabilities));
+		output.SetValue(3, out, Value(r.license));
+		output.SetValue(4, out, Value::BOOLEAN(r.commercial));
+		output.SetValue(5, out, nbig(r.max_rows));
+		output.SetValue(6, out, nbig(r.max_features));
+		output.SetValue(7, out, nbig(r.max_classes));
+		output.SetValue(8, out, Value::BOOLEAN(r.downloaded));
+		out++;
+	}
+	output.SetCardinality(out);
+}
+
+//===--------------------------------------------------------------------===//
 // tabfm_load(task) / tabfm_unload([task]) — status-row surface
 //===--------------------------------------------------------------------===//
 
@@ -839,6 +887,12 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            "Delete a downloaded TabFM model's weights from the local cache (by task, optionally a specific "
 	            "revision).",
 	            "CALL tabfm_remove('classification');");
+	// SELECT * FROM tabfm_list_models();  — the registry (all known models).
+	RegisterSet(loader, "anofox_tabfm_list_models", "tabfm_list_models", {{}}, ListModelsBind, ListModelsInit,
+	            ListModelsExecute,
+	            "List every model in the registry (built-ins + user manifests), downloaded or not: model, family, "
+	            "capabilities, license, commercial, size regime (max_rows/features/classes), downloaded.",
+	            "SELECT * FROM tabfm_list_models();");
 	// CALL tabfm_gpu_precompile(task [, rows, features]);
 	RegisterSet(loader, "anofox_tabfm_gpu_precompile", "tabfm_gpu_precompile",
 	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT}},

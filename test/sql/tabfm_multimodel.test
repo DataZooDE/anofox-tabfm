@@ -26,6 +26,13 @@ CREATE TABLE t AS SELECT * FROM (VALUES
   (0.7,0.9,'a','x',0.15,NULL),(1.8,-0.7,'b','y',0.75,NULL))
   v(f1,f2,f3,f4,f5,label);
 
+# the registry lists both models (the fixture + the built-in), downloaded or not
+query TT
+SELECT model, capabilities FROM tabfm_list_models() ORDER BY model
+----
+fixture	classify
+tabfm-v1	classify, regress
+
 # default resolution (no model :=) picks the single-file manifest model = fixture
 query I
 SELECT count(*) FROM tabfm_classify('t','label')
