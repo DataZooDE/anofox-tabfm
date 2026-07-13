@@ -1,0 +1,69 @@
+# name: test/sql/tabfm_multimodel_v2.test
+# description: The M4 proof (FR-5.1: "a second model is a manifest, not new C++").
+#              A DIRECTORY manifest source registers a second REAL model — a v2
+#              schema, commercial (ungated) icl-transformer that reuses the
+#              committed classification fixture graph/weights via ../ paths — and
+#              runs it end-to-end through the real engine. Zero new artifacts,
+#              zero Mitra bytes, no mocks.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# a DIRECTORY of manifests (merged, no implicit default)
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/multi'
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,'a','x',0.1,'c0'),(1.5,0.2,'b','y',0.3,'c1'),(2.5,-1.0,'a','y',0.5,'c2'),
+  (0.2,0.8,'b','x',0.7,'c0'),(1.1,0.4,'a','y',0.2,'c1'),(3.0,-0.5,'b','y',0.9,'c2'),
+  (0.9,1.2,'a','x',0.6,'c0'),(2.1,0.1,'b','y',0.4,'c1'),
+  (1.3,0.3,'a','y',0.35,NULL),(2.4,-0.2,'b','x',0.55,NULL),
+  (0.7,0.9,'a','x',0.15,NULL),(1.8,-0.7,'b','y',0.75,NULL))
+  v(f1,f2,f3,f4,f5,label);
+
+# the registry now has the v2 commercial fixture + the built-in
+query TTT
+SELECT model, family, commercial FROM tabfm_list_models() ORDER BY model
+----
+fixture-commercial	icl-transformer	true
+tabfm-v1	icl-transformer	false
+
+# the v2 model's size regime comes through
+query III
+SELECT max_rows, max_features, max_classes FROM tabfm_list_models() WHERE model = 'fixture-commercial'
+----
+5000	100	10
+
+# a directory source has no implicit default → a bare call is an actionable error
+statement error
+SELECT count(*) FROM tabfm_classify('t','label')
+----
+<REGEX>:.*(registered|default_model|model :=).*
+
+# selecting the v2 model runs a REAL forward pass through the shared engine
+query I
+SELECT count(*) FROM tabfm_classify('t','label', model := 'fixture-commercial')
+----
+12
+
+# every prediction is a valid training class (the graph really ran)
+query I
+SELECT count(*) FROM tabfm_classify('t','label', model := 'fixture-commercial')
+WHERE yhat NOT IN ('c0','c1','c2')
+----
+0
+
+# a commercial (ungated) model needs no license acceptance
+statement ok
+SET anofox_tabfm_default_model = 'fixture-commercial'
+
+query I
+SELECT count(*) FROM tabfm_classify('t','label')
+----
+12

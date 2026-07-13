@@ -1,6 +1,7 @@
 #include "tabfm_registration.hpp"
 #include "anofox_function_alias.hpp"
 #include "tabfm_predict.hpp"
+#include "tabfm_registry.hpp"
 #include "tabfm_state.hpp"
 #include "telemetry.hpp"
 
@@ -40,9 +41,6 @@ namespace anofox {
 namespace {
 
 constexpr idx_t kChunkBytes = 8ULL * 1024 * 1024;
-constexpr const char *kBuiltinRepo = "google/tabfm-1.0.0-pytorch";
-constexpr const char *kBuiltinLicense = "tabfm-non-commercial-v1.0";
-constexpr const char *kBuiltinModel = "tabfm-v1";
 
 //===--------------------------------------------------------------------===//
 // Manifest resolution
@@ -100,140 +98,75 @@ bool LicenseAccepted(ClientContext &context) {
 	return BooleanValue::Get(value.DefaultCastAs(LogicalType::BOOLEAN));
 }
 
-string ReadTextFile(ClientContext &context, const string &path) {
-	auto &fs = FileSystem::GetFileSystem(context);
-	auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
-	auto size = NumericCast<idx_t>(fs.GetFileSize(*handle));
-	string result(size, '\0');
-	idx_t offset = 0;
-	while (offset < size) {
-		auto n = handle->Read((void *)(result.data() + offset), size - offset);
-		if (n <= 0) {
-			break;
-		}
-		offset += NumericCast<idx_t>(n);
-	}
-	result.resize(offset);
-	return result;
-}
-
-string JsonString(duckdb_yyjson::yyjson_val *obj, const char *key, const string &fallback) {
-	auto val = duckdb_yyjson::yyjson_obj_get(obj, key);
-	if (!val || !duckdb_yyjson::yyjson_is_str(val)) {
-		return fallback;
-	}
-	return duckdb_yyjson::yyjson_get_str(val);
-}
-
-WeightsManifest ParseManifestJson(const string &json, const string &manifest_path) {
-	using namespace duckdb_yyjson; // NOLINT
-	auto doc = yyjson_read(json.c_str(), json.size(), 0);
-	if (!doc) {
-		throw InvalidInputException("tabfm: cannot parse model manifest '%s': invalid JSON", manifest_path);
-	}
+// Build the weights-view of one (model, task) from a registry ModelSpec. The
+// single manifest parser is now ParseModelSpec (tabfm_model_spec.cpp); this
+// module no longer parses manifest JSON — it shares the registry with predict.
+WeightsManifest WeightsFromSpec(const ModelSpec &spec, TabFMTask task) {
 	WeightsManifest result;
-	auto root = yyjson_doc_get_root(doc);
-	if (!root || !yyjson_is_obj(root)) {
-		yyjson_doc_free(doc);
-		throw InvalidInputException("tabfm: cannot parse model manifest '%s': root must be a JSON object",
-		                            manifest_path);
-	}
-	result.model = JsonString(root, "model", JsonString(root, "model_id", "unnamed"));
-	result.task = JsonString(root, "task", "");
-	result.repo = JsonString(root, "repo", "");
-	result.revision = JsonString(root, "revision", "main");
-	result.license = JsonString(root, "license", "none");
-	auto files = yyjson_obj_get(root, "files");
-	if (files && yyjson_is_arr(files)) {
-		size_t idx, max;
-		yyjson_val *file;
-		yyjson_arr_foreach(files, idx, max, file) {
-			if (!yyjson_is_obj(file)) {
-				continue;
-			}
-			WeightsFileEntry entry;
-			entry.path = JsonString(file, "path", "");
-			entry.url = JsonString(file, "url", "");
-			auto bytes = yyjson_obj_get(file, "bytes");
-			if (bytes && yyjson_is_int(bytes)) {
-				entry.bytes = yyjson_get_sint(bytes);
-			}
-			if (!entry.path.empty()) {
-				result.files.push_back(std::move(entry));
-			}
-		}
-	}
-	yyjson_doc_free(doc);
-	if (result.task.empty()) {
-		throw InvalidInputException("tabfm: model manifest '%s' is missing the 'task' field", manifest_path);
-	}
-	if (result.files.empty()) {
-		throw InvalidInputException("tabfm: model manifest '%s' lists no files", manifest_path);
+	result.model = spec.id;
+	result.task = TabFMTaskName(task);
+	const auto &art = spec.tasks.at(task);
+	result.repo = art.repo;
+	result.revision = art.revision;
+	// Gated iff the license declares a gate_setting (e.g. accept_hf_license).
+	result.license = spec.license.gate_setting.empty() ? "none" : spec.license.id;
+	result.builtin = spec.source_dir.empty(); // built-ins carry no source dir
+	for (auto &f : art.files) {
+		WeightsFileEntry entry;
+		entry.path = f.path;
+		entry.url = f.url;
+		entry.bytes = f.bytes == 0 ? -1 : NumericCast<int64_t>(f.bytes);
+		result.files.push_back(std::move(entry));
 	}
 	return result;
 }
 
-WeightsManifest BuiltinManifest(const string &task) {
-	WeightsManifest result;
-	result.model = kBuiltinModel;
-	result.task = task;
-	result.repo = kBuiltinRepo;
-	result.revision = "main";
-	result.license = kBuiltinLicense;
-	result.builtin = true;
-	WeightsFileEntry entry;
-	entry.path = task + "/model.safetensors";
-	// URL is derived from repo + revision at bind time (revision may be overridden).
-	result.files.push_back(std::move(entry));
-	return result;
-}
-
-// All manifests visible in this session: the pluggable manifest from
-// SET anofox_tabfm_model_manifest (if any) shadows a built-in task of the
-// same name; the hardcoded Google tasks are always present otherwise.
-vector<WeightsManifest> ResolveManifests(ClientContext &context) {
-	vector<WeightsManifest> result;
+string StringSetting(ClientContext &context, const char *name) {
 	Value value;
-	if (context.TryGetCurrentSetting("anofox_tabfm_model_manifest", value) && !value.IsNull()) {
-		auto path = value.ToString();
-		if (!path.empty()) {
-			result.push_back(ParseManifestJson(ReadTextFile(context, path), path));
-		}
+	if (context.TryGetCurrentSetting(name, value) && !value.IsNull()) {
+		return value.ToString();
 	}
-	for (auto task : {"classification", "regression"}) {
-		bool shadowed = false;
-		for (auto &m : result) {
-			if (m.task == task) {
-				shadowed = true;
-				break;
-			}
-		}
-		if (!shadowed) {
-			result.push_back(BuiltinManifest(task));
+	return "";
+}
+
+// Every (model, task) the registry knows this session — built-ins + user
+// manifests (file or dir) from anofox_tabfm_model_manifest. The single source of
+// truth, shared with the predict path.
+vector<WeightsManifest> ResolveManifests(ClientContext &context) {
+	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"));
+	vector<WeightsManifest> result;
+	for (auto &kv : registry.Models()) {
+		for (auto &task_kv : kv.second.tasks) {
+			result.push_back(WeightsFromSpec(kv.second, task_kv.first));
 		}
 	}
 	return result;
 }
 
-string ValidTaskList(const vector<WeightsManifest> &manifests) {
-	vector<string> tasks;
-	for (auto &m : manifests) {
-		if (std::find(tasks.begin(), tasks.end(), m.task) == tasks.end()) {
-			tasks.push_back(m.task);
-		}
+TabFMTask ParseTaskArg(const string &task, const char *func_name) {
+	if (task == "classification") {
+		return TabFMTask::CLASSIFICATION;
 	}
-	std::sort(tasks.begin(), tasks.end());
-	return StringUtil::Join(tasks, ", ");
+	if (task == "regression") {
+		return TabFMTask::REGRESSION;
+	}
+	throw InvalidInputException("%s: unknown task '%s'. Valid tasks: classification, regression", func_name, task);
 }
 
-WeightsManifest FindManifest(ClientContext &context, const char *func_name, const string &task) {
-	auto manifests = ResolveManifests(context);
-	for (auto &m : manifests) {
-		if (m.task == task) {
-			return m;
-		}
+// Resolve one (model, task) via the registry: the resolved model (model_id, may
+// be "" → default_model / single-file manifest / sole model) for `task`.
+WeightsManifest FindManifest(ClientContext &context, const char *func_name, const string &model_id,
+                             const string &task) {
+	auto tfm_task = ParseTaskArg(task, func_name);
+	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"));
+	const ModelSpec &spec = registry.Resolve(model_id, StringSetting(context, "anofox_tabfm_default_model"));
+	if (!spec.HasTask(tfm_task)) {
+		throw InvalidInputException(
+		    "%s: model '%s' does not support task '%s'. Point anofox_tabfm_model_manifest at a model that supports "
+		    "'%s' (or unset it to use the built-in); see tabfm_list_models().",
+		    func_name, spec.id, task, task);
 	}
-	throw InvalidInputException("%s: unknown task '%s'. Valid tasks: %s", func_name, task, ValidTaskList(manifests));
+	return WeightsFromSpec(spec, tfm_task);
 }
 
 string RequireTaskArgument(const TableFunctionBindInput &input, const char *func_name) {
@@ -254,10 +187,12 @@ string FileUrl(const WeightsManifest &manifest, const WeightsFileEntry &file, co
 	if (!file.url.empty()) {
 		return file.url;
 	}
+	// Built-in models derive the HF URL from repo/revision/path. User manifests
+	// are air-gapped unless a file carries an explicit url (FR-1.5); a future
+	// downloadable provider (e.g. Mitra) will carry per-file urls / url_template.
 	if (manifest.builtin) {
 		return "https://huggingface.co/" + manifest.repo + "/resolve/" + revision + "/" + file.path;
 	}
-	// custom manifest without url: air-gapped, cache must be pre-seeded (FR-1.5)
 	return "";
 }
 
@@ -341,7 +276,7 @@ unique_ptr<FunctionData> DownloadBind(ClientContext &context, TableFunctionBindI
 
 	auto task = RequireTaskArgument(input, "tabfm_download");
 	auto result = make_uniq<DownloadBindData>();
-	result->manifest = FindManifest(context, "tabfm_download", task);
+	result->manifest = FindManifest(context, "tabfm_download", string(), task);
 	result->revision = result->manifest.revision;
 	if (input.inputs.size() > 1) {
 		if (input.inputs[1].IsNull()) {
@@ -563,6 +498,109 @@ void ModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 }
 
 //===--------------------------------------------------------------------===//
+// tabfm_list_models() — the REGISTRY view: every known model, downloaded or not
+//===--------------------------------------------------------------------===//
+
+struct ListModelsRow {
+	string model, family, capabilities, license;
+	bool commercial = false;
+	int64_t max_rows = -1, max_features = -1, max_classes = -1;
+	bool downloaded = false;
+};
+
+struct ListModelsGlobalState : public GlobalTableFunctionState {
+	vector<ListModelsRow> rows;
+	idx_t next = 0;
+	idx_t MaxThreads() const override {
+		return 1;
+	}
+};
+
+// A task's weights are "complete" in the cache iff every file exists AND (when
+// the manifest declares a byte count) its size matches. This mirrors the
+// download path, which only trusts size-matching files — a truncated or
+// zero-byte artifact must not report as downloaded (list_models parity).
+bool TaskWeightsComplete(FileSystem &fs, const string &base_dir, const vector<WeightsFileEntry> &files) {
+	if (files.empty()) {
+		return false;
+	}
+	for (auto &f : files) {
+		auto path = base_dir + "/" + f.path;
+		if (!fs.FileExists(path)) {
+			return false;
+		}
+		if (f.bytes >= 0) {
+			auto handle = fs.OpenFile(path, FileFlags::FILE_FLAGS_READ);
+			if (fs.GetFileSize(*handle) != f.bytes) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+unique_ptr<FunctionData> ListModelsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
+                                        vector<string> &names) {
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_list_models");
+	names = {"model",    "family",       "capabilities", "license",   "commercial",
+	         "max_rows", "max_features", "max_classes",  "downloaded"};
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                LogicalType::VARCHAR, LogicalType::BOOLEAN, LogicalType::BIGINT,
+	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BOOLEAN};
+	return make_uniq<ModelsBindData>();
+}
+
+unique_ptr<GlobalTableFunctionState> ListModelsInit(ClientContext &context, TableFunctionInitInput &) {
+	auto state = make_uniq<ListModelsGlobalState>();
+	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"));
+	auto &fs = FileSystem::GetFileSystem(context);
+	auto cache_dir = GetCacheDir(context);
+	for (auto &kv : registry.Models()) {
+		const auto &spec = kv.second;
+		ListModelsRow row;
+		row.model = spec.id;
+		row.family = spec.family;
+		row.capabilities = StringUtil::Join(spec.capabilities, ", ");
+		row.license = spec.license.id;
+		row.commercial = spec.license.commercial;
+		row.max_rows = spec.size_regime.max_rows;
+		row.max_features = spec.size_regime.max_features;
+		row.max_classes = spec.size_regime.max_classes;
+		// downloaded = any task's weights are complete (present AND size-matched)
+		for (auto &task_kv : spec.tasks) {
+			auto wm = WeightsFromSpec(spec, task_kv.first);
+			auto base = cache_dir + "/" + wm.CacheSlug(wm.revision);
+			if (TaskWeightsComplete(fs, base, wm.files)) {
+				row.downloaded = true;
+				break;
+			}
+		}
+		state->rows.push_back(std::move(row));
+	}
+	return std::move(state);
+}
+
+void ListModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<ListModelsGlobalState>();
+	auto nbig = [](int64_t v) { return v < 0 ? Value(LogicalType::BIGINT) : Value::BIGINT(v); };
+	idx_t out = 0;
+	while (state.next < state.rows.size() && out < STANDARD_VECTOR_SIZE) {
+		auto &r = state.rows[state.next++];
+		output.SetValue(0, out, Value(r.model));
+		output.SetValue(1, out, Value(r.family));
+		output.SetValue(2, out, Value(r.capabilities));
+		output.SetValue(3, out, Value(r.license));
+		output.SetValue(4, out, Value::BOOLEAN(r.commercial));
+		output.SetValue(5, out, nbig(r.max_rows));
+		output.SetValue(6, out, nbig(r.max_features));
+		output.SetValue(7, out, nbig(r.max_classes));
+		output.SetValue(8, out, Value::BOOLEAN(r.downloaded));
+		out++;
+	}
+	output.SetCardinality(out);
+}
+
+//===--------------------------------------------------------------------===//
 // tabfm_load(task) / tabfm_unload([task]) — status-row surface
 //===--------------------------------------------------------------------===//
 
@@ -587,7 +625,7 @@ unique_ptr<FunctionData> LoadBind(ClientContext &context, TableFunctionBindInput
                                   vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_load");
 	auto task = RequireTaskArgument(input, "tabfm_load");
-	auto manifest = FindManifest(context, "tabfm_load", task);
+	auto manifest = FindManifest(context, "tabfm_load", string(), task);
 
 	// cache presence check — the §5 'not downloaded' contract
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -619,7 +657,7 @@ unique_ptr<FunctionData> UnloadBind(ClientContext &context, TableFunctionBindInp
 		tabfm_state->UnloadAll(); // free every warmed session for this DB instance
 	} else {
 		result->task = RequireTaskArgument(input, "tabfm_unload");
-		auto manifest = FindManifest(context, "tabfm_unload", result->task); // validates the task name
+		auto manifest = FindManifest(context, "tabfm_unload", string(), result->task); // validates the task name
 		// free the warmed session, if any (predict / tabfm_load registered it).
 		tabfm_state->Unload(TabFMModelCacheKey(manifest.model, result->task, manifest.revision));
 	}
@@ -668,7 +706,7 @@ unique_ptr<FunctionData> RemoveBind(ClientContext &context, TableFunctionBindInp
                                     vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_remove");
 	auto task = RequireTaskArgument(input, "tabfm_remove");
-	auto manifest = FindManifest(context, "tabfm_remove", task);
+	auto manifest = FindManifest(context, "tabfm_remove", string(), task);
 
 	auto result = make_uniq<RemoveBindData>();
 	result->task = task;
@@ -755,7 +793,7 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
                                         vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_gpu_precompile");
 	auto task = RequireTaskArgument(input, "tabfm_gpu_precompile");
-	FindManifest(context, "tabfm_gpu_precompile", task); // validates the task name
+	FindManifest(context, "tabfm_gpu_precompile", string(), task); // validates the task name
 	auto result = make_uniq<PrecompileBindData>();
 	result->task = task;
 	result->task_enum = task == "regression" ? TabFMTask::REGRESSION : TabFMTask::CLASSIFICATION;
@@ -868,6 +906,12 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            "Delete a downloaded TabFM model's weights from the local cache (by task, optionally a specific "
 	            "revision).",
 	            "CALL tabfm_remove('classification');");
+	// SELECT * FROM tabfm_list_models();  — the registry (all known models).
+	RegisterSet(loader, "anofox_tabfm_list_models", "tabfm_list_models", {{}}, ListModelsBind, ListModelsInit,
+	            ListModelsExecute,
+	            "List every model in the registry (built-ins + user manifests), downloaded or not: model, family, "
+	            "capabilities, license, commercial, size regime (max_rows/features/classes), downloaded.",
+	            "SELECT * FROM tabfm_list_models();");
 	// CALL tabfm_gpu_precompile(task [, rows, features]);
 	RegisterSet(loader, "anofox_tabfm_gpu_precompile", "tabfm_gpu_precompile",
 	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT}},

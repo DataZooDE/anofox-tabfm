@@ -23,6 +23,7 @@
 #include "tabfm_predict.hpp"
 #include "tabfm_preprocess.hpp"
 #include "tabfm_manifest.hpp"
+#include "tabfm_registry.hpp"
 #include "tabfm_safetensors.hpp"
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_bundled_resources.hpp"
@@ -98,6 +99,10 @@ struct ResolvedModel {
 	string weights_path;
 	unordered_map<string, string> tensor_map; // onnx initializer name -> st key
 	string cache_key;
+	// Manifest-declared tensor contract (P4): graph input/output names to verify
+	// against the actual graph at load. Empty = no declared contract.
+	vector<string> contract_inputs;
+	vector<string> contract_outputs;
 };
 
 // Load {onnx -> safetensors} from the manifest: inline map, or the
@@ -167,9 +172,13 @@ string ResolveWeightsPath(FileSystem &fs, const ModelManifest &manifest, const s
 	}
 	const auto &file = manifest.files.front();
 	vector<string> candidates;
-	if (!cache_dir.empty() && !manifest.repo.empty()) {
-		auto slug = StringUtil::Replace(manifest.repo, "/", "__") + "@" + manifest.revision;
-		candidates.push_back(fs.JoinPath(fs.JoinPath(cache_dir, slug), file.path));
+	if (!cache_dir.empty()) {
+		// Match the download-side cache slug (WeightsManifest::CacheSlug): a
+		// repo-less model (e.g. a user manifest with per-file urls) caches under
+		// its model id, not a repo path. Resolve must look there too, else a
+		// downloaded repo-less model reads as "not downloaded".
+		auto slug_base = manifest.repo.empty() ? manifest.model : StringUtil::Replace(manifest.repo, "/", "__");
+		candidates.push_back(fs.JoinPath(fs.JoinPath(cache_dir, slug_base + "@" + manifest.revision), file.path));
 	}
 	candidates.push_back(JoinPath(fs, dir, file.path));
 	// fixture layout: a bare model.safetensors beside the manifest
@@ -183,25 +192,49 @@ string ResolveWeightsPath(FileSystem &fs, const ModelManifest &manifest, const s
 	                            task_name, task_name);
 }
 
-ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask task) {
+// Bridge a resolved ModelSpec's per-task artifacts into the per-(model,task)
+// ModelManifest the downstream weights/graph/tensor-map resolution consumes.
+ModelManifest SpecTaskToManifest(const ModelSpec &spec, TabFMTask task) {
+	const auto &art = spec.tasks.at(task);
+	ModelManifest m;
+	m.model = spec.id;
+	m.task = task;
+	m.repo = art.repo;
+	m.revision = art.revision;
+	m.files = art.files;
+	m.graph = art.graph;
+	m.tensor_map_path = art.tensor_map_path;
+	m.tensor_map = art.tensor_map;
+	m.preprocessing_profile = art.preprocessing_profile;
+	m.license = spec.license.id;
+	m.engine_profiles = spec.engine_profiles;
+	return m;
+}
+
+ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask task, const string &requested_model) {
 	ResolvedModel resolved;
 	const auto task_name = TabFMTaskName(task);
-	if (!ctx.model_manifest_path.empty()) {
-		resolved.manifest = LoadModelManifestFile(ctx.model_manifest_path);
-		resolved.manifest_dir = DirName(ctx.model_manifest_path);
-		if (resolved.manifest.task != task) {
-			throw InvalidInputException(
-			    "tabfm: the configured model manifest is for task '%s', but a '%s' prediction was requested. "
-			    "Set anofox_tabfm_model_manifest to a %s model or use the matching tabfm_%s function.",
-			    TabFMTaskName(resolved.manifest.task), task_name, task_name,
-			    task == TabFMTask::CLASSIFICATION ? "classify" : "regress");
-		}
-	} else {
-		resolved.manifest = BuiltinTabFMManifest(task);
-		// built-in models: only the weights come from the cache; the weight-free
-		// graph + tensor map are compiled into the binary (bundle) below.
-		resolved.manifest_dir = ctx.cache_dir;
+	// The registry: built-ins + user manifests (anofox_tabfm_model_manifest,
+	// file or dir). Selection precedence: model := → default_model → single-file
+	// manifest → sole model.
+	auto registry = ModelRegistry::Build(ctx.model_manifest_path);
+	const ModelSpec &spec = registry.Resolve(requested_model, ctx.default_model);
+	if (!spec.HasTask(task)) {
+		throw InvalidInputException(
+		    "tabfm: model '%s' does not support task '%s'. Choose a model that declares it, or use the matching "
+		    "tabfm_%s function.",
+		    spec.id, task_name, task == TabFMTask::CLASSIFICATION ? "classify" : "regress");
 	}
+	resolved.manifest = SpecTaskToManifest(spec, task);
+	for (auto &e : spec.tensor_contract.inputs) {
+		resolved.contract_inputs.push_back(e.name);
+	}
+	for (auto &e : spec.tensor_contract.outputs) {
+		resolved.contract_outputs.push_back(e.name);
+	}
+	// Built-ins carry a bundled graph (resolved below) + cache weights → cache_dir;
+	// a user manifest's relative paths resolve against its own directory.
+	resolved.manifest_dir = spec.source_dir.empty() ? ctx.cache_dir : spec.source_dir;
 	// weights first: "not downloaded" is the common, actionable error (§5).
 	resolved.weights_path =
 	    ResolveWeightsPath(fs, resolved.manifest, resolved.manifest_dir, ctx.cache_dir, task_name);
@@ -572,6 +605,8 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	config.device_id = device.device_id;
 	config.device_ordinal = device.device_ordinal;
 	config.model_tag = TabFMTaskName(resolved.manifest.task);
+	config.contract_inputs = resolved.contract_inputs;
+	config.contract_outputs = resolved.contract_outputs;
 
 	const idx_t weight_bytes = nbytes;
 	auto session = resolved.graph_bundle.data
@@ -706,7 +741,7 @@ public:
 
 		// 3. resolve + load + forward. Only the session load and the forward pass
 		// are serialized per device (the expensive, non-reentrant parts).
-		auto resolved = ResolveModel(*fs, in.ctx, task);
+		auto resolved = ResolveModel(*fs, in.ctx, task, in.opts.model);
 		auto state = TabFMState::Get(*in.ctx.db);
 		TabFMRunOutput out;
 		{
@@ -788,7 +823,7 @@ void TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows,
 		throw InternalException("tabfm: precompile invoked without a database handle");
 	}
 	auto fs = FileSystem::CreateLocal();
-	auto resolved = ResolveModel(*fs, ctx, task);
+	auto resolved = ResolveModel(*fs, ctx, task, string());
 	auto state = TabFMState::Get(*ctx.db);
 	// Loads/caches the backend (registered in state) and warms the shape-bucket:
 	// on ROCm this is the expensive MIGraphX compile + .mxr cache; on CPU/CUDA the

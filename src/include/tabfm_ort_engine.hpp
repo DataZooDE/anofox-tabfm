@@ -169,6 +169,12 @@ struct TabFMSessionConfig {
 	//! ORT weight prepacking (anofox_tabfm_cpu_prepack): faster matmuls at ~+16%
 	//! RSS. Disabling it was the old default when RSS was ~18 GB.
 	bool prepack = true;
+	//! Manifest-declared tensor contract (P4). When non-empty, the graph's actual
+	//! input / output names are validated against these at session creation, so a
+	//! manifest that lies about its graph fails fast with an actionable error.
+	//! Empty = no declared contract (skip — the built-in x/y/... contract).
+	vector<string> contract_inputs;
+	vector<string> contract_outputs;
 };
 
 //! Opaque engine session (pimpl over Ort::Session; keeps ORT headers out of

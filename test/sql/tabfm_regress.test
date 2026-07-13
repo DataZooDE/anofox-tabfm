@@ -93,14 +93,14 @@ SELECT * FROM tabfm_regress('houses','price', opts := MAP{'n_estimators':'4'})
 ----
 <REGEX>:.*(ensemble|M3|n_estimators).*
 
-# pointing regress at a CLASSIFICATION model errors on the task mismatch
+# pointing regress at a CLASSIFICATION-only model errors on the missing task
 statement ok
 SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
 
 statement error
 SELECT * FROM tabfm_regress('houses','price')
 ----
-<REGEX>:.*manifest is for task 'classification'.*
+<REGEX>:.*model 'fixture' does not support task 'regression'.*
 
 # no model configured -> not-downloaded remediation. Point the cache at an
 # empty temp dir so a locally-downloaded real model does not mask this.

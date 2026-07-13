@@ -37,11 +37,13 @@ SELECT count(*) FROM glob('__TEST_DIR__/license_cache/*')
 ----
 0
 
-# The built-in Google tasks are gated the same way (no network involved: bind fails)
+# The configured single-file manifest (tabfm-test) is the default model and is
+# classification-only, so requesting regression errors on capability — the
+# default model no longer silently falls back to the built-in for other tasks.
 statement error
 CALL tabfm_download('regression')
 ----
-licensed 'tabfm-non-commercial-v1.0' (non-commercial, no redistribution). Run: SET anofox_tabfm_accept_hf_license = true;
+<REGEX>:.*model 'tabfm-test' does not support task 'regression'.*
 
 # --- Accept → download proceeds --------------------------------------------------
 

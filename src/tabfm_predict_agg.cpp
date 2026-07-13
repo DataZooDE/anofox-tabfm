@@ -308,6 +308,9 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	if (context.TryGetCurrentSetting("anofox_tabfm_model_manifest", setting) && !setting.IsNull()) {
 		bind->context.model_manifest_path = setting.ToString();
 	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_default_model", setting) && !setting.IsNull()) {
+		bind->context.default_model = setting.ToString();
+	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_cache_dir", setting) && !setting.IsNull()) {
 		bind->context.cache_dir = ExpandUserHome(setting.ToString());
 	}

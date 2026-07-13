@@ -124,6 +124,39 @@ Every column of the scored rows, plus:
 
 ---
 
+## Multiple models (the registry)
+
+`anofox_tabfm` is one entrypoint for many **tabular foundation models** — "TabFM"
+is the *category*, not a single model. A model is described by a JSON **manifest**
+(weights repo, weight-free ONNX graph, license, capabilities, size regime);
+adding one is a data change, not new C++. Google's TabFM ships built in as
+`tabfm-v1`.
+
+```sql
+SELECT * FROM tabfm_list_models();          -- the registry: every known model
+```
+
+| `model` | `family` | `capabilities` | `commercial` | `downloaded` |
+|---|---|---|---|---|
+| `tabfm-v1` | `icl-transformer` | `classify, regress` | `false` | `true` |
+
+Pick a model per call (promoted out of `opts` to a first-class argument), or set
+a session default; precedence is **per-call → `anofox_tabfm_default_model` →
+single-file manifest → the sole model**:
+
+```sql
+SELECT * FROM tabfm_classify('customers', 'churned', model := 'tabfm-v1');
+SET anofox_tabfm_default_model = 'tabfm-v1';         -- session-wide
+```
+
+Register your own models by pointing `anofox_tabfm_model_manifest` at a manifest
+**file** (that model becomes the active default) or a **directory** of manifests
+(merged into the registry). An unknown `model :=`, or a model that lacks the
+requested task, is a clean error naming the alternatives. `tabfm_download` /
+`tabfm_load` / `tabfm_unload` / `tabfm_remove` operate on the resolved model.
+
+---
+
 ## A full worked example
 
 Zero-shot churn prediction on a public dataset, split into train/test, scored,
@@ -204,7 +237,8 @@ CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_…', SCOPE 'https://huggingface.c
 | `anofox_tabfm_max_features` | `500` | guardrail |
 | `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `coreml` (`migraphx` alias for `rocm`) |
 | `anofox_tabfm_gpu_precision` | `bf16` | GPU dtype: `bf16` / `fp16` / `fp32` |
-| `anofox_tabfm_model_manifest` | `''` | point at a custom model manifest |
+| `anofox_tabfm_model_manifest` | `''` | extra model manifest(s): a `.json` file (also the active default) or a directory |
+| `anofox_tabfm_default_model` | `''` | session-wide model when `model :=` is not given |
 | `anofox_tabfm_mxr_source` | `''` | directory of precompiled ROCm `.mxr` programs to stage from |
 | `anofox_tabfm_ep_path` | `''` | extra search path for execution-provider shared libraries |
 | `anofox_tabfm_trace_level` | `warn` | log verbosity: `error` / `warn` / `info` / `debug` / `trace` |
@@ -227,11 +261,13 @@ Run: CALL tabfm_download('classification');
 The full SQL surface runs the **real TabFM v1 model** end to end (preprocess →
 ONNX Runtime forward → decode); per-row outputs match the PyTorch reference to
 ~1e-5. The weight-free graphs are compiled into the extension, so after
-`tabfm_download` the model works with no companion files. v1 runs a single
-estimator; it ships CPU (`cpu`) plus accelerated flavors (`cuda`, `rocm` via a
-direct MIGraphX backend, and `coreml` for Apple Silicon — see below). Not yet wired up: the `n_estimators > 1`
-ensemble, and the grouped / composable-aggregate / windowed surfaces
-(`tabfm_predict_by` / `_agg` / `_win`) — planned on the same engine.
+`tabfm_download` the model works with no companion files. A **model registry**
+(`model :=`, `tabfm_list_models()`, per-model manifests) makes a second model a
+data change, not new C++ (FR-5.1). v1 runs a single estimator; it ships CPU
+(`cpu`) plus accelerated flavors (`cuda`, `rocm` via a direct MIGraphX backend,
+and `coreml` for Apple Silicon — see below). Not yet wired up: the
+`n_estimators > 1` ensemble, and the grouped / composable-aggregate / windowed
+surfaces (`tabfm_predict_by` / `_agg` / `_win`) — planned on the same engine.
 
 ## Flavors (CPU / GPU)
 
