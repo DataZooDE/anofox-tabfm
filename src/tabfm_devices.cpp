@@ -506,7 +506,7 @@ struct DevicesGlobalState : public GlobalTableFunctionState {
 
 unique_ptr<FunctionData> DevicesBind(ClientContext &context, TableFunctionBindInput &input,
                                      vector<LogicalType> &return_types, vector<string> &names) {
-	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_devices");
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_devices");
 
 	names = {"device_id", "ep", "name", "arch", "vram_total", "vram_free", "driver", "usable"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,

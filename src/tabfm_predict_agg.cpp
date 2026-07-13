@@ -325,7 +325,7 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	}
 
 	// once per query: bind runs once, update/finalize run per group/row
-	PostHogTelemetry::Instance().CaptureFunctionExecution(fname);
+	PostHogTelemetry::Instance().RecordFunctionCall(fname);
 	return std::move(bind);
 }
 
