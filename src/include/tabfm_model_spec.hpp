@@ -105,6 +105,9 @@ struct ModelSpec {
 	map<string, EngineProfile> engine_profiles;
 	//! Model-wide preprocessing profile (also mirrored into each task's entry).
 	string preprocessing_profile;
+	//! Directory the manifest was loaded from (relative graph/tensor-map paths
+	//! resolve against it). Empty for built-ins / inline manifests.
+	string source_dir;
 
 	bool HasTask(TabFMTask task) const {
 		return tasks.find(task) != tasks.end();

@@ -378,7 +378,11 @@ ModelSpec LoadModelSpecFile(const string &path) {
 	auto size = UnsafeNumericCast<idx_t>(handle->GetFileSize());
 	string json(size, '\0');
 	handle->Read(const_cast<char *>(json.data()), size);
-	return ParseModelSpec(json, path);
+	auto spec = ParseModelSpec(json, path);
+	// Relative graph/tensor-map paths in this manifest resolve against its dir.
+	auto slash = path.find_last_of("/\\");
+	spec.source_dir = (slash == string::npos) ? string(".") : path.substr(0, slash);
+	return spec;
 }
 
 } // namespace anofox
