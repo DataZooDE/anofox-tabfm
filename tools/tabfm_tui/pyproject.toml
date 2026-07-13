@@ -17,3 +17,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tabfm_tui"]
+
+[dependency-groups]
+dev = ["pytest>=8"]

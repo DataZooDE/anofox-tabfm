@@ -113,8 +113,8 @@ class TabfmTui(App):
             if event.button.id == "demo_" + name.split()[0]:
                 self.query_one("#data", Input).value = data
                 self.query_one("#target", Input).value = target
-                rs = self.query_one("#task", RadioSet)
-                rs.pressed_index = 0 if task == "classify" else 1
+                buttons = list(self.query_one("#task", RadioSet).query(RadioButton))
+                buttons[0 if task == "classify" else 1].value = True
                 return
 
     def action_run(self) -> None:
