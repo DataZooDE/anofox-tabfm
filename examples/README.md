@@ -13,6 +13,7 @@ computes the metric entirely in SQL.
 | [`classification_income.sql`](classification_income.sql) | binary classification | `scikit-learn/adult-census-income` | F1 (also shows `tabfm_list_models()` + `model :=`) |
 | [`regression_tips.sql`](regression_tips.sql) | regression | `scikit-learn/tips` | MSE |
 | [`regression_wine.sql`](regression_wine.sql) | regression | `mstz/wine` | MSE |
+| [`compare_models.sql`](compare_models.sql) | **multi-model** | `scikit-learn/iris` | accuracy **+ runtime**, two models |
 
 ## Running
 
@@ -28,6 +29,7 @@ duckdb :memory: < examples/classification_iris.sql    # 3-class, accuracy
 duckdb :memory: < examples/classification_income.sql  # binary, F1 (+ registry)
 duckdb :memory: < examples/regression_tips.sql        # regression, MSE
 duckdb :memory: < examples/regression_wine.sql        # regression, MSE
+duckdb :memory: < examples/compare_models.sql         # multi-model: accuracy + runtime
 ```
 
 Each example points `anofox_tabfm_model_manifest` at the matching
@@ -94,6 +96,21 @@ target `quality`:
 | MAE | 0.529 |
 | mean-predictor baseline MSE | 0.860 |
 | wall time | ~42 s |
+
+**Multi-model comparison** — `compare_models.sql`, `scikit-learn/iris`, the same
+100-row context / 53 scored split run through **two registered models** selected
+with `model :=` (accuracy *and* wall-clock runtime side by side):
+
+| model | accuracy | runtime | note |
+|---|---|---|---|
+| **`tabfm-v1`** (real Google TabFM, 6.56 GB) | **0.943** (50 / 53) | ~30–40 s | dominated by the one-time 6.56 GB model load |
+| `fixture-commercial` (random-init fixture) | 0.377 (20 / 53) | ~0.25 s | tiny test graph, **not trained** — ≈chance for 3 classes |
+
+The harness is the point: comparing models is two queries over one registry
+(`tabfm_list_models()` to discover, `model :=` to select). The gap here is the
+expected one between a foundation model and random weights; drop in a second
+*real* model (e.g. a future Mitra export) for a meaningful head-to-head. Runtime
+is the per-predict `Run Time (s)` printed by `.timer on`.
 
 Zero-shot, no training: the model reads the train split as context and scores
 the test split. Classification reaches 0.67 F1 on churn and 0.94 accuracy on
