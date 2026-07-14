@@ -5,11 +5,10 @@
 --
 -- Run:  duckdb :memory: < examples/regression_tips.sql
 -- Needs: real regression weights downloaded (CALL tabfm_download('regression'))
---        and the resources/ graph (see examples/tabfm_real_regression.json).
+--        (built-in model 'tabfm-v1' — no manifest file needed).
 
 INSTALL httpfs; LOAD httpfs;
 LOAD anofox_tabfm;
-SET anofox_tabfm_model_manifest = 'examples/tabfm_real_regression.json';
 
 -- 1. Load; add a VARCHAR row id (categorical → inert as an unseen value in the
 --    test split, so it is safe to carry through for the join-back).
@@ -32,7 +31,7 @@ CREATE TABLE test_actuals  AS SELECT row_id, tip FROM test_full;
 -- 3. Zero-shot predict the tip for the test rows.
 CREATE TABLE preds AS
 SELECT row_id, yhat AS pred
-FROM tabfm_regress('train', 'tip', test := 'test_features');
+FROM tabfm_regress('train', 'tip', test := 'test_features', model := 'tabfm-v1');
 
 -- 4. MSE / RMSE / MAE, plus a naive mean-predictor baseline, in SQL.
 .print '================ TIPS regression (TabFM zero-shot) ================'

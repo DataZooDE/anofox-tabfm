@@ -127,33 +127,36 @@ Every column of the scored rows, plus:
 ## Multiple models (the registry)
 
 `anofox_tabfm` is one entrypoint for many **tabular foundation models** — "TabFM"
-is the *category*, not a single model. A model is described by a JSON **manifest**
-(weights repo, weight-free ONNX graph, license, capabilities, size regime);
-adding one is a data change, not new C++. Google's TabFM ships built in as
-`tabfm-v1`.
+is the *category*, not a single model. Four models are **built in** and usable by
+name with no config, no manifest file:
 
 ```sql
 SELECT * FROM tabfm_list_models();          -- the registry: every known model
 ```
 
-| `model` | `family` | `capabilities` | `commercial` | `downloaded` |
-|---|---|---|---|---|
-| `tabfm-v1` | `icl-transformer` | `classify, regress` | `false` | `true` |
+| `model` | family | license | `commercial` |
+|---|---|---|---|
+| `tabfm-v1` | Google TabFM | non-commercial (gated) | `false` |
+| `mitra` | AWS AutoGluon | Apache-2.0 | `true` |
+| `tabpfn-v2` | Prior Labs | Apache-2.0 + attribution | `true` |
+| `tabicl-v2` | Inria | BSD-3-Clause | `true` |
 
-Pick a model per call (promoted out of `opts` to a first-class argument), or set
-a session default; precedence is **per-call → `anofox_tabfm_default_model` →
-single-file manifest → the sole model**:
+Pick a model per call (a first-class argument, promoted out of `opts`), or set a
+session default; precedence is **per-call → `anofox_tabfm_default_model` → a
+single SQL-registered model**:
 
 ```sql
-SELECT * FROM tabfm_classify('customers', 'churned', model := 'tabfm-v1');
-SET anofox_tabfm_default_model = 'tabfm-v1';         -- session-wide
+SELECT * FROM tabfm_classify('customers', 'churned', model := 'mitra');
+SET anofox_tabfm_default_model = 'mitra';            -- session-wide
 ```
 
-Register your own models by pointing `anofox_tabfm_model_manifest` at a manifest
-**file** (that model becomes the active default) or a **directory** of manifests
-(merged into the registry). An unknown `model :=`, or a model that lacks the
-requested task, is a clean error naming the alternatives. `tabfm_download` /
-`tabfm_load` / `tabfm_unload` / `tabfm_remove` operate on the resolved model.
+Register your **own** model entirely in SQL — no JSON file — with
+`CALL tabfm_register_model(id := 'my', classification_graph := '<path|url>', …)`
+(and `tabfm_unregister_model('my')`). The only external thing is the weight-free
+ONNX graph blob; every other field is a named argument. An unknown `model :=`, or
+a model that lacks the requested task, is a clean error naming the alternatives.
+`tabfm_download` / `tabfm_load` / `tabfm_unload` / `tabfm_remove` operate on the
+resolved model.
 
 ---
 
@@ -237,7 +240,6 @@ CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_…', SCOPE 'https://huggingface.c
 | `anofox_tabfm_max_features` | `500` | guardrail |
 | `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `coreml` (`migraphx` alias for `rocm`) |
 | `anofox_tabfm_gpu_precision` | `bf16` | GPU dtype: `bf16` / `fp16` / `fp32` |
-| `anofox_tabfm_model_manifest` | `''` | extra model manifest(s): a `.json` file (also the active default) or a directory |
 | `anofox_tabfm_default_model` | `''` | session-wide model when `model :=` is not given |
 | `anofox_tabfm_mxr_source` | `''` | directory of precompiled ROCm `.mxr` programs to stage from |
 | `anofox_tabfm_ep_path` | `''` | extra search path for execution-provider shared libraries |
@@ -262,7 +264,7 @@ The full SQL surface runs the **real TabFM v1 model** end to end (preprocess →
 ONNX Runtime forward → decode); per-row outputs match the PyTorch reference to
 ~1e-5. The weight-free graphs are compiled into the extension, so after
 `tabfm_download` the model works with no companion files. A **model registry**
-(`model :=`, `tabfm_list_models()`, per-model manifests) makes a second model a
+(`model :=`, `tabfm_list_models()`, `tabfm_register_model`) makes a second model a
 data change, not new C++ (FR-5.1). v1 runs a single estimator; it ships CPU
 (`cpu`) plus accelerated flavors (`cuda`, `rocm` via a direct MIGraphX backend,
 and `coreml` for Apple Silicon — see below). Not yet wired up: the

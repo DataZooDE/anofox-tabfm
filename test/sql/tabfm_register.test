@@ -1,0 +1,83 @@
+# name: test/sql/tabfm_register.test
+# description: Pure-SQL model registration (Phase 2) — CALL tabfm_register_model
+#              registers a model from SQL args (graph/weights/tensor-map as
+#              paths), no JSON manifest file. It merges into the registry
+#              alongside the built-ins, is usable via model :=, and can be
+#              removed with tabfm_unregister_model. Uses the committed random-init
+#              Mitra fixture artifacts.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# register a model entirely in SQL — the only external things are the graph +
+# weights blobs (a graph cannot be a SQL literal); all metadata is arguments
+query TTT
+CALL tabfm_register_model(
+  id := 'sql_clf',
+  classification_graph := 'test/fixtures/mitra/graph_mitra_classification.onnx',
+  classification_weights := 'test/fixtures/mitra/model_classification.safetensors',
+  classification_tensor_map := 'test/fixtures/mitra/tensor_map_mitra_classification.json',
+  license := 'apache-2.0', preprocessing_profile := 'mitra_v1_minimal', max_classes := 10)
+----
+sql_clf	classify	registered
+
+# it is now in the registry alongside the four built-ins
+query TTT
+SELECT model, license, commercial FROM tabfm_list_models() WHERE model = 'sql_clf'
+----
+sql_clf	apache-2.0	true
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,'a','x',0.1,'c0'),(1.5,0.2,'b','y',0.3,'c1'),(2.5,-1.0,'a','y',0.5,'c2'),
+  (0.2,0.8,'b','x',0.7,'c0'),(1.1,0.4,'a','y',0.2,'c1'),(3.0,-0.5,'b','y',0.9,'c2'),
+  (0.9,1.2,'a','x',0.6,'c0'),(2.1,0.1,'b','y',0.4,'c1'),
+  (1.3,0.3,'a','y',0.35,NULL),(2.4,-0.2,'b','x',0.55,NULL))
+  v(f1,f2,f3,f4,f5,label);
+
+# a real forward pass through the SQL-registered model
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2'))
+FROM tabfm_classify('t','label', model := 'sql_clf')
+----
+10	0
+
+# a single SQL registration is the implicit default (a bare call resolves to it)
+query I
+SELECT count(*) FROM tabfm_classify('t','label')
+----
+10
+
+# 'id' is required
+statement error
+CALL tabfm_register_model(classification_graph := 'x.onnx')
+----
+<REGEX>:.*'id' is required.*
+
+# at least one graph is required
+statement error
+CALL tabfm_register_model(id := 'nope')
+----
+<REGEX>:.*classification_graph.*regression_graph.*
+
+# unregister removes it from the registry
+query TT
+CALL tabfm_unregister_model('sql_clf')
+----
+sql_clf	unregistered
+
+query I
+SELECT count(*) FROM tabfm_list_models() WHERE model = 'sql_clf'
+----
+0
+
+# unregistering a model that is not registered is reported, not an error
+query TT
+CALL tabfm_unregister_model('sql_clf')
+----
+sql_clf	not registered

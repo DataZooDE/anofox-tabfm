@@ -5,11 +5,10 @@
 --
 -- Run:  duckdb :memory: < examples/classification_income.sql
 -- Needs: real classification weights (CALL tabfm_download('classification'))
---        and the resources/ graph (see examples/tabfm_real_classification.json).
+--        (built-in model 'tabfm-v1' — no manifest file needed).
 
 INSTALL httpfs; LOAD httpfs;
 LOAD anofox_tabfm;
-SET anofox_tabfm_model_manifest = 'examples/tabfm_real_classification.json';
 SET anofox_tabfm_max_rows = 20000;
 
 -- What models can I run? (the registry — downloaded or not)

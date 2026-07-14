@@ -17,7 +17,13 @@ statement ok
 SET anofox_tabfm_cache_dir = '__TEST_DIR__/lifecycle_cache'
 
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_ok.json'
+CALL tabfm_register_model(
+  id := 'tabfm-test',
+  classification_files := ['classification/model.safetensors', 'classification/config.json'],
+  classification_file_urls := ['test/fixtures/weights_test/model_a.bin', 'test/fixtures/weights_test/config_a.json'],
+  classification_file_bytes := [4096, 128],
+  weights_repo := 'acme/tabfm-test', weights_revision := 'main',
+  license := 'tabfm-non-commercial-v1.0', gate_setting := 'accept_hf_license')
 
 statement ok
 SET anofox_tabfm_accept_hf_license = true

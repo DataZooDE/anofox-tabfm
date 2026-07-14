@@ -104,11 +104,8 @@ struct TabFMPredictResult {
 //! DatabaseInstance is a complete type via duckdb.hpp above.
 struct PredictContext {
 	DatabaseInstance *db = nullptr;
-	//! SET anofox_tabfm_model_manifest ('' → built-ins only; a file or a
-	//! directory of extra manifests merged into the registry).
-	string model_manifest_path;
-	//! SET anofox_tabfm_default_model ('' → resolve to the single-file manifest
-	//! or the sole registered model).
+	//! SET anofox_tabfm_default_model ('' → resolve to a single SQL-registered
+	//! model, else require an explicit model :=).
 	string default_model;
 	//! SET anofox_tabfm_cache_dir (already ~-expanded is not required here).
 	string cache_dir;

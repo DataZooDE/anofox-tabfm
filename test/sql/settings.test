@@ -30,11 +30,6 @@ SELECT current_setting('anofox_tabfm_max_features')
 500
 
 query I
-SELECT current_setting('anofox_tabfm_model_manifest')
-----
-(empty)
-
-query I
 SELECT current_setting('anofox_tabfm_trace_level')
 ----
 warn

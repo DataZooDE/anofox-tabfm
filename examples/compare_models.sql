@@ -9,19 +9,15 @@
 --
 -- Run:  duckdb :memory: < examples/compare_models.sql   (from the repo root)
 -- Needs, once:
---   SET anofox_tabfm_model_manifest = 'examples/mitra.json';
---   CALL tabfm_download('classification');                 -- Mitra, ~303 MB (ungated)
---   SET anofox_tabfm_accept_hf_license = true;             -- TabFM is gated
---   -- TabFM's 6.56 GB weights: cached from the other examples, or
---   -- SET anofox_tabfm_model_manifest to the built-in and CALL tabfm_download.
+--   CALL tabfm_download('classification', model := 'mitra');  -- ~303 MB (ungated)
+--   SET anofox_tabfm_accept_hf_license = true;                -- TabFM is gated
+--   -- TabFM's 6.56 GB weights: CALL tabfm_download('classification');
 
 INSTALL httpfs; LOAD httpfs;
 LOAD anofox_tabfm;
 SET anofox_tabfm_accept_hf_license = true;
 
--- A single-file manifest registers `mitra` AND leaves the built-in `tabfm-v1`
--- in the registry (built-ins are always present) → two real models, one query.
-SET anofox_tabfm_model_manifest = 'examples/mitra.json';
+-- No manifest file: `mitra` and `tabfm-v1` are built-in models, usable by name.
 
 .print '================ registered models ================'
 SELECT model, capabilities, license, commercial, downloaded

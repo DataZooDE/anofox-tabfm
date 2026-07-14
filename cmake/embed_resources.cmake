@@ -22,7 +22,21 @@ set(_tabfm_inputs
     "graph_migraphx_classification.onnx"
     "graph_migraphx_regression.onnx"
     "tensor_map_classification.json"
-    "tensor_map_regression.json")
+    "tensor_map_regression.json"
+    # Built-in catalog models (Mitra, TabPFN v2, TabICL v2) — bundled so they are
+    # usable by name with no manifest file (pure-SQL surface).
+    "graph_mitra_classification.onnx"
+    "graph_mitra_regression.onnx"
+    "graph_tabpfn_classification.onnx"
+    "graph_tabpfn_regression.onnx"
+    "graph_tabicl_classification.onnx"
+    "graph_tabicl_regression.onnx"
+    "tensor_map_mitra_classification.json"
+    "tensor_map_mitra_regression.json"
+    "tensor_map_tabpfn_classification.json"
+    "tensor_map_tabpfn_regression.json"
+    "tensor_map_tabicl_classification.json"
+    "tensor_map_tabicl_regression.json")
 
 # Re-run configure when a resource changes so the generated source stays fresh.
 foreach(_f ${_tabfm_inputs})

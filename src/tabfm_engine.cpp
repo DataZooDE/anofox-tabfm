@@ -25,6 +25,7 @@
 #include "tabfm_manifest.hpp"
 #include "tabfm_registry.hpp"
 #include "tabfm_safetensors.hpp"
+#include "tabfm_ckpt.hpp"
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_migraphx.hpp"
@@ -107,7 +108,8 @@ struct ResolvedModel {
 
 // Load {onnx -> safetensors} from the manifest: inline map, or the
 // "initializers" object of the tensor-map JSON file, else identity.
-unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest &manifest, const string &dir) {
+unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest &manifest, const string &dir,
+                                            bool use_bundle) {
 	if (!manifest.tensor_map.empty()) {
 		return manifest.tensor_map;
 	}
@@ -115,12 +117,14 @@ unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest 
 	if (manifest.tensor_map_path.empty()) {
 		return result; // identity mapping (handled at injection)
 	}
-	// Prefer a bundled tensor map (built-in manifest names, e.g.
-	// "tensor_map_classification.json"); otherwise read it from disk next to the
-	// manifest. A path never matches the bundle, so custom manifests still work.
+	// Built-in models read their bundled tensor map (embedded in the binary);
+	// user/fixture manifests ALWAYS read from their own directory — otherwise a
+	// fixture that happens to share a filename with a bundled resource would pick
+	// up the bundled (real-model) map instead of its own.
 	string json;
 	string source = manifest.tensor_map_path;
-	if (auto bundled = GetBundledResource(manifest.tensor_map_path); bundled.data) {
+	BundledResource bundled = use_bundle ? GetBundledResource(manifest.tensor_map_path) : BundledResource {};
+	if (bundled.data) {
 		json.assign(bundled.data, bundled.size);
 	} else {
 		source = JoinPath(fs, dir, manifest.tensor_map_path);
@@ -214,10 +218,10 @@ ModelManifest SpecTaskToManifest(const ModelSpec &spec, TabFMTask task) {
 ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask task, const string &requested_model) {
 	ResolvedModel resolved;
 	const auto task_name = TabFMTaskName(task);
-	// The registry: built-ins + user manifests (anofox_tabfm_model_manifest,
+	// The registry: built-ins + SQL-registered models (CALL tabfm_register_model).
 	// file or dir). Selection precedence: model := → default_model → single-file
 	// manifest → sole model.
-	auto registry = ModelRegistry::Build(ctx.model_manifest_path);
+	auto registry = ModelRegistry::Build(ctx.db ? TabFMState::Get(*ctx.db)->RegisteredSpecs() : vector<ModelSpec>());
 	const ModelSpec &spec = registry.Resolve(requested_model, ctx.default_model);
 	if (!spec.HasTask(task)) {
 		throw InvalidInputException(
@@ -232,20 +236,24 @@ ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	for (auto &e : spec.tensor_contract.outputs) {
 		resolved.contract_outputs.push_back(e.name);
 	}
-	// Built-ins carry a bundled graph (resolved below) + cache weights → cache_dir;
-	// a user manifest's relative paths resolve against its own directory.
-	resolved.manifest_dir = spec.source_dir.empty() ? ctx.cache_dir : spec.source_dir;
+	// Built-ins carry a bundled graph + cache weights → cache_dir; a user manifest's
+	// relative paths resolve against its own directory. Only built-ins consult the
+	// bundle: a fixture that shares a filename with a bundled resource must load
+	// its OWN local file, not the embedded real-model one.
+	const bool is_builtin = spec.source_dir.empty();
+	resolved.manifest_dir = is_builtin ? ctx.cache_dir : spec.source_dir;
 	// weights first: "not downloaded" is the common, actionable error (§5).
 	resolved.weights_path =
 	    ResolveWeightsPath(fs, resolved.manifest, resolved.manifest_dir, ctx.cache_dir, task_name);
-	// Graph: a bundled id ("graph_classification") resolves to embedded bytes;
-	// anything else is a path resolved next to the manifest.
-	if (auto bundled = GetBundledResource(resolved.manifest.graph); bundled.data) {
+	// Graph: for built-ins a bundled id ("graph_classification") resolves to
+	// embedded bytes; user manifests always resolve a path next to the manifest.
+	BundledResource bundled = is_builtin ? GetBundledResource(resolved.manifest.graph) : BundledResource {};
+	if (bundled.data) {
 		resolved.graph_bundle = bundled;
 	} else {
 		resolved.graph_path = ResolveGraphPath(fs, resolved.manifest, resolved.manifest_dir);
 	}
-	resolved.tensor_map = LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir);
+	resolved.tensor_map = LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin);
 	resolved.cache_key = TabFMModelCacheKey(resolved.manifest.model, task_name, resolved.manifest.revision);
 	return resolved;
 }
@@ -572,29 +580,60 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		bytes = const_data_ptr_cast(weights.data());
 		nbytes = weights.size();
 	}
-	auto view = ParseSafetensors(bytes, nbytes, resolved.weights_path);
-	auto arena = MaterializeF32Arena(view);
-
-	// Build one injected initializer per safetensors tensor, named by the graph
-	// (ONNX) initializer name. The tensor map is onnx->st; invert it, and fall
-	// back to the "m." wrapper prefix for any tensor the map omits.
+	// The tensor map is onnx->st; invert it, and fall back to the "m." wrapper
+	// prefix for any tensor the map omits.
 	unordered_map<string, string> st_to_onnx;
 	for (auto &kv : resolved.tensor_map) {
 		st_to_onnx[kv.second] = kv.first;
 	}
+	F32Arena arena; // owns bf16->f32 upcasts (safetensors path); empty for ckpt
 	vector<TabFMTensorRef> initializers;
-	initializers.reserve(view.tensors.size());
-	for (auto &entry : view.tensors) {
-		const string &st_key = entry.first;
-		auto &m = arena.Get(st_key);
-		TabFMTensorRef ref;
-		auto it = st_to_onnx.find(st_key);
-		ref.name = it != st_to_onnx.end() ? it->second : ("m." + st_key);
-		ref.dtype = ToEngineDtype(m.dtype);
-		ref.shape = m.shape;
-		ref.data = m.data;
-		ref.size_bytes = m.nbytes;
-		initializers.push_back(std::move(ref));
+	if (IsTorchCkpt(bytes, nbytes)) {
+		// Native PyTorch checkpoint (.ckpt): recover the state_dict and inject each
+		// tensor by graph name. The bytes alias the mmap/read buffer (kept alive by
+		// the backend below), so no arena copy is needed for f32/i64.
+		auto sd = ReadTorchCkpt(bytes, nbytes);
+		initializers.reserve(sd.size());
+		for (auto &entry : sd) {
+			const CkptTensor &t = entry.second;
+			TabFMTensorRef ref;
+			auto it = st_to_onnx.find(entry.first);
+			ref.name = it != st_to_onnx.end() ? it->second : ("m." + entry.first);
+			if (t.dtype == "f32") {
+				ref.dtype = TabFMTensorDtype::F32;
+			} else if (t.dtype == "i64") {
+				ref.dtype = TabFMTensorDtype::I64;
+			} else if (t.dtype == "bool") {
+				ref.dtype = TabFMTensorDtype::BOOL;
+			} else {
+				throw InvalidInputException(
+				    "tabfm: checkpoint tensor '%s' has dtype '%s'; the engine injects f32/i64/bool. Re-export the "
+				    "weights as float32, or file an issue to add the dtype.",
+				    entry.first, t.dtype);
+			}
+			ref.shape = t.shape;
+			ref.data = t.data;
+			ref.size_bytes = t.nbytes;
+			initializers.push_back(std::move(ref));
+		}
+	} else {
+		// safetensors: build one injected initializer per tensor, named by the
+		// graph (ONNX) initializer name.
+		auto view = ParseSafetensors(bytes, nbytes, resolved.weights_path);
+		arena = MaterializeF32Arena(view);
+		initializers.reserve(view.tensors.size());
+		for (auto &entry : view.tensors) {
+			const string &st_key = entry.first;
+			auto &m = arena.Get(st_key);
+			TabFMTensorRef ref;
+			auto it = st_to_onnx.find(st_key);
+			ref.name = it != st_to_onnx.end() ? it->second : ("m." + st_key);
+			ref.dtype = ToEngineDtype(m.dtype);
+			ref.shape = m.shape;
+			ref.data = m.data;
+			ref.size_bytes = m.nbytes;
+			initializers.push_back(std::move(ref));
+		}
 	}
 
 	TabFMSessionConfig config;

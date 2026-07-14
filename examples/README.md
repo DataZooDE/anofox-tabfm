@@ -32,11 +32,11 @@ duckdb :memory: < examples/regression_wine.sql        # regression, MSE
 duckdb :memory: < examples/compare_models.sql         # multi-model: accuracy + runtime
 ```
 
-Each example points `anofox_tabfm_model_manifest` at the matching
-`examples/tabfm_real_<task>.json`, which references the weight-free graph in
-`resources/` (relative to the manifest) and resolves the downloaded weights from
-the cache. The graphs ship weight-free; the weights are the user's own download
-(license-clean).
+Every model here is **built in** — `tabfm-v1`, `mitra`, `tabpfn-v2`, `tabicl-v2`
+are usable by name (`model := '<id>'`) with no manifest file; `tabfm_list_models()`
+lists them. The weight-free graphs ship inside the extension; the weights are the
+user's own download (license-clean). To register your *own* model in SQL, see
+`CALL tabfm_register_model(...)`.
 
 ## Results (single 8-core x86 CPU, fp32, n_estimators = 1)
 

@@ -85,5 +85,25 @@ mutex &TabFMState::DeviceMutex(const string &device_id) {
 	return *entry->second;
 }
 
+void TabFMState::RegisterModelSpec(const ModelSpec &spec) {
+	lock_guard<mutex> guard(lock);
+	registered_specs[spec.id] = spec;
+}
+
+bool TabFMState::UnregisterModelSpec(const string &id) {
+	lock_guard<mutex> guard(lock);
+	return registered_specs.erase(id) > 0;
+}
+
+vector<ModelSpec> TabFMState::RegisteredSpecs() const {
+	lock_guard<mutex> guard(lock);
+	vector<ModelSpec> out;
+	out.reserve(registered_specs.size());
+	for (auto &entry : registered_specs) {
+		out.push_back(entry.second); // std::map iterates sorted by id
+	}
+	return out;
+}
+
 } // namespace anofox
 } // namespace duckdb

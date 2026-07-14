@@ -17,7 +17,13 @@ statement ok
 SET anofox_tabfm_cache_dir = '__TEST_DIR__/license_cache'
 
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_ok.json'
+CALL tabfm_register_model(
+  id := 'tabfm-test',
+  classification_files := ['classification/model.safetensors', 'classification/config.json'],
+  classification_file_urls := ['test/fixtures/weights_test/model_a.bin', 'test/fixtures/weights_test/config_a.json'],
+  classification_file_bytes := [4096, 128],
+  weights_repo := 'acme/tabfm-test', weights_revision := 'main',
+  license := 'tabfm-non-commercial-v1.0', gate_setting := 'accept_hf_license')
 
 # --- Gate blocks with the SQL-API §5 text while the setting is false (default) --
 
@@ -86,7 +92,16 @@ statement ok
 SET anofox_tabfm_accept_hf_license = false
 
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_free.json'
+CALL tabfm_unregister_model('tabfm-test')
+
+statement ok
+CALL tabfm_register_model(
+  id := 'tabfm-free',
+  classification_files := ['classification/model.safetensors'],
+  classification_file_urls := ['test/fixtures/weights_test/model_a.bin'],
+  classification_file_bytes := [4096],
+  weights_repo := 'acme/tabfm-free', weights_revision := 'main',
+  license := 'none')
 
 statement ok
 SET anofox_tabfm_cache_dir = '__TEST_DIR__/free_cache'

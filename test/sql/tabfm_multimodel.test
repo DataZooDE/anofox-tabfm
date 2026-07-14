@@ -13,9 +13,15 @@ statement ok
 LOAD anofox_tabfm
 
 # The classification fixture registers a model 'fixture' AND becomes the active
-# default (single-file manifest); the built-in 'tabfm-v1' is also registered.
+# default (a single SQL registration is the implicit default); the built-in
+# 'tabfm-v1' is also registered.
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
 
 statement ok
 CREATE TABLE t AS SELECT * FROM (VALUES
@@ -28,7 +34,7 @@ CREATE TABLE t AS SELECT * FROM (VALUES
 
 # the registry lists both models (the fixture + the built-in), downloaded or not
 query TT
-SELECT model, capabilities FROM tabfm_list_models() ORDER BY model
+SELECT model, capabilities FROM tabfm_list_models() WHERE model IN ('fixture','tabfm-v1') ORDER BY model
 ----
 fixture	classify
 tabfm-v1	classify, regress
