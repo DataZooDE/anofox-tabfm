@@ -25,6 +25,7 @@
 #include "tabfm_manifest.hpp"
 #include "tabfm_registry.hpp"
 #include "tabfm_safetensors.hpp"
+#include "tabfm_ckpt.hpp"
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_migraphx.hpp"
@@ -580,29 +581,60 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		bytes = const_data_ptr_cast(weights.data());
 		nbytes = weights.size();
 	}
-	auto view = ParseSafetensors(bytes, nbytes, resolved.weights_path);
-	auto arena = MaterializeF32Arena(view);
-
-	// Build one injected initializer per safetensors tensor, named by the graph
-	// (ONNX) initializer name. The tensor map is onnx->st; invert it, and fall
-	// back to the "m." wrapper prefix for any tensor the map omits.
+	// The tensor map is onnx->st; invert it, and fall back to the "m." wrapper
+	// prefix for any tensor the map omits.
 	unordered_map<string, string> st_to_onnx;
 	for (auto &kv : resolved.tensor_map) {
 		st_to_onnx[kv.second] = kv.first;
 	}
+	F32Arena arena; // owns bf16->f32 upcasts (safetensors path); empty for ckpt
 	vector<TabFMTensorRef> initializers;
-	initializers.reserve(view.tensors.size());
-	for (auto &entry : view.tensors) {
-		const string &st_key = entry.first;
-		auto &m = arena.Get(st_key);
-		TabFMTensorRef ref;
-		auto it = st_to_onnx.find(st_key);
-		ref.name = it != st_to_onnx.end() ? it->second : ("m." + st_key);
-		ref.dtype = ToEngineDtype(m.dtype);
-		ref.shape = m.shape;
-		ref.data = m.data;
-		ref.size_bytes = m.nbytes;
-		initializers.push_back(std::move(ref));
+	if (IsTorchCkpt(bytes, nbytes)) {
+		// Native PyTorch checkpoint (.ckpt): recover the state_dict and inject each
+		// tensor by graph name. The bytes alias the mmap/read buffer (kept alive by
+		// the backend below), so no arena copy is needed for f32/i64.
+		auto sd = ReadTorchCkpt(bytes, nbytes);
+		initializers.reserve(sd.size());
+		for (auto &entry : sd) {
+			const CkptTensor &t = entry.second;
+			TabFMTensorRef ref;
+			auto it = st_to_onnx.find(entry.first);
+			ref.name = it != st_to_onnx.end() ? it->second : ("m." + entry.first);
+			if (t.dtype == "f32") {
+				ref.dtype = TabFMTensorDtype::F32;
+			} else if (t.dtype == "i64") {
+				ref.dtype = TabFMTensorDtype::I64;
+			} else if (t.dtype == "bool") {
+				ref.dtype = TabFMTensorDtype::BOOL;
+			} else {
+				throw InvalidInputException(
+				    "tabfm: checkpoint tensor '%s' has dtype '%s'; the engine injects f32/i64/bool. Re-export the "
+				    "weights as float32, or file an issue to add the dtype.",
+				    entry.first, t.dtype);
+			}
+			ref.shape = t.shape;
+			ref.data = t.data;
+			ref.size_bytes = t.nbytes;
+			initializers.push_back(std::move(ref));
+		}
+	} else {
+		// safetensors: build one injected initializer per tensor, named by the
+		// graph (ONNX) initializer name.
+		auto view = ParseSafetensors(bytes, nbytes, resolved.weights_path);
+		arena = MaterializeF32Arena(view);
+		initializers.reserve(view.tensors.size());
+		for (auto &entry : view.tensors) {
+			const string &st_key = entry.first;
+			auto &m = arena.Get(st_key);
+			TabFMTensorRef ref;
+			auto it = st_to_onnx.find(st_key);
+			ref.name = it != st_to_onnx.end() ? it->second : ("m." + st_key);
+			ref.dtype = ToEngineDtype(m.dtype);
+			ref.shape = m.shape;
+			ref.data = m.data;
+			ref.size_bytes = m.nbytes;
+			initializers.push_back(std::move(ref));
+		}
 	}
 
 	TabFMSessionConfig config;

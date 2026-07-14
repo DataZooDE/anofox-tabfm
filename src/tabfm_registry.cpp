@@ -49,8 +49,12 @@ static const char *const BUILTIN_TABPFN = R"json({
               "attribution": "TabPFN v2 by Prior Labs GmbH (Prior Labs License v1.1 = Apache-2.0 + attribution)."},
   "preprocessing_profile": "tabpfn_v2_raw",
   "weights": {
-    "classification": {"repo": "Prior-Labs/TabPFN-v2-clf", "revision": "main", "files": [{"path": "classification/model.safetensors"}]},
-    "regression": {"repo": "Prior-Labs/TabPFN-v2-reg", "revision": "main", "files": [{"path": "regression/model.safetensors"}]}
+    "classification": {"repo": "Prior-Labs/TabPFN-v2-clf", "revision": "main",
+      "files": [{"path": "classification/model.ckpt",
+                 "url": "https://huggingface.co/Prior-Labs/TabPFN-v2-clf/resolve/main/tabpfn-v2-classifier.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/TabPFN-v2-reg", "revision": "main",
+      "files": [{"path": "regression/model.ckpt",
+                 "url": "https://huggingface.co/Prior-Labs/TabPFN-v2-reg/resolve/main/tabpfn-v2-regressor.ckpt"}]}
   },
   "graph": {"classification": "graph_tabpfn_classification", "regression": "graph_tabpfn_regression",
     "tensor_map": {"classification": "tensor_map_tabpfn_classification.json",
@@ -68,8 +72,12 @@ static const char *const BUILTIN_TABICL = R"json({
               "attribution": "TabICL (soda-inria), BSD-3-Clause. Checkpoints: HF jingang/TabICL."},
   "preprocessing_profile": "tabicl_v2_raw",
   "weights": {
-    "classification": {"repo": "jingang/TabICL", "revision": "main", "files": [{"path": "classification/model.safetensors"}]},
-    "regression": {"repo": "jingang/TabICL", "revision": "main", "files": [{"path": "regression/model.safetensors"}]}
+    "classification": {"repo": "jingang/TabICL", "revision": "main",
+      "files": [{"path": "classification/model.ckpt",
+                 "url": "https://huggingface.co/jingang/TabICL/resolve/main/tabicl-classifier-v2-20260212.ckpt"}]},
+    "regression": {"repo": "jingang/TabICL", "revision": "main",
+      "files": [{"path": "regression/model.ckpt",
+                 "url": "https://huggingface.co/jingang/TabICL/resolve/main/tabicl-regressor-v2-20260212.ckpt"}]}
   },
   "graph": {"classification": "graph_tabicl_classification", "regression": "graph_tabicl_regression",
     "tensor_map": {"classification": "tensor_map_tabicl_classification.json",
