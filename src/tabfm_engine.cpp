@@ -220,7 +220,8 @@ ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	// The registry: built-ins + user manifests (anofox_tabfm_model_manifest,
 	// file or dir). Selection precedence: model := → default_model → single-file
 	// manifest → sole model.
-	auto registry = ModelRegistry::Build(ctx.model_manifest_path);
+	auto registry = ModelRegistry::Build(ctx.model_manifest_path,
+	                                    ctx.db ? TabFMState::Get(*ctx.db)->RegisteredSpecs() : vector<ModelSpec>());
 	const ModelSpec &spec = registry.Resolve(requested_model, ctx.default_model);
 	if (!spec.HasTask(task)) {
 		throw InvalidInputException(

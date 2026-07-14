@@ -144,12 +144,25 @@ const ModelSpec &ModelRegistry::Resolve(const string &requested, const string &d
 	    static_cast<unsigned long long>(models_.size()), RegisteredIds());
 }
 
-ModelRegistry ModelRegistry::Build(const string &manifest_source) {
+ModelRegistry ModelRegistry::Build(const string &manifest_source, const vector<ModelSpec> &registered) {
 	ModelRegistry registry;
 	for (auto &spec : BuiltinModelSpecs()) {
 		registry.models_[spec.id] = std::move(spec);
 	}
+	// SQL-registered models (CALL tabfm_register_model) merge last and shadow a
+	// built-in / manifest id. A single SQL registration also becomes the implicit
+	// default when no manifest set one (bare calls resolve to it, like a
+	// single-file manifest did).
+	auto add_registered = [&]() {
+		for (auto &spec : registered) {
+			registry.models_[spec.id] = spec;
+		}
+		if (registered.size() == 1 && registry.implicit_default_.empty()) {
+			registry.implicit_default_ = registered.front().id;
+		}
+	};
 	if (manifest_source.empty()) {
+		add_registered();
 		return registry;
 	}
 	auto fs = FileSystem::CreateLocal();
@@ -184,6 +197,7 @@ ModelRegistry ModelRegistry::Build(const string &manifest_source) {
 		throw IOException(
 		    "tabfm: anofox_tabfm_model_manifest '%s' is neither a readable file nor a directory", manifest_source);
 	}
+	add_registered();
 	return registry;
 }
 

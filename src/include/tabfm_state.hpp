@@ -24,6 +24,8 @@
 #include "duckdb/common/mutex.hpp"
 #include "duckdb/storage/object_cache.hpp"
 
+#include "tabfm_model_spec.hpp"
+
 namespace duckdb {
 
 class ClientContext;
@@ -95,10 +97,20 @@ public:
 	//! returned mutex lives as long as this state object.
 	mutex &DeviceMutex(const string &device_id);
 
+	//! Models registered in SQL (CALL tabfm_register_model). They are merged into
+	//! the registry alongside the built-ins; a registered id shadows a built-in of
+	//! the same id. Lives for the database-instance lifetime.
+	void RegisterModelSpec(const ModelSpec &spec);
+	//! Drop a registered model; false if the id was not registered.
+	bool UnregisterModelSpec(const string &id);
+	//! Snapshot of all SQL-registered specs (sorted by id).
+	vector<ModelSpec> RegisteredSpecs() const;
+
 private:
 	mutable mutex lock;
 	map<string, shared_ptr<LoadedModel>> models;
 	map<string, unique_ptr<mutex>> device_mutexes;
+	map<string, ModelSpec> registered_specs;
 };
 
 } // namespace anofox

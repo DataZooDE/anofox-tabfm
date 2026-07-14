@@ -133,7 +133,7 @@ string StringSetting(ClientContext &context, const char *name) {
 // manifests (file or dir) from anofox_tabfm_model_manifest. The single source of
 // truth, shared with the predict path.
 vector<WeightsManifest> ResolveManifests(ClientContext &context) {
-	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"));
+	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"), TabFMState::Get(context)->RegisteredSpecs());
 	vector<WeightsManifest> result;
 	for (auto &kv : registry.Models()) {
 		for (auto &task_kv : kv.second.tasks) {
@@ -158,7 +158,7 @@ TabFMTask ParseTaskArg(const string &task, const char *func_name) {
 WeightsManifest FindManifest(ClientContext &context, const char *func_name, const string &model_id,
                              const string &task) {
 	auto tfm_task = ParseTaskArg(task, func_name);
-	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"));
+	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"), TabFMState::Get(context)->RegisteredSpecs());
 	const ModelSpec &spec = registry.Resolve(model_id, StringSetting(context, "anofox_tabfm_default_model"));
 	if (!spec.HasTask(tfm_task)) {
 		throw InvalidInputException(
@@ -552,7 +552,7 @@ unique_ptr<FunctionData> ListModelsBind(ClientContext &, TableFunctionBindInput 
 
 unique_ptr<GlobalTableFunctionState> ListModelsInit(ClientContext &context, TableFunctionInitInput &) {
 	auto state = make_uniq<ListModelsGlobalState>();
-	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"));
+	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"), TabFMState::Get(context)->RegisteredSpecs());
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto cache_dir = GetCacheDir(context);
 	for (auto &kv : registry.Models()) {
@@ -850,6 +850,149 @@ void PrecompileExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 // Registration
 //===--------------------------------------------------------------------===//
 
+//===--------------------------------------------------------------------===//
+// tabfm_register_model / tabfm_unregister_model — pure-SQL model registration
+// (no JSON manifest file). The spec is held in TabFMState for the db-instance
+// lifetime and merged into the registry alongside the built-ins.
+//===--------------------------------------------------------------------===//
+
+string NamedStr(TableFunctionBindInput &input, const char *key, const string &def = "") {
+	auto it = input.named_parameters.find(key);
+	return (it == input.named_parameters.end() || it->second.IsNull()) ? def : it->second.ToString();
+}
+int64_t NamedInt(TableFunctionBindInput &input, const char *key, int64_t def) {
+	auto it = input.named_parameters.find(key);
+	return (it == input.named_parameters.end() || it->second.IsNull()) ? def : it->second.GetValue<int64_t>();
+}
+
+struct RegisterModelBindData : public TableFunctionData {
+	string model_id;
+	string capabilities;
+};
+
+unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunctionBindInput &input,
+                                           vector<LogicalType> &return_types, vector<string> &names) {
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_register_model");
+	auto id = NamedStr(input, "id");
+	if (id.empty()) {
+		throw InvalidInputException("tabfm_register_model: 'id' is required, e.g. "
+		                            "CALL tabfm_register_model(id := 'my_model', classification_graph := '<path|url>');");
+	}
+	auto clf_graph = NamedStr(input, "classification_graph");
+	auto reg_graph = NamedStr(input, "regression_graph");
+	if (clf_graph.empty() && reg_graph.empty()) {
+		throw InvalidInputException(
+		    "tabfm_register_model: provide at least one of classification_graph / regression_graph (the weight-free "
+		    "ONNX graph path or url).");
+	}
+
+	ModelSpec spec;
+	spec.schema_version = 2;
+	spec.id = id;
+	spec.display_name = NamedStr(input, "display_name", id);
+	spec.family = NamedStr(input, "family", "icl-transformer");
+	spec.preprocessing_profile = NamedStr(input, "preprocessing_profile", "tabfm_v1_minimal");
+	spec.license.id = NamedStr(input, "license", "none");
+	spec.license.gate_setting = NamedStr(input, "gate_setting", "");
+	auto comm = input.named_parameters.find("commercial");
+	spec.license.commercial = (comm != input.named_parameters.end() && !comm->second.IsNull())
+	                              ? BooleanValue::Get(comm->second.DefaultCastAs(LogicalType::BOOLEAN))
+	                              : spec.license.gate_setting.empty(); // gated ⇒ treated as restricted
+	spec.license.redistributable = spec.license.commercial;
+	spec.size_regime.max_rows = NamedInt(input, "max_rows", -1);
+	spec.size_regime.max_features = NamedInt(input, "max_features", -1);
+	spec.size_regime.max_classes = NamedInt(input, "max_classes", -1);
+	// A non-empty source_dir marks this as a disk-resolved user model (not a
+	// built-in): graph/weights/tensor_map paths resolve against it (default: CWD).
+	spec.source_dir = NamedStr(input, "base_dir", ".");
+
+	auto shared_tmap = NamedStr(input, "tensor_map");
+	auto weights_repo = NamedStr(input, "weights_repo");
+	auto add_task = [&](TabFMTask task, const string &graph, const string &weights, const string &tmap) {
+		if (graph.empty()) {
+			return;
+		}
+		ModelTaskArtifacts art;
+		art.graph = graph;
+		art.preprocessing_profile = spec.preprocessing_profile;
+		art.repo = weights_repo;
+		if (!tmap.empty()) {
+			art.tensor_map_path = tmap;
+		}
+		ManifestFile f;
+		f.path = weights.empty() ? "model.safetensors" : weights;
+		art.files.push_back(std::move(f));
+		spec.tasks.emplace(task, std::move(art));
+		spec.capabilities.push_back(ModelSpec::TaskCapability(task));
+	};
+	add_task(TabFMTask::CLASSIFICATION, clf_graph, NamedStr(input, "classification_weights"),
+	         NamedStr(input, "classification_tensor_map", shared_tmap));
+	add_task(TabFMTask::REGRESSION, reg_graph, NamedStr(input, "regression_weights"),
+	         NamedStr(input, "regression_tensor_map", shared_tmap));
+
+	TabFMState::Get(context)->RegisterModelSpec(spec);
+
+	auto result = make_uniq<RegisterModelBindData>();
+	result->model_id = id;
+	result->capabilities = StringUtil::Join(spec.capabilities, ", ");
+	names = {"model", "capabilities", "status"};
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+	return std::move(result);
+}
+
+struct OneRowState : public GlobalTableFunctionState {
+	bool done = false;
+	idx_t MaxThreads() const override {
+		return 1;
+	}
+};
+unique_ptr<GlobalTableFunctionState> OneRowInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<OneRowState>();
+}
+void RegisterModelExecute(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<OneRowState>();
+	if (state.done) {
+		output.SetCardinality(0);
+		return;
+	}
+	auto &bind = data.bind_data->Cast<RegisterModelBindData>();
+	output.SetCardinality(1);
+	output.SetValue(0, 0, Value(bind.model_id));
+	output.SetValue(1, 0, Value(bind.capabilities));
+	output.SetValue(2, 0, Value("registered"));
+	state.done = true;
+}
+
+struct UnregisterBindData : public TableFunctionData {
+	string model_id;
+	bool existed = false;
+};
+unique_ptr<FunctionData> UnregisterModelBind(ClientContext &context, TableFunctionBindInput &input,
+                                             vector<LogicalType> &return_types, vector<string> &names) {
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_unregister_model");
+	if (input.inputs.empty() || input.inputs[0].IsNull()) {
+		throw InvalidInputException("tabfm_unregister_model: model id cannot be NULL");
+	}
+	auto result = make_uniq<UnregisterBindData>();
+	result->model_id = StringValue::Get(input.inputs[0]);
+	result->existed = TabFMState::Get(context)->UnregisterModelSpec(result->model_id);
+	names = {"model", "status"};
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
+	return std::move(result);
+}
+void UnregisterModelExecute(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<OneRowState>();
+	if (state.done) {
+		output.SetCardinality(0);
+		return;
+	}
+	auto &bind = data.bind_data->Cast<UnregisterBindData>();
+	output.SetCardinality(1);
+	output.SetValue(0, 0, Value(bind.model_id));
+	output.SetValue(1, 0, Value(bind.existed ? "unregistered" : "not registered"));
+	state.done = true;
+}
+
 void RegisterSet(ExtensionLoader &loader, const string &full_name, const string &alias,
                  const vector<vector<LogicalType>> &overloads, table_function_bind_t bind,
                  table_function_init_global_t init, table_function_t execute, const char *description = nullptr,
@@ -920,6 +1063,40 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            "(on ROCm this builds and caches the .mxr program; a no-op cost on CPU/CUDA). Returns task, rows, "
 	            "features, device, status.",
 	            "CALL tabfm_gpu_precompile('classification', 1000, 50);");
+
+	// CALL tabfm_register_model(id := '...', classification_graph := '...', ...);
+	{
+		TableFunction f("anofox_tabfm_register_model", {}, RegisterModelExecute, RegisterModelBind, OneRowInit);
+		for (auto *k : {"id", "display_name", "family", "classification_graph", "regression_graph",
+		                "classification_weights", "regression_weights", "tensor_map", "classification_tensor_map",
+		                "regression_tensor_map", "weights_repo", "license", "gate_setting", "preprocessing_profile",
+		                "base_dir"}) {
+			f.named_parameters[k] = LogicalType::VARCHAR;
+		}
+		f.named_parameters["commercial"] = LogicalType::BOOLEAN;
+		for (auto *k : {"max_rows", "max_features", "max_classes"}) {
+			f.named_parameters[k] = LogicalType::BIGINT;
+		}
+		TableFunctionSet set("anofox_tabfm_register_model");
+		set.AddFunction(std::move(f));
+		vector<FunctionDescription> d;
+		FunctionDescription fd;
+		fd.description =
+		    "Register a model in SQL (no manifest file). Named args: id, classification_graph / regression_graph "
+		    "(path or url to the weight-free ONNX graph), classification_weights / regression_weights, tensor_map "
+		    "(or classification_tensor_map / regression_tensor_map), weights_repo, license, commercial, "
+		    "gate_setting, preprocessing_profile, max_rows / max_features / max_classes. Then use model := '<id>'.";
+		fd.examples = {"CALL tabfm_register_model(id := 'my', classification_graph := '/p/g.onnx', "
+		               "classification_weights := '/p/w.safetensors', tensor_map := '/p/map.json', "
+		               "license := 'apache-2.0');"};
+		d.push_back(std::move(fd));
+		RegisterTableFunctionSetWithAlias(loader, std::move(set), "tabfm_register_model", std::move(d));
+	}
+	// CALL tabfm_unregister_model('id');
+	RegisterSet(loader, "anofox_tabfm_unregister_model", "tabfm_unregister_model", {{LogicalType::VARCHAR}},
+	            UnregisterModelBind, OneRowInit, UnregisterModelExecute,
+	            "Remove a model registered with tabfm_register_model. Returns model, status.",
+	            "CALL tabfm_unregister_model('my_model');");
 }
 
 } // namespace anofox

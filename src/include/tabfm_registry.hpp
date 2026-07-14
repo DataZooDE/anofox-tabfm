@@ -29,7 +29,9 @@ public:
 	//! or "" for none. A single-file source becomes the *implicit default* model
 	//! (back-compat: `SET anofox_tabfm_model_manifest = file` selects that model,
 	//! as it did before the registry). User ids shadow a built-in of the same id.
-	static ModelRegistry Build(const string &manifest_source);
+	//! `registered` are models added in SQL (CALL tabfm_register_model, held in
+	//! TabFMState); they are merged last and shadow a built-in / manifest id.
+	static ModelRegistry Build(const string &manifest_source, const vector<ModelSpec> &registered = {});
 
 	const map<string, ModelSpec> &Models() const {
 		return models_;
