@@ -904,12 +904,48 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	auto shared_tmap = NamedStr(input, "tensor_map");
 	auto weights_repo = NamedStr(input, "weights_repo");
 	auto weights_revision = NamedStr(input, "weights_revision", "main");
+	auto named_list = [&](const char *key) -> vector<Value> {
+		auto it = input.named_parameters.find(key);
+		if (it == input.named_parameters.end() || it->second.IsNull()) {
+			return {};
+		}
+		return ListValue::GetChildren(it->second);
+	};
+	// Per-task weight files: a `<task>_files` LIST (with parallel _file_urls /
+	// _file_bytes) for multi-file models, else the single `<task>_weights` scalar.
+	auto build_files = [&](const char *files_k, const char *urls_k, const char *bytes_k, const string &one_path,
+	                       const string &one_url, int64_t one_bytes) -> vector<ManifestFile> {
+		vector<ManifestFile> files;
+		auto paths = named_list(files_k);
+		if (!paths.empty()) {
+			auto urls = named_list(urls_k);
+			auto byts = named_list(bytes_k);
+			for (idx_t i = 0; i < paths.size(); i++) {
+				ManifestFile f;
+				f.path = paths[i].ToString();
+				f.url = (i < urls.size() && !urls[i].IsNull()) ? urls[i].ToString() : "";
+				f.bytes = (i < byts.size() && !byts[i].IsNull()) ? NumericCast<idx_t>(byts[i].GetValue<int64_t>()) : 0;
+				files.push_back(std::move(f));
+			}
+		} else if (!one_path.empty()) {
+			ManifestFile f;
+			f.path = one_path;
+			f.url = one_url;
+			f.bytes = one_bytes < 0 ? 0 : NumericCast<idx_t>(one_bytes);
+			files.push_back(std::move(f));
+		}
+		return files;
+	};
 	// Register a task if it has a graph OR weights: a graph-less task is
 	// download-only (predict errors clearly, but download/list work).
-	auto add_task = [&](TabFMTask task, const string &graph, const string &weights, const string &url, int64_t bytes,
-	                    const string &tmap) {
-		if (graph.empty() && weights.empty()) {
+	auto add_task = [&](TabFMTask task, const string &graph, vector<ManifestFile> files, const string &tmap) {
+		if (graph.empty() && files.empty()) {
 			return;
+		}
+		if (files.empty()) {
+			ManifestFile f;
+			f.path = "model.safetensors";
+			files.push_back(std::move(f));
 		}
 		ModelTaskArtifacts art;
 		art.graph = graph;
@@ -919,19 +955,19 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 		if (!tmap.empty()) {
 			art.tensor_map_path = tmap;
 		}
-		ManifestFile f;
-		f.path = weights.empty() ? "model.safetensors" : weights;
-		f.url = url;
-		f.bytes = bytes < 0 ? 0 : NumericCast<idx_t>(bytes);
-		art.files.push_back(std::move(f));
+		art.files = std::move(files);
 		spec.tasks.emplace(task, std::move(art));
 		spec.capabilities.push_back(ModelSpec::TaskCapability(task));
 	};
-	add_task(TabFMTask::CLASSIFICATION, clf_graph, NamedStr(input, "classification_weights"),
-	         NamedStr(input, "classification_weights_url"), NamedInt(input, "classification_weights_bytes", -1),
+	add_task(TabFMTask::CLASSIFICATION, clf_graph,
+	         build_files("classification_files", "classification_file_urls", "classification_file_bytes",
+	                     NamedStr(input, "classification_weights"), NamedStr(input, "classification_weights_url"),
+	                     NamedInt(input, "classification_weights_bytes", -1)),
 	         NamedStr(input, "classification_tensor_map", shared_tmap));
-	add_task(TabFMTask::REGRESSION, reg_graph, NamedStr(input, "regression_weights"),
-	         NamedStr(input, "regression_weights_url"), NamedInt(input, "regression_weights_bytes", -1),
+	add_task(TabFMTask::REGRESSION, reg_graph,
+	         build_files("regression_files", "regression_file_urls", "regression_file_bytes",
+	                     NamedStr(input, "regression_weights"), NamedStr(input, "regression_weights_url"),
+	                     NamedInt(input, "regression_weights_bytes", -1)),
 	         NamedStr(input, "regression_tensor_map", shared_tmap));
 	if (spec.tasks.empty()) {
 		throw InvalidInputException("tabfm_register_model: provide a graph and/or weights for at least one task "
@@ -1107,6 +1143,14 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 		for (auto *k : {"max_rows", "max_features", "max_classes", "classification_weights_bytes",
 		                "regression_weights_bytes"}) {
 			f.named_parameters[k] = LogicalType::BIGINT;
+		}
+		// Multi-file-per-task (e.g. weights + config): parallel LISTs.
+		for (auto *k : {"classification_files", "regression_files", "classification_file_urls",
+		                "regression_file_urls"}) {
+			f.named_parameters[k] = LogicalType::LIST(LogicalType::VARCHAR);
+		}
+		for (auto *k : {"classification_file_bytes", "regression_file_bytes"}) {
+			f.named_parameters[k] = LogicalType::LIST(LogicalType::BIGINT);
 		}
 		TableFunctionSet set("anofox_tabfm_register_model");
 		set.AddFunction(std::move(f));
