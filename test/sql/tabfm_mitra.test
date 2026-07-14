@@ -1,0 +1,67 @@
+# name: test/sql/tabfm_mitra.test
+# description: Mitra (AWS AutoGluon Tab2D) onboarded as a REAL second architecture
+#              — proof it runs end-to-end through the SAME engine with NO C++
+#              change, driven purely by a v2 manifest (FR-5.1 / M4). Uses the
+#              committed random-init Mitra fixture (weight-free graph + tiny
+#              random safetensors) so CI is offline and ships zero Mitra weight
+#              bytes. Mitra's exported contract is x,y,train_size,d -> logits
+#              (no cat_mask: it has no categorical-specific embedding, and it
+#              rank/quantile-normalizes inside the graph, so the engine's
+#              existing preprocessing is harmless).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/mitra/manifest.json'
+
+# the Mitra fixture registers alongside the built-in; it is a distinct family
+# member, apache-2.0 / commercial / ungated
+query TTTT
+SELECT model, family, license, commercial FROM tabfm_list_models() WHERE model = 'mitra-fixture'
+----
+mitra-fixture	icl-transformer	apache-2.0	true
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,'a','x',0.1,'c0'),(1.5,0.2,'b','y',0.3,'c1'),(2.5,-1.0,'a','y',0.5,'c2'),
+  (0.2,0.8,'b','x',0.7,'c0'),(1.1,0.4,'a','y',0.2,'c1'),(3.0,-0.5,'b','y',0.9,'c2'),
+  (0.9,1.2,'a','x',0.6,'c0'),(2.1,0.1,'b','y',0.4,'c1'),
+  (1.3,0.3,'a','y',0.35,NULL),(2.4,-0.2,'b','x',0.55,NULL),
+  (0.7,0.9,'a','x',0.15,NULL),(1.8,-0.7,'b','y',0.75,NULL))
+  v(f1,f2,f3,f4,f5,label);
+
+# a REAL forward pass through the Mitra graph (random-init weights) — every
+# prediction is a valid training class, so the graph really ran end-to-end
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2'))
+FROM tabfm_classify('t', 'label', model := 'mitra-fixture')
+----
+12	0
+
+# regression capability runs too (Mitra fixture ships both graphs)
+statement ok
+CREATE TABLE r AS SELECT * FROM (VALUES
+  (0.5,1.0,'a',0.1,1.2),(1.5,0.2,'b',0.3,2.4),(2.5,-1.0,'a',0.5,3.1),
+  (0.2,0.8,'b',0.7,0.9),(1.1,0.4,'a',0.2,1.8),(3.0,-0.5,'b',0.9,3.6),
+  (0.9,1.2,'a',0.6,1.1),(2.1,0.1,'b',0.4,2.7),
+  (1.3,0.3,'a',0.35,NULL),(2.4,-0.2,'b',0.55,NULL))
+  v(f1,f2,f3,f4,target);
+
+query I
+SELECT count(*) FROM tabfm_regress('r', 'target', model := 'mitra-fixture')
+----
+10
+
+# the exported contract declares x,y,train_size,d (no cat_mask) and is enforced
+# at load — the fixture runs, proving graph I/O matches the manifest contract
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'mitra-fixture')
+WHERE yhat IS NULL
+----
+0

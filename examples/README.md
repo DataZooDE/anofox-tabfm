@@ -98,19 +98,20 @@ target `quality`:
 | wall time | ~42 s |
 
 **Multi-model comparison** — `compare_models.sql`, `scikit-learn/iris`, the same
-100-row context / 53 scored split run through **two registered models** selected
-with `model :=` (accuracy *and* wall-clock runtime side by side):
+100-row context / 53 scored split run through **two REAL foundation models**
+selected with `model :=` (accuracy *and* wall-clock runtime side by side):
 
 | model | accuracy | runtime | note |
 |---|---|---|---|
-| **`tabfm-v1`** (real Google TabFM, 6.56 GB) | **0.943** (50 / 53) | ~30–40 s | dominated by the one-time 6.56 GB model load |
-| `fixture-commercial` (random-init fixture) | 0.377 (20 / 53) | ~0.25 s | tiny test graph, **not trained** — ≈chance for 3 classes |
+| **`mitra`** (AWS Mitra, Apache-2.0, 72 M / ~303 MB) | **0.962** (51 / 53) | **~2.4 s** | commercial-clean; rank-normalizes inside the graph |
+| `tabfm-v1` (Google TabFM, 6.56 GB, gated) | 0.943 (50 / 53) | ~30 s | dominated by the one-time 6.56 GB load |
 
-The harness is the point: comparing models is two queries over one registry
-(`tabfm_list_models()` to discover, `model :=` to select). The gap here is the
-expected one between a foundation model and random weights; drop in a second
-*real* model (e.g. a future Mitra export) for a meaningful head-to-head. Runtime
-is the per-predict `Run Time (s)` printed by `.timer on`.
+A real head-to-head: on iris, **Mitra is both more accurate and ~12× faster**
+than the 1.6 B-param Google model, and it is commercially usable. Comparing
+models is two queries over one registry (`tabfm_list_models()` to discover,
+`model :=` to select). Runtime is the per-predict `Run Time (s)` from `.timer
+on`. Prerequisites: `CALL tabfm_download('classification')` under
+`examples/mitra.json` (~303 MB) for Mitra, plus the cached 6.56 GB TabFM weights.
 
 Zero-shot, no training: the model reads the train split as context and scores
 the test split. Classification reaches 0.67 F1 on churn and 0.94 accuracy on
