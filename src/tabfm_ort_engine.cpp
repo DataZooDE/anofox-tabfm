@@ -555,8 +555,8 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 
 	if (session.output_names.empty()) {
 		throw InvalidInputException(
-		    "anofox_tabfm: model graph declares no outputs; expected a 'logits' output (HLD §4.4). If you set "
-		    "anofox_tabfm_model_manifest, point it at a compatible weight-free graph.");
+		    "anofox_tabfm: model graph declares no outputs; expected a 'logits' output (HLD §4.4). If you "
+		    "registered a custom model, point it at a compatible weight-free graph.");
 	}
 	// Prefer the output named "logits"; otherwise take the first output.
 	idx_t output_index = 0;
@@ -602,14 +602,14 @@ void ValidateTabFMOutput(const TabFMRunOutput &out, idx_t expected_t, idx_t min_
 	    out.shape[1] != NumericCast<int64_t>(expected_t)) {
 		throw InvalidInputException(
 		    "anofox_tabfm: model produced logits of shape %s, but the engine contract is [1, %llu, C] for %s "
-		    "(HLD §4.4). The configured graph does not match the engine — check anofox_tabfm_model_manifest.",
+		    "(HLD §4.4). The configured graph does not match the engine — check the registered model's graph.",
 		    shape_str(), static_cast<unsigned long long>(expected_t), task_name);
 	}
 	const auto C = NumericCast<idx_t>(out.shape[2]);
 	if (C < 1 || C < min_classes) {
 		throw InvalidInputException(
 		    "anofox_tabfm: model output has %llu class column(s) but %s needs at least %llu — the graph's "
-		    "class head does not match the data. Check anofox_tabfm_model_manifest.",
+		    "class head does not match the data. Check the registered model's graph.",
 		    static_cast<unsigned long long>(C), task_name, static_cast<unsigned long long>(min_classes));
 	}
 	// shape[0] == 1, so the element count is expected_t * C (both bounded by the

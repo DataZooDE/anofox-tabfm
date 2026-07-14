@@ -3,7 +3,7 @@
 //
 // tabfm_registry.hpp — the model registry (multi-model, FR-5.1 / M4). Holds N
 // ModelSpecs keyed by id: the built-ins compiled into the binary (today the
-// Google TabFM v1) plus any user manifests from `anofox_tabfm_model_manifest`
+// Google TabFM v1) plus models registered in SQL (CALL tabfm_register_model)
 // (a file or a directory). One registry is the single source of truth for both
 // the predict path and the weights functions.
 //===----------------------------------------------------------------------===//
@@ -24,14 +24,10 @@ vector<ModelSpec> BuiltinModelSpecs();
 
 class ModelRegistry {
 public:
-	//! Build the registry: the built-ins, plus user manifests from
-	//! `manifest_source` — a single .json *file*, a *directory* of .json files,
-	//! or "" for none. A single-file source becomes the *implicit default* model
-	//! (back-compat: `SET anofox_tabfm_model_manifest = file` selects that model,
-	//! as it did before the registry). User ids shadow a built-in of the same id.
-	//! `registered` are models added in SQL (CALL tabfm_register_model, held in
-	//! TabFMState); they are merged last and shadow a built-in / manifest id.
-	static ModelRegistry Build(const string &manifest_source, const vector<ModelSpec> &registered = {});
+	//! Build the registry: the built-ins, plus `registered` models added in SQL
+	//! (CALL tabfm_register_model, held in TabFMState). A registered id shadows a
+	//! built-in of the same id; a single registration is the implicit default.
+	static ModelRegistry Build(const vector<ModelSpec> &registered = {});
 
 	const map<string, ModelSpec> &Models() const {
 		return models_;

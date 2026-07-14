@@ -305,9 +305,6 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	bind->context.db = &DatabaseInstance::GetDatabase(context);
 	bind->context.threads = NumericCast<int64_t>(ReadSettingUBigint(context, "anofox_tabfm_threads", 1));
 	Value setting;
-	if (context.TryGetCurrentSetting("anofox_tabfm_model_manifest", setting) && !setting.IsNull()) {
-		bind->context.model_manifest_path = setting.ToString();
-	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_default_model", setting) && !setting.IsNull()) {
 		bind->context.default_model = setting.ToString();
 	}

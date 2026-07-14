@@ -130,10 +130,10 @@ string StringSetting(ClientContext &context, const char *name) {
 }
 
 // Every (model, task) the registry knows this session — built-ins + user
-// manifests (file or dir) from anofox_tabfm_model_manifest. The single source of
+// plus SQL-registered models. The single source of
 // truth, shared with the predict path.
 vector<WeightsManifest> ResolveManifests(ClientContext &context) {
-	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"), TabFMState::Get(context)->RegisteredSpecs());
+	auto registry = ModelRegistry::Build(TabFMState::Get(context)->RegisteredSpecs());
 	vector<WeightsManifest> result;
 	for (auto &kv : registry.Models()) {
 		for (auto &task_kv : kv.second.tasks) {
@@ -158,13 +158,13 @@ TabFMTask ParseTaskArg(const string &task, const char *func_name) {
 WeightsManifest FindManifest(ClientContext &context, const char *func_name, const string &model_id,
                              const string &task) {
 	auto tfm_task = ParseTaskArg(task, func_name);
-	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"), TabFMState::Get(context)->RegisteredSpecs());
+	auto registry = ModelRegistry::Build(TabFMState::Get(context)->RegisteredSpecs());
 	const ModelSpec &spec = registry.Resolve(model_id, StringSetting(context, "anofox_tabfm_default_model"));
 	if (!spec.HasTask(tfm_task)) {
 		throw InvalidInputException(
-		    "%s: model '%s' does not support task '%s'. Point anofox_tabfm_model_manifest at a model that supports "
-		    "'%s' (or unset it to use the built-in); see tabfm_list_models().",
-		    func_name, spec.id, task, task);
+		    "%s: model '%s' does not support task '%s'. Select a model that does (model := '<id>', or "
+		    "CALL tabfm_register_model(...)); see tabfm_list_models().",
+		    func_name, spec.id, task);
 	}
 	return WeightsFromSpec(spec, tfm_task);
 }
@@ -552,7 +552,7 @@ unique_ptr<FunctionData> ListModelsBind(ClientContext &, TableFunctionBindInput 
 
 unique_ptr<GlobalTableFunctionState> ListModelsInit(ClientContext &context, TableFunctionInitInput &) {
 	auto state = make_uniq<ListModelsGlobalState>();
-	auto registry = ModelRegistry::Build(StringSetting(context, "anofox_tabfm_model_manifest"), TabFMState::Get(context)->RegisteredSpecs());
+	auto registry = ModelRegistry::Build(TabFMState::Get(context)->RegisteredSpecs());
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto cache_dir = GetCacheDir(context);
 	for (auto &kv : registry.Models()) {
@@ -819,9 +819,6 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", v) && !v.IsNull()) {
 		ctx.mxr_source = v.ToString();
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_model_manifest", v) && !v.IsNull()) {
-		ctx.model_manifest_path = v.ToString();
 	}
 	names = {"task", "rows", "features", "device", "status"};
 	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR,

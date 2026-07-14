@@ -97,3 +97,21 @@ engine to read it.
    setting) lands last, once the replacements are proven.
 
 Red/green TDD throughout; codex review after Phase 2 and Phase 3.
+
+## Status (2026-07-14)
+
+- **Phase 1 — built-in catalog: DONE.** Mitra / TabPFN v2 / TabICL v2 bundled +
+  baked into `BuiltinModelSpecs`; usable by name, no manifest. (commit 12a582f)
+- **Phase 2 — `CALL tabfm_register_model`: DONE.** Registers a model from SQL
+  args into TabFMState; merged into the registry. (commit 541af1d)
+- **Phase 3 — native `.ckpt` reading: DONE.** `tabfm_ckpt.{hpp,cpp}` (STORED zip
+  + subset pickle VM); the loader injects a `.ckpt` directly. Validated:
+  `model := 'tabicl-v2'` reads the real torch checkpoint, iris 0.962, no Python.
+  (commit d2f7eaa)
+- **Phase 4a — user-facing removal: DONE.** examples / README use built-ins +
+  CALL register; no manifest anywhere a user looks. (commit 6309ea7)
+- **Phase 4b — remove the setting: IN PROGRESS.** 9/13 fixture tests migrated to
+  CALL register; `tabfm_register_model` gained multi-file-per-task support so the
+  last 4 download tests can migrate; then delete `anofox_tabfm_model_manifest` +
+  its plumbing (settings.cpp, ModelRegistry::Build's manifest path + callers,
+  PredictContext.model_manifest_path, the C++ manifest-file tests, settings.test).

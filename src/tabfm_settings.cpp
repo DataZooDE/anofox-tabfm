@@ -93,11 +93,6 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	config.AddExtensionOption("anofox_tabfm_max_features", "Maximum feature columns per predict call",
 	                          LogicalType::BIGINT, Value::BIGINT(500), ValidateMaxFeatures);
 
-	config.AddExtensionOption("anofox_tabfm_model_manifest",
-	                          "Extra model manifest(s) merged into the registry: a manifest .json file (also the "
-	                          "active default model) or a directory of manifests. '' = built-ins only.",
-	                          LogicalType::VARCHAR, Value(""));
-
 	config.AddExtensionOption("anofox_tabfm_default_model",
 	                          "Default model id for tabfm_classify/regress/download/... when model := is not given. "
 	                          "'' = resolve to the single-file manifest model, else the sole registered model.",

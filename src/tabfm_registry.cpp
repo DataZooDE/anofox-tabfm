@@ -1,6 +1,6 @@
-// tabfm_registry.cpp — the model registry (P2). Single source of truth for the
-// set of models: the built-ins compiled into the binary + user manifests from
-// anofox_tabfm_model_manifest (file or dir). Schema: tabfm_registry.hpp.
+// tabfm_registry.cpp — the model registry. Single source of truth for the set of
+// models: the built-ins compiled into the binary + models registered in SQL
+// (CALL tabfm_register_model). Schema: tabfm_registry.hpp.
 
 #include "tabfm_registry.hpp"
 #include "tabfm_manifest.hpp" // BuiltinTabFMManifestJson
@@ -152,60 +152,20 @@ const ModelSpec &ModelRegistry::Resolve(const string &requested, const string &d
 	    static_cast<unsigned long long>(models_.size()), RegisteredIds());
 }
 
-ModelRegistry ModelRegistry::Build(const string &manifest_source, const vector<ModelSpec> &registered) {
+ModelRegistry ModelRegistry::Build(const vector<ModelSpec> &registered) {
 	ModelRegistry registry;
 	for (auto &spec : BuiltinModelSpecs()) {
 		registry.models_[spec.id] = std::move(spec);
 	}
 	// SQL-registered models (CALL tabfm_register_model) merge last and shadow a
-	// built-in / manifest id. A single SQL registration also becomes the implicit
-	// default when no manifest set one (bare calls resolve to it, like a
-	// single-file manifest did).
-	auto add_registered = [&]() {
-		for (auto &spec : registered) {
-			registry.models_[spec.id] = spec;
-		}
-		if (registered.size() == 1 && registry.implicit_default_.empty()) {
-			registry.implicit_default_ = registered.front().id;
-		}
-	};
-	if (manifest_source.empty()) {
-		add_registered();
-		return registry;
+	// built-in of the same id. A single SQL registration also becomes the implicit
+	// default (a bare call resolves to it); with several, selection is explicit.
+	for (auto &spec : registered) {
+		registry.models_[spec.id] = spec;
 	}
-	auto fs = FileSystem::CreateLocal();
-	if (fs->DirectoryExists(manifest_source)) {
-		// A directory of manifests: register every *.json (merged, no implicit
-		// default). Sort the file list so loading is deterministic, and reject two
-		// user manifests that declare the same id (a user file MAY shadow a
-		// built-in, but two user files with one id is nondeterministic → error).
-		vector<string> names;
-		fs->ListFiles(manifest_source, [&](const string &name, bool is_dir) {
-			if (!is_dir && StringUtil::EndsWith(StringUtil::Lower(name), ".json")) {
-				names.push_back(name);
-			}
-		});
-		std::sort(names.begin(), names.end());
-		std::set<string> user_ids;
-		for (auto &name : names) {
-			auto spec = LoadModelSpecFile(fs->JoinPath(manifest_source, name));
-			if (!user_ids.insert(spec.id).second) {
-				throw InvalidInputException(
-				    "tabfm: two manifests in directory '%s' both declare model id '%s' — ids must be unique",
-				    manifest_source, spec.id);
-			}
-			registry.models_[spec.id] = std::move(spec);
-		}
-	} else if (fs->FileExists(manifest_source)) {
-		// A single file selects that model as the active default (back-compat).
-		auto spec = LoadModelSpecFile(manifest_source);
-		registry.implicit_default_ = spec.id;
-		registry.models_[spec.id] = std::move(spec);
-	} else {
-		throw IOException(
-		    "tabfm: anofox_tabfm_model_manifest '%s' is neither a readable file nor a directory", manifest_source);
+	if (registered.size() == 1) {
+		registry.implicit_default_ = registered.front().id;
 	}
-	add_registered();
 	return registry;
 }
 

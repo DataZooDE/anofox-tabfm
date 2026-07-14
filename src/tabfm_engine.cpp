@@ -218,11 +218,10 @@ ModelManifest SpecTaskToManifest(const ModelSpec &spec, TabFMTask task) {
 ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask task, const string &requested_model) {
 	ResolvedModel resolved;
 	const auto task_name = TabFMTaskName(task);
-	// The registry: built-ins + user manifests (anofox_tabfm_model_manifest,
+	// The registry: built-ins + SQL-registered models (CALL tabfm_register_model).
 	// file or dir). Selection precedence: model := → default_model → single-file
 	// manifest → sole model.
-	auto registry = ModelRegistry::Build(ctx.model_manifest_path,
-	                                    ctx.db ? TabFMState::Get(*ctx.db)->RegisteredSpecs() : vector<ModelSpec>());
+	auto registry = ModelRegistry::Build(ctx.db ? TabFMState::Get(*ctx.db)->RegisteredSpecs() : vector<ModelSpec>());
 	const ModelSpec &spec = registry.Resolve(requested_model, ctx.default_model);
 	if (!spec.HasTask(task)) {
 		throw InvalidInputException(
