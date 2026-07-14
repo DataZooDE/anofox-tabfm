@@ -880,11 +880,6 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	}
 	auto clf_graph = NamedStr(input, "classification_graph");
 	auto reg_graph = NamedStr(input, "regression_graph");
-	if (clf_graph.empty() && reg_graph.empty()) {
-		throw InvalidInputException(
-		    "tabfm_register_model: provide at least one of classification_graph / regression_graph (the weight-free "
-		    "ONNX graph path or url).");
-	}
 
 	ModelSpec spec;
 	spec.schema_version = 2;
@@ -908,27 +903,61 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 
 	auto shared_tmap = NamedStr(input, "tensor_map");
 	auto weights_repo = NamedStr(input, "weights_repo");
-	auto add_task = [&](TabFMTask task, const string &graph, const string &weights, const string &tmap) {
-		if (graph.empty()) {
+	auto weights_revision = NamedStr(input, "weights_revision", "main");
+	// Register a task if it has a graph OR weights: a graph-less task is
+	// download-only (predict errors clearly, but download/list work).
+	auto add_task = [&](TabFMTask task, const string &graph, const string &weights, const string &url, int64_t bytes,
+	                    const string &tmap) {
+		if (graph.empty() && weights.empty()) {
 			return;
 		}
 		ModelTaskArtifacts art;
 		art.graph = graph;
 		art.preprocessing_profile = spec.preprocessing_profile;
 		art.repo = weights_repo;
+		art.revision = weights_revision;
 		if (!tmap.empty()) {
 			art.tensor_map_path = tmap;
 		}
 		ManifestFile f;
 		f.path = weights.empty() ? "model.safetensors" : weights;
+		f.url = url;
+		f.bytes = bytes < 0 ? 0 : NumericCast<idx_t>(bytes);
 		art.files.push_back(std::move(f));
 		spec.tasks.emplace(task, std::move(art));
 		spec.capabilities.push_back(ModelSpec::TaskCapability(task));
 	};
 	add_task(TabFMTask::CLASSIFICATION, clf_graph, NamedStr(input, "classification_weights"),
+	         NamedStr(input, "classification_weights_url"), NamedInt(input, "classification_weights_bytes", -1),
 	         NamedStr(input, "classification_tensor_map", shared_tmap));
 	add_task(TabFMTask::REGRESSION, reg_graph, NamedStr(input, "regression_weights"),
+	         NamedStr(input, "regression_weights_url"), NamedInt(input, "regression_weights_bytes", -1),
 	         NamedStr(input, "regression_tensor_map", shared_tmap));
+	if (spec.tasks.empty()) {
+		throw InvalidInputException("tabfm_register_model: provide a graph and/or weights for at least one task "
+		                            "(classification_graph / regression_graph / classification_weights / ...).");
+	}
+
+	// Optional tensor contract: comma-separated graph I/O names to verify at load.
+	auto contract = [](const string &csv, vector<TensorContractEntry> &out) {
+		for (auto &name : StringUtil::Split(csv, ',')) {
+			string n = name;
+			while (!n.empty() && std::isspace((unsigned char)n.front())) {
+				n.erase(n.begin());
+			}
+			while (!n.empty() && std::isspace((unsigned char)n.back())) {
+				n.pop_back();
+			}
+			if (!n.empty()) {
+				TensorContractEntry e;
+				e.logical = n;
+				e.name = n;
+				out.push_back(std::move(e));
+			}
+		}
+	};
+	contract(NamedStr(input, "contract_inputs"), spec.tensor_contract.inputs);
+	contract(NamedStr(input, "contract_outputs"), spec.tensor_contract.outputs);
 
 	TabFMState::Get(context)->RegisterModelSpec(spec);
 
@@ -1068,13 +1097,15 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	{
 		TableFunction f("anofox_tabfm_register_model", {}, RegisterModelExecute, RegisterModelBind, OneRowInit);
 		for (auto *k : {"id", "display_name", "family", "classification_graph", "regression_graph",
-		                "classification_weights", "regression_weights", "tensor_map", "classification_tensor_map",
+		                "classification_weights", "regression_weights", "classification_weights_url",
+		                "regression_weights_url", "weights_revision", "tensor_map", "classification_tensor_map",
 		                "regression_tensor_map", "weights_repo", "license", "gate_setting", "preprocessing_profile",
-		                "base_dir"}) {
+		                "base_dir", "contract_inputs", "contract_outputs"}) {
 			f.named_parameters[k] = LogicalType::VARCHAR;
 		}
 		f.named_parameters["commercial"] = LogicalType::BOOLEAN;
-		for (auto *k : {"max_rows", "max_features", "max_classes"}) {
+		for (auto *k : {"max_rows", "max_features", "max_classes", "classification_weights_bytes",
+		                "regression_weights_bytes"}) {
 			f.named_parameters[k] = LogicalType::BIGINT;
 		}
 		TableFunctionSet set("anofox_tabfm_register_model");

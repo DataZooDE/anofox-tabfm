@@ -5,11 +5,10 @@
 --
 -- Run:  duckdb :memory: < examples/regression_wine.sql
 -- Needs: real regression weights (CALL tabfm_download('regression'))
---        and the resources/ graph (see examples/tabfm_real_regression.json).
+--        (built-in model 'tabfm-v1' — no manifest file needed).
 
 INSTALL httpfs; LOAD httpfs;
 LOAD anofox_tabfm;
-SET anofox_tabfm_model_manifest = 'examples/tabfm_real_regression.json';
 
 -- 1. Load; deterministic split key.
 CREATE TABLE wine AS
@@ -32,7 +31,7 @@ CREATE TABLE test_actuals  AS SELECT row_id, quality FROM test_full;
 .timer on
 CREATE TABLE preds AS
 SELECT row_id, yhat AS pred
-FROM tabfm_regress('train', 'quality', test := 'test_features');
+FROM tabfm_regress('train', 'quality', test := 'test_features', model := 'tabfm-v1');
 
 -- 4. MSE / RMSE / MAE + a naive mean-predictor baseline, in SQL.
 .print '================ WINE-QUALITY regression (TabFM zero-shot) ================'
