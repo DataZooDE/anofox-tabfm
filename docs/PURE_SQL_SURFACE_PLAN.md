@@ -110,8 +110,12 @@ Red/green TDD throughout; codex review after Phase 2 and Phase 3.
   (commit d2f7eaa)
 - **Phase 4a — user-facing removal: DONE.** examples / README use built-ins +
   CALL register; no manifest anywhere a user looks. (commit 6309ea7)
-- **Phase 4b — remove the setting: IN PROGRESS.** 9/13 fixture tests migrated to
-  CALL register; `tabfm_register_model` gained multi-file-per-task support so the
-  last 4 download tests can migrate; then delete `anofox_tabfm_model_manifest` +
-  its plumbing (settings.cpp, ModelRegistry::Build's manifest path + callers,
-  PredictContext.model_manifest_path, the C++ manifest-file tests, settings.test).
+- **Phase 4b — remove the setting: DONE.** All 13 fixture tests migrated to CALL
+  register (`tabfm_register_model` gained multi-file-per-task support);
+  `anofox_tabfm_model_manifest` and all its plumbing deleted (settings.cpp,
+  ModelRegistry::Build's manifest path + callers, PredictContext.model_manifest_path,
+  the C++ manifest-file tests, settings.test). `SET anofox_tabfm_model_manifest`
+  now errors "unrecognized configuration parameter". (commit ba741fd)
+
+**Plan complete — the extension is operated entirely in SQL, no JSON manifest
+anywhere.**
