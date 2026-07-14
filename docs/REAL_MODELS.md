@@ -19,7 +19,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Google TabFM** (`tabfm-v1`) | non-commercial (gated) | ✅ shipped | yes | the original; 1.6 B params / 6.56 GB |
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
 | **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes (classify)** | ~29 MB; iris **0.962**; one-time ckpt→safetensors convert |
-| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | 🧪 export-proven | engine-ready; real-weight convert pending |
+| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes (classify)** | ~110 MB; iris **0.943**; one-time ckpt→safetensors convert |
 
 ## Mitra — done
 
@@ -62,14 +62,16 @@ reference), ~29 MB weights. Regression is deferred: TabPFN's head is a 5000-buck
 `FullSupportBarDistribution` whose borders live in the criterion, not the graph —
 a `[1,T,1]` point estimate needs a bar-distribution decoder (WS-E).
 
-## TabICL v2 — engine-ready, real-weight conversion pending
+## TabICL v2 — shipped (classification)
 
-TabICL's graph is *also* `(x, y)`-only, so the same y-prefix inference already
-drives it (offline fixture runs). What remains before a real-weight run: a
-ckpt→safetensors converter like TabPFN's (its HF checkpoint is a PyTorch `.ckpt`,
-and the exported graph's config must match the checkpoint's), plus — for
-regression — a 999-quantile decoder. The export tooling, weight-free graphs,
-random-init fixtures, and prototype manifest are committed and reproducible.
+TabICL's graph is *also* `(x, y)`-only, so the same y-prefix inference drives it
+with no model-specific code. `tools/export_tabicl/convert_weights.py` downloads
+the HF `.ckpt` and writes a safetensors keyed by the committed tensor map (all
+391 keys matched the checkpoint's `state_dict` directly). `model := 'tabicl-v2'`
+scores **iris at 0.943** (~110 MB, BSD-3, ungated). It keeps the default z-score
+profile (`tabicl_v2_minimal`) — its own internal normalization tolerates it.
+Regression is deferred: TabICL's head is 999 quantile logits, which needs a
+quantile→point-estimate decoder (WS-E).
 
 ## License wall (all models)
 
