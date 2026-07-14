@@ -39,6 +39,7 @@ logits[:, train_size:]).
 
 from __future__ import annotations
 
+import math
 import types
 
 import torch
@@ -50,6 +51,33 @@ from tabpfn.preprocessing.torch import ops as opsmod
 # Code-generated positional-embedding base: one row per (feature-group) column.
 # Cover the largest supported feature count / smallest group size with margin.
 MAX_COLS = 1024
+
+# FullSupportBarDistribution tail constants (see architectures/shared/
+# bar_distribution.py). HalfNormal(1).icdf(0.5) and E[HalfNormal(1)] = sqrt(2/pi).
+# The two outer buckets are half-normal tails; their centre is offset from the
+# outer border by E[HalfNormal(scale)] with scale = bucket_width / icdf(0.5).
+_HN_ICDF_HALF = float(
+    torch.distributions.HalfNormal(torch.tensor(1.0)).icdf(torch.tensor(0.5))
+)
+_SQRT_2_OVER_PI = math.sqrt(2.0 / math.pi)
+
+
+def _random_regression_borders(num_buckets: int, seed: int) -> torch.Tensor:
+    """Deterministic, sorted, strictly-increasing borders for a random-init
+    fixture. Length num_buckets+1; positive outer bucket widths (required by
+    FullSupportBarDistribution). NOT a checkpoint weight — the fixture is
+    weight-free/random-init; real exports inject `criterion.borders`."""
+    g = torch.Generator().manual_seed(int(seed) + 777)
+    widths = torch.rand(num_buckets, generator=g) + 0.5  # all >= 0.5 > 0
+    edges = torch.cat([torch.zeros(1), torch.cumsum(widths, dim=0)])
+    # Normalize to a fixed modest span (z-normalized-target scale, ~[-4, 4]),
+    # independent of num_buckets. Real checkpoint borders concentrate their
+    # mass on a similar range; keeping the fixture on the same scale keeps the
+    # point-estimate reduction (a weighted sum over all buckets) numerically
+    # stable in fp32 (avoids ORT-vs-PyTorch accumulation blow-up at 5000 bars).
+    span = 8.0
+    edges = (edges - edges.min()) / (edges.max() - edges.min()) * span - span / 2
+    return edges.float().contiguous()
 
 
 def _patched_select_features(x, sel):
@@ -130,7 +158,17 @@ def build_random_model(task: str, model_kwargs: dict, seed: int = 0):
     cfg = TabPFNV2Config(**{k: v for k, v in kw.items()
                             if k in TabPFNV2Config.__dataclass_fields__})
     model = get_architecture(cfg)
-    return prepare_model_for_export(model)
+    prepare_model_for_export(model)
+    if task == "regression":
+        # Random-init (weight-free) bar-distribution borders for the fixture.
+        # A real export overwrites this buffer with the checkpoint's
+        # `criterion.borders` (see load_real_model); the buffer is mapped +
+        # externalized like any other weight.
+        model.register_buffer(
+            "regression_borders",
+            _random_regression_borders(model.n_out, seed),
+        )
+    return model.eval()
 
 
 def load_real_model(task: str, ckpt_path: str):
@@ -144,8 +182,20 @@ def load_real_model(task: str, ckpt_path: str):
     from tabpfn.model_loading import load_model
 
     apply_module_patches()
-    model, _criterion, _cfg, _inf = load_model(path=Path(ckpt_path))
+    model, criterion, _cfg, _inf = load_model(path=Path(ckpt_path))
     prepare_model_for_export(model)
+    if task == "regression":
+        # The bar-distribution borders live in the checkpoint criterion
+        # (`criterion.borders`, in the z-normalized target space). Attach them
+        # as a model buffer so they enter state_dict() and are mapped +
+        # externalized like any weight (convert_weights.py writes them to the
+        # injected safetensors under key `regression_borders`).
+        if criterion is None or not hasattr(criterion, "borders"):
+            raise RuntimeError(
+                "regression checkpoint has no FullSupportBarDistribution "
+                "criterion.borders — cannot build the point-estimate head")
+        model.register_buffer(
+            "regression_borders", criterion.borders.detach().float().contiguous())
     return model
 
 
@@ -155,20 +205,62 @@ class ExportWrapper(torch.nn.Module):
     Inputs (batch fixed to 1):
       x [1, T, H] float32   preprocessed features (raw-ish; TabPFN scales
                             internally — do NOT z-score on the C++ side)
-      y [1, N] float32      TRAIN labels only (N = train_size, a runtime dim)
+      y [1, N] float32      TRAIN targets only (N = train_size, a runtime dim).
+                            classification: dense class ids 0..C-1.
+                            regression:     RAW target values (the wrapper
+                            z-normalizes them internally — see below).
     Output:
-      logits [1, T, C]      C = max_classes (classification) or num_buckets
-                            (regression, bar-distribution logits). Predictions
-                            occupy rows >= N; rows < N are zero padding.
+      logits [1, T, C]      classification: C = max_classes (class logits).
+                            regression:     C = 1, a RAW-space POINT ESTIMATE
+                            (the bar-distribution mean, de-standardized).
+                            Predictions occupy rows >= N; rows < N are zero pad.
+
+    Regression contract (Option A — self-contained, raw-in / raw-out):
+      TabPFN's regressor standardizes the target on the TRAIN rows
+      (y' = (y - mean) / std, population std) and its logits describe a
+      FullSupportBarDistribution over `criterion.borders` in that z-normalized
+      space. This wrapper reproduces that end to end: it z-normalizes the RAW
+      train targets it is fed, runs the transformer, reduces the bucket logits
+      to the distribution MEAN over the (z-space) borders, then maps that mean
+      back to raw space via `mean * std + mean`. The engine therefore feeds RAW
+      train targets and must NOT standardize the target or inverse-transform the
+      output — logits[:, train_size:, 0] is the final prediction.
     """
 
-    def __init__(self, model):
+    def __init__(self, model, task: str = "classification"):
         super().__init__()
         self.m = model
+        if task not in ("classification", "regression"):
+            raise ValueError(f"task must be classification|regression, got {task!r}")
+        self.task = task
+
+    def _bardist_mean(self, logits):
+        """Distribution mean of a FullSupportBarDistribution over the model's
+        `regression_borders`. Matches FullSupportBarDistribution.mean exactly
+        (inner buckets: centre = midpoint; outer buckets: half-normal tails)."""
+        b = self.m.regression_borders.to(logits.dtype)
+        bw = b[1:] - b[:-1]  # bucket widths, [num_bars]
+        mids = b[:-1] + bw / 2.0
+        mean0 = (-bw[0] / _HN_ICDF_HALF * _SQRT_2_OVER_PI + b[1]).reshape(1)
+        meanN = (bw[-1] / _HN_ICDF_HALF * _SQRT_2_OVER_PI + b[-2]).reshape(1)
+        bucket_means = torch.cat([mean0, mids[1:-1], meanN])  # [num_bars]
+        p = torch.softmax(logits, dim=-1)  # [T-N, 1, num_bars]
+        return torch.matmul(p, bucket_means)  # [T-N, 1]
 
     def forward(self, x, y):
         xt = x.permute(1, 0, 2)  # [T,1,H] seq-first
-        out = self.m(xt, y[0])  # [T-N, 1, C]
+        if self.task == "regression":
+            yt = y[0]  # [N] RAW train targets
+            ymean = yt.mean()
+            # population std (correction=0), matching TabPFN's fit path.
+            ystd = torch.clamp(torch.sqrt(((yt - ymean) ** 2).mean()), min=1e-20)
+            ynorm = (yt - ymean) / ystd
+            logits = self.m(xt, ynorm)  # [T-N, 1, num_buckets]
+            znorm_mean = self._bardist_mean(logits)  # [T-N, 1] (z-space)
+            raw = znorm_mean * ystd + ymean  # [T-N, 1] (raw space)
+            out = raw.unsqueeze(-1)  # [T-N, 1, 1]
+        else:
+            out = self.m(xt, y[0])  # [T-N, 1, C]
         pad_rows = xt.shape[0] - out.shape[0]
         pad = torch.zeros(pad_rows, out.shape[1], out.shape[2], dtype=out.dtype)
         full = torch.cat([pad, out], dim=0)  # [T,1,C]

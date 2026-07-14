@@ -127,6 +127,7 @@
     "m.output_projection.0.weight": "output_projection.0.weight",
     "m.output_projection.2.bias": "output_projection.2.bias",
     "m.output_projection.2.weight": "output_projection.2.weight",
+    "m.regression_borders": "regression_borders",
     "m.target_embedder.bias": "target_embedder.bias",
     "m.target_embedder.weight": "target_embedder.weight"
   },

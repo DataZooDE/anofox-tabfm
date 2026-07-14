@@ -1,10 +1,16 @@
 """CI fixture model for TabICL — random weights, tiny dims, deterministic bytes.
 
-Same shape as the S06 TabFM fixture (tools/make_fixture): a tiny random-init
-TabICL (BSD-3-Clause architecture, our weights — zero soda-inria checkpoint
-bytes) with SEEDED weights over SORTED state_dict keys, a weight-free graph
-through the SAME exporter, a golden.json (PyTorch fp32 logits for the C++ parity
-test) and a v2 manifest with ``../`` paths.
+Same shape as the S06 TabFM fixture (tools/make_fixture) and the Mitra fixture
+(test/fixtures/mitra): a tiny random-init TabICL (BSD-3-Clause architecture, our
+weights — zero soda-inria checkpoint bytes) with SEEDED weights over SORTED
+state_dict keys, weight-free graphs through the SAME exporter, per-task
+golden_*.json (PyTorch fp32 logits for the C++ parity test) and a single v2
+manifest carrying BOTH tasks (capabilities [classify, regress]).
+
+Regression is a real second capability here: the exported regression graph emits
+``logits[1, T, 1]`` — a single real-valued POINT ESTIMATE per row (mean over the
+quantile head, then an in-graph inverse StandardScaler), NOT 999 quantile logits.
+See ``tabicl_patches.ExportWrapper`` for the target-space contract.
 """
 
 from __future__ import annotations
@@ -26,8 +32,21 @@ WEIGHT_SCALE = 0.05
 GOLDEN_SHAPE = dict(t=20, h=5, s=12)  # T rows, H features, S train_size
 PARITY_RTOL = 1e-4
 
-FILES = ["graph_tabicl_fixture.onnx", "model.safetensors",
-         "tensor_map_tabicl_fixture.json", "golden.json", "manifest.json"]
+TASKS = ("classification", "regression")
+# Shared tensor map: injection is name-based (onnx init "m.<key>" <- safetensors
+# "<key>", with an "m."-prefix fallback in the engine), so one map serves both
+# graphs. We ship the classification map as the manifest's shared map.
+SHARED_TENSOR_MAP = "tensor_map_tabicl_classification.json"
+FILES = [
+    "graph_tabicl_classification.onnx", "model_classification.safetensors",
+    "tensor_map_tabicl_classification.json", "golden_classification.json",
+    "graph_tabicl_regression.onnx", "model_regression.safetensors",
+    "tensor_map_tabicl_regression.json", "golden_regression.json",
+    "manifest.json",
+]
+# Stale single-task fixture artifacts from before the dual-task restructure.
+_LEGACY = ["graph_tabicl_fixture.onnx", "model.safetensors",
+           "tensor_map_tabicl_fixture.json", "golden.json"]
 
 
 def seeded_model(task: str = "classification"):
@@ -59,7 +78,8 @@ def golden_inputs(task: str = "classification"):
     if task == "classification":
         y = torch.randint(0, 3, (1, s), generator=gen).float()
     else:
-        y = torch.randn(1, s, generator=gen)
+        # RAW train targets (the engine feeds raw; the graph z-scores internally).
+        y = torch.randn(1, s, generator=gen) * 2.5 + 1.0
     return x, y
 
 
@@ -67,12 +87,8 @@ def sha256_file(p: pathlib.Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
-def build(out: pathlib.Path, task: str = "classification") -> dict:
-    if task not in ("classification", "regression"):
-        raise ValueError(f"task must be classification|regression, got {task!r}")
-    apply()
-    out.mkdir(parents=True, exist_ok=True)
-
+def _build_task(out: pathlib.Path, task: str) -> str:
+    """Build one task's graph + safetensors + golden. Returns safetensors sha256."""
     model = seeded_model(task)
     model2 = seeded_model(task)
     sd, sd2 = model.state_dict(), model2.state_dict()
@@ -80,21 +96,21 @@ def build(out: pathlib.Path, task: str = "classification") -> dict:
     for k in sd:
         assert torch.equal(sd[k], sd2[k]), f"nondeterministic weight {k}"
 
-    st_path = out / "model.safetensors"
+    st_path = out / f"model_{task}.safetensors"
     digest = safetensors_bytes_digest(model, st_path)
-    tmp = out / "model.safetensors.recheck"
+    tmp = out / f"model_{task}.safetensors.recheck"
     digest2 = safetensors_bytes_digest(model2, tmp)
     tmp.unlink()
     assert digest == digest2, f"safetensors bytes not deterministic: {digest} != {digest2}"
 
     cfg = x_configs.fixture()
-    graph_path = out / "graph_tabicl_fixture.onnx"
+    graph_path = out / f"graph_tabicl_{task}.onnx"
     wrapper = x_export.export_graph(model, graph_path, dim_rows=cfg.dim_rows,
                                     dim_train=cfg.dim_train, dim_features=cfg.dim_features,
                                     example=cfg.example)
     tensor_map = x_export.postprocess(graph_path, dict(model.state_dict()))
-    x_export.write_tensor_map(out / "tensor_map_tabicl_fixture.json", tensor_map,
-                              task=task, safetensors_rel="model.safetensors")
+    x_export.write_tensor_map(out / f"tensor_map_tabicl_{task}.json", tensor_map,
+                              task=task, safetensors_rel=f"model_{task}.safetensors")
 
     parity = x_export.check_parity(graph_path, wrapper, cfg.parity_shapes)
     assert parity["ok"], parity
@@ -105,24 +121,44 @@ def build(out: pathlib.Path, task: str = "classification") -> dict:
     x, y = golden_inputs(task)
     with torch.no_grad():
         logits = wrapper(x, y)
+    if task == "classification":
+        out_doc = "classification: C = max_classes (class logits)."
+    else:
+        out_doc = ("regression: C = 1 — a single real-valued POINT ESTIMATE per row "
+                   "(mean over the quantile head + in-graph inverse StandardScaler). "
+                   "y holds RAW train targets; the graph z-scores them internally, so "
+                   "the engine feeds RAW targets and reads the output directly.")
     y_convention = (
         "y holds ONLY the training labels (length S = train_size); train_size is "
         "implicit as len(y). logits are [1, T, C]; the runtime reads predictions "
-        "on rows >= S (test rows). "
-        + ("classification: C = max_classes." if task == "classification"
-           else "regression: C = num_quantiles (quantile logits, NOT a single "
-                "value); TabICL maps these to a point estimate downstream."))
-    (out / "golden.json").write_text(json.dumps({
+        "on rows >= S (test rows). " + out_doc)
+    (out / f"golden_{task}.json").write_text(json.dumps({
         "_doc": {
-            "purpose": "C++ parity: safetensors -> initializer injection -> ORT run "
-                       "on graph_tabicl_fixture.onnx must reproduce these fp32 logits.",
+            "purpose": f"C++ parity: safetensors -> initializer injection -> ORT run "
+                       f"on graph_tabicl_{task}.onnx must reproduce these fp32 logits.",
             "parity_slice": "asserted on logits[:, train_size:, :] (test rows)",
             "rtol": PARITY_RTOL, "y_convention": y_convention,
         },
         "inputs": {"x": x.tolist(), "y": y.tolist(), "train_size": GOLDEN_SHAPE["s"]},
         "logits": logits.tolist(),
+        "output_shape": list(logits.shape),
         "safetensors_sha256": digest,
     }, indent=2) + "\n")
+    return digest
+
+
+def build(out: pathlib.Path, task: str | None = None) -> dict:
+    """Build the dual-task committed CI fixture (both tasks + combined manifest).
+
+    ``task`` is accepted for CLI back-compat but ignored: the fixture always
+    ships both classification and regression.
+    """
+    apply()
+    out.mkdir(parents=True, exist_ok=True)
+    for legacy in _LEGACY:
+        (out / legacy).unlink(missing_ok=True)
+
+    digests = {t: _build_task(out, t) for t in TASKS}
 
     def file_entry(name):
         p = out / name
@@ -135,12 +171,15 @@ def build(out: pathlib.Path, task: str = "classification") -> dict:
         "license": {"id": "bsd-3-clause", "commercial": True,
                     "redistributable": True, "gate_setting": None},
         "preprocessing_profile": "tabicl_v2_minimal",
-        "weights": {task: {"repo": f"local:test/fixtures/tabicl",
-                           "revision": "fixture-v1",
-                           "files": [file_entry("model.safetensors")]}},
-        "graph": {task: "graph_tabicl_fixture.onnx",
-                  "tensor_map": "tensor_map_tabicl_fixture.json"},
-        "capabilities": ["classify" if task == "classification" else "regress"],
+        "weights": {
+            t: {"repo": "local:test/fixtures/tabicl", "revision": "fixture-v1",
+                "files": [file_entry(f"model_{t}.safetensors")]}
+            for t in TASKS
+        },
+        "graph": {"classification": "graph_tabicl_classification.onnx",
+                  "regression": "graph_tabicl_regression.onnx",
+                  "tensor_map": SHARED_TENSOR_MAP},
+        "capabilities": ["classify", "regress"],
         "tensor_contract": {
             "inputs": {
                 "features": {"name": "x", "dtype": "f32", "shape": ["1", "T", "H"]},
@@ -148,12 +187,15 @@ def build(out: pathlib.Path, task: str = "classification") -> dict:
             },
             "outputs": {"logits": {"name": "logits", "dtype": "f32", "shape": ["1", "T", "C"]}},
         },
-        "size_regime": {"max_rows": 4096, "max_features": 64,
-                        "max_classes": 3 if task == "classification" else 0},
+        "size_regime": {"max_rows": 4096, "max_features": 64, "max_classes": 3},
         "compute": {"cpu": "f32"},
         "_note": "Random-init TabICL fixture (BSD-3-Clause architecture, our weights). "
                  "H is DYNAMIC; y carries train labels only (length=train_size); no "
-                 "cat_mask/d/train_size inputs. Regression logits are quantile logits.",
+                 "cat_mask/d/train_size inputs. classification logits are class logits "
+                 "(C=max_classes); regression logits are a SINGLE point estimate "
+                 "(C=1) — mean over the quantile head + in-graph inverse StandardScaler "
+                 "on RAW train targets. One shared tensor_map serves both graphs "
+                 "(name-based injection with an 'm.' fallback).",
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 

@@ -149,6 +149,24 @@ void ParseTensorMapInto(yyjson_val *map_val, ModelTaskArtifacts &art, const stri
 	Fail(path, "\"tensor_map\" must be a path string or an {onnx -> safetensors} object");
 }
 
+// A v2 graph.tensor_map is either SHARED across tasks (a path string, or an
+// inline {onnx -> st} object — Mitra) or keyed PER TASK ({classification: <map>,
+// regression: <map>}) when the tasks' graphs have different initializers (TabPFN
+// clf 29 vs reg 130). Disambiguate on the first key being a task name.
+bool IsTaskKeyedTensorMap(yyjson_val *map_val) {
+	if (!map_val || !yyjson_is_obj(map_val)) {
+		return false;
+	}
+	yyjson_obj_iter it;
+	yyjson_obj_iter_init(map_val, &it);
+	yyjson_val *k = yyjson_obj_iter_next(&it);
+	if (!k) {
+		return false;
+	}
+	string key(yyjson_get_str(k), yyjson_get_len(k));
+	return key == "classification" || key == "regression";
+}
+
 void ParseEngineProfilesInto(yyjson_val *profiles_val, map<string, EngineProfile> &out, const string &path) {
 	if (profiles_val && yyjson_is_obj(profiles_val)) {
 		yyjson_obj_iter iter;
@@ -295,10 +313,13 @@ void ParseV2(yyjson_val *root, ModelSpec &spec, const string &path) {
 		Fail(path, "v2 \"weights\" must be a non-empty object keyed by task");
 	}
 	auto graph = yyjson_obj_get(root, "graph");
-	// The shared tensor map may be a path string OR an inline {onnx -> st} object.
+	// The tensor map is either shared across tasks (path/inline object) or keyed
+	// per task (graphs with different initializers, e.g. TabPFN clf vs reg).
+	yyjson_val *tmap_val = (graph && yyjson_is_obj(graph)) ? yyjson_obj_get(graph, "tensor_map") : nullptr;
+	const bool task_keyed_map = IsTaskKeyedTensorMap(tmap_val);
 	ModelTaskArtifacts shared_map;
-	if (graph && yyjson_is_obj(graph)) {
-		ParseTensorMapInto(yyjson_obj_get(graph, "tensor_map"), shared_map, path);
+	if (tmap_val && !task_keyed_map) {
+		ParseTensorMapInto(tmap_val, shared_map, path);
 	}
 	yyjson_obj_iter wit;
 	yyjson_obj_iter_init(weights, &wit);
@@ -321,8 +342,12 @@ void ParseV2(yyjson_val *root, ModelSpec &spec, const string &path) {
 		if (art.graph.empty()) {
 			Fail(path, "v2 \"graph\" has no entry for task '" + task_name + "'");
 		}
-		art.tensor_map_path = shared_map.tensor_map_path;
-		art.tensor_map = shared_map.tensor_map;
+		if (task_keyed_map) {
+			ParseTensorMapInto(yyjson_obj_get(tmap_val, task_name.c_str()), art, path);
+		} else {
+			art.tensor_map_path = shared_map.tensor_map_path;
+			art.tensor_map = shared_map.tensor_map;
+		}
 		spec.tasks.emplace(task, std::move(art));
 	}
 

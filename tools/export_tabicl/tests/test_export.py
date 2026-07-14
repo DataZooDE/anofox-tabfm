@@ -32,12 +32,15 @@ def test_classification_exports_and_parity(tmp_path):
     assert parity["worst"] < 1e-4
 
 
-def test_regression_out_dim_is_quantiles(tmp_path):
+def test_regression_out_dim_is_point_estimate(tmp_path):
+    # The regression graph reduces the 999-quantile head to a single per-row
+    # point estimate (sklearn output_type="mean" == mean over quantiles) and
+    # inverse-StandardScaler back to RAW space -> logits[1, T, 1].
     model, wrapper, graph, tmap = _export(tmp_path, "regression")
     sess = ort.InferenceSession(str(graph), providers=["CPUExecutionProvider"])
     feed = export.make_feed(30, 6, 12, max_classes=0)
     (out,) = sess.run(["logits"], feed)
-    assert out.shape == (1, 30, model.num_quantiles)  # quantile logits, not 1
+    assert out.shape == (1, 30, 1)  # single point estimate per row, not 999 quantiles
 
 
 def test_dynamic_H(tmp_path):

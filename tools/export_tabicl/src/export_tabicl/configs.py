@@ -15,6 +15,16 @@ import dataclasses
 OPSET = 18
 
 # TabICL v2 __init__ defaults (== the released v2 architecture).
+#
+# NOTE: the released classifier and regressor checkpoints (HF jingang/TabICL)
+# share these dims but DIFFER in one architectural flag, verified from each
+# checkpoint's embedded ``config``:
+#   - tabicl-classifier-v2: bias_free_ln=False  (391 state_dict tensors)
+#   - tabicl-regressor-v2:  bias_free_ln=True   (347 tensors; LayerNorms have no
+#                                                bias, so 44 *.norm*.bias params
+#                                                are absent)
+# The exported architecture MUST match, else real-weight injection leaves 44
+# initializers unmapped. So the real config is task-aware on ``bias_free_ln``.
 _REAL_KWARGS = dict(
     max_classes=10, num_quantiles=999, embed_dim=128,
     col_num_blocks=3, col_nhead=8, col_num_inds=128,
@@ -58,17 +68,20 @@ def fixture() -> ExportConfig:
     )
 
 
-def real() -> ExportConfig:
+def real(task: str = "classification") -> ExportConfig:
+    kwargs = dict(_REAL_KWARGS)
+    # tabicl-regressor-v2 was trained with bias-free LayerNorms.
+    kwargs["bias_free_ln"] = (task == "regression")
     return ExportConfig(
-        name="real", model_kwargs=dict(_REAL_KWARGS),
+        name="real", model_kwargs=kwargs,
         dim_rows=DIM_ROWS, dim_train=DIM_TRAIN, dim_features=DIM_FEATURES,
         example=(20, 8, 12), parity_shapes=((16, 4, 10), (60, 20, 40)),
     )
 
 
-def get(name: str) -> ExportConfig:
+def get(name: str, task: str = "classification") -> ExportConfig:
     if name == "fixture":
         return fixture()
     if name == "real":
-        return real()
+        return real(task)
     raise ValueError(f"unknown config {name!r} (fixture|real)")

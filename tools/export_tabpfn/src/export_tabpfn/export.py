@@ -39,23 +39,28 @@ PARITY_TOL = 1e-3  # DoD budget; expect ~1e-6
 POS_BASE_NAME = "_pos_base"
 
 
-def example_inputs(t, h, n, max_classes=4, seed=0):
+def example_inputs(t, h, n, max_classes=4, seed=0, task="classification"):
     torch.manual_seed(seed)
     x = torch.randn(1, t, h)
-    # dense 0..C-1 train labels, every class present (identity densification)
-    y = torch.arange(n, dtype=torch.float32).remainder(max_classes)[None, :]
+    if task == "regression":
+        # continuous RAW train targets (the wrapper z-normalizes internally)
+        y = torch.randn(1, n, dtype=torch.float32)
+    else:
+        # dense 0..C-1 train labels, every class present (identity densification)
+        y = torch.arange(n, dtype=torch.float32).remainder(max_classes)[None, :]
     return x, y
 
 
 def export_graph(model, graph_path: pathlib.Path, *, example=(12, 5, 8),
-                 max_classes=4, opset: int = OPSET) -> ExportWrapper:
+                 max_classes=4, opset: int = OPSET,
+                 task="classification") -> ExportWrapper:
     """Step 1: dynamo export with Dim.AUTO. Writes graph + .onnx.data."""
-    wrapper = ExportWrapper(model).eval()
+    wrapper = ExportWrapper(model, task=task).eval()
     A = torch.export.Dim.AUTO
     S = torch.export.Dim.STATIC
     dyn = ({0: S, 1: A, 2: A}, {0: S, 1: A})
     t, h, n = example
-    ex = example_inputs(t, h, n, max_classes=max_classes)
+    ex = example_inputs(t, h, n, max_classes=max_classes, task=task)
     graph_path.parent.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
         torch.onnx.export(
@@ -172,24 +177,34 @@ def write_tensor_map(map_path: pathlib.Path, tensor_map: dict, *, task: str,
     map_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-def make_feed(t, h, n, classes=4, seed=1):
+def make_feed(t, h, n, classes=4, seed=1, task="classification"):
     rng = np.random.default_rng(seed)
     x = rng.standard_normal((1, t, h)).astype(np.float32)
-    y = rng.integers(0, classes, (1, n)).astype(np.float32)
+    if task == "regression":
+        # RAW continuous train targets with non-trivial mean/scale, to exercise
+        # the in-graph z-norm + de-standardization.
+        y = (rng.standard_normal((1, n)) * 3.0 + 7.0).astype(np.float32)
+    else:
+        y = rng.integers(0, classes, (1, n)).astype(np.float32)
     return {"x": x, "y": y}
 
 
 def check_parity(graph_path: pathlib.Path, model, shapes, max_classes=4,
-                 tol: float = PARITY_TOL) -> dict:
-    """ORT vs PyTorch fp32 on random weights. Compares TEST rows (>= N)."""
+                 tol: float = PARITY_TOL, task="classification") -> dict:
+    """ORT vs PyTorch fp32 on random weights. Compares TEST rows (>= N).
+
+    classification: also checks argmax agreement over class logits.
+    regression:     output is a scalar point estimate [1,T,1]; only the numeric
+                    max-abs delta on test rows is meaningful (argmax is trivial).
+    """
     import onnxruntime as ort
 
-    wrapper = ExportWrapper(model).eval()
+    wrapper = ExportWrapper(model, task=task).eval()
     sess = ort.InferenceSession(str(graph_path),
                                 providers=["CPUExecutionProvider"])
     results, worst, argmax_ok = [], 0.0, True
     for t, h, n in shapes:
-        feed = make_feed(t, h, n, classes=max_classes)
+        feed = make_feed(t, h, n, classes=max_classes, task=task)
         t0 = time.time()
         (ort_out,) = sess.run(["logits"], feed)
         ort_ms = (time.time() - t0) * 1e3
@@ -197,7 +212,11 @@ def check_parity(graph_path: pathlib.Path, model, shapes, max_classes=4,
             pt_out = wrapper(torch.from_numpy(feed["x"]),
                              torch.from_numpy(feed["y"])).numpy()
         delta = float(np.abs(ort_out[:, n:] - pt_out[:, n:]).max())
-        aok = bool((ort_out[:, n:].argmax(-1) == pt_out[:, n:].argmax(-1)).all())
+        if task == "regression":
+            aok = True  # scalar output; argmax not applicable
+        else:
+            aok = bool(
+                (ort_out[:, n:].argmax(-1) == pt_out[:, n:].argmax(-1)).all())
         worst = max(worst, delta)
         argmax_ok = argmax_ok and aok
         results.append({"T": t, "H": h, "train": n,

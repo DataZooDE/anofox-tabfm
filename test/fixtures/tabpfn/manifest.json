@@ -19,14 +19,27 @@
           "bytes": 155352
         }
       ]
+    },
+    "regression": {
+      "files": [
+        {
+          "path": "model_regression.safetensors",
+          "bytes": 161692
+        }
+      ]
     }
   },
   "graph": {
     "classification": "graph_tabpfn_classification.onnx",
-    "tensor_map": "tensor_map_tabpfn_classification.json"
+    "regression": "graph_tabpfn_regression.onnx",
+    "tensor_map": {
+      "classification": "tensor_map_tabpfn_classification.json",
+      "regression": "tensor_map_tabpfn_regression.json"
+    }
   },
   "capabilities": [
-    "classify"
+    "classify",
+    "regress"
   ],
   "tensor_contract": {
     "inputs": {
@@ -68,5 +81,5 @@
   "compute": {
     "cpu": "f32"
   },
-  "_note": "Random-init TabPFN v2 (emsize=32, 2 layers). train_size is conveyed as len(y) (train-label prefix), NOT a scalar input; cat_mask/d omitted. See tools/export_tabpfn for the export recipe."
+  "_note": "Random-init TabPFN v2 (emsize=32, 2 layers). train_size is conveyed as len(y) (train-target prefix), NOT a scalar input; cat_mask/d omitted. REGRESSION: y is RAW train targets and logits[1,T,1] is a RAW point estimate \u2014 the graph z-normalizes y and de-standardizes its own output, so the engine must feed raw targets and neither standardize them nor inverse-transform the output. See tools/export_tabpfn for the recipe."
 }

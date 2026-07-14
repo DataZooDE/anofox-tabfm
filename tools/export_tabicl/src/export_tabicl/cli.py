@@ -28,7 +28,7 @@ def main(argv=None) -> int:
     ap.add_argument("--skip-parity", action="store_true")
     args = ap.parse_args(argv)
 
-    cfg = configs.get(args.config)
+    cfg = configs.get(args.config, task=args.task)
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     graph_path = out / f"graph_tabicl_{args.task}.onnx"
@@ -77,7 +77,12 @@ def main(argv=None) -> int:
         "task": args.task, "config": cfg.name, "model_kwargs": cfg.model_kwargs,
         "n_params": n_params, "seed": args.seed, "opset": export.OPSET,
         "input_signature": {"x": "[1,T,H] f32", "y": "[1,S] f32 (S=train_size, train labels only)"},
-        "output": {"logits": "[1,T,C]"},
+        "output": (
+            {"logits": "[1,T,C] class logits, C=max_classes"} if args.task == "classification"
+            else {"logits": "[1,T,1] single real-valued point estimate per row "
+                            "(mean over the 999-quantile head + in-graph inverse "
+                            "StandardScaler); engine feeds RAW train targets and reads "
+                            "the output directly (no target z-score, no inverse-transform)"}),
         "H_dynamic": True, "train_size": "runtime (implicit = len(y))",
         "cat_mask": "omitted (no categorical path)", "d": "omitted (unsupported with feature grouping)",
         "dim_rows": list(cfg.dim_rows), "dim_train": list(cfg.dim_train),

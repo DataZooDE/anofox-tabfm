@@ -49,7 +49,7 @@ def main(argv=None) -> int:
 
     t0 = time.time()
     export.export_graph(model, graph_path, example=cfg.example,
-                        max_classes=cfg.max_classes)
+                        max_classes=cfg.max_classes, task=args.task)
     print(f"[export_tabpfn] dynamo export done ({time.time()-t0:.1f}s)", flush=True)
 
     t0 = time.time()
@@ -65,7 +65,7 @@ def main(argv=None) -> int:
     if not args.skip_parity:
         t0 = time.time()
         parity = export.check_parity(graph_path, model, cfg.parity_shapes,
-                                     max_classes=cfg.max_classes)
+                                     max_classes=cfg.max_classes, task=args.task)
         print(f"[export_tabpfn] parity ({time.time()-t0:.1f}s): worst "
               f"{parity['worst']:.2e} (budget {parity['tol']:.0e}) argmax_ok "
               f"{parity['argmax_all_agree']} -> "
@@ -89,8 +89,33 @@ def main(argv=None) -> int:
         "n_initializers_mapped": len(tensor_map["initializers"]),
         "unmatched_small_inline": tensor_map["unmatched_small"],
         "parity": parity,
-        "input_signature": {"x": "f32[1,T,H]", "y": "f32[1,N] (N=train_size)"},
-        "output_signature": {"logits": "f32[1,T,C]"},
+        "input_signature": {
+            "x": "f32[1,T,H]",
+            "y": ("f32[1,N] RAW train targets (N=train_size); wrapper "
+                  "z-normalizes internally"
+                  if args.task == "regression"
+                  else "f32[1,N] dense train labels 0..C-1 (N=train_size)"),
+        },
+        "output_signature": {
+            "logits": ("f32[1,T,1] RAW-space point estimate on rows >= N "
+                       "(bar-distribution mean, de-standardized)"
+                       if args.task == "regression"
+                       else "f32[1,T,C] class logits on rows >= N")
+        },
+        "regression_contract": (
+            {
+                "target_space_in": "RAW train targets (engine feeds raw y as "
+                                   "the [1,N] train prefix; do NOT standardize)",
+                "output_space": "RAW predictions (engine reads "
+                                "logits[:, train_size:, 0] directly; no inverse "
+                                "transform)",
+                "reduction": "softmax(bucket_logits) . bucket_means over "
+                             "criterion.borders (z-space), then *std + mean",
+                "borders_source": "checkpoint criterion.borders, mapped + "
+                                  "externalized as `regression_borders`",
+            }
+            if args.task == "regression" else None
+        ),
         "versions": {"torch": _torch.__version__, "onnx": _onnx.__version__,
                      "onnxruntime": _ort.__version__},
     }

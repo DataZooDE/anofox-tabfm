@@ -26,12 +26,12 @@
     6,
     10
   ],
-  "graph_bytes": 818048,
-  "n_initializers_mapped": 129,
+  "graph_bytes": 824662,
+  "n_initializers_mapped": 130,
   "unmatched_small_inline": [],
   "parity": {
     "ok": true,
-    "worst": 3.5762786865234375e-07,
+    "worst": 9.5367431640625e-07,
     "tol": 0.001,
     "argmax_all_agree": true,
     "shapes": [
@@ -39,18 +39,24 @@
         "T": 32,
         "H": 12,
         "train": 20,
-        "max_abs_delta_test_rows": 3.5762786865234375e-07,
+        "max_abs_delta_test_rows": 9.5367431640625e-07,
         "argmax_agree": true,
-        "ort_ms": 147.16815948486328
+        "ort_ms": 134.92321968078613
       }
     ]
   },
   "input_signature": {
     "x": "f32[1,T,H]",
-    "y": "f32[1,N] (N=train_size)"
+    "y": "f32[1,N] RAW train targets (N=train_size); wrapper z-normalizes internally"
   },
   "output_signature": {
-    "logits": "f32[1,T,C]"
+    "logits": "f32[1,T,1] RAW-space point estimate on rows >= N (bar-distribution mean, de-standardized)"
+  },
+  "regression_contract": {
+    "target_space_in": "RAW train targets (engine feeds raw y as the [1,N] train prefix; do NOT standardize)",
+    "output_space": "RAW predictions (engine reads logits[:, train_size:, 0] directly; no inverse transform)",
+    "reduction": "softmax(bucket_logits) . bucket_means over criterion.borders (z-space), then *std + mean",
+    "borders_source": "checkpoint criterion.borders, mapped + externalized as `regression_borders`"
   },
   "versions": {
     "torch": "2.13.0+cpu",

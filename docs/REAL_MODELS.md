@@ -18,8 +18,8 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 |---|---|---|---|---|
 | **Google TabFM** (`tabfm-v1`) | non-commercial (gated) | ✅ shipped | yes | the original; 1.6 B params / 6.56 GB |
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
-| **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes (classify)** | ~29 MB; iris **0.962**; one-time ckpt→safetensors convert |
-| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes (classify)** | ~110 MB; iris **0.943**; one-time ckpt→safetensors convert |
+| **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert |
+| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert |
 
 ## Mitra — done
 
@@ -58,9 +58,18 @@ Real-weight run: `tools/export_tabpfn/convert_weights.py` downloads the HF `.ckp
 (pickle) and writes a safetensors keyed by the committed tensor map into the
 extension cache (a one-time, dev-side step — the extension stays pure C++/ORT).
 Then `model := 'tabpfn-v2'` scores **iris at 0.962** (matching the Python
-reference), ~29 MB weights. Regression is deferred: TabPFN's head is a 5000-bucket
-`FullSupportBarDistribution` whose borders live in the criterion, not the graph —
-a `[1,T,1]` point estimate needs a bar-distribution decoder (WS-E).
+reference), ~29 MB weights.
+
+**Regression** works too: the bar-distribution mean (`softmax(bucket_logits) ·
+bucket_centers`, with TabPFN's half-normal tail correction and target
+de-standardization) is **baked into the graph** at export, so it outputs a plain
+`[1,T,1]` point estimate — no model-specific C++ decoder. The graph is
+**self-contained (raw-in / raw-out)**: it consumes raw training targets and emits
+raw predictions, which the engine's `*_raw` profile honors (feed raw target, skip
+the inverse-transform). Real weights: `california_housing` R² 0.827 (agent
+parity), `mstz/wine` MSE **0.482** vs 0.860 baseline. The bucket borders live in
+the checkpoint (`regression_borders`), so the classification and regression graphs
+have different initializers — the manifest uses a **per-task** `graph.tensor_map`.
 
 ## TabICL v2 — shipped (classification)
 
@@ -68,10 +77,18 @@ TabICL's graph is *also* `(x, y)`-only, so the same y-prefix inference drives it
 with no model-specific code. `tools/export_tabicl/convert_weights.py` downloads
 the HF `.ckpt` and writes a safetensors keyed by the committed tensor map (all
 391 keys matched the checkpoint's `state_dict` directly). `model := 'tabicl-v2'`
-scores **iris at 0.943** (~110 MB, BSD-3, ungated). It keeps the default z-score
-profile (`tabicl_v2_minimal`) — its own internal normalization tolerates it.
-Regression is deferred: TabICL's head is 999 quantile logits, which needs a
-quantile→point-estimate decoder (WS-E).
+scores **iris at 0.962** (~110 MB, BSD-3, ungated) under the `tabicl_v2_raw`
+profile — raw features (its internal normalization prefers them, and they edge
+out z-score here).
+
+**Regression** works via the same in-graph reduction: `TabICLRegressor`'s point
+estimate is the **mean over the 999 quantiles** (sort-invariant, so no in-graph
+sort needed), with the target StandardScaler + inverse baked in → a
+self-contained `[1,T,1]` raw-in/raw-out graph. Real weights: `california_housing`
+R² 0.821 tracking the sklearn regressor at corr 0.9999; `mstz/wine` MSE **0.586**
+vs 0.860 baseline. Note the checkpoints differ (`bias_free_ln`: classifier 391
+tensors, regressor 347), so the exporter is task-aware; the regressor keys are a
+subset of the classifier's, so a shared tensor_map still drives both graphs.
 
 ## License wall (all models)
 

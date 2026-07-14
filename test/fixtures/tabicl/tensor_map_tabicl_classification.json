@@ -83,7 +83,7 @@
     "m.row_interactor.tf_row.rope.freqs": "row_interactor.tf_row.rope.freqs"
   },
   "opset": 18,
-  "safetensors": "model.safetensors",
+  "safetensors": "model_classification.safetensors",
   "task": "classification",
   "transforms": {}
 }

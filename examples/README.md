@@ -105,13 +105,15 @@ selected with `model :=` (accuracy *and* wall-clock runtime side by side):
 |---|---|---|---|---|
 | **`mitra`** (AWS Mitra) | Apache-2.0 (commercial) | ~303 MB | **0.962** | ~2.4 s |
 | **`tabpfn-v2`** (Prior Labs) | Prior Labs (comm. + attrib.) | **~29 MB** | **0.962** | **~0.5 s** |
-| `tabicl-v2` (Inria) | BSD-3 (commercial) | ~110 MB | 0.943 | ~0.7 s |
+| **`tabicl-v2`** (Inria) | BSD-3 (commercial) | ~110 MB | **0.962** | ~0.7 s |
 | `tabfm-v1` (Google) | non-commercial (gated) | 6.56 GB | 0.943 | ~30 s |
 
-The three permissively-licensed foundation models **match or beat** the 1.6 B-param
-gated Google model on iris, at a tiny fraction of the size and 40–60× the speed —
-and comparing them is just `model :=` over one registry (`tabfm_list_models()` to
-discover). Runtime is the per-predict `Run Time (s)` from `.timer on`.
+The three permissively-licensed foundation models **beat** the 1.6 B-param gated
+Google model on iris, at a tiny fraction of the size and 40–60× the speed — and
+comparing them is just `model :=` over one registry (`tabfm_list_models()` to
+discover). All four also do **regression** (Mitra, TabPFN v2, TabICL v2, TabFM);
+on `mstz/wine` TabPFN scores MSE 0.482 and TabICL 0.586 vs a 0.860 mean baseline.
+Runtime is the per-predict `Run Time (s)` from `.timer on`.
 
 Setup (all one-time): Mitra downloads from HF (`CALL tabfm_download('classification')`
 under `examples/mitra.json`, ~303 MB, ungated); TabPFN v2 and TabICL v2 ship

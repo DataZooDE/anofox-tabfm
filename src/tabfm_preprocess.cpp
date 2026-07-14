@@ -582,6 +582,16 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 			batch.y_train[i] = code;
 			batch.y[i] = (double)code;
 		}
+	} else if (!standardize) {
+		// Raw target: a "*_raw" model consumes raw training targets and emits raw
+		// point predictions from a self-normalizing head (e.g. TabPFN's bar
+		// distribution, TabICL's quantiles). Identity target scaling makes the
+		// decode inverse-transform (pred*scale + mean) a no-op.
+		batch.target_mean = 0.0;
+		batch.target_scale = 1.0;
+		for (idx_t i = 0; i < n_train; i++) {
+			batch.y[i] = rows.GetValue(target_col, train_rows[i]).GetValue<double>();
+		}
 	} else {
 		double sum = 0.0;
 		for (idx_t i = 0; i < n_train; i++) {

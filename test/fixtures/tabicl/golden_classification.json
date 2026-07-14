@@ -1,9 +1,9 @@
 {
   "_doc": {
-    "purpose": "C++ parity: safetensors -> initializer injection -> ORT run on graph_tabicl_fixture.onnx must reproduce these fp32 logits.",
+    "purpose": "C++ parity: safetensors -> initializer injection -> ORT run on graph_tabicl_classification.onnx must reproduce these fp32 logits.",
     "parity_slice": "asserted on logits[:, train_size:, :] (test rows)",
     "rtol": 0.0001,
-    "y_convention": "y holds ONLY the training labels (length S = train_size); train_size is implicit as len(y). logits are [1, T, C]; the runtime reads predictions on rows >= S (test rows). classification: C = max_classes."
+    "y_convention": "y holds ONLY the training labels (length S = train_size); train_size is implicit as len(y). logits are [1, T, C]; the runtime reads predictions on rows >= S (test rows). classification: C = max_classes (class logits)."
   },
   "inputs": {
     "x": [
@@ -271,6 +271,11 @@
         -0.08673671633005142
       ]
     ]
+  ],
+  "output_shape": [
+    1,
+    20,
+    3
   ],
   "safetensors_sha256": "b5a04ddcda0b10cdb304cd5a018d474cafa7e0925e96c6f746ec24a7c4368de1"
 }

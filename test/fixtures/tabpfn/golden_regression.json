@@ -1,12 +1,12 @@
 {
   "_doc": {
-    "purpose": "C++ parity: model.safetensors -> initializer injection -> ORT run on graph_tabpfn_classification.onnx reproduces these fp32 logits.",
-    "input_contract": "x[1,T,H] raw features (TabPFN scales internally); y[1,N] = TRAIN labels only (N=train_size, dense 0..C-1). cat_mask/d/train_size are NOT graph inputs.",
-    "output_contract": "logits[1,T,C] class logits; predictions occupy rows >= N.",
+    "purpose": "C++ parity: model_regression.safetensors -> initializer injection -> ORT run on graph_tabpfn_regression.onnx reproduces these fp32 logits.",
+    "input_contract": "x[1,T,H] raw features (TabPFN scales internally); y[1,N] = RAW TRAIN targets only (N=train_size); the graph z-normalizes internally. Engine must NOT standardize the target nor inverse-transform the output. cat_mask/d/train_size are NOT graph inputs.",
+    "output_contract": "logits[1,T,1] RAW-space point estimate (bar-distribution mean, de-standardized); predictions occupy rows >= N.",
     "parity_slice": "predictions occupy logits[:, N:, :]; rows < N are zero pad.",
     "rtol": 0.001
   },
-  "task": "classification",
+  "task": "regression",
   "inputs": {
     "x": [
       [
@@ -98,14 +98,14 @@
     ],
     "y": [
       [
-        0.0,
-        1.0,
-        2.0,
-        3.0,
-        0.0,
-        1.0,
-        2.0,
-        3.0
+        2.296173095703125,
+        1.743149757385254,
+        7.706681251525879,
+        1.5396575927734375,
+        6.008345603942871,
+        1.940263271331787,
+        6.754372596740723,
+        10.534818649291992
       ]
     ],
     "train_size": 8
@@ -113,78 +113,42 @@
   "logits": [
     [
       [
-        0.0,
-        0.0,
-        0.0,
         0.0
       ],
       [
-        0.0,
-        0.0,
-        0.0,
         0.0
       ],
       [
-        0.0,
-        0.0,
-        0.0,
         0.0
       ],
       [
-        0.0,
-        0.0,
-        0.0,
         0.0
       ],
       [
-        0.0,
-        0.0,
-        0.0,
         0.0
       ],
       [
-        0.0,
-        0.0,
-        0.0,
         0.0
       ],
       [
-        0.0,
-        0.0,
-        0.0,
         0.0
       ],
       [
-        0.0,
-        0.0,
-        0.0,
         0.0
       ],
       [
-        -0.06293897330760956,
-        0.1397864818572998,
-        -0.24200382828712463,
-        -0.4850115478038788
+        4.7783708572387695
       ],
       [
-        -0.06293897330760956,
-        0.1397864818572998,
-        -0.24200382828712463,
-        -0.4850115478038788
+        4.7783708572387695
       ],
       [
-        -0.06293897330760956,
-        0.1397864818572998,
-        -0.24200382828712463,
-        -0.4850115478038788
+        4.7783708572387695
       ],
       [
-        -0.06293897330760956,
-        0.1397864818572998,
-        -0.24200382828712463,
-        -0.4850115478038788
+        4.7783708572387695
       ]
     ]
   ],
-  "safetensors_sha256": "4f2c0ce7c09180e85201e212fc3d3a687be55cdcec9cfaaeb8fd35db10ff2ce7"
+  "safetensors_sha256": "f1e2dba1cbc0ac4294420eb39844212eefefe06852909f398d26d27f21f8a31b"
 }

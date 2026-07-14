@@ -142,27 +142,65 @@ class ExportWrapper(torch.nn.Module):
       x  [1, T, H] float32   preprocessed features (all rows; H is dynamic)
       y  [1, S]    float32   TRAINING labels only (S = train_size <= T)
     Output:
-      logits [1, T, C]       C = max_classes (classification) or
-                             num_quantiles (regression). Rows < S (train rows)
-                             carry the model's own values and are ignored by the
-                             engine; rows >= S are the test predictions.
+      logits [1, T, C]       Rows < S (train rows) carry the model's own values
+                             and are ignored by the engine; rows >= S are the
+                             test predictions.
+      - CLASSIFICATION: C = max_classes (class logits).
+      - REGRESSION:     C = 1 — a single real-valued POINT ESTIMATE per row.
 
     train_size is implicit as ``S = y.shape[1]``; there is no train_size / cat_mask
     / d input (TabICL has no categorical path and, with feature grouping, does not
     accept ``d``). See FEASIBILITY notes for the engine integration contract.
+
+    Regression target-space contract (self-contained graph)
+    -------------------------------------------------------
+    The engine feeds RAW training targets in ``y`` and reads the [1, T, 1] output
+    directly as the real-valued prediction — the engine does NOT z-score the
+    target and does NOT inverse-transform the output. This mirrors TabICL's own
+    sklearn ``TabICLRegressor`` pipeline, which is reproduced INSIDE the graph:
+
+      1. StandardScaler on the train targets:  y_z = (y - mean_y) / std_y
+         (population std, ddof=0, with a zero-variance guard std=0 -> 1), exactly
+         matching ``sklearn.preprocessing.StandardScaler``.
+      2. The whole model sees ``y_z`` (target-aware column embedding AND the ICL
+         y-encoder), so quantiles come out in z-scored space.
+      3. Point estimate = MEAN over the 999 quantiles. ``TabICLRegressor.predict``
+         defaults to ``output_type="mean"`` == ``dist.quantiles.mean(-1)``; the
+         monotonic ``sort`` inside ``QuantileToDistribution`` is a permutation, so
+         the mean is invariant and no in-graph sort is needed.
+      4. Inverse StandardScaler:  yhat = point_z * std_y + mean_y  → RAW space.
     """
 
     def __init__(self, model):
         super().__init__()
         self.m = model
+        self.regression = (model.max_classes == 0)
 
     def forward(self, x, y):
-        emb = self.m.col_embedder(x, y_train=y, d=None, embed_with_test=False)
+        if not self.regression:
+            emb = self.m.col_embedder(x, y_train=y, d=None, embed_with_test=False)
+            reps = self.m.row_interactor(emb, d=None)
+            # _icl_predictions returns full [1, T, C]; the public icl_predictor()
+            # training branch would slice to test rows only — we keep all T so the
+            # graph output matches the engine's logits[1,T,C] contract.
+            return self.m.icl_predictor._icl_predictions(reps, y)
+
+        # --- Regression: self-contained RAW-in / RAW-out point estimate. --------
+        # StandardScaler(ddof=0) on the raw train targets, baked into the graph.
+        mean_y = y.mean(dim=1, keepdim=True)
+        var_y = ((y - mean_y) ** 2).mean(dim=1, keepdim=True)
+        std_y = torch.sqrt(var_y)
+        std_y = torch.where(std_y > 0.0, std_y, torch.ones_like(std_y))  # 0 -> 1 guard
+        y_z = (y - mean_y) / std_y
+
+        emb = self.m.col_embedder(x, y_train=y_z, d=None, embed_with_test=False)
         reps = self.m.row_interactor(emb, d=None)
-        # _icl_predictions returns full [1, T, C]; the public icl_predictor()
-        # training branch would slice to test rows only — we keep all T so the
-        # graph output matches the engine's logits[1,T,C] contract.
-        return self.m.icl_predictor._icl_predictions(reps, y)
+        quantiles = self.m.icl_predictor._icl_predictions(reps, y_z)  # [1, T, num_quantiles]
+
+        # Point estimate = mean over quantiles (sklearn output_type="mean"),
+        # invariant to the monotonic sort, then inverse StandardScaler -> RAW.
+        point_z = quantiles.mean(dim=-1, keepdim=True)  # [1, T, 1]
+        return point_z * std_y.unsqueeze(-1) + mean_y.unsqueeze(-1)  # [1, T, 1]
 
 
 def build_model(task: str, model_kwargs: dict, seed: int = 0):
