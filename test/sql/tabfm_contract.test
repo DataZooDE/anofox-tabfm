@@ -31,7 +31,7 @@ CREATE TABLE t AS SELECT * FROM (VALUES
 # the model registers and lists fine — the contract is only enforced at load
 # (a single-file manifest is the implicit default, alongside the built-in)
 query TT
-SELECT model, family FROM tabfm_list_models() ORDER BY model
+SELECT model, family FROM tabfm_list_models() WHERE model IN ('fixture-badcontract','tabfm-v1') ORDER BY model
 ----
 fixture-badcontract	icl-transformer
 tabfm-v1	icl-transformer

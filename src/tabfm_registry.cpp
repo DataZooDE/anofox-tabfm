@@ -15,6 +15,71 @@
 namespace duckdb {
 namespace anofox {
 
+// Built-in catalog (pure-SQL surface): the models we ship are baked in as v2
+// manifests referencing BUNDLED graphs + tensor-maps (embedded in the binary via
+// cmake/embed_resources.cmake), so they are usable by name with no JSON file.
+// Weight bytes are still the user's own HF download — nothing licensed is here.
+static const char *const BUILTIN_MITRA = R"json({
+  "schema_version": 2, "id": "mitra", "display_name": "Mitra (AWS AutoGluon)",
+  "family": "icl-transformer",
+  "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null},
+  "preprocessing_profile": "mitra_v1_minimal",
+  "weights": {
+    "classification": {"repo": "autogluon/mitra-classifier", "revision": "main",
+      "files": [{"path": "model.safetensors", "bytes": 302717904,
+                 "url": "https://huggingface.co/autogluon/mitra-classifier/resolve/main/model.safetensors"}]},
+    "regression": {"repo": "autogluon/mitra-regressor", "revision": "main",
+      "files": [{"path": "model.safetensors", "bytes": 302683140,
+                 "url": "https://huggingface.co/autogluon/mitra-regressor/resolve/main/model.safetensors"}]}
+  },
+  "graph": {"classification": "graph_mitra_classification", "regression": "graph_mitra_regression",
+    "tensor_map": {"classification": "tensor_map_mitra_classification.json",
+                   "regression": "tensor_map_mitra_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
+                                 "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 100, "max_classes": 10}
+})json";
+
+static const char *const BUILTIN_TABPFN = R"json({
+  "schema_version": 2, "id": "tabpfn-v2", "display_name": "TabPFN v2 (Prior Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": "accept_hf_license",
+              "attribution": "TabPFN v2 by Prior Labs GmbH (Prior Labs License v1.1 = Apache-2.0 + attribution)."},
+  "preprocessing_profile": "tabpfn_v2_raw",
+  "weights": {
+    "classification": {"repo": "Prior-Labs/TabPFN-v2-clf", "revision": "main", "files": [{"path": "classification/model.safetensors"}]},
+    "regression": {"repo": "Prior-Labs/TabPFN-v2-reg", "revision": "main", "files": [{"path": "regression/model.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabpfn_classification", "regression": "graph_tabpfn_regression",
+    "tensor_map": {"classification": "tensor_map_tabpfn_classification.json",
+                   "regression": "tensor_map_tabpfn_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+})json";
+
+static const char *const BUILTIN_TABICL = R"json({
+  "schema_version": 2, "id": "tabicl-v2", "display_name": "TabICL v2 (soda-inria)",
+  "family": "icl-transformer",
+  "license": {"id": "bsd-3-clause", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "TabICL (soda-inria), BSD-3-Clause. Checkpoints: HF jingang/TabICL."},
+  "preprocessing_profile": "tabicl_v2_raw",
+  "weights": {
+    "classification": {"repo": "jingang/TabICL", "revision": "main", "files": [{"path": "classification/model.safetensors"}]},
+    "regression": {"repo": "jingang/TabICL", "revision": "main", "files": [{"path": "regression/model.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabicl_classification", "regression": "graph_tabicl_regression",
+    "tensor_map": {"classification": "tensor_map_tabicl_classification.json",
+                   "regression": "tensor_map_tabicl_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 100000, "max_features": 512, "max_classes": 10}
+})json";
+
 vector<ModelSpec> BuiltinModelSpecs() {
 	// Merge the two per-task built-in TabFM v1 manifests into one multi-task
 	// model spec (id "tabfm-v1"). Each task keeps its own graph/tensor-map/repo.
@@ -30,7 +95,14 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	spec.license.commercial = false;
 	spec.license.redistributable = false;
 	spec.license.gate_setting = "accept_hf_license";
-	return {std::move(spec)};
+
+	vector<ModelSpec> specs;
+	specs.push_back(std::move(spec));
+	// The commercial-clean catalog, baked in (bundled graphs/tensor-maps).
+	specs.push_back(ParseModelSpec(BUILTIN_MITRA, "(built-in mitra)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABPFN, "(built-in tabpfn-v2)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABICL, "(built-in tabicl-v2)"));
+	return specs;
 }
 
 string ModelRegistry::RegisteredIds() const {

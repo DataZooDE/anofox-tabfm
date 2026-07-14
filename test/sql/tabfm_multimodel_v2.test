@@ -29,7 +29,7 @@ CREATE TABLE t AS SELECT * FROM (VALUES
 
 # the registry now has the v2 commercial fixture + the built-in
 query TTT
-SELECT model, family, commercial FROM tabfm_list_models() ORDER BY model
+SELECT model, family, commercial FROM tabfm_list_models() WHERE model IN ('fixture-commercial','tabfm-v1') ORDER BY model
 ----
 fixture-commercial	icl-transformer	true
 tabfm-v1	icl-transformer	false

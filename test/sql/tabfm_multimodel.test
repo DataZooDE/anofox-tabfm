@@ -28,7 +28,7 @@ CREATE TABLE t AS SELECT * FROM (VALUES
 
 # the registry lists both models (the fixture + the built-in), downloaded or not
 query TT
-SELECT model, capabilities FROM tabfm_list_models() ORDER BY model
+SELECT model, capabilities FROM tabfm_list_models() WHERE model IN ('fixture','tabfm-v1') ORDER BY model
 ----
 fixture	classify
 tabfm-v1	classify, regress

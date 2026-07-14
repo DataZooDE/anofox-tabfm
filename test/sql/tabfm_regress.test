@@ -111,6 +111,6 @@ statement ok
 SET anofox_tabfm_cache_dir = '__TEST_DIR__/empty_cache'
 
 statement error
-SELECT * FROM tabfm_regress('houses','price')
+SELECT * FROM tabfm_regress('houses','price', model := 'tabfm-v1')
 ----
 <REGEX>:.*(not downloaded|tabfm_download).*

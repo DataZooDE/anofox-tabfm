@@ -107,7 +107,8 @@ struct ResolvedModel {
 
 // Load {onnx -> safetensors} from the manifest: inline map, or the
 // "initializers" object of the tensor-map JSON file, else identity.
-unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest &manifest, const string &dir) {
+unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest &manifest, const string &dir,
+                                            bool use_bundle) {
 	if (!manifest.tensor_map.empty()) {
 		return manifest.tensor_map;
 	}
@@ -115,12 +116,14 @@ unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest 
 	if (manifest.tensor_map_path.empty()) {
 		return result; // identity mapping (handled at injection)
 	}
-	// Prefer a bundled tensor map (built-in manifest names, e.g.
-	// "tensor_map_classification.json"); otherwise read it from disk next to the
-	// manifest. A path never matches the bundle, so custom manifests still work.
+	// Built-in models read their bundled tensor map (embedded in the binary);
+	// user/fixture manifests ALWAYS read from their own directory — otherwise a
+	// fixture that happens to share a filename with a bundled resource would pick
+	// up the bundled (real-model) map instead of its own.
 	string json;
 	string source = manifest.tensor_map_path;
-	if (auto bundled = GetBundledResource(manifest.tensor_map_path); bundled.data) {
+	BundledResource bundled = use_bundle ? GetBundledResource(manifest.tensor_map_path) : BundledResource {};
+	if (bundled.data) {
 		json.assign(bundled.data, bundled.size);
 	} else {
 		source = JoinPath(fs, dir, manifest.tensor_map_path);
@@ -232,20 +235,24 @@ ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	for (auto &e : spec.tensor_contract.outputs) {
 		resolved.contract_outputs.push_back(e.name);
 	}
-	// Built-ins carry a bundled graph (resolved below) + cache weights → cache_dir;
-	// a user manifest's relative paths resolve against its own directory.
-	resolved.manifest_dir = spec.source_dir.empty() ? ctx.cache_dir : spec.source_dir;
+	// Built-ins carry a bundled graph + cache weights → cache_dir; a user manifest's
+	// relative paths resolve against its own directory. Only built-ins consult the
+	// bundle: a fixture that shares a filename with a bundled resource must load
+	// its OWN local file, not the embedded real-model one.
+	const bool is_builtin = spec.source_dir.empty();
+	resolved.manifest_dir = is_builtin ? ctx.cache_dir : spec.source_dir;
 	// weights first: "not downloaded" is the common, actionable error (§5).
 	resolved.weights_path =
 	    ResolveWeightsPath(fs, resolved.manifest, resolved.manifest_dir, ctx.cache_dir, task_name);
-	// Graph: a bundled id ("graph_classification") resolves to embedded bytes;
-	// anything else is a path resolved next to the manifest.
-	if (auto bundled = GetBundledResource(resolved.manifest.graph); bundled.data) {
+	// Graph: for built-ins a bundled id ("graph_classification") resolves to
+	// embedded bytes; user manifests always resolve a path next to the manifest.
+	BundledResource bundled = is_builtin ? GetBundledResource(resolved.manifest.graph) : BundledResource {};
+	if (bundled.data) {
 		resolved.graph_bundle = bundled;
 	} else {
 		resolved.graph_path = ResolveGraphPath(fs, resolved.manifest, resolved.manifest_dir);
 	}
-	resolved.tensor_map = LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir);
+	resolved.tensor_map = LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin);
 	resolved.cache_key = TabFMModelCacheKey(resolved.manifest.model, task_name, resolved.manifest.revision);
 	return resolved;
 }
