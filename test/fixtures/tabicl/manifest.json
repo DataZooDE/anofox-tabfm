@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "tabicl-fixture",
+  "display_name": "TabICL CI fixture (random init, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "bsd-3-clause",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "tabicl_v2_minimal",
+  "weights": {
+    "classification": {
+      "repo": "local:test/fixtures/tabicl",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model.safetensors",
+          "bytes": 107796,
+          "sha256": "b5a04ddcda0b10cdb304cd5a018d474cafa7e0925e96c6f746ec24a7c4368de1"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_tabicl_fixture.onnx",
+    "tensor_map": "tensor_map_tabicl_fixture.json"
+  },
+  "capabilities": [
+    "classify"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 3
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init TabICL fixture (BSD-3-Clause architecture, our weights). H is DYNAMIC; y carries train labels only (length=train_size); no cat_mask/d/train_size inputs. Regression logits are quantile logits."
+}

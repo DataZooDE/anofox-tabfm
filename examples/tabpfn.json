@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "id": "tabpfn-v2",
+  "display_name": "TabPFN v2 (Prior Labs)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "apache-2.0",
+    "commercial": true,
+    "redistributable": true,
+    "attribution": "TabPFN v2 by Prior Labs GmbH, licensed under the Prior Labs License v1.1 (Apache-2.0 + attribution). Cite: Hollmann et al., 'Accurate predictions on small data with a tabular foundation model', Nature 2025.",
+    "gate_setting": "accept_hf_license"
+  },
+  "preprocessing_profile": "tabpfn_v2_raw",
+  "weights": {
+    "classification": {
+      "repo": "Prior-Labs/TabPFN-v2-clf",
+      "revision": "main",
+      "files": [
+        { "path": "classification/model.safetensors", "url": "https://huggingface.co/Prior-Labs/TabPFN-v2-clf/resolve/main/tabpfn-v2-classifier.ckpt" }
+      ]
+    },
+    "regression": {
+      "repo": "Prior-Labs/TabPFN-v2-reg",
+      "revision": "main",
+      "files": [
+        { "path": "regression/model.safetensors", "url": "https://huggingface.co/Prior-Labs/TabPFN-v2-reg/resolve/main/tabpfn-v2-regressor.ckpt" }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "../resources/graph_tabpfn_classification.onnx",
+    "regression": "../resources/graph_tabpfn_regression.onnx",
+    "tensor_map": "../resources/tensor_map_tabpfn_classification.json"
+  },
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {
+    "inputs": {
+      "features": { "name": "x", "dtype": "f32", "shape": ["1", "T", "H"] },
+      "labels":   { "name": "y", "dtype": "f32", "shape": ["1", "N"] }
+    },
+    "outputs": {
+      "logits": { "name": "logits", "dtype": "f32", "shape": ["1", "T", "C"] }
+    }
+  },
+  "size_regime": { "max_rows": 10000, "max_features": 500, "max_classes": 10 },
+  "compute": { "cpu": "f32" },
+  "_note": "TabPFN v2 (Prior Labs). CONTRACT DEVIATIONS from the TabFM engine contract, see tools/export_tabpfn feasibility report: (1) train_size is NOT a scalar input — the train/test split is len(y); the engine must feed y as the TRAIN-LABEL PREFIX [1,N] (not full [1,T]). Output logits[1,T,C] carries predictions on rows >= N (rows < N are zero pad; engine reads logits[:, train_size:] as today). (2) cat_mask and d are NOT graph inputs — categoricals must be ordinal-encoded to floats upstream; TabPFN auto-detects/pads features internally. (3) Do NOT z-score features on the C++ side: TabPFN standard-scales internally (feed raw). (4) Classification C=max_classes(10); REGRESSION C=num_buckets(5000) bar-distribution logits, NOT a single value — a point estimate needs the bar-distribution borders (not shipped here). (5) Multiclass target densification is disabled at export; correct when train labels are the dense set 0..C-1. (6) HF ships .ckpt (PyTorch), not safetensors — WS-D must convert ckpt -> safetensors keyed by the tensor_map before injection. tensor_contract input names x,y match the exported graph; train_size/cat_mask/d are intentionally absent."
+}

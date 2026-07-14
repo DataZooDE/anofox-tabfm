@@ -1,0 +1,48 @@
+{
+  "schema_version": 2,
+  "id": "tabicl-v2",
+  "display_name": "TabICL v2 (soda-inria)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "bsd-3-clause",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null,
+    "attribution": "TabICL (soda-inria), BSD-3-Clause. Checkpoints: HF jingang/TabICL (tabicl-classifier-v2 / tabicl-regressor-v2)."
+  },
+  "preprocessing_profile": "tabicl_v2_minimal",
+  "weights": {
+    "classification": {
+      "repo": "jingang/TabICL",
+      "revision": "main",
+      "files": [
+        { "path": "classification/model.safetensors", "url": "https://huggingface.co/jingang/TabICL/resolve/main/tabicl-classifier-v2-20260212.ckpt" }
+      ]
+    },
+    "regression": {
+      "repo": "jingang/TabICL",
+      "revision": "main",
+      "files": [
+        { "path": "regression/model.safetensors", "url": "https://huggingface.co/jingang/TabICL/resolve/main/tabicl-regressor-v2-20260212.ckpt" }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "../resources/graph_tabicl_classification.onnx",
+    "regression": "../resources/graph_tabicl_regression.onnx",
+    "tensor_map": "../resources/tensor_map_tabicl_classification.json"
+  },
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {
+    "inputs": {
+      "features": { "name": "x", "dtype": "f32", "shape": ["1", "T", "H"] },
+      "labels":   { "name": "y", "dtype": "f32", "shape": ["1", "S"] }
+    },
+    "outputs": {
+      "logits": { "name": "logits", "dtype": "f32", "shape": ["1", "T", "C"] }
+    }
+  },
+  "size_regime": { "max_rows": 100000, "max_features": 512, "max_classes": 10 },
+  "compute": { "cpu": "f32" },
+  "_note": "TabICL v2 exported at the package DEFAULT (v2) architecture, weight-free (opset 18). H is DYNAMIC (no fixed feature bucket, no padding, no cat_mask, no d input). Input y carries ONLY the training labels: its length S IS train_size (there is no separate train_size / cat_mask / d input). Output logits[1,T,C]: rows >= S are the test predictions (rows < S carry the model's own values and are ignored). C = 10 for classification (max_classes); for regression C = 999 QUANTILE logits (not a single value) — TabICL maps these to a point estimate via its quantile head downstream. Per-task tensor_map: classification uses ../resources/tensor_map_tabicl_classification.json; regression's is ../resources/tensor_map_tabicl_regression.json (identical key set). Real-weight injection requires the checkpoint config to match the exported dims (v2 defaults); verify before onboarding. Preprocessing: TabICL standardizes X internally on train rows (z-score baked into the graph); the sklearn wrapper additionally ordinal-encodes + imputes + shuffles features — a minimal z-score+ordinal C++ preprocess is close but not identical (see FEASIBILITY)."
+}

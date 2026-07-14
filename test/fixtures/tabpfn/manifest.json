@@ -1,0 +1,72 @@
+{
+  "schema_version": 2,
+  "id": "tabpfn-v2-fixture",
+  "display_name": "TabPFN v2 (random-init CI fixture)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "apache-2.0",
+    "commercial": true,
+    "redistributable": true,
+    "attribution": "Random-init fixture; no Prior Labs weights.",
+    "gate_setting": null
+  },
+  "preprocessing_profile": "tabpfn_v2_raw",
+  "weights": {
+    "classification": {
+      "files": [
+        {
+          "path": "model.safetensors",
+          "bytes": 155352
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_tabpfn_classification.onnx",
+    "tensor_map": "tensor_map_tabpfn_classification.json"
+  },
+  "capabilities": [
+    "classify"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "N"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 4
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init TabPFN v2 (emsize=32, 2 layers). train_size is conveyed as len(y) (train-label prefix), NOT a scalar input; cat_mask/d omitted. See tools/export_tabpfn for the export recipe."
+}

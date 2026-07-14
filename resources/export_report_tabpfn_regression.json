@@ -1,0 +1,60 @@
+{
+  "command": [
+    "export_tabpfn",
+    "--task",
+    "regression",
+    "--config",
+    "real",
+    "--out",
+    "../../resources"
+  ],
+  "task": "regression",
+  "config": "real",
+  "model_kwargs": {
+    "emsize": 192,
+    "nlayers": 12,
+    "nhead": 6,
+    "features_per_group": 2,
+    "seed": 0
+  },
+  "n_out": 5000,
+  "n_params": 11081864,
+  "seed": 0,
+  "opset": 18,
+  "example_input_THN": [
+    16,
+    6,
+    10
+  ],
+  "graph_bytes": 818048,
+  "n_initializers_mapped": 129,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 3.5762786865234375e-07,
+    "tol": 0.001,
+    "argmax_all_agree": true,
+    "shapes": [
+      {
+        "T": 32,
+        "H": 12,
+        "train": 20,
+        "max_abs_delta_test_rows": 3.5762786865234375e-07,
+        "argmax_agree": true,
+        "ort_ms": 147.16815948486328
+      }
+    ]
+  },
+  "input_signature": {
+    "x": "f32[1,T,H]",
+    "y": "f32[1,N] (N=train_size)"
+  },
+  "output_signature": {
+    "logits": "f32[1,T,C]"
+  },
+  "versions": {
+    "torch": "2.13.0+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0"
+  }
+}
