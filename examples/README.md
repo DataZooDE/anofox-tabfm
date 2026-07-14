@@ -98,20 +98,30 @@ target `quality`:
 | wall time | ~42 s |
 
 **Multi-model comparison** — `compare_models.sql`, `scikit-learn/iris`, the same
-100-row context / 53 scored split run through **two REAL foundation models**
+100-row context / 53 scored split run through **FOUR REAL foundation models**
 selected with `model :=` (accuracy *and* wall-clock runtime side by side):
 
-| model | accuracy | runtime | note |
-|---|---|---|---|
-| **`mitra`** (AWS Mitra, Apache-2.0, 72 M / ~303 MB) | **0.962** (51 / 53) | **~2.4 s** | commercial-clean; rank-normalizes inside the graph |
-| `tabfm-v1` (Google TabFM, 6.56 GB, gated) | 0.943 (50 / 53) | ~30 s | dominated by the one-time 6.56 GB load |
+| model | license | size | accuracy | runtime |
+|---|---|---|---|---|
+| **`mitra`** (AWS Mitra) | Apache-2.0 (commercial) | ~303 MB | **0.962** | ~2.4 s |
+| **`tabpfn-v2`** (Prior Labs) | Prior Labs (comm. + attrib.) | **~29 MB** | **0.962** | **~0.5 s** |
+| `tabicl-v2` (Inria) | BSD-3 (commercial) | ~110 MB | 0.943 | ~0.7 s |
+| `tabfm-v1` (Google) | non-commercial (gated) | 6.56 GB | 0.943 | ~30 s |
 
-A real head-to-head: on iris, **Mitra is both more accurate and ~12× faster**
-than the 1.6 B-param Google model, and it is commercially usable. Comparing
-models is two queries over one registry (`tabfm_list_models()` to discover,
-`model :=` to select). Runtime is the per-predict `Run Time (s)` from `.timer
-on`. Prerequisites: `CALL tabfm_download('classification')` under
-`examples/mitra.json` (~303 MB) for Mitra, plus the cached 6.56 GB TabFM weights.
+The three permissively-licensed foundation models **match or beat** the 1.6 B-param
+gated Google model on iris, at a tiny fraction of the size and 40–60× the speed —
+and comparing them is just `model :=` over one registry (`tabfm_list_models()` to
+discover). Runtime is the per-predict `Run Time (s)` from `.timer on`.
+
+Setup (all one-time): Mitra downloads from HF (`CALL tabfm_download('classification')`
+under `examples/mitra.json`, ~303 MB, ungated); TabPFN v2 and TabICL v2 ship
+PyTorch `.ckpt` (pickle), so a one-time converter stages real weights as
+safetensors (`uv run python tools/export_{tabpfn,tabicl}/convert_weights.py
+classification ~/.cache/anofox-tabfm`); TabFM is the cached 6.56 GB download. See
+[`../docs/REAL_MODELS.md`](../docs/REAL_MODELS.md) for the full story (why Mitra is
+a manifest-only drop-in while TabPFN/TabICL needed the y-as-train-prefix engine
+feature). `compare_models.sql` itself runs the `mitra` vs `tabfm-v1` pair (both
+HF-downloadable, no converter needed).
 
 Zero-shot, no training: the model reads the train split as context and scores
 the test split. Classification reaches 0.67 F1 on churn and 0.94 accuracy on
