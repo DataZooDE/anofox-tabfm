@@ -1,0 +1,10 @@
+{
+	"model": "acme-apache",
+	"task": "classification",
+	"repo": "acme/apache-model",
+	"revision": "main",
+	"license": "apache-2.0",
+	"files": [
+		{"path": "classification/model.safetensors", "url": "test/fixtures/weights_test/model_a.bin", "bytes": 4096}
+	]
+}

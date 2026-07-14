@@ -73,15 +73,18 @@ struct PredictMacroDef {
 // 'regression'). `data`, `test`, `target`, `features`, `opts` are macro params.
 static const PredictMacroDef CLASSIFY_MACRO = {
     {"data", "target", nullptr},
-    {"test=NULL", "features=NULL", "opts=MAP{}", nullptr},
+    {"test=NULL", "features=NULL", "opts=MAP{}", "model=NULL", nullptr},
 R"(
     SELECT * FROM (
       SELECT unnest(res, max_depth := 3) FROM (
         SELECT __anofox_tabfm_predict_agg(
                  anofox_tabfm_row, target,
                  map_concat(
-                   map_concat(MAP{'output_mode':'detail'}, CAST(opts AS MAP(VARCHAR, VARCHAR))),
-                   MAP{'task':'classification'})) AS res
+                   map_concat(
+                     map_concat(MAP{'output_mode':'detail'}, CAST(opts AS MAP(VARCHAR, VARCHAR))),
+                     MAP{'task':'classification'}),
+                   CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                        ELSE MAP{'model': model::VARCHAR} END)) AS res
         FROM (
           SELECT COLUMNS(lambda c: features IS NULL
                                    OR list_contains(list_transform(features, lambda f: lcase(f)), lcase(c))
@@ -105,13 +108,16 @@ R"(
 
 static const PredictMacroDef REGRESS_MACRO = {
     {"data", "target", nullptr},
-    {"test=NULL", "features=NULL", "opts=MAP{}", nullptr},
+    {"test=NULL", "features=NULL", "opts=MAP{}", "model=NULL", nullptr},
 R"(
     SELECT * FROM (
       SELECT unnest(res, max_depth := 3) FROM (
         SELECT __anofox_tabfm_predict_agg(
                  anofox_tabfm_row, target,
-                 map_concat(CAST(opts AS MAP(VARCHAR, VARCHAR)), MAP{'task':'regression'})) AS res
+                 map_concat(
+                   map_concat(CAST(opts AS MAP(VARCHAR, VARCHAR)), MAP{'task':'regression'}),
+                   CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                        ELSE MAP{'model': model::VARCHAR} END)) AS res
         FROM (
           SELECT COLUMNS(lambda c: features IS NULL
                                    OR list_contains(list_transform(features, lambda f: lcase(f)), lcase(c))
@@ -176,7 +182,7 @@ unique_ptr<CreateMacroInfo> BuildMacroInfo(const string &name, const PredictMacr
 	// Surface the signature in duckdb_functions() (description + parameter names
 	// + a runnable example).
 	FunctionDescription fd;
-	fd.parameter_names = {"data", "target", "test", "features", "opts"};
+	fd.parameter_names = {"data", "target", "test", "features", "opts", "model"};
 	fd.description = def.description;
 	if (def.example) {
 		fd.examples = {def.example};

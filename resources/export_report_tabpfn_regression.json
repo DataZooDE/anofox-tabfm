@@ -1,0 +1,66 @@
+{
+  "command": [
+    "export_tabpfn",
+    "--task",
+    "regression",
+    "--config",
+    "real",
+    "--out",
+    "../../resources"
+  ],
+  "task": "regression",
+  "config": "real",
+  "model_kwargs": {
+    "emsize": 192,
+    "nlayers": 12,
+    "nhead": 6,
+    "features_per_group": 2,
+    "seed": 0
+  },
+  "n_out": 5000,
+  "n_params": 11081864,
+  "seed": 0,
+  "opset": 18,
+  "example_input_THN": [
+    16,
+    6,
+    10
+  ],
+  "graph_bytes": 824662,
+  "n_initializers_mapped": 130,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 9.5367431640625e-07,
+    "tol": 0.001,
+    "argmax_all_agree": true,
+    "shapes": [
+      {
+        "T": 32,
+        "H": 12,
+        "train": 20,
+        "max_abs_delta_test_rows": 9.5367431640625e-07,
+        "argmax_agree": true,
+        "ort_ms": 134.92321968078613
+      }
+    ]
+  },
+  "input_signature": {
+    "x": "f32[1,T,H]",
+    "y": "f32[1,N] RAW train targets (N=train_size); wrapper z-normalizes internally"
+  },
+  "output_signature": {
+    "logits": "f32[1,T,1] RAW-space point estimate on rows >= N (bar-distribution mean, de-standardized)"
+  },
+  "regression_contract": {
+    "target_space_in": "RAW train targets (engine feeds raw y as the [1,N] train prefix; do NOT standardize)",
+    "output_space": "RAW predictions (engine reads logits[:, train_size:, 0] directly; no inverse transform)",
+    "reduction": "softmax(bucket_logits) . bucket_means over criterion.borders (z-space), then *std + mean",
+    "borders_source": "checkpoint criterion.borders, mapped + externalized as `regression_borders`"
+  },
+  "versions": {
+    "torch": "2.13.0+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0"
+  }
+}

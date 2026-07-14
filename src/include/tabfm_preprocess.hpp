@@ -170,9 +170,15 @@ PreprocessTask InferTask(const LogicalType &target_type);
 //! is_target=true; feature columns are those with is_feature=true. Rows whose
 //! target is NULL are the to-score (test) rows; the rest are the in-context
 //! train rows. Throws InvalidInputException on malformed input.
+//!
+//! `standardize` (default true) runs the CustomStandardScaler (z-score, fit on
+//! train) + OutlierRemover. Set false for models that normalize features INSIDE
+//! their graph (TabPFN/TabICL, a "*_raw" preprocessing profile): features are
+//! then ordinal-encoded + NULL/NaN-imputed but passed through un-standardized,
+//! and the scaler/outlier stages are identity.
 PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
                                   const vector<PreprocessColumnSpec> &columns,
-                                  PreprocessTask task);
+                                  PreprocessTask task, bool standardize = true);
 
 } // namespace anofox
 } // namespace duckdb

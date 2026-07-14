@@ -394,6 +394,53 @@ void PrepareSessionOptions(Ort::SessionOptions &options, const vector<TabFMTenso
 
 } // namespace
 
+// P4: verify the graph's actual input/output names match the manifest-declared
+// tensor_contract (when one is declared), so a manifest that lies about its
+// weight-free graph fails fast at load with an actionable error.
+static void ValidateDeclaredContract(const TabFMSession &session, const TabFMSessionConfig &config) {
+	auto has = [](const vector<string> &names, const string &n) {
+		for (auto &x : names) {
+			if (x == n) {
+				return true;
+			}
+		}
+		return false;
+	};
+	auto check = [&](const vector<string> &declared, const vector<string> &actual, const char *kind) {
+		for (auto &d : declared) {
+			if (!has(actual, d)) {
+				throw InvalidInputException(
+				    "anofox_tabfm: the manifest's tensor_contract declares %s '%s', but the model graph has no such "
+				    "%s — the manifest does not match its weight-free graph.",
+				    kind, d, kind);
+			}
+		}
+	};
+	// The engine feeds exactly these graph inputs (see Run): a contract that
+	// declares any other input name describes a graph this engine cannot drive.
+	// Reject it now with an actionable error rather than let Run() fail with an
+	// opaque "unexpected input" deep in inference. (A future contract-driven
+	// feeding path would relax this.)
+	static const char *kFeedable[] = {"x", "y", "train_size", "cat_mask", "d"};
+	for (auto &d : config.contract_inputs) {
+		bool feedable = false;
+		for (auto *f : kFeedable) {
+			if (d == f) {
+				feedable = true;
+				break;
+			}
+		}
+		if (!feedable) {
+			throw InvalidInputException(
+			    "anofox_tabfm: the manifest's tensor_contract declares input '%s', which this engine cannot feed. "
+			    "TabFM graphs must use the inputs x, y, train_size, cat_mask, d.",
+			    d);
+		}
+	}
+	check(config.contract_inputs, session.input_names, "input");
+	check(config.contract_outputs, session.output_names, "output");
+}
+
 TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
                                  const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config) {
 	if (!graph_bytes || graph_size == 0) {
@@ -406,7 +453,9 @@ TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
 	PrepareSessionOptions(options, initializers, config, names, values);
 	try {
 		Ort::Session session(GetOrtEnv(), graph_bytes, graph_size, options);
-		return make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
+		auto handle = make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
+		ValidateDeclaredContract(*handle, config);
+		return handle;
 	} catch (const Ort::Exception &error) {
 		ThrowMappedCreateError(error, config);
 	}
@@ -428,7 +477,9 @@ TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<
 #else
 		Ort::Session session(GetOrtEnv(), graph_path.c_str(), options);
 #endif
-		return make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
+		auto handle = make_shared_ptr<TabFMSession>(std::move(session), config, std::move(names), std::move(values));
+		ValidateDeclaredContract(*handle, config);
+		return handle;
 	} catch (const Ort::Exception &error) {
 		ThrowMappedCreateError(error, config);
 	}
@@ -453,8 +504,22 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 	int64_t train_size_value = input.train_size;
 	int64_t d_value = input.d;
 
+	// A graph that declares no "train_size" input derives the train/test split
+	// from the LENGTH of y (TabPFN/TabICL's single_eval_pos convention), so feed y
+	// as the training prefix [1, train_size]. Graphs that take train_size as a
+	// scalar (TabFM, Mitra) get the full y [1, T]. input.y is the full [1, T]
+	// buffer; the first train_size labels are a contiguous prefix.
+	bool graph_has_train_size = false;
+	for (auto &n : session.input_names) {
+		if (n == "train_size") {
+			graph_has_train_size = true;
+			break;
+		}
+	}
+	const int64_t y_len = graph_has_train_size ? input.t : input.train_size;
+
 	const std::array<int64_t, 3> x_shape {1, input.t, input.h};
-	const std::array<int64_t, 2> y_shape {1, input.t};
+	const std::array<int64_t, 2> y_shape {1, y_len};
 	const std::array<int64_t, 1> scalar_shape {1};
 	const std::array<int64_t, 2> mask_shape {1, input.h};
 
@@ -470,7 +535,7 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 			                                                      x_shape.data(), x_shape.size()));
 		} else if (name == "y") {
 			feed_values.push_back(Ort::Value::CreateTensor<float>(memory_info, const_cast<float *>(input.y),
-			                                                      static_cast<size_t>(input.t), y_shape.data(),
+			                                                      static_cast<size_t>(y_len), y_shape.data(),
 			                                                      y_shape.size()));
 		} else if (name == "train_size") {
 			feed_values.push_back(Ort::Value::CreateTensor<int64_t>(memory_info, &train_size_value, 1,

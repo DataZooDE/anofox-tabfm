@@ -1,0 +1,68 @@
+# name: test/sql/tabfm_tabpfn.test
+# description: TabPFN v2 (Prior Labs) onboarded as a real architecture whose ONNX
+#              contract differs from TabFM's: its graph takes only (x, y) and
+#              derives the train/test split from len(y) — so the engine feeds y
+#              as the TRAINING PREFIX [1, train_size] (inferred from the absence
+#              of a train_size input), and its declared "*_raw" preprocessing
+#              profile skips the z-score (TabPFN normalizes inside the graph).
+#              This test uses the committed random-init fixture (offline, zero
+#              TabPFN weight bytes); real-weight accuracy is exercised out-of-band
+#              (examples/tabpfn.json + tools/export_tabpfn/convert_weights.py:
+#              iris 0.96). classify only — TabPFN regression is a bar
+#              distribution (see docs/REAL_MODELS.md).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/tabpfn/manifest.json'
+
+query TTT
+SELECT model, family, capabilities FROM tabfm_list_models() WHERE model = 'tabpfn-v2-fixture'
+----
+tabpfn-v2-fixture	icl-transformer	classify, regress
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,0.1,'c0'),(1.5,0.2,0.3,'c1'),(2.5,-1.0,0.5,'c2'),
+  (0.2,0.8,0.7,'c0'),(1.1,0.4,0.2,'c1'),(3.0,-0.5,0.9,'c2'),
+  (0.9,1.2,0.6,'c0'),(2.1,0.1,0.4,'c1'),
+  (1.3,0.3,0.35,NULL),(2.4,-0.2,0.55,NULL))
+  v(f1,f2,f3,label);
+
+# a real forward pass through the (x, y)-only TabPFN graph: the engine feeds y as
+# the train prefix and reads test-row predictions — every prediction is a valid
+# training class
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2'))
+FROM tabfm_classify('t', 'label', model := 'tabpfn-v2-fixture')
+----
+10	0
+
+# no NULL predictions (the graph really produced logits for every test row)
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabpfn-v2-fixture') WHERE yhat IS NULL
+----
+0
+
+# regression runs too: the re-exported graph bakes the bar-distribution mean into
+# the graph (logits[1,T,1]) and consumes RAW train targets ("*_raw" profile),
+# so a real forward pass returns a numeric yhat for every test row
+statement ok
+CREATE TABLE r AS SELECT * FROM (VALUES
+  (0.5,1.0,0.1,1.2),(1.5,0.2,0.3,2.4),(2.5,-1.0,0.5,3.1),
+  (0.2,0.8,0.7,0.9),(1.1,0.4,0.2,1.8),(3.0,-0.5,0.9,3.6),
+  (0.9,1.2,0.6,1.1),(2.1,0.1,0.4,2.7),
+  (1.3,0.3,0.35,NULL),(2.4,-0.2,0.55,NULL))
+  v(f1,f2,f3,target);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_regress('r', 'target', model := 'tabpfn-v2-fixture')
+----
+10	0

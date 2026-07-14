@@ -58,7 +58,9 @@ struct TabFMPredictOptions {
 	//! subsample the context to at most N rows (0 = use all context rows)
 	idx_t context_rows = 0;
 	double softmax_temperature = 0.9;
-	string model = "tabfm-v1";
+	//! Selected model id (from opts['model'] / model :=). Empty = "not specified"
+	//! → the registry resolves it (default model → single-file manifest → sole).
+	string model;
 };
 
 //! Per-row predictions for EVERY input row, in input order: context rows get
@@ -102,8 +104,12 @@ struct TabFMPredictResult {
 //! DatabaseInstance is a complete type via duckdb.hpp above.
 struct PredictContext {
 	DatabaseInstance *db = nullptr;
-	//! SET anofox_tabfm_model_manifest ('' → the built-in TabFM v1 manifest).
+	//! SET anofox_tabfm_model_manifest ('' → built-ins only; a file or a
+	//! directory of extra manifests merged into the registry).
 	string model_manifest_path;
+	//! SET anofox_tabfm_default_model ('' → resolve to the single-file manifest
+	//! or the sole registered model).
+	string default_model;
 	//! SET anofox_tabfm_cache_dir (already ~-expanded is not required here).
 	string cache_dir;
 	//! SET anofox_tabfm_threads (ORT intra-op).

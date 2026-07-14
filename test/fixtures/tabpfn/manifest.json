@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "id": "tabpfn-v2-fixture",
+  "display_name": "TabPFN v2 (random-init CI fixture)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "apache-2.0",
+    "commercial": true,
+    "redistributable": true,
+    "attribution": "Random-init fixture; no Prior Labs weights.",
+    "gate_setting": null
+  },
+  "preprocessing_profile": "tabpfn_v2_raw",
+  "weights": {
+    "classification": {
+      "files": [
+        {
+          "path": "model.safetensors",
+          "bytes": 155352
+        }
+      ]
+    },
+    "regression": {
+      "files": [
+        {
+          "path": "model_regression.safetensors",
+          "bytes": 161692
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_tabpfn_classification.onnx",
+    "regression": "graph_tabpfn_regression.onnx",
+    "tensor_map": {
+      "classification": "tensor_map_tabpfn_classification.json",
+      "regression": "tensor_map_tabpfn_regression.json"
+    }
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "N"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 4
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init TabPFN v2 (emsize=32, 2 layers). train_size is conveyed as len(y) (train-target prefix), NOT a scalar input; cat_mask/d omitted. REGRESSION: y is RAW train targets and logits[1,T,1] is a RAW point estimate \u2014 the graph z-normalizes y and de-standardizes its own output, so the engine must feed raw targets and neither standardize them nor inverse-transform the output. See tools/export_tabpfn for the recipe."
+}

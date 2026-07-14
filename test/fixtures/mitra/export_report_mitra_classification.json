@@ -1,0 +1,58 @@
+{
+  "model": "mitra-tab2d",
+  "task": "classification",
+  "config": "fixture",
+  "opset": 18,
+  "n_params": 51236,
+  "model_kwargs": {
+    "dim": 32,
+    "dim_output": 4,
+    "n_layers": 2,
+    "n_heads": 2
+  },
+  "input_signature": {
+    "x": "[1,T,H] f32",
+    "y": "[1,T] f32",
+    "train_size": "[1] i64",
+    "d": "[1] i64"
+  },
+  "output": {
+    "logits": "[1,T,C] f32"
+  },
+  "cat_mask": "omitted (Mitra has no categorical embedding)",
+  "graph_bytes": 98377,
+  "initializers_mapped": 72,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 2.086162567138672e-07,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 14,
+        "H": 4,
+        "d": 4,
+        "train": 8,
+        "max_abs_delta_test_rows": 2.086162567138672e-07,
+        "ort_ms": 20.030736923217773
+      },
+      {
+        "T": 20,
+        "H": 6,
+        "d": 5,
+        "train": 12,
+        "max_abs_delta_test_rows": 1.7881393432617188e-07,
+        "ort_ms": 10.14852523803711
+      }
+    ]
+  },
+  "versions": {
+    "python": "3.14.0",
+    "numpy": "2.5.1",
+    "torch": "2.12.1+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0"
+  },
+  "cmd": "export_mitra --task classification --config fixture --out /home/jr/Projects/datazoo/anofox-tabfm/test/fixtures/mitra --emit-weights /home/jr/Projects/datazoo/anofox-tabfm/test/fixtures/mitra/model_classification.safetensors --emit-golden /home/jr/Projects/datazoo/anofox-tabfm/test/fixtures/mitra/golden_classification.json",
+  "weight_free": true
+}

@@ -1,0 +1,92 @@
+{
+  "command": [
+    "export_tabicl",
+    "--task",
+    "regression",
+    "--config",
+    "real",
+    "--out",
+    "../../resources"
+  ],
+  "task": "regression",
+  "config": "real",
+  "model_kwargs": {
+    "max_classes": 10,
+    "num_quantiles": 999,
+    "embed_dim": 128,
+    "col_num_blocks": 3,
+    "col_nhead": 8,
+    "col_num_inds": 128,
+    "row_num_blocks": 3,
+    "row_nhead": 8,
+    "row_num_cls": 4,
+    "icl_num_blocks": 12,
+    "icl_nhead": 8,
+    "ff_factor": 2,
+    "bias_free_ln": true
+  },
+  "n_params": 28544991,
+  "seed": 0,
+  "opset": 18,
+  "input_signature": {
+    "x": "[1,T,H] f32",
+    "y": "[1,S] f32 (S=train_size, train labels only)"
+  },
+  "output": {
+    "logits": "[1,T,1] single real-valued point estimate per row (mean over the 999-quantile head + in-graph inverse StandardScaler); engine feeds RAW train targets and reads the output directly (no target z-score, no inverse-transform)"
+  },
+  "H_dynamic": true,
+  "train_size": "runtime (implicit = len(y))",
+  "cat_mask": "omitted (no categorical path)",
+  "d": "omitted (unsupported with feature grouping)",
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_train": [
+    "train",
+    2,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    2,
+    512
+  ],
+  "example_THS": [
+    20,
+    8,
+    12
+  ],
+  "graph_bytes": 531818,
+  "n_initializers_mapped": 347,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 4.190951585769653e-09,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 16,
+        "H": 4,
+        "train": 10,
+        "max_abs_delta_test_rows": 1.862645149230957e-09,
+        "ort_ms": 114.38798904418945
+      },
+      {
+        "T": 60,
+        "H": 20,
+        "train": 40,
+        "max_abs_delta_test_rows": 4.190951585769653e-09,
+        "ort_ms": 404.30212020874023
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0",
+    "onnxscript": "0.7.1"
+  }
+}

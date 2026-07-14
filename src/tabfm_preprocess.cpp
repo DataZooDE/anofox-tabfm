@@ -158,7 +158,7 @@ struct FeatureCol {
 
 PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
                                   const vector<PreprocessColumnSpec> &columns,
-                                  PreprocessTask task) {
+                                  PreprocessTask task, bool standardize) {
 	if (data.ColumnCount() != columns.size()) {
 		throw InvalidInputException(
 		    "tabfm preprocess: column metadata count (%llu) does not match the "
@@ -448,42 +448,49 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 	}
 
 	// --- CustomStandardScaler (fit on filtered train) ---
+	// Identity by default; only fit + transform when the model wants standardized
+	// features (skipped for "*_raw" profiles — the model normalizes internally).
 	stages.scaler_mean.assign(H, 0.0);
-	stages.scaler_scale.assign(H, 0.0);
-	for (idx_t j = 0; j < H; j++) {
-		double sum = 0.0;
-		for (idx_t i = 0; i < n_train; i++) {
-			sum += filt_train[i * H + j];
-		}
-		double mean = sum / (double)n_train;
-		double var = 0.0;
-		for (idx_t i = 0; i < n_train; i++) {
-			double dv = filt_train[i * H + j] - mean;
-			var += dv * dv;
-		}
-		var /= (double)n_train; // ddof=0
-		stages.scaler_mean[j] = mean;
-		stages.scaler_scale[j] = std::sqrt(var) + 1e-6;
-	}
-	// transform [train; test], clip [-100,100].
-	for (idx_t i = 0; i < T; i++) {
+	stages.scaler_scale.assign(H, 1.0);
+	if (standardize) {
 		for (idx_t j = 0; j < H; j++) {
-			double s = (filt_full[i * H + j] - stages.scaler_mean[j]) /
-			           stages.scaler_scale[j];
-			if (s < -100.0) {
-				s = -100.0;
-			} else if (s > 100.0) {
-				s = 100.0;
+			double sum = 0.0;
+			for (idx_t i = 0; i < n_train; i++) {
+				sum += filt_train[i * H + j];
 			}
-			filt_full[i * H + j] = s;
+			double mean = sum / (double)n_train;
+			double var = 0.0;
+			for (idx_t i = 0; i < n_train; i++) {
+				double dv = filt_train[i * H + j] - mean;
+				var += dv * dv;
+			}
+			var /= (double)n_train; // ddof=0
+			stages.scaler_mean[j] = mean;
+			stages.scaler_scale[j] = std::sqrt(var) + 1e-6;
+		}
+		// transform [train; test], clip [-100,100].
+		for (idx_t i = 0; i < T; i++) {
+			for (idx_t j = 0; j < H; j++) {
+				double s = (filt_full[i * H + j] - stages.scaler_mean[j]) /
+				           stages.scaler_scale[j];
+				if (s < -100.0) {
+					s = -100.0;
+				} else if (s > 100.0) {
+					s = 100.0;
+				}
+				filt_full[i * H + j] = s;
+			}
 		}
 	}
 
 	// --- OutlierRemover (two-stage, fit on scaled train) ---
+	// Identity by default; only active alongside standardization (a "*_raw"
+	// profile passes features straight through to the model's own normalizer).
 	stages.outlier_means.assign(H, 0.0);
 	stages.outlier_stds.assign(H, 0.0);
 	stages.outlier_lower.assign(H, 0.0);
 	stages.outlier_upper.assign(H, 0.0);
+	if (standardize) {
 	const double kThreshold = 4.0;
 	const bool use_ddof1 = n_train > 1;
 	for (idx_t j = 0; j < H; j++) {
@@ -540,6 +547,7 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 			filt_full[i * H + j] = x;
 		}
 	}
+	} // if (standardize)
 
 	batch.T = T;
 	batch.H = H;
@@ -573,6 +581,16 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 			int64_t code = code_of[rows.GetValue(target_col, train_rows[i]).ToString()];
 			batch.y_train[i] = code;
 			batch.y[i] = (double)code;
+		}
+	} else if (!standardize) {
+		// Raw target: a "*_raw" model consumes raw training targets and emits raw
+		// point predictions from a self-normalizing head (e.g. TabPFN's bar
+		// distribution, TabICL's quantiles). Identity target scaling makes the
+		// decode inverse-transform (pred*scale + mean) a no-op.
+		batch.target_mean = 0.0;
+		batch.target_scale = 1.0;
+		for (idx_t i = 0; i < n_train; i++) {
+			batch.y[i] = rows.GetValue(target_col, train_rows[i]).GetValue<double>();
 		}
 	} else {
 		double sum = 0.0;

@@ -1,0 +1,87 @@
+{
+  "schema_version": 2,
+  "id": "tabicl-fixture",
+  "display_name": "TabICL CI fixture (random init, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "bsd-3-clause",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "tabicl_v2_raw",
+  "weights": {
+    "classification": {
+      "repo": "local:test/fixtures/tabicl",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model_classification.safetensors",
+          "bytes": 107796,
+          "sha256": "b5a04ddcda0b10cdb304cd5a018d474cafa7e0925e96c6f746ec24a7c4368de1"
+        }
+      ]
+    },
+    "regression": {
+      "repo": "local:test/fixtures/tabicl",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model_regression.safetensors",
+          "bytes": 110800,
+          "sha256": "c5982afe894125cdaa99c24e76f2c9d9deb47548801baacfa87401e033a7b7f5"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_tabicl_classification.onnx",
+    "regression": "graph_tabicl_regression.onnx",
+    "tensor_map": "tensor_map_tabicl_classification.json"
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 3
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init TabICL fixture (BSD-3-Clause architecture, our weights). H is DYNAMIC; y carries train labels only (length=train_size); no cat_mask/d/train_size inputs. classification logits are class logits (C=max_classes); regression logits are a SINGLE point estimate (C=1) \u2014 mean over the quantile head + in-graph inverse StandardScaler on RAW train targets. One shared tensor_map serves both graphs (name-based injection with an 'm.' fallback)."
+}

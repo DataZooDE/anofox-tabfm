@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "id": "tabicl-v2",
+  "display_name": "TabICL v2 (soda-inria)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "bsd-3-clause",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null,
+    "attribution": "TabICL (soda-inria), BSD-3-Clause. Checkpoints: HF jingang/TabICL (tabicl-classifier-v2 / tabicl-regressor-v2)."
+  },
+  "preprocessing_profile": "tabicl_v2_raw",
+  "weights": {
+    "classification": {
+      "repo": "jingang/TabICL",
+      "revision": "main",
+      "files": [
+        {
+          "path": "classification/model.safetensors"
+        }
+      ]
+    },
+    "regression": {
+      "repo": "jingang/TabICL",
+      "revision": "main",
+      "files": [
+        {
+          "path": "regression/model.safetensors"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "../resources/graph_tabicl_classification.onnx",
+    "regression": "../resources/graph_tabicl_regression.onnx",
+    "tensor_map": "../resources/tensor_map_tabicl_classification.json"
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 100000,
+    "max_features": 512,
+    "max_classes": 10
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "TabICL v2 exported at the released v2 architecture, weight-free (opset 18). H is DYNAMIC (no fixed feature bucket, no padding, no cat_mask, no d input). Input y carries ONLY the training labels: its length S IS train_size (there is no separate train_size / cat_mask / d input). Output logits[1,T,C]: rows >= S are the test predictions (rows < S carry the model's own values and are ignored). C = 10 for classification (max_classes). For REGRESSION C = 1: a single real-valued POINT ESTIMATE per row. The graph reduces the 999-quantile head with sklearn TabICLRegressor's default (output_type='mean' == mean over the monotonic quantiles; the mean is sort-invariant) and applies an in-graph StandardScaler + inverse (matching sklearn's y_scaler_). REGRESSION TARGET CONTRACT: the graph is SELF-CONTAINED \u2014 the engine feeds RAW train targets in y and reads logits[1,T,1] directly as the real-valued prediction; the engine must NOT z-score the target and must NOT inverse-transform the output (feature z-scoring via tabicl_v2_minimal is unchanged; TabICL tolerates it). ARCHITECTURE NOTE: the classifier and regressor checkpoints differ \u2014 tabicl-classifier-v2 has bias_free_ln=False (391 tensors), tabicl-regressor-v2 has bias_free_ln=True (347 tensors); each graph is exported to match its checkpoint, so real-weight injection covers 100%. tensor_map: injection is name-based (onnx 'm.<key>' <- safetensors '<key>', with an 'm.' fallback), so the shared classification map (../resources/tensor_map_tabicl_classification.json) drives both graphs; the regression map (../resources/tensor_map_tabicl_regression.json) is committed for convert_weights.py. Preprocessing: TabICL standardizes X internally on train rows; the sklearn wrapper additionally ordinal-encodes + imputes + shuffles features and ensembles 8 members \u2014 a single-member minimal z-score+ordinal C++ preprocess is close but not identical (see FEASIBILITY). Verified real-weight regression (single member, ORT + injected regressor weights): california_housing R2=0.82 (MSE 0.27) vs mean-predictor baseline MSE 1.52, tracking sklearn TabICLRegressor at corr 0.9999.",
+  "_weights_note": "HF ships PyTorch .ckpt (pickle); the engine injects safetensors. Run once per task: `uv run python tools/export_tabicl/convert_weights.py <classification|regression> ~/.cache/anofox-tabfm`, then model := 'tabicl-v2'."
+}
