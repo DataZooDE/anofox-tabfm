@@ -14,7 +14,12 @@ statement ok
 LOAD anofox_tabfm
 
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
 
 statement ok
 CREATE TABLE t AS SELECT * FROM (VALUES
@@ -135,12 +140,9 @@ SELECT * FROM tabfm_classify('t','label', opts := MAP{'nonsense':'1'})
 ----
 <REGEX>:.*(unknown|invalid|option).*
 
-# no model configured -> not-downloaded remediation (weights checked first).
-# Point the cache at an empty temp dir so a locally-downloaded real model
-# does not make this pass for the wrong reason.
-statement ok
-SET anofox_tabfm_model_manifest = ''
-
+# selecting a built-in that is not downloaded -> not-downloaded remediation
+# (weights checked first). Point the cache at an empty temp dir so a locally-
+# downloaded real model does not make this pass for the wrong reason.
 statement ok
 SET anofox_tabfm_cache_dir = '__TEST_DIR__/empty_cache'
 

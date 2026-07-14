@@ -14,9 +14,26 @@ require notwindows
 statement ok
 LOAD anofox_tabfm
 
-# a DIRECTORY of manifests (merged, no implicit default)
+# Two SQL registrations (merged, no implicit default — like a directory source):
+# the v2 commercial fixture plus a second model, so a bare call stays ambiguous
+# and must be disambiguated with model := / default_model.
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/multi'
+CALL tabfm_register_model(
+  id := 'fixture-commercial', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'apache-2.0', commercial := true,
+  preprocessing_profile := 'tabfm_v1_minimal',
+  max_rows := 5000, max_features := 100, max_classes := 10)
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
 
 statement ok
 CREATE TABLE t AS SELECT * FROM (VALUES

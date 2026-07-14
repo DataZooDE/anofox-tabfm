@@ -17,7 +17,12 @@ statement ok
 LOAD anofox_tabfm
 
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
 
 # Independence is a property of the graph, not the backend — assert it on the
 # CPU path so this stays a fast unit test (no per-bucket GPU compile).

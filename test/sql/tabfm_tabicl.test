@@ -20,7 +20,17 @@ statement ok
 LOAD anofox_tabfm
 
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/tabicl/manifest.json'
+CALL tabfm_register_model(
+  id := 'tabicl-fixture', base_dir := 'test/fixtures/tabicl',
+  classification_graph := 'graph_tabicl_classification.onnx',
+  regression_graph := 'graph_tabicl_regression.onnx',
+  classification_weights := 'model_classification.safetensors',
+  regression_weights := 'model_regression.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json',
+  license := 'bsd-3-clause', commercial := true,
+  weights_repo := 'local:test/fixtures/tabicl', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'tabicl_v2_raw',
+  max_rows := 4096, max_features := 64, max_classes := 3)
 
 query TTT
 SELECT model, family, capabilities FROM tabfm_list_models() WHERE model = 'tabicl-fixture'

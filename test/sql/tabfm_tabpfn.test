@@ -20,7 +20,17 @@ statement ok
 LOAD anofox_tabfm
 
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/tabpfn/manifest.json'
+CALL tabfm_register_model(
+  id := 'tabpfn-v2-fixture', base_dir := 'test/fixtures/tabpfn',
+  classification_graph := 'graph_tabpfn_classification.onnx',
+  regression_graph := 'graph_tabpfn_regression.onnx',
+  classification_weights := 'model.safetensors',
+  regression_weights := 'model_regression.safetensors',
+  classification_tensor_map := 'tensor_map_tabpfn_classification.json',
+  regression_tensor_map := 'tensor_map_tabpfn_regression.json',
+  license := 'apache-2.0', commercial := true,
+  preprocessing_profile := 'tabpfn_v2_raw',
+  max_rows := 4096, max_features := 64, max_classes := 4)
 
 query TTT
 SELECT model, family, capabilities FROM tabfm_list_models() WHERE model = 'tabpfn-v2-fixture'
