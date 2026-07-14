@@ -504,8 +504,22 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 	int64_t train_size_value = input.train_size;
 	int64_t d_value = input.d;
 
+	// A graph that declares no "train_size" input derives the train/test split
+	// from the LENGTH of y (TabPFN/TabICL's single_eval_pos convention), so feed y
+	// as the training prefix [1, train_size]. Graphs that take train_size as a
+	// scalar (TabFM, Mitra) get the full y [1, T]. input.y is the full [1, T]
+	// buffer; the first train_size labels are a contiguous prefix.
+	bool graph_has_train_size = false;
+	for (auto &n : session.input_names) {
+		if (n == "train_size") {
+			graph_has_train_size = true;
+			break;
+		}
+	}
+	const int64_t y_len = graph_has_train_size ? input.t : input.train_size;
+
 	const std::array<int64_t, 3> x_shape {1, input.t, input.h};
-	const std::array<int64_t, 2> y_shape {1, input.t};
+	const std::array<int64_t, 2> y_shape {1, y_len};
 	const std::array<int64_t, 1> scalar_shape {1};
 	const std::array<int64_t, 2> mask_shape {1, input.h};
 
@@ -521,7 +535,7 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 			                                                      x_shape.data(), x_shape.size()));
 		} else if (name == "y") {
 			feed_values.push_back(Ort::Value::CreateTensor<float>(memory_info, const_cast<float *>(input.y),
-			                                                      static_cast<size_t>(input.t), y_shape.data(),
+			                                                      static_cast<size_t>(y_len), y_shape.data(),
 			                                                      y_shape.size()));
 		} else if (name == "train_size") {
 			feed_values.push_back(Ort::Value::CreateTensor<int64_t>(memory_info, &train_size_value, 1,

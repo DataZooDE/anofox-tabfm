@@ -18,8 +18,8 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 |---|---|---|---|---|
 | **Google TabFM** (`tabfm-v1`) | non-commercial (gated) | ✅ shipped | yes | the original; 1.6 B params / 6.56 GB |
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
-| **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | 🧪 export-proven | no | needs engine + preprocessing + weight-conversion work |
-| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | 🧪 export-proven | no | same shared blockers as TabPFN |
+| **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes (classify)** | ~29 MB; iris **0.962**; one-time ckpt→safetensors convert |
+| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | 🧪 export-proven | engine-ready; real-weight convert pending |
 
 ## Mitra — done
 
@@ -37,47 +37,39 @@ head-to-head in `examples/compare_models.sql`. Downloadable from HF
 (`autogluon/mitra-{classifier,regressor}`, per-file URLs in the manifest),
 Apache-2.0, ungated.
 
-## TabPFN v2 and TabICL v2 — export-proven, integration pending
+## TabPFN v2 — shipped (classification)
 
-Both export cleanly to weight-free ONNX with strong parity on the real
-architecture (TabPFN real-weight parity 1.18e-4 / 100% argmax; TabICL
-random-weight parity 1.5e-7 — real-weight parity not yet run). The export
-tooling (`tools/export_tabpfn/`, `tools/export_tabicl/`), weight-free graphs
-(`resources/graph_{tabpfn,tabicl}_*.onnx`), random-init fixtures
-(`test/fixtures/{tabpfn,tabicl}/`), and prototype manifests
-(`examples/{tabpfn,tabicl}.json`) are all committed and reproducible. They do
-**not** run through the engine yet. Shared blockers:
+TabPFN v2's ONNX contract differs from TabFM's: its graph takes only `(x, y)`
+and derives the train/test split from `len(y)` (`single_eval_pos`), so `y` is the
+training-label prefix. Two small, generic engine features made it run:
 
-1. **`y` is the train-prefix, not the full column.** Both architectures derive
-   the train/test split from `len(y)` (`single_eval_pos`), so their graphs take
-   `y` as `[1, train_size]` (training labels only) — a data-dependent
-   `y[:, :train_size]` slice with a runtime `train_size` tensor is *not*
-   ONNX-exportable. The engine currently feeds `y` as the full `[1, T]`. **Fix:**
-   let a model declare "feed `y` as the training prefix" (a manifest capability),
-   and slice in the engine's input-feeding path. This single change unblocks
-   *both* classification paths.
-2. **Preprocessing must be raw-ish, not z-scored.** TabPFN normalizes inside the
-   model and its docs say "don't scale yourself"; TabICL z-scores on train rows
-   inside the graph. The engine's `tabfm_v1_minimal` z-score would *double-scale*
-   and degrade accuracy. **Fix:** a `raw`/passthrough preprocessing profile
-   selected by the manifest's `preprocessing_profile`.
-3. **Distributional regression heads.** TabPFN regression = a 5000-bucket
-   `FullSupportBarDistribution` (borders live in the criterion, not the graph);
-   TabICL regression = 999 quantile logits. Neither is a `[1,T,1]` point
-   estimate — the engine (WS-E) must reduce the distribution to a scalar. **So
-   the near-term target for both is classification only.**
-4. **Weights are pickle `.ckpt`, not safetensors.** HF ships PyTorch checkpoints;
-   the engine injects from safetensors. **Fix:** a ckpt→safetensors conversion
-   (keyed by the committed tensor map) at download-prep time — the export tools
-   already know the mapping.
+1. **`y`-as-train-prefix feeding** (`Run`, `tabfm_ort_engine.cpp`). A graph that
+   declares *no* `train_size` input must derive the split from `len(y)`, so the
+   engine feeds `y` as `[1, train_size]` instead of the full `[1, T]`. This is
+   *inferred* from the graph's inputs — no manifest flag, no schema change — and
+   is inert for TabFM/Mitra (which do declare `train_size`).
+2. **`*_raw` preprocessing profile** (`PreprocessBatch`). A model whose
+   `preprocessing_profile` ends in `_raw` skips the z-score/outlier stages
+   (features are ordinal-encoded + NULL-imputed but passed through). TabPFN
+   declares `tabpfn_v2_raw`. (Measured: z-score is actually harmless to TabPFN
+   too, but respecting the declared profile is the correct behavior.)
 
-### Recommended next step
+Real-weight run: `tools/export_tabpfn/convert_weights.py` downloads the HF `.ckpt`
+(pickle) and writes a safetensors keyed by the committed tensor map into the
+extension cache (a one-time, dev-side step — the extension stays pure C++/ORT).
+Then `model := 'tabpfn-v2'` scores **iris at 0.962** (matching the Python
+reference), ~29 MB weights. Regression is deferred: TabPFN's head is a 5000-bucket
+`FullSupportBarDistribution` whose borders live in the criterion, not the graph —
+a `[1,T,1]` point estimate needs a bar-distribution decoder (WS-E).
 
-One focused engine feature — **manifest-declared "y-as-train-prefix" feeding +
-a `raw` preprocessing profile** — plus a ckpt→safetensors download-prep step
-makes **TabPFN v2 and TabICL v2 classification** run with real weights (both are
-commercial/attribution-permissive, and TabPFN's ~29 MB weights are ideal for an
-embedded extension). Regression follows once the distributional heads are decoded.
+## TabICL v2 — engine-ready, real-weight conversion pending
+
+TabICL's graph is *also* `(x, y)`-only, so the same y-prefix inference already
+drives it (offline fixture runs). What remains before a real-weight run: a
+ckpt→safetensors converter like TabPFN's (its HF checkpoint is a PyTorch `.ckpt`,
+and the exported graph's config must match the checkpoint's), plus — for
+regression — a 999-quantile decoder. The export tooling, weight-free graphs,
+random-init fixtures, and prototype manifest are committed and reproducible.
 
 ## License wall (all models)
 

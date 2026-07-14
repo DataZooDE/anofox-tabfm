@@ -702,11 +702,19 @@ public:
 		const auto task =
 		    in.opts.task == TabFMTask::CLASSIFICATION ? TabFMTask::CLASSIFICATION : TabFMTask::REGRESSION;
 
+		// Resolve the model up front (no engine access yet): its preprocessing
+		// profile decides whether the engine standardizes features. TabFM/Mitra
+		// want the default z-score (Mitra is rank-invariant to it); TabPFN/TabICL
+		// normalize INSIDE the graph and must get raw features — they declare a
+		// "*_raw" profile, and z-scoring here would double-normalize them.
+		auto resolved = ResolveModel(*fs, in.ctx, task, in.opts.model);
+		const bool standardize = !StringUtil::EndsWith(resolved.manifest.preprocessing_profile, "_raw");
+
 		// 1. preprocess
 		vector<PreprocessColumnSpec> columns;
 		auto collection = BuildCollection(in.rows, in.row_type, columns, in.target_idx);
 		auto pp_task = task == TabFMTask::CLASSIFICATION ? PreprocessTask::CLASSIFICATION : PreprocessTask::REGRESSION;
-		auto batch = PreprocessBatch(collection, columns, pp_task);
+		auto batch = PreprocessBatch(collection, columns, pp_task, standardize);
 
 		if (task == TabFMTask::CLASSIFICATION && batch.label_decoder.size() > 10) {
 			throw InvalidInputException(
@@ -739,9 +747,9 @@ public:
 		run_input.train_size = NumericCast<int64_t>(batch.train_size);
 		run_input.d = NumericCast<int64_t>(batch.d);
 
-		// 3. resolve + load + forward. Only the session load and the forward pass
-		// are serialized per device (the expensive, non-reentrant parts).
-		auto resolved = ResolveModel(*fs, in.ctx, task, in.opts.model);
+		// 3. load + forward. Only the session load and the forward pass are
+		// serialized per device (the expensive, non-reentrant parts); the model was
+		// already resolved above.
 		auto state = TabFMState::Get(*in.ctx.db);
 		TabFMRunOutput out;
 		{
