@@ -43,26 +43,45 @@ The gated Google model (`tabfm-v1`) additionally needs
 
 ### 3. Predict
 
-Choose the model by name — every function takes `model :=`, or `SET
-anofox_tabfm_default_model = 'mitra'` once for the session:
+A concrete example — the classic **iris** dataset (four flower measurements →
+species), read straight from Hugging Face, with 20% of the species hidden as
+`NULL` so we can predict them:
 
 ```sql
--- customers with a known churn label are the context; NULL-label rows are scored
-SELECT age, plan, churned, yhat, yhat_score
-FROM tabfm_classify('customers', 'churned', model := 'mitra')
-WHERE churned IS NULL;
+CREATE TABLE iris AS
+SELECT SepalLengthCm AS sepal_len, SepalWidthCm AS sepal_wid,
+       PetalLengthCm AS petal_len, PetalWidthCm AS petal_wid,
+       CASE WHEN row_number() OVER () % 5 = 0 THEN NULL ELSE Species END AS species
+FROM 'hf://datasets/scikit-learn/iris/**/*.csv';
 ```
 
-```
-┌───────┬───────┬─────────┬──────┬────────────┐
-│  age  │ plan  │ churned │ yhat │ yhat_score │
-├───────┼───────┼─────────┼──────┼────────────┤
-│ 40.0  │ basic │ NULL    │ no   │       0.83 │
-│ 60.0  │ pro   │ NULL    │ yes  │       0.71 │
-└───────┴───────┴─────────┴──────┴────────────┘
+Rows with a known `species` are the **context**; the `NULL` rows are the ones to
+score:
+
+| sepal_len | sepal_wid | petal_len | petal_wid | species |
+|--:|--:|--:|--:|:--|
+| 4.9 | 3.0 | 1.4 | 0.2 | Iris-setosa |
+| 5.0 | 3.6 | 1.4 | 0.2 | **NULL** |
+| 5.2 | 2.7 | 3.9 | 1.4 | **NULL** |
+| 6.5 | 3.0 | 5.8 | 2.2 | **NULL** |
+
+Predict the hidden species — zero-shot, no training. Every function takes
+`model :=` (or `SET anofox_tabfm_default_model = 'mitra'` once for the session):
+
+```sql
+SELECT sepal_len, sepal_wid, petal_len, petal_wid, yhat AS predicted_species, yhat_score
+FROM tabfm_classify('iris', 'species', model := 'mitra')
+WHERE species IS NULL;
 ```
 
-That's it — a state-of-the-art tabular model scoring your data, from SQL.
+| sepal_len | sepal_wid | petal_len | petal_wid | predicted_species | yhat_score |
+|--:|--:|--:|--:|:--|--:|
+| 5.0 | 3.6 | 1.4 | 0.2 | Iris-setosa | 1.00 |
+| 5.2 | 2.7 | 3.9 | 1.4 | Iris-versicolor | 1.00 |
+| 6.5 | 3.0 | 5.8 | 2.2 | Iris-virginica | 1.00 |
+
+That's it — a foundation model scoring your data, from SQL. (On a held-out split
+`mitra` gets iris **96%** right; see [`examples/`](examples/README.md).)
 
 ---
 
