@@ -129,6 +129,14 @@ string StringSetting(ClientContext &context, const char *name) {
 	return "";
 }
 
+// The lifecycle functions (download/load/unload/remove/gpu_precompile) accept an
+// optional `model :=` to target a specific registered model; empty resolves the
+// default (anofox_tabfm_default_model or the sole registered model).
+string ModelArg(TableFunctionBindInput &input) {
+	auto it = input.named_parameters.find("model");
+	return (it == input.named_parameters.end() || it->second.IsNull()) ? string() : it->second.ToString();
+}
+
 // Every (model, task) the registry knows this session — built-ins + user
 // plus SQL-registered models. The single source of
 // truth, shared with the predict path.
@@ -276,7 +284,7 @@ unique_ptr<FunctionData> DownloadBind(ClientContext &context, TableFunctionBindI
 
 	auto task = RequireTaskArgument(input, "tabfm_download");
 	auto result = make_uniq<DownloadBindData>();
-	result->manifest = FindManifest(context, "tabfm_download", string(), task);
+	result->manifest = FindManifest(context, "tabfm_download", ModelArg(input), task);
 	result->revision = result->manifest.revision;
 	if (input.inputs.size() > 1) {
 		if (input.inputs[1].IsNull()) {
@@ -625,7 +633,7 @@ unique_ptr<FunctionData> LoadBind(ClientContext &context, TableFunctionBindInput
                                   vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_load");
 	auto task = RequireTaskArgument(input, "tabfm_load");
-	auto manifest = FindManifest(context, "tabfm_load", string(), task);
+	auto manifest = FindManifest(context, "tabfm_load", ModelArg(input), task);
 
 	// cache presence check — the §5 'not downloaded' contract
 	auto &fs = FileSystem::GetFileSystem(context);
@@ -657,7 +665,7 @@ unique_ptr<FunctionData> UnloadBind(ClientContext &context, TableFunctionBindInp
 		tabfm_state->UnloadAll(); // free every warmed session for this DB instance
 	} else {
 		result->task = RequireTaskArgument(input, "tabfm_unload");
-		auto manifest = FindManifest(context, "tabfm_unload", string(), result->task); // validates the task name
+		auto manifest = FindManifest(context, "tabfm_unload", ModelArg(input), result->task); // validates the task name
 		// free the warmed session, if any (predict / tabfm_load registered it).
 		tabfm_state->Unload(TabFMModelCacheKey(manifest.model, result->task, manifest.revision));
 	}
@@ -706,7 +714,7 @@ unique_ptr<FunctionData> RemoveBind(ClientContext &context, TableFunctionBindInp
                                     vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_remove");
 	auto task = RequireTaskArgument(input, "tabfm_remove");
-	auto manifest = FindManifest(context, "tabfm_remove", string(), task);
+	auto manifest = FindManifest(context, "tabfm_remove", ModelArg(input), task);
 
 	auto result = make_uniq<RemoveBindData>();
 	result->task = task;
@@ -793,7 +801,7 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
                                         vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_gpu_precompile");
 	auto task = RequireTaskArgument(input, "tabfm_gpu_precompile");
-	FindManifest(context, "tabfm_gpu_precompile", string(), task); // validates the task name
+	FindManifest(context, "tabfm_gpu_precompile", ModelArg(input), task); // validates the task name
 	auto result = make_uniq<PrecompileBindData>();
 	result->task = task;
 	result->task_enum = task == "regression" ? TabFMTask::REGRESSION : TabFMTask::CLASSIFICATION;
@@ -1058,10 +1066,14 @@ void UnregisterModelExecute(ClientContext &, TableFunctionInput &data, DataChunk
 void RegisterSet(ExtensionLoader &loader, const string &full_name, const string &alias,
                  const vector<vector<LogicalType>> &overloads, table_function_bind_t bind,
                  table_function_init_global_t init, table_function_t execute, const char *description = nullptr,
-                 const char *example = nullptr) {
+                 const char *example = nullptr, bool with_model = false) {
 	TableFunctionSet set(full_name);
 	for (auto &arguments : overloads) {
 		TableFunction func(full_name, arguments, execute, bind, init);
+		if (with_model) {
+			// Optional `model :=` to target a specific model (else the default).
+			func.named_parameters["model"] = LogicalType::VARCHAR;
+		}
 		set.AddFunction(std::move(func));
 	}
 	// Surface the function in duckdb_functions() with a description + example.
@@ -1087,7 +1099,7 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            "Download the TabFM model weights for a task ('classification' or 'regression') from Hugging Face "
 	            "into the local cache. Requires SET anofox_tabfm_accept_hf_license = true. Returns one row per file "
 	            "(file, url, bytes, status).",
-	            "CALL tabfm_download('classification');");
+	            "CALL tabfm_download('classification');", true);
 	// SELECT * FROM tabfm_models();
 	RegisterSet(loader, "anofox_tabfm_models", "tabfm_models", {{}}, ModelsBind, ModelsInit, ModelsExecute,
 	            "List the TabFM models known to the local cache (model, task, revision, path, bytes, loaded, "
@@ -1098,19 +1110,19 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            LifecycleExecute,
 	            "Eagerly load a downloaded TabFM model for a task into memory so the first predict is warm "
 	            "(otherwise the model loads lazily on first use).",
-	            "CALL tabfm_load('classification');");
+	            "CALL tabfm_load('classification');", true);
 	// CALL tabfm_unload([task]);
 	RegisterSet(loader, "anofox_tabfm_unload", "tabfm_unload", {{}, {LogicalType::VARCHAR}}, UnloadBind,
 	            LifecycleInit, LifecycleExecute,
 	            "Unload a loaded TabFM model from memory (all models if no task is given), freeing its RAM/VRAM.",
-	            "CALL tabfm_unload('classification');");
+	            "CALL tabfm_unload('classification');", true);
 	// CALL tabfm_remove(task [, revision]);
 	RegisterSet(loader, "anofox_tabfm_remove", "tabfm_remove",
 	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::VARCHAR}}, RemoveBind, RemoveInit,
 	            RemoveExecute,
 	            "Delete a downloaded TabFM model's weights from the local cache (by task, optionally a specific "
 	            "revision).",
-	            "CALL tabfm_remove('classification');");
+	            "CALL tabfm_remove('classification');", true);
 	// SELECT * FROM tabfm_list_models();  — the registry (all known models).
 	RegisterSet(loader, "anofox_tabfm_list_models", "tabfm_list_models", {{}}, ListModelsBind, ListModelsInit,
 	            ListModelsExecute,
@@ -1124,7 +1136,7 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            "Warm the GPU path for a task by compiling the model for a shape bucket ahead of the first predict "
 	            "(on ROCm this builds and caches the .mxr program; a no-op cost on CPU/CUDA). Returns task, rows, "
 	            "features, device, status.",
-	            "CALL tabfm_gpu_precompile('classification', 1000, 50);");
+	            "CALL tabfm_gpu_precompile('classification', 1000, 50);", true);
 
 	// CALL tabfm_register_model(id := '...', classification_graph := '...', ...);
 	{

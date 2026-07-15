@@ -30,14 +30,12 @@ LOAD anofox_tabfm;
 
 ### 2. Pick a model and download its weights (once)
 
-`SELECT * FROM tabfm_list_models();` shows the four built-in models. Choose one
-with `anofox_tabfm_default_model` — `mitra` is a good default (Apache-2.0,
-~303 MB, no license gate). The extension ships only **weight-free** graphs; the
-weights are your own Hugging Face download:
+`SELECT * FROM tabfm_list_models();` shows the four built-in models. `mitra` is a
+good default — Apache-2.0, ~303 MB, no license gate. The extension ships only
+**weight-free** graphs; the weights are your own Hugging Face download:
 
 ```sql
-SET anofox_tabfm_default_model = 'mitra';
-CALL tabfm_download('classification');    -- ~303 MB, cached in ~/.cache/anofox-tabfm
+CALL tabfm_download('classification', model := 'mitra');    -- ~303 MB, cached in ~/.cache/anofox-tabfm
 ```
 
 The gated Google model (`tabfm-v1`) additionally needs
@@ -45,13 +43,13 @@ The gated Google model (`tabfm-v1`) additionally needs
 
 ### 3. Predict
 
-Nothing else to configure — just predict. The default model is used, or pass
-`model := '<id>'` per call to compare models:
+Choose the model by name — every function takes `model :=`, or `SET
+anofox_tabfm_default_model = 'mitra'` once for the session:
 
 ```sql
 -- customers with a known churn label are the context; NULL-label rows are scored
 SELECT age, plan, churned, yhat, yhat_score
-FROM tabfm_classify('customers', 'churned')
+FROM tabfm_classify('customers', 'churned', model := 'mitra')
 WHERE churned IS NULL;
 ```
 
@@ -156,8 +154,9 @@ Register your **own** model entirely in SQL — no JSON file — with
 (and `tabfm_unregister_model('my')`). The only external thing is the weight-free
 ONNX graph blob; every other field is a named argument. An unknown `model :=`, or
 a model that lacks the requested task, is a clean error naming the alternatives.
-`tabfm_download` / `tabfm_load` / `tabfm_unload` / `tabfm_remove` operate on the
-resolved model.
+`tabfm_download` / `tabfm_load` / `tabfm_unload` / `tabfm_remove` /
+`tabfm_gpu_precompile` each take the same `model :=` argument (or fall back to the
+default) so the whole lifecycle is per-model.
 
 ---
 
