@@ -1,0 +1,84 @@
+# name: test/sql/tabfm_model_arg.test
+# description: The lifecycle functions (tabfm_download / load / unload / remove /
+#              gpu_precompile) accept an optional `model :=` to target a specific
+#              registered model, so you don't have to SET a default. Uses two
+#              download-only models with committed local-file URLs.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/model_arg_cache'
+
+# two downloadable models (local-file 'urls'); different repos → different slugs
+statement ok
+CALL tabfm_register_model(
+  id := 'm_a', weights_repo := 'acme/a',
+  classification_weights := 'classification/model.safetensors',
+  classification_weights_url := 'test/fixtures/weights_test/model_a.bin',
+  classification_weights_bytes := 4096, license := 'apache-2.0')
+
+statement ok
+CALL tabfm_register_model(
+  id := 'm_b', weights_repo := 'acme/b',
+  classification_weights := 'classification/model.safetensors',
+  classification_weights_url := 'test/fixtures/weights_test/model_a.bin',
+  classification_weights_bytes := 4096, license := 'apache-2.0')
+
+# two registered models + no model := and no default → an actionable ambiguity error
+statement error
+SELECT status FROM tabfm_download('classification')
+----
+<REGEX>:.*(registered|model :=|default_model).*
+
+# model := picks the target model — download resolves it directly
+query T
+SELECT status FROM tabfm_download('classification', model := 'm_a')
+----
+downloaded
+
+query T
+SELECT status FROM tabfm_download('classification', model := 'm_b')
+----
+downloaded
+
+# both are now cached, each under its own model id
+query T
+SELECT model FROM tabfm_models() ORDER BY model
+----
+m_a
+m_b
+
+# load / unload also accept model := (same resolution path as download)
+statement ok
+CALL tabfm_load('classification', model := 'm_a')
+
+statement ok
+CALL tabfm_unload('classification', model := 'm_a')
+
+# an unknown model := is an actionable error naming the registered ids — this is
+# proof the arg reaches model resolution
+statement error
+CALL tabfm_load('classification', model := 'nope')
+----
+<REGEX>:.*unknown model 'nope'.*
+
+# an unknown model := is an actionable error naming the registered ids
+statement error
+SELECT status FROM tabfm_download('classification', model := 'nope')
+----
+<REGEX>:.*unknown model 'nope'.*m_a.*
+
+# remove := drops a specific model's weights
+statement ok
+CALL tabfm_remove('classification', model := 'm_b')
+
+query T
+SELECT model FROM tabfm_models() ORDER BY model
+----
+m_a
