@@ -1,14 +1,19 @@
 # anofox-tabfm
 
 **Zero-shot machine learning for tabular data, inside DuckDB.** This extension
-embeds Google's [TabFM](https://github.com/google-research/tabfm) foundation
-model — a TabPFN-style in-context learner — so classification and regression
-become a single SQL statement. No Python, no training loop, no MLOps: the model
-reads your labelled rows as context and predicts the rest.
+runs **tabular foundation models** — TabPFN-style in-context learners — so
+classification and regression become a single SQL statement. No Python, no
+training loop, no MLOps: the model reads your labelled rows as context and
+predicts the rest.
+
+**Four models are built in and selectable by name** — `mitra` (AWS AutoGluon,
+Apache-2.0), `tabpfn-v2` (Prior Labs), `tabicl-v2` (Inria), and `tabfm-v1`
+(Google TabFM) — and you can register your own entirely in SQL. Everything is
+operated in SQL: no manifest file, no config.
 
 ```sql
 LOAD anofox_tabfm;
-SELECT * FROM tabfm_classify('history', 'churned', test := 'prospects');
+SELECT * FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra');
 ```
 
 ---
@@ -23,29 +28,25 @@ LOAD httpfs;
 LOAD anofox_tabfm;
 ```
 
-### 2. Download the model (once)
+### 2. Pick a model and download its weights (once)
 
-The extension ships only a **weight-free** computation graph; you download the
-weights yourself from Hugging Face under Google's license.
+`SELECT * FROM tabfm_list_models();` shows the four built-in models. Choose one
+with `anofox_tabfm_default_model` — `mitra` is a good default (Apache-2.0,
+~303 MB, no license gate). The extension ships only **weight-free** graphs; the
+weights are your own Hugging Face download:
 
 ```sql
-SET anofox_tabfm_accept_hf_license = true;   -- non-commercial, no redistribution
-CALL tabfm_download('classification');       -- ~6.6 GB, cached in ~/.cache/anofox-tabfm
-CALL tabfm_download('regression');           -- optional, for tabfm_regress
+SET anofox_tabfm_default_model = 'mitra';
+CALL tabfm_download('classification');    -- ~303 MB, cached in ~/.cache/anofox-tabfm
 ```
 
-```
-┌──────────────────────────────┬───────────────────────────────────────┬────────────┬────────────┐
-│             file             │                  url                  │   bytes    │   status   │
-├──────────────────────────────┼───────────────────────────────────────┼────────────┼────────────┤
-│ classification/model.safeten…│ huggingface.co/google/tabfm-1.0.0-…   │ 6557888408 │ downloaded │
-└──────────────────────────────┴───────────────────────────────────────┴────────────┴────────────┘
-```
+The gated Google model (`tabfm-v1`) additionally needs
+`SET anofox_tabfm_accept_hf_license = true;`.
 
 ### 3. Predict
 
-The weight-free graph is bundled in the extension, so nothing else to configure —
-just predict:
+Nothing else to configure — just predict. The default model is used, or pass
+`model := '<id>'` per call to compare models:
 
 ```sql
 -- customers with a known churn label are the context; NULL-label rows are scored
@@ -178,9 +179,10 @@ CREATE TABLE test  AS SELECT * EXCLUDE (bucket) FROM (FROM churn WHERE bucket >=
 CREATE TABLE test_features AS SELECT * EXCLUDE (Churn) FROM test;   -- no target for the test rows
 
 -- 2. predict the test rows using the train rows as context
+--    (assumes `model := 'tabfm-v1'`'s weights are downloaded — see Quickstart)
 CREATE TABLE preds AS
 SELECT customerID, yhat AS pred
-FROM tabfm_classify('train', 'Churn', test := 'test_features');
+FROM tabfm_classify('train', 'Churn', test := 'test_features', model := 'tabfm-v1');
 
 -- 3. F1 of the positive class, in SQL
 WITH cm AS (
@@ -191,12 +193,12 @@ WITH cm AS (
 SELECT 2.0*tp / nullif(2.0*tp + fp + fn, 0) AS f1 FROM cm;
 ```
 
-On this dataset the zero-shot model reaches **F1 0.667 / accuracy 0.827**. The
-same three-line recipe generalizes: multiclass `scikit-learn/iris` reaches
-**accuracy 0.943**, and the regression counterpart on `scikit-learn/tips` reaches
-**MSE 0.971** vs a mean-predictor baseline of 1.68. The runnable scripts
-(`classification_churn.sql`, `classification_iris.sql`, `regression_tips.sql`)
-and full numbers are in [`examples/`](examples/README.md).
+On this dataset `tabfm-v1` reaches **F1 0.667 / accuracy 0.827** zero-shot. The
+same recipe generalizes across models and tasks — swap `model :=` to compare: on
+iris, `mitra` / `tabpfn-v2` / `tabicl-v2` all reach **0.962** vs `tabfm-v1`'s
+0.943, at a fraction of the size and ~40–60× the speed. The runnable scripts
+(including `compare_models.sql`, a real head-to-head) and full numbers are in
+[`examples/`](examples/README.md).
 
 ---
 
@@ -289,12 +291,14 @@ GPU flavors ship from the anofox extension repository
 ## License
 
 - **This extension's code:** MIT.
-- **Model weights:** you download them from `google/tabfm-1.0.0-pytorch` under
-  Google's `tabfm-non-commercial-v1.0` license (non-commercial, no
-  redistribution). The extension ships only a weight-free graph and never
-  redistributes or writes converted weights to disk; the license gate is
-  enforced before any download. The repository and test fixtures contain zero
-  Google weight bytes.
+- **Model weights:** each model's weights are **your own Hugging Face download**,
+  under that model's license — `mitra` Apache-2.0, `tabpfn-v2` Prior Labs License
+  (Apache-2.0 + attribution), `tabicl-v2` BSD-3-Clause, `tabfm-v1`
+  `tabfm-non-commercial-v1.0` (non-commercial, gated behind
+  `anofox_tabfm_accept_hf_license`). The extension ships only **weight-free**
+  graphs and never redistributes weights; `tabfm_list_models()` shows each
+  model's license and whether it's commercially usable. The repository and test
+  fixtures contain **zero model weight bytes** (fixtures are random-init).
 
 ## Telemetry
 
