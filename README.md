@@ -26,19 +26,19 @@ LOAD anofox_tabfm;
 ### 2. Pick a model and download its weights (once)
 
 `SELECT * FROM tabfm_list_models();` shows the four built-in models. `mitra` is a
-good default — Apache-2.0, ~303 MB, no license gate. The extension ships only
-**weight-free** graphs; the weights are your own Hugging Face download:
+good default — Apache-2.0, ~303 MB. It also has a permissive license. The extension ships only
+**weight-free** graphs; the weights have to be downloaded from Hugging Face before using the model:
 
 ```sql
 CALL tabfm_download('classification', model := 'mitra');    -- ~303 MB, cached in ~/.cache/anofox-tabfm
 ```
 
-The gated Google model (`tabfm-v1`) additionally needs
+For the Google model (`tabfm-v1`) which has special licensing, you additionally need to
 `SET anofox_tabfm_accept_hf_license = true;`.
 
 ### 3. Predict
 
-A concrete example — the classic **iris** dataset (four flower measurements →
+A concrete example — the classic **iris** dataset (classifying four flower measurements into 
 species), read straight from Hugging Face, with 20% of the species hidden as
 `NULL` so we can predict them:
 
@@ -80,7 +80,7 @@ That's it — a foundation model scoring your data, from SQL. (On a held-out spl
 
 ---
 
-## The two shapes
+## We support classification and regression
 
 Both functions have the same signature; the task (classification vs
 regression) is fixed by which one you call.
@@ -106,7 +106,7 @@ values, handy for a sanity check).
 SELECT * FROM tabfm_classify('customers', 'churned');
 ```
 
-**A subquery** works anywhere a table name does:
+**A subquery** works anywhere where a table name does:
 
 ```sql
 SELECT * FROM tabfm_classify(
@@ -114,7 +114,7 @@ SELECT * FROM tabfm_classify(
     test := 'prospects');
 ```
 
-**Feature selection and options** (named parameters read best):
+**Feature selection and options** (named parameters lead to the best readability):
 
 ```sql
 SELECT * FROM tabfm_classify(
