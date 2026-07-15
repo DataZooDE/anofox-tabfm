@@ -11,11 +11,6 @@ Apache-2.0), `tabpfn-v2` (Prior Labs), `tabicl-v2` (Inria), and `tabfm-v1`
 (Google TabFM) — and you can register your own entirely in SQL. Everything is
 operated in SQL: no manifest file, no config.
 
-```sql
-LOAD anofox_tabfm;
-SELECT * FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra');
-```
-
 ---
 
 ## Quickstart
