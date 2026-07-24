@@ -17,7 +17,7 @@ make test_debug       # sqllogictests + C++ tests via build/debug/test/unittest
 TABFM_FLAVOR=rocm make release TABFM_ORT_ROCM_DIR=...       # rocm flavor
 ```
 
-- DuckDB pinned v1.5.4 (submodule), extension-ci-tools v1.5-variegata.
+- DuckDB pinned v1.5.5 (submodule), extension-ci-tools v1.5-variegata.
 - Tests always run with `DATAZOO_DISABLE_TELEMETRY=1` (Makefile does this).
 - C++ tests: Catch2 TUs listed in `TABFM_CPP_TEST_SOURCES` in CMakeLists.txt,
   compiled into the unittest binary (use `#include "catch.hpp"`).

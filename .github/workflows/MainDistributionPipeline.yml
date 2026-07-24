@@ -16,11 +16,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  duckdb-v1_5_4-build:
-    name: Build extension binaries (v1.5.4, cpu flavor)
+  duckdb-v1_5_5-build:
+    name: Build extension binaries (v1.5.5, cpu flavor)
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
-      duckdb_version: v1.5.4
+      duckdb_version: v1.5.5
       ci_tools_version: v1.5-variegata
       extension_name: anofox_tabfm
       # ONNX Runtime comes from the prebuilt release archive by default
@@ -30,13 +30,13 @@ jobs:
       # MinGW (vcpkg OpenSSL build issues, house pattern).
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl
 
-  duckdb-v1_5_4-deploy:
-    name: Deploy extension binaries (v1.5.4)
-    needs: duckdb-v1_5_4-build
+  duckdb-v1_5_5-deploy:
+    name: Deploy extension binaries (v1.5.5)
+    needs: duckdb-v1_5_5-build
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
-      duckdb_version: v1.5.4
+      duckdb_version: v1.5.5
       extension_name: anofox_tabfm
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
