@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "orion-bix-fixture",
+  "display_name": "Orion-BiX CI fixture (random init, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "mit",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "orion_bix_v1_minimal",
+  "weights": {
+    "classification": {
+      "repo": "local:test/fixtures/orion_bix",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model_classification.safetensors",
+          "bytes": 82492,
+          "sha256": "9d4abcfe754d64a5974d3d2d34d41d8fd6cd56bfac64f628358414e1dbff711e"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_orion_bix_classification.onnx",
+    "tensor_map": "tensor_map_orion_bix_classification.json"
+  },
+  "capabilities": [
+    "classify"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 3
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init Orion-BiX fixture (MIT architecture, our weights). H is DYNAMIC; y carries train labels only (length=train_size); no cat_mask/d/train_size inputs. CLASSIFICATION ONLY \u2014 upstream ships no regression head. safetensors keys carry the released checkpoint's '_orig_mod.' prefix so one tensor map serves fixture and real weights."
+}

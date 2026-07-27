@@ -45,8 +45,36 @@ import types
 import torch
 
 import tabpfn.architectures.tabpfn_v2 as v2mod
+import tabpfn.architectures.tabpfn_v2_5 as v25mod
 from tabpfn.architectures.tabpfn_v2 import TabPFNV2Config, get_architecture
 from tabpfn.preprocessing.torch import ops as opsmod
+
+# --- Architecture selection ---------------------------------------------------
+#
+# `tabpfn` ships each generation as a standalone module with the same symbol
+# names (`get_architecture`, `_generate_nan_and_inf_indicator`, a Config
+# dataclass), so the patch surface is shared and only the module differs.
+# "v2" reproduces the original behaviour exactly — the v2 export path is
+# unchanged by the 2.5 work (guarded by tests/test_export.py).
+ARCHES = {
+    "v2": {
+        "module": v2mod,
+        "config": TabPFNV2Config,
+        "get_architecture": get_architecture,
+    },
+    "v2.5": {
+        "module": v25mod,
+        "config": v25mod.TabPFNV2p5Config,
+        "get_architecture": v25mod.get_architecture,
+    },
+}
+
+
+def _arch(name: str) -> dict:
+    try:
+        return ARCHES[name]
+    except KeyError:
+        raise ValueError(f"unknown arch {name!r} (choose from {sorted(ARCHES)})") from None
 
 # Code-generated positional-embedding base: one row per (feature-group) column.
 # Cover the largest supported feature count / smallest group size with margin.
@@ -122,29 +150,107 @@ def _patched_add_column_embeddings(self, x_BRCX):
     return x_BRCX + embs[None, None]
 
 
-def apply_module_patches() -> None:
+def _patched_v25_add_column_embeddings(self, x_BRGX):
+    """TabPFN-2.5 column embeddings without the symbolic-shaped randn (#3').
+
+    Upstream 2.5 draws ``torch.randn((num_cols, encoding_size // 4))`` at runtime
+    (symbolic ``num_cols`` -> "SymIntArrayRef expected concrete integers") and
+    then OVERWRITES the first 2000 rows with ``pre_generated_column_embeddings``
+    — a fixed table shipped as `tabpfn` package data specifically so the values
+    are identical across platforms. Our engine caps features at 512, so at
+    ``features_per_group >= 1`` the column count can never reach 2000 and the
+    random draw is dead code: slicing the pre-generated table is EXACT, not an
+    approximation.
+
+    Like v2's ``_pos_base``, this table is code/data-generated rather than a
+    checkpoint weight (it is not in the checkpoint's state_dict at all), so it
+    stays INLINE in the weight-free graph and never enters the tensor map.
+    """
+    num_cols = x_BRGX.shape[2]
+    base = self._pos_base[:num_cols].to(x_BRGX.dtype)
+    embs = self.feature_positional_embedding_embeddings(base)
+    return x_BRGX + embs[None, None]
+
+
+def apply_module_patches(arch: str = "v2") -> None:
     """Install the two module-level op patches (idempotent, global)."""
+    mod = _arch(arch)["module"]
     opsmod.select_features = _patched_select_features
-    v2mod.select_features = _patched_select_features
-    v2mod._generate_nan_and_inf_indicator = _patched_nan_inf_indicator
+    mod.select_features = _patched_select_features
+    mod._generate_nan_and_inf_indicator = _patched_nan_inf_indicator
 
 
-def prepare_model_for_export(model, *, max_cols: int = MAX_COLS):
+def prepare_model_for_export(model, *, max_cols: int = MAX_COLS, arch: str = "v2",
+                             allow_synthetic_pos_base: bool = False):
     """Apply the per-instance export patches (#3, #4, #5) to a built model."""
+    # 2.5 dropped the multiclass target encoding; setting the attribute is inert.
     model.use_multiclass_target_encoding = False
     model._do_encoder_nan_check = False
     e_quarter = model.emsize // 4
-    g = torch.Generator().manual_seed(int(model.seed))
-    model.register_buffer("_pos_base", torch.randn((max_cols, e_quarter), generator=g))
-    model.add_column_embeddings = types.MethodType(_patched_add_column_embeddings, model)
+    if arch == "v2":
+        g = torch.Generator().manual_seed(int(model.seed))
+        model.register_buffer("_pos_base", torch.randn((max_cols, e_quarter), generator=g))
+        model.add_column_embeddings = types.MethodType(_patched_add_column_embeddings, model)
+    else:
+        # 2.5: the fixed, cross-platform table from `tabpfn` package data.
+        pre = model.pre_generated_column_embeddings
+        if pre.shape[1] == e_quarter:
+            base = pre[:max_cols].detach().clone().float()
+        elif allow_synthetic_pos_base:
+            # Only reachable for the tiny CI fixture, whose emsize is not the
+            # released 192 — upstream would take its runtime-randn branch here,
+            # so there is no "real" table to reproduce. A seeded draw keeps the
+            # fixture deterministic and exportable; it is still code-generated,
+            # stays inline and never enters the tensor map. A REAL checkpoint
+            # never lands here (load_real_model forbids it).
+            g = torch.Generator().manual_seed(int(getattr(model, 'seed', 42)))
+            base = torch.randn((max_cols, e_quarter), generator=g)
+        else:
+            raise RuntimeError(
+                f"pre_generated_column_embeddings has width {pre.shape[1]}, expected "
+                f"{e_quarter} (emsize // 4) — upstream would fall back to its runtime "
+                "randn, which cannot be exported. Check the architecture config."
+            )
+        model.register_buffer("_pos_base", base)
+        model._add_column_embeddings = types.MethodType(
+            _patched_v25_add_column_embeddings, model)
+        _freeze_in_train_mode(model)
     return model.eval()
 
 
-def build_random_model(task: str, model_kwargs: dict, seed: int = 0):
-    """Random-init TabPFNV2 at the given dims. No checkpoint bytes anywhere."""
+def _freeze_in_train_mode(model) -> None:
+    """Pin a 2.5 model in train mode so its target-range guard is skipped (#6).
+
+    TabPFNV2p5.forward has an input-validation branch::
+
+        if (not self.training and self.task_type == "multiclass"
+                and (y > self.n_out - 1).any()):
+            raise ValueError("Target is out of range. ...")
+
+    ``.any()`` on a symbolic tensor is a data-dependent Python branch and aborts
+    the trace with ``GuardOnDataDependentSymNode: Could not guard on
+    data-dependent expression Eq(u0, 1)``. Like patch #4 it is a pure guard: it
+    only raises on bad input, and the C++ ordinal encoder always feeds dense
+    0..C-1 class ids.
+
+    ``self.training`` appears EXACTLY ONCE in the whole ``tabpfn_v2_5`` module —
+    this guard — and the released configs set ``dropout = 0.0``, so train mode is
+    numerically inert. We therefore pin ``training = True`` rather than trying to
+    excise a branch from the middle of a 300-line ``forward``.
+
+    The instance's ``train`` is neutralized because ``export.export_graph``
+    wraps the model and calls ``.eval()``, which would otherwise propagate
+    ``train(False)`` back down into it.
+    """
+    model.training = True
+    model.train = types.MethodType(lambda self, mode=True: self, model)
+
+
+def build_random_model(task: str, model_kwargs: dict, seed: int = 0, arch: str = "v2"):
+    """Random-init TabPFN at the given dims. No checkpoint bytes anywhere."""
     if task not in ("classification", "regression"):
         raise ValueError(f"task must be classification|regression, got {task!r}")
-    apply_module_patches()
+    apply_module_patches(arch)
     torch.manual_seed(seed)
     kw = dict(model_kwargs)
     if task == "classification":
@@ -155,10 +261,12 @@ def build_random_model(task: str, model_kwargs: dict, seed: int = 0):
         # fall through to num_buckets and keep multiclass encoding off (0<2).
         kw["max_num_classes"] = 0
         kw.setdefault("num_buckets", 64)
-    cfg = TabPFNV2Config(**{k: v for k, v in kw.items()
-                            if k in TabPFNV2Config.__dataclass_fields__})
-    model = get_architecture(cfg)
-    prepare_model_for_export(model)
+    spec = _arch(arch)
+    config_cls = spec["config"]
+    cfg = config_cls(**{k: v for k, v in kw.items()
+                        if k in config_cls.__dataclass_fields__})
+    model = spec["get_architecture"](cfg)
+    prepare_model_for_export(model, arch=arch, allow_synthetic_pos_base=True)
     if task == "regression":
         # Random-init (weight-free) bar-distribution borders for the fixture.
         # A real export overwrites this buffer with the checkpoint's
@@ -171,8 +279,8 @@ def build_random_model(task: str, model_kwargs: dict, seed: int = 0):
     return model.eval()
 
 
-def load_real_model(task: str, ckpt_path: str):
-    """Load a real TabPFN v2 checkpoint into a patched model (parity only).
+def load_real_model(task: str, ckpt_path: str, arch: str = "v2"):
+    """Load a real TabPFN checkpoint into a patched model (parity only).
 
     Weights are used transiently for parity; never committed. Returns
     (model, state_dict) where state_dict is the checkpoint-namespace mapping.
@@ -181,9 +289,9 @@ def load_real_model(task: str, ckpt_path: str):
 
     from tabpfn.model_loading import load_model
 
-    apply_module_patches()
+    apply_module_patches(arch)
     model, criterion, _cfg, _inf = load_model(path=Path(ckpt_path))
-    prepare_model_for_export(model)
+    prepare_model_for_export(model, arch=arch)
     if task == "regression":
         # The bar-distribution borders live in the checkpoint criterion
         # (`criterion.borders`, in the z-normalized target space). Attach them

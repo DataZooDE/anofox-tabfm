@@ -1,0 +1,104 @@
+{
+  "command": [
+    "export_orion_bix",
+    "--config",
+    "real",
+    "--out",
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-tabfm/9f3c2d24-a2b0-442d-b89b-40497757ce20/scratchpad/obix-real"
+  ],
+  "task": "classification",
+  "config": "real",
+  "model_kwargs": {
+    "max_classes": 10,
+    "embed_dim": 128,
+    "col_num_blocks": 3,
+    "col_nhead": 4,
+    "col_num_inds": 128,
+    "row_num_blocks": 3,
+    "row_nhead": 8,
+    "row_num_cls": 4,
+    "row_rope_base": 100000.0,
+    "icl_num_blocks": 12,
+    "icl_nhead": 4,
+    "ff_factor": 2,
+    "dropout": 0.0,
+    "activation": "gelu",
+    "norm_first": true,
+    "col_attention_type": "standard",
+    "col_feature_map": "identity",
+    "row_attention_type": "standard",
+    "row_feature_map": "identity",
+    "icl_attention_type": "standard",
+    "icl_feature_map": "identity"
+  },
+  "n_params": 27051666,
+  "seed": 0,
+  "opset": 18,
+  "upstream": {
+    "repo": "https://github.com/Lexsi-Labs/Orion-BiX",
+    "rev": "060d34606f56c591c47e0b6cbe971e5f5035f33e",
+    "license": "MIT",
+    "checkpoint": "Lexsi/Orion-BiX :: Orion-BiX-v1.1.ckpt"
+  },
+  "input_signature": {
+    "x": "[1,T,H] f32",
+    "y": "[1,S] f32 (S=train_size, train labels only)"
+  },
+  "output": {
+    "logits": "[1,T,C] class logits, C=max_classes"
+  },
+  "H_dynamic": true,
+  "train_size": "runtime (implicit = len(y))",
+  "cat_mask": "omitted (no categorical path)",
+  "d": "omitted (engine pads features; d-path uses boolean-mask indexing)",
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_train": [
+    "train",
+    2,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    2,
+    512
+  ],
+  "example_THS": [
+    20,
+    8,
+    12
+  ],
+  "graph_bytes": 564194,
+  "n_initializers_mapped": 277,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 2.2351741790771484e-07,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 16,
+        "H": 4,
+        "train": 10,
+        "max_abs_delta_test_rows": 2.2351741790771484e-07,
+        "ort_ms": 87.44096755981445
+      },
+      {
+        "T": 60,
+        "H": 20,
+        "train": 40,
+        "max_abs_delta_test_rows": 2.2351741790771484e-07,
+        "ort_ms": 150.77638626098633
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.28.0",
+    "onnxscript": "0.7.1"
+  }
+}

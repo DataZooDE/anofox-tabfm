@@ -65,6 +65,36 @@ static const char *const BUILTIN_TABPFN = R"json({
   "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
 })json";
 
+// TabPFN-2.5 relicensed STRICTLY vs v2: `tabpfn-2.5-license-v1.1` forbids any
+// commercial or production use of the weights (and of their outputs), so unlike
+// `tabpfn-v2` this entry is commercial:false + gated. Only the `_default`
+// checkpoint variant is shipped. Classifier and regressor are different depths
+// (24 vs 18 layers) with different encoders, hence per-task graphs AND per-task
+// tensor maps.
+static const char *const BUILTIN_TABPFN25 = R"json({
+  "schema_version": 2, "id": "tabpfn-v2-5", "display_name": "TabPFN 2.5 (Prior Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "tabpfn-2.5-license-v1.1", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "TabPFN-2.5 by Prior Labs GmbH. Weights are research/internal-evaluation only — NO commercial or production use. Contact sales@priorlabs.ai for a commercial license."},
+  "preprocessing_profile": "tabpfn_v2_5_raw",
+  "weights": {
+    "classification": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "main",
+      "files": [{"path": "classification/model.ckpt", "bytes": 42935499,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/main/tabpfn-v2.5-classifier-v2.5_default.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "main",
+      "files": [{"path": "regression/model.ckpt", "bytes": 40831995,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/main/tabpfn-v2.5-regressor-v2.5_default.ckpt"}]}
+  },
+  "graph": {"classification": "graph_tabpfn25_classification", "regression": "graph_tabpfn25_regression",
+    "tensor_map": {"classification": "tensor_map_tabpfn25_classification.json",
+                   "regression": "tensor_map_tabpfn25_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+})json";
+
 static const char *const BUILTIN_TABICL = R"json({
   "schema_version": 2, "id": "tabicl-v2", "display_name": "TabICL v2 (soda-inria)",
   "family": "icl-transformer",
@@ -83,6 +113,31 @@ static const char *const BUILTIN_TABICL = R"json({
     "tensor_map": {"classification": "tensor_map_tabicl_classification.json",
                    "regression": "tensor_map_tabicl_regression.json"}},
   "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 100000, "max_features": 512, "max_classes": 10}
+})json";
+
+// Orion-BiX is the first built-in with a SINGLE capability: upstream ships a
+// classifier only (orion_bix/sklearn/classifier.py, no regressor), so
+// `tabfm_regress(..., model := 'orion-bix')` raises the unsupported-task error.
+// Unlike TabPFN/TabICL it does NOT normalize internally — its sklearn wrapper
+// standardizes externally — hence a "_minimal" (engine-standardizes) profile
+// rather than a "_raw" one.
+static const char *const BUILTIN_ORION_BIX = R"json({
+  "schema_version": 2, "id": "orion-bix", "display_name": "Orion-BiX v1.1 (Lexsi Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "mit", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "Orion-BiX by Lexsi Labs, MIT. Checkpoint: HF Lexsi/Orion-BiX."},
+  "preprocessing_profile": "orion_bix_v1_minimal",
+  "weights": {
+    "classification": {"repo": "Lexsi/Orion-BiX", "revision": "main",
+      "files": [{"path": "classification/model.ckpt", "bytes": 314653437,
+                 "url": "https://huggingface.co/Lexsi/Orion-BiX/resolve/main/Orion-BiX-v1.1.ckpt"}]}
+  },
+  "graph": {"classification": "graph_orion_bix_classification",
+    "tensor_map": {"classification": "tensor_map_orion_bix_classification.json"}},
+  "capabilities": ["classify"],
   "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
                       "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
   "size_regime": {"max_rows": 100000, "max_features": 512, "max_classes": 10}
@@ -109,7 +164,9 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	// The commercial-clean catalog, baked in (bundled graphs/tensor-maps).
 	specs.push_back(ParseModelSpec(BUILTIN_MITRA, "(built-in mitra)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN, "(built-in tabpfn-v2)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABPFN25, "(built-in tabpfn-v2-5)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABICL, "(built-in tabicl-v2)"));
+	specs.push_back(ParseModelSpec(BUILTIN_ORION_BIX, "(built-in orion-bix)"));
 	return specs;
 }
 

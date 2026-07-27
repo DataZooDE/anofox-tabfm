@@ -3,6 +3,7 @@
 #include "tabfm_predict.hpp"
 #include "tabfm_registry.hpp"
 #include "tabfm_state.hpp"
+#include "tabfm_weights.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -37,6 +38,53 @@ namespace anofox {
 // - Download source handles are opened with CachingMode::NO_CACHING and the
 //   plain (non-Caching) FileSystem, so DuckDB's external file cache never
 //   buffers multi-GB weight bodies (S03 §2c caveat).
+
+// A gated repository answers an anonymous GET with 401/403, and httpfs reports
+// only the status line. Rewrite that into the CREATE SECRET (and, for
+// HuggingFace, the license page) that actually unblocks the download.
+// Declared in tabfm_weights.hpp; unit-tested in test/cpp/test_tabfm_weights.cpp.
+string HttpAuthRemediation(const string &error, const string &url) {
+	// Match the status as a standalone number: "wrote 4031 of ..." is not a 403.
+	auto find_status = [&error](const char *code) -> bool {
+		for (size_t pos = error.find(code); pos != string::npos; pos = error.find(code, pos + 1)) {
+			const bool digit_before = pos > 0 && StringUtil::CharacterIsDigit(error[pos - 1]);
+			const size_t after = pos + 3;
+			const bool digit_after = after < error.size() && StringUtil::CharacterIsDigit(error[after]);
+			if (!digit_before && !digit_after) {
+				return true;
+			}
+		}
+		return false;
+	};
+	const bool unauthorized = find_status("401");
+	if (!unauthorized && !find_status("403")) {
+		return ""; // 404 / connection / missing-httpfs keep their own remediation
+	}
+	const char *status = unauthorized ? "401 Unauthorized" : "403 Forbidden";
+
+	// Split "<scheme>://<host>/<path>" — the query string never enters a message.
+	auto scheme_end = url.find("://");
+	auto host_start = scheme_end == string::npos ? 0 : scheme_end + 3;
+	auto host_end = url.find('/', host_start);
+	const string host = url.substr(host_start, host_end == string::npos ? string::npos : host_end - host_start);
+	const string scheme = scheme_end == string::npos ? "https" : url.substr(0, scheme_end);
+
+	if (StringUtil::EndsWith(host, "huggingface.co") && host_end != string::npos) {
+		// "<owner>/<repo>/resolve/<rev>/<file>" → the gated repo is the first two.
+		auto parts = StringUtil::Split(url.substr(host_end + 1), '/');
+		if (parts.size() >= 2) {
+			const string repo = parts[0] + "/" + parts[1];
+			return StringUtil::Format(
+			    "tabfm_download: access denied (HTTP %s) for the gated repository %s://%s/%s. "
+			    "Fix both: (1) accept the model license at %s://%s/%s while signed in, then "
+			    "(2) supply your token — CREATE SECRET hf (TYPE http, BEARER_TOKEN '<hf_token>', SCOPE '%s://%s');",
+			    status, scheme, host, repo, scheme, host, repo, scheme, host);
+		}
+	}
+	return StringUtil::Format("tabfm_download: access denied (HTTP %s) by host %s. Supply credentials with "
+	                          "CREATE SECRET dl (TYPE http, BEARER_TOKEN '<token>', SCOPE '%s://%s');",
+	                          status, host, scheme, host);
+}
 
 namespace {
 
@@ -330,8 +378,21 @@ idx_t FetchFile(ClientContext &context, const DownloadItem &item) {
 	// "INSTALL httpfs; LOAD httpfs;" remediation — let it propagate (S03 §5).
 	auto read_flags = FileOpenFlags(FileFlags::FILE_FLAGS_READ);
 	read_flags.SetCachingMode(CachingMode::NO_CACHING); // S03 §2c: never cache weight bodies
-	auto src = fs.OpenFile(item.url, read_flags);
-	auto remote_size = fs.GetFileSize(*src); // HEAD-cheap even on multi-GB files (S03 §4)
+	unique_ptr<FileHandle> src;
+	int64_t remote_size;
+	try {
+		src = fs.OpenFile(item.url, read_flags);
+		remote_size = fs.GetFileSize(*src); // HEAD-cheap even on multi-GB files (S03 §4)
+	} catch (std::exception &e) {
+		// A gated repo fails here with a bare 401/403; everything else (404,
+		// connection errors, the missing-httpfs MissingExtensionException) keeps
+		// its own remediation and propagates untouched.
+		auto hint = HttpAuthRemediation(e.what(), item.url);
+		if (hint.empty()) {
+			throw;
+		}
+		throw IOException(hint);
+	}
 	if (item.bytes >= 0 && remote_size >= 0 && remote_size != item.bytes) {
 		throw IOException("tabfm_download: size mismatch for %s (manifest expects %lld bytes, source reports %lld) "
 		                  "— download aborted",

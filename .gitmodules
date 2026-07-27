@@ -11,3 +11,6 @@
 [submodule "vendor/tabfm"]
 	path = vendor/tabfm
 	url = https://github.com/google-research/tabfm.git
+[submodule "vendor/limix"]
+	path = vendor/limix
+	url = https://github.com/limix-ldm-ai/LimiX.git

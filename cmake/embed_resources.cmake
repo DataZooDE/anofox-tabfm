@@ -36,7 +36,15 @@ set(_tabfm_inputs
     "tensor_map_tabpfn_classification.json"
     "tensor_map_tabpfn_regression.json"
     "tensor_map_tabicl_classification.json"
-    "tensor_map_tabicl_regression.json")
+    "tensor_map_tabicl_regression.json"
+    # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
+    "graph_tabpfn25_classification.onnx"
+    "graph_tabpfn25_regression.onnx"
+    "tensor_map_tabpfn25_classification.json"
+    "tensor_map_tabpfn25_regression.json"
+    # Orion-BiX (MIT) — classification only, no regression graph upstream.
+    "graph_orion_bix_classification.onnx"
+    "tensor_map_orion_bix_classification.json")
 
 # Re-run configure when a resource changes so the generated source stays fresh.
 foreach(_f ${_tabfm_inputs})
