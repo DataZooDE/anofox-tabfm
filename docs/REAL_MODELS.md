@@ -21,6 +21,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert |
 | **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert |
 | **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB .ckpt read natively; upstream ships no regressor |
+| **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
 
 ## Mitra — done
 
@@ -123,6 +124,53 @@ uses `CustomStandardScaler` / `RTDLQuantileTransformer` externally), so it
 declares `orion_bix_v1_minimal` — a normal engine-standardizes profile, not
 `_raw`. Export parity **2.24e-07**. The ~315 MB `.ckpt` is read natively by the
 extension; no conversion step is needed.
+
+## TabPFN-2.5 — shipped (classify + regress)
+
+The 2.5 line keeps v2's `(x, y)`-only contract, so onboarding it needed **no
+engine change at all** — it is purely an exporter change. `tools/export_tabpfn`
+is now parameterized by architecture (`tabpfn_patched.ARCHES`, `--config
+real25`), since `tabpfn` ≥ 8.1 ships `tabpfn_v2_5.py` as a standalone module
+with the same symbol names the v2 patches already target. The v2 path is
+unchanged: rebuilding `test/fixtures/tabpfn/` reproduces all 10 files
+byte-for-byte.
+
+**License, not accuracy, is the reason it is a separate entry.** v2 ships under
+the Prior Labs License (Apache-2.0 + attribution, `commercial: true`); 2.5 ships
+under `tabpfn-2.5-license-v1.1`, which forbids commercial *and production* use of
+the weights and their outputs. So `tabpfn-v2-5` is `commercial: false` +
+`gate_setting: accept_hf_license`. `test/sql/tabpfn25.test` asserts the two rows
+differ on exactly that.
+
+Three findings from the export:
+
+1. **The heads are different architectures.** Classifier = 24 layers with a
+   linear encoder (10,718,218 params); regressor = 18 layers with an MLP encoder
+   (10,186,760). `configs.real25(task)` is task-aware for that reason, and the
+   manifest carries per-task graphs *and* per-task tensor maps.
+2. **A new data-dependent guard.** `TabPFNV2p5.forward` validates
+   `(y > n_out - 1).any()` — untraceable, and it aborts the export with
+   `GuardOnDataDependentSymNode`. `self.training` appears exactly once in the
+   whole module (that guard) and the released configs set `dropout = 0.0`, so
+   pinning the model in train mode is provably inert and skips it. Like the
+   existing `_do_encoder_nan_check` patch, it is a pure input-validation branch.
+3. **Column embeddings are package data, not weights.** 2.5 replaces v2's seeded
+   `randn` with `pre_generated_column_embeddings`, a fixed (2000, 48) table
+   shipped inside the `tabpfn` wheel so values match across platforms. It is not
+   in the checkpoint at all, so — exactly like v2's `_pos_base` — it stays inline
+   in the weight-free graph and never enters the tensor map. Our 512-feature cap
+   means the column count can never reach 2000, so slicing it is exact.
+
+Export parity **1.45e-07** (classification). `convert_weights.py --arch=v2.5`
+confirms **250/250** and **192/192** tensor-map keys resolve against the real
+checkpoints. As for v2 the conversion step is *required*, not optional: the
+released `.ckpt` stores fused QKV projections, so only 2 of 250 map keys appear
+in it directly — the engine consumes the converted safetensors named by the
+tensor map's `safetensors` field.
+
+Note the `Prior-Labs/tabpfn_2_5` repo carries `extra_gated_fields`, but its
+`resolve` endpoint currently serves anonymously; if that changes, the download
+fails with the actionable 401 described below.
 
 ## Gated HuggingFace repositories
 

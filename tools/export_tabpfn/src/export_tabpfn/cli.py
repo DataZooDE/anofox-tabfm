@@ -23,26 +23,29 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="export_tabpfn")
     ap.add_argument("--task", required=True,
                     choices=["classification", "regression"])
-    ap.add_argument("--config", required=True, choices=["tiny", "fixture", "real"])
+    ap.add_argument("--config", required=True,
+                    choices=["tiny", "fixture", "real", "fixture25", "real25"])
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
     args = ap.parse_args(argv)
 
-    cfg = configs.get(args.config)
+    cfg = configs.get(args.config, task=args.task)
+    # 2.5 graphs/maps get their own names so both generations can ship side by side.
+    slug = "tabpfn25" if cfg.arch == "v2.5" else "tabpfn"
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    graph_path = out / f"graph_tabpfn_{args.task}.onnx"
-    map_path = out / f"tensor_map_tabpfn_{args.task}.json"
+    graph_path = out / f"graph_{slug}_{args.task}.onnx"
+    map_path = out / f"tensor_map_{slug}_{args.task}.json"
     n_out = cfg.max_classes if args.task == "classification" else cfg.num_buckets
 
-    print(f"[export_tabpfn] building random-weight TabPFN v2 "
+    print(f"[export_tabpfn] building random-weight TabPFN {cfg.arch} "
           f"({args.config}, {args.task}) ...", flush=True)
     t0 = time.time()
     kw = dict(cfg.model_kwargs)
     kw["num_buckets"] = cfg.num_buckets
     kw["max_num_classes"] = cfg.max_classes
-    model = build_random_model(args.task, kw, seed=args.seed)
+    model = build_random_model(args.task, kw, seed=args.seed, arch=cfg.arch)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[export_tabpfn] {n_params:,} params, n_out={model.n_out} "
           f"({time.time()-t0:.1f}s)", flush=True)
@@ -82,7 +85,8 @@ def main(argv=None) -> int:
     import torch as _torch
     report = {
         "command": ["export_tabpfn"] + list(argv or sys.argv[1:]),
-        "task": args.task, "config": cfg.name, "model_kwargs": cfg.model_kwargs,
+        "task": args.task, "config": cfg.name, "arch": cfg.arch,
+        "model_kwargs": cfg.model_kwargs,
         "n_out": model.n_out, "n_params": n_params, "seed": args.seed,
         "opset": export.OPSET, "example_input_THN": list(cfg.example),
         "graph_bytes": graph_path.stat().st_size,
@@ -119,7 +123,7 @@ def main(argv=None) -> int:
         "versions": {"torch": _torch.__version__, "onnx": _onnx.__version__,
                      "onnxruntime": _ort.__version__},
     }
-    (out / f"export_report_tabpfn_{args.task}.json").write_text(
+    (out / f"export_report_{slug}_{args.task}.json").write_text(
         json.dumps(report, indent=2) + "\n")
     print(f"[export_tabpfn] graph: {graph_path} "
           f"({graph_path.stat().st_size/1e6:.2f} MB, weight-free)")

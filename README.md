@@ -6,10 +6,10 @@ classification and regression become a single SQL statement. No Python, no
 training loop, no MLOps: the model reads your labelled rows as context and
 predicts the rest.
 
-**Five models are built in and selectable by name** — `mitra` (AWS AutoGluon,
-Apache-2.0), `tabpfn-v2` (Prior Labs), `tabicl-v2` (Inria), `orion-bix` (Lexsi
-Labs, MIT), and `tabfm-v1` (Google TabFM) — and you can register your own
-entirely in SQL. Everything is
+**Six models are built in and selectable by name** — `mitra` (AWS AutoGluon,
+Apache-2.0), `tabpfn-v2` and `tabpfn-v2-5` (Prior Labs), `tabicl-v2` (Inria),
+`orion-bix` (Lexsi Labs, MIT), and `tabfm-v1` (Google TabFM) — and you can
+register your own entirely in SQL. Everything is
 operated in SQL: no manifest file, no config.
 
 ---
@@ -26,7 +26,7 @@ LOAD anofox_tabfm;
 
 ### 2. Pick a model and download its weights (once)
 
-`SELECT * FROM tabfm_list_models();` shows the five built-in models. `mitra` is a
+`SELECT * FROM tabfm_list_models();` shows the six built-in models. `mitra` is a
 good default — Apache-2.0, ~303 MB. It also has a permissive license. The extension ships only
 **weight-free** graphs; the weights have to be downloaded from Hugging Face before using the model:
 
@@ -151,7 +151,7 @@ Every column of the scored rows, plus:
 ## Multiple models (the registry)
 
 `anofox_tabfm` is one entrypoint for many **tabular foundation models** — "TabFM"
-is the *category*, not a single model. Five models are **built in** and usable by
+is the *category*, not a single model. Six models are **built in** and usable by
 name with no config, no manifest file:
 
 ```sql
@@ -165,6 +165,7 @@ SELECT * FROM tabfm_list_models();          -- the registry: every known model
 | `tabpfn-v2` | Prior Labs | Apache-2.0 + attribution | `true` |
 | `tabicl-v2` | Inria | BSD-3-Clause | `true` |
 | `orion-bix` | Lexsi Labs | MIT | `true` (classify only) |
+| `tabpfn-v2-5` | Prior Labs | TabPFN-2.5 (non-commercial, gated) | `false` |
 
 Pick a model per call (a first-class argument, promoted out of `opts`), or set a
 session default; precedence is **per-call → `anofox_tabfm_default_model` → a

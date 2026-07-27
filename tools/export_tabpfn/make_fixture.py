@@ -1,4 +1,7 @@
-"""Build the random-init CI fixture for test/fixtures/tabpfn/ (both tasks).
+"""Build the random-init CI fixture for test/fixtures/tabpfn{,25}/ (both tasks).
+
+Pass ``--arch=v2.5`` to build the TabPFN-2.5 fixture into test/fixtures/tabpfn25/;
+the default (v2) writes test/fixtures/tabpfn/ exactly as before.
 
 Per task: weight-free graph + tiny random safetensors (checkpoint-namespace
 keys, _pos_base excluded/inline) + tensor map + golden_<task>.json parity slice.
@@ -7,7 +10,7 @@ point estimate (bar-distribution mean, de-standardized — see tabpfn_patched.
 ExportWrapper). Everything is seeded/random-init — NO TabPFN weight bytes (the
 regression borders are random-init too; a real export injects criterion.borders).
 """
-import hashlib, json, pathlib
+import hashlib, json, pathlib, sys
 import numpy as np
 import torch
 from safetensors.torch import save_file
@@ -16,9 +19,11 @@ from export_tabpfn import configs, export
 from export_tabpfn.tabpfn_patched import build_random_model, ExportWrapper
 
 SEED = 0
-OUT = pathlib.Path(__file__).resolve().parents[2] / "test" / "fixtures" / "tabpfn"
+ARCH = "v2.5" if any(a.startswith("--arch") and "2.5" in a for a in sys.argv[1:]) else "v2"
+SLUG = "tabpfn25" if ARCH == "v2.5" else "tabpfn"
+OUT = pathlib.Path(__file__).resolve().parents[2] / "test" / "fixtures" / SLUG
 OUT.mkdir(parents=True, exist_ok=True)
-cfg = configs.fixture()
+cfg = configs.fixture25() if ARCH == "v2.5" else configs.fixture()
 MAXC = cfg.max_classes
 T, H, N = cfg.example
 
@@ -31,13 +36,13 @@ def build_task(task: str):
     golden.json); regression uses *_regression suffixes (mitra-style)."""
     st_name = "model.safetensors" if task == "classification" else "model_regression.safetensors"
     golden_name = "golden.json" if task == "classification" else "golden_regression.json"
-    graph_name = f"graph_tabpfn_{task}.onnx"
-    map_name = f"tensor_map_tabpfn_{task}.json"
+    graph_name = f"graph_{SLUG}_{task}.onnx"
+    map_name = f"tensor_map_{SLUG}_{task}.json"
 
     kw = dict(cfg.model_kwargs)
     kw["num_buckets"] = cfg.num_buckets
     kw["max_num_classes"] = MAXC
-    model = build_random_model(task, kw, seed=SEED)
+    model = build_random_model(task, kw, seed=SEED, arch=ARCH)
     wrapper = ExportWrapper(model, task=task).eval()
 
     graph_path = OUT / graph_name
@@ -132,13 +137,14 @@ for task in ("classification", "regression"):
 
 manifest = {
     "schema_version": 2,
-    "id": "tabpfn-v2-fixture",
-    "display_name": "TabPFN v2 (random-init CI fixture)",
+    "id": "tabpfn-v2-5-fixture" if ARCH == "v2.5" else "tabpfn-v2-fixture",
+    "display_name": ("TabPFN 2.5 (random-init CI fixture)" if ARCH == "v2.5"
+                     else "TabPFN v2 (random-init CI fixture)"),
     "family": "icl-transformer",
     "license": {"id": "apache-2.0", "commercial": True, "redistributable": True,
                 "attribution": "Random-init fixture; no Prior Labs weights.",
                 "gate_setting": None},
-    "preprocessing_profile": "tabpfn_v2_raw",
+    "preprocessing_profile": "tabpfn_v2_5_raw" if ARCH == "v2.5" else "tabpfn_v2_raw",
     "weights": {
         "classification": {"files": [
             {"path": frags["classification"]["st_name"],
