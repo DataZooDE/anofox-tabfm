@@ -129,6 +129,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_preprocess.cpp
     test/cpp/test_tabfm_ensemble.cpp
     test/cpp/test_tabfm_bundled_resources.cpp
+    test/cpp/test_tabfm_weights.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     add_library(anofox_tabfm_unittest_tests OBJECT ${TABFM_CPP_TEST_SOURCES})

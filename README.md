@@ -6,9 +6,10 @@ classification and regression become a single SQL statement. No Python, no
 training loop, no MLOps: the model reads your labelled rows as context and
 predicts the rest.
 
-**Four models are built in and selectable by name** — `mitra` (AWS AutoGluon,
-Apache-2.0), `tabpfn-v2` (Prior Labs), `tabicl-v2` (Inria), and `tabfm-v1`
-(Google TabFM) — and you can register your own entirely in SQL. Everything is
+**Five models are built in and selectable by name** — `mitra` (AWS AutoGluon,
+Apache-2.0), `tabpfn-v2` (Prior Labs), `tabicl-v2` (Inria), `orion-bix` (Lexsi
+Labs, MIT), and `tabfm-v1` (Google TabFM) — and you can register your own
+entirely in SQL. Everything is
 operated in SQL: no manifest file, no config.
 
 ---
@@ -25,7 +26,7 @@ LOAD anofox_tabfm;
 
 ### 2. Pick a model and download its weights (once)
 
-`SELECT * FROM tabfm_list_models();` shows the four built-in models. `mitra` is a
+`SELECT * FROM tabfm_list_models();` shows the five built-in models. `mitra` is a
 good default — Apache-2.0, ~303 MB. It also has a permissive license. The extension ships only
 **weight-free** graphs; the weights have to be downloaded from Hugging Face before using the model:
 
@@ -35,6 +36,16 @@ CALL tabfm_download('classification', model := 'mitra');    -- ~303 MB, cached i
 
 For the Google model (`tabfm-v1`) which has special licensing, you additionally need to
 `SET anofox_tabfm_accept_hf_license = true;`.
+
+Some repositories are additionally **gated by Hugging Face** — accept the license on
+the model page while signed in, then pass your token via a standard DuckDB secret:
+
+```sql
+CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_xxx', SCOPE 'https://huggingface.co');
+```
+
+A download that needs this fails with an error naming both steps. See
+[`docs/REAL_MODELS.md`](docs/REAL_MODELS.md#gated-huggingface-repositories).
 
 ### 3. Predict
 
@@ -140,7 +151,7 @@ Every column of the scored rows, plus:
 ## Multiple models (the registry)
 
 `anofox_tabfm` is one entrypoint for many **tabular foundation models** — "TabFM"
-is the *category*, not a single model. Four models are **built in** and usable by
+is the *category*, not a single model. Five models are **built in** and usable by
 name with no config, no manifest file:
 
 ```sql
@@ -153,6 +164,7 @@ SELECT * FROM tabfm_list_models();          -- the registry: every known model
 | `mitra` | AWS AutoGluon | Apache-2.0 | `true` |
 | `tabpfn-v2` | Prior Labs | Apache-2.0 + attribution | `true` |
 | `tabicl-v2` | Inria | BSD-3-Clause | `true` |
+| `orion-bix` | Lexsi Labs | MIT | `true` (classify only) |
 
 Pick a model per call (a first-class argument, promoted out of `opts`), or set a
 session default; precedence is **per-call → `anofox_tabfm_default_model` → a

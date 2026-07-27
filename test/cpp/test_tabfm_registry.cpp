@@ -44,6 +44,13 @@ ModelSpec Registered(const char *json) {
 	return s;
 }
 
+//! Size of the built-in catalog. Derived, not hard-coded, so onboarding a model
+//! does not break every registry test — the assertions below are about
+//! registration *arithmetic* (added / shadowed), not the catalog's size.
+size_t BuiltinCount() {
+	return BuiltinModelSpecs().size();
+}
+
 } // anonymous namespace
 
 TEST_CASE("registry: the built-in catalog is always present", "[tabfm][registry]") {
@@ -62,7 +69,11 @@ TEST_CASE("registry: the built-in catalog is always present", "[tabfm][registry]
 	REQUIRE(reg.Has("tabpfn-v2"));
 	REQUIRE(reg.Has("tabicl-v2"));
 	REQUIRE(reg.Get("mitra").license.commercial == true);
-	REQUIRE(reg.Models().size() == 4);
+	REQUIRE(reg.Has("orion-bix"));
+	// classify-only built-in: capability gating is real, not hypothetical
+	REQUIRE(reg.Get("orion-bix").HasCapability("classify"));
+	REQUIRE_FALSE(reg.Get("orion-bix").HasCapability("regress"));
+	REQUIRE(reg.Models().size() == BuiltinCount());
 	// several models + no selection → actionable ambiguity error; explicit works
 	REQUIRE_THROWS_WITH(reg.Resolve("", ""), Contains("registered"));
 	REQUIRE(reg.Resolve("tabfm-v1", "").id == "tabfm-v1");
@@ -75,7 +86,7 @@ TEST_CASE("registry: a single SQL-registered model is the implicit default", "[t
 	auto reg = ModelRegistry::Build({Registered(kAcmeClf)});
 	REQUIRE(reg.Has("tabfm-v1"));
 	REQUIRE(reg.Has("acme-clf"));
-	REQUIRE(reg.Models().size() == 5);
+	REQUIRE(reg.Models().size() == BuiltinCount() + 1);
 	REQUIRE(reg.ImplicitDefault() == "acme-clf");
 	REQUIRE(reg.Get("acme-clf").license.commercial == true);
 
@@ -89,7 +100,7 @@ TEST_CASE("registry: a single SQL-registered model is the implicit default", "[t
 
 TEST_CASE("registry: several registered models → selection is explicit", "[tabfm][registry]") {
 	auto reg = ModelRegistry::Build({Registered(kAcmeClf), Registered(kAcmeReg)});
-	REQUIRE(reg.Models().size() == 6);
+	REQUIRE(reg.Models().size() == BuiltinCount() + 2);
 	REQUIRE(reg.ImplicitDefault().empty());
 	// no selection + >1 model → an actionable ambiguity error
 	REQUIRE_THROWS_WITH(reg.Resolve("", ""), Contains("registered"));
@@ -102,7 +113,7 @@ TEST_CASE("registry: a registered id shadows a built-in of the same id", "[tabfm
 	auto spec = Registered(kAcmeClf);
 	spec.id = "mitra";
 	auto reg = ModelRegistry::Build({spec});
-	REQUIRE(reg.Models().size() == 4); // still 4 — the registration replaced the built-in
+	REQUIRE(reg.Models().size() == BuiltinCount()); // unchanged — the registration replaced the built-in
 	// the registered model won: it has a source_dir (built-ins do not)
 	REQUIRE_FALSE(reg.Get("mitra").source_dir.empty());
 	REQUIRE(reg.Get("mitra").HasCapability("classify"));

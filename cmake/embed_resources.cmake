@@ -36,7 +36,10 @@ set(_tabfm_inputs
     "tensor_map_tabpfn_classification.json"
     "tensor_map_tabpfn_regression.json"
     "tensor_map_tabicl_classification.json"
-    "tensor_map_tabicl_regression.json")
+    "tensor_map_tabicl_regression.json"
+    # Orion-BiX (MIT) — classification only, no regression graph upstream.
+    "graph_orion_bix_classification.onnx"
+    "tensor_map_orion_bix_classification.json")
 
 # Re-run configure when a resource changes so the generated source stays fresh.
 foreach(_f ${_tabfm_inputs})

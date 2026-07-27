@@ -88,6 +88,31 @@ static const char *const BUILTIN_TABICL = R"json({
   "size_regime": {"max_rows": 100000, "max_features": 512, "max_classes": 10}
 })json";
 
+// Orion-BiX is the first built-in with a SINGLE capability: upstream ships a
+// classifier only (orion_bix/sklearn/classifier.py, no regressor), so
+// `tabfm_regress(..., model := 'orion-bix')` raises the unsupported-task error.
+// Unlike TabPFN/TabICL it does NOT normalize internally — its sklearn wrapper
+// standardizes externally — hence a "_minimal" (engine-standardizes) profile
+// rather than a "_raw" one.
+static const char *const BUILTIN_ORION_BIX = R"json({
+  "schema_version": 2, "id": "orion-bix", "display_name": "Orion-BiX v1.1 (Lexsi Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "mit", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "Orion-BiX by Lexsi Labs, MIT. Checkpoint: HF Lexsi/Orion-BiX."},
+  "preprocessing_profile": "orion_bix_v1_minimal",
+  "weights": {
+    "classification": {"repo": "Lexsi/Orion-BiX", "revision": "main",
+      "files": [{"path": "classification/model.ckpt", "bytes": 314653437,
+                 "url": "https://huggingface.co/Lexsi/Orion-BiX/resolve/main/Orion-BiX-v1.1.ckpt"}]}
+  },
+  "graph": {"classification": "graph_orion_bix_classification",
+    "tensor_map": {"classification": "tensor_map_orion_bix_classification.json"}},
+  "capabilities": ["classify"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 100000, "max_features": 512, "max_classes": 10}
+})json";
+
 vector<ModelSpec> BuiltinModelSpecs() {
 	// Merge the two per-task built-in TabFM v1 manifests into one multi-task
 	// model spec (id "tabfm-v1"). Each task keeps its own graph/tensor-map/repo.
@@ -110,6 +135,7 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_MITRA, "(built-in mitra)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN, "(built-in tabpfn-v2)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABICL, "(built-in tabicl-v2)"));
+	specs.push_back(ParseModelSpec(BUILTIN_ORION_BIX, "(built-in orion-bix)"));
 	return specs;
 }
 

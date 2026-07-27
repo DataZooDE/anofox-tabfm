@@ -20,6 +20,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
 | **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert |
 | **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert |
+| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB .ckpt read natively; upstream ships no regressor |
 
 ## Mitra — done
 
@@ -89,6 +90,62 @@ R² 0.821 tracking the sklearn regressor at corr 0.9999; `mstz/wine` MSE **0.586
 vs 0.860 baseline. Note the checkpoints differ (`bias_free_ln`: classifier 391
 tensors, regressor 347), so the exporter is task-aware; the regressor keys are a
 subset of the classifier's, so a shared tensor_map still drives both graphs.
+
+## Orion-BiX — shipped (classification only)
+
+A TabICL descendant from Lexsi Labs, and the **only MIT-licensed** model in the
+catalog: commercially usable with no license gate at all. Its graph is `(x, y)`-only
+too, so the same y-prefix inference drives it with **no model-specific C++**.
+
+It is the first built-in with a **single capability** — upstream ships
+`sklearn/classifier.py` and no regression head — so `capabilities: ["classify"]`
+and `tabfm_regress(..., model := 'orion-bix')` raises the actionable
+unsupported-task error (asserted in `test/sql/tabfm_orion_bix.test`).
+
+Three things the export had to establish, all recorded in
+`tools/export_orion_bix/README.md`:
+
+1. **The name is misleading.** `Orion-BiX-v1.1.ckpt`'s embedded `config` sets
+   `col/row/icl_attention_type = "standard"`, so `BiAxialAttention` and
+   `LinearAttentionBlock` are never instantiated by the released weights.
+   `configs.assert_shipped_path` fails loudly if a future checkpoint changes that.
+2. **Keys carry an `_orig_mod.` prefix** (saved from a `torch.compile`-wrapped
+   module). Since `src/tabfm_ckpt.cpp` unwraps `state_dict` but does not rewrite
+   parameter names, the tensor map records the prefixed keys —
+   `convert_weights.py` confirms **277/277** map keys are present in the real
+   checkpoint.
+3. **RoPE caching had to be disabled** for export: the freq cache becomes a
+   FakeTensor under tracing, and would have baked the export example's row count
+   into the rotary table.
+
+Unlike TabPFN/TabICL it does **not** normalize internally (its sklearn wrapper
+uses `CustomStandardScaler` / `RTDLQuantileTransformer` externally), so it
+declares `orion_bix_v1_minimal` — a normal engine-standardizes profile, not
+`_raw`. Export parity **2.24e-07**. The ~315 MB `.ckpt` is read natively by the
+extension; no conversion step is needed.
+
+## Gated HuggingFace repositories
+
+Some model repositories are **access-gated**: you must accept the license on the
+model page while signed in, and the download must then carry your HF token.
+Downloads flow through DuckDB's `httpfs`, so the token is supplied with a
+standard DuckDB secret — the extension needs no setting of its own:
+
+```sql
+INSTALL httpfs; LOAD httpfs;
+CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_xxx', SCOPE 'https://huggingface.co');
+CALL tabfm_download('classification', model := 'tabpfn-v2-5');
+```
+
+Without it the fetch fails with an actionable error naming both steps
+(`HttpAuthRemediation`, `src/tabfm_weights.cpp`): HTTP **401** means no token,
+HTTP **403** means the token is fine but the license has not been accepted. The
+mapping is unit-tested offline in `test/cpp/test_tabfm_weights.cpp` — reproducing
+a real 401 would require network, so there is deliberately no sqllogictest for it.
+
+Note this is orthogonal to `anofox_tabfm_accept_hf_license`, which is *our*
+gate recording that you accepted a non-commercial license; the secret is
+*HuggingFace's* gate on serving you the bytes. Gated models need both.
 
 ## License wall (all models)
 
