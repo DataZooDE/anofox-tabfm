@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <fstream>
+#include "anofox_tabfm_banner.hpp"
 
 #if defined(TABFM_EP_CUDA) || defined(TABFM_EP_MIGRAPHX) || defined(TABFM_EP_COREML)
 #include <onnxruntime_cxx_api.h>
@@ -541,7 +542,8 @@ void DevicesFunction(ClientContext &context, TableFunctionInput &data, DataChunk
 } // anonymous namespace
 
 void RegisterDevicesFunctions(ExtensionLoader &loader) {
-	TableFunction func("anofox_tabfm_devices", {}, DevicesFunction, DevicesBind, DevicesInitGlobal);
+	TableFunction func("anofox_tabfm_devices", {}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, DevicesFunction),
+	                   DATAZOO_GUARD(ANOFOX_TABFM_BANNER, DevicesBind), DevicesInitGlobal);
 	FunctionDescription fd;
 	fd.description =
 	    "List the inference devices this build can see (device_id, ep, name, arch, vram, driver, usable). The cpu "
