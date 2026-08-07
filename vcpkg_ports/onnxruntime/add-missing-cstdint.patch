@@ -1,0 +1,22 @@
+Include <cstdint> in semver.h, which uses uint32_t without it.
+
+GCC 13 stopped providing <cstdint> transitively through other standard headers
+and GCC 16 enforces that, so the build fails with "'uint32_t' does not name a
+type". Older toolchains -- including the gcc-toolset-14 CI uses -- happen to
+pull it in indirectly and never notice.
+
+Only bites when onnxruntime is built from source; CI pulls it from the vcpkg
+binary cache.
+
+diff --git a/onnxruntime/core/common/semver.h b/onnxruntime/core/common/semver.h
+index a07c24f..98bb6a2 100644
+--- a/onnxruntime/core/common/semver.h
++++ b/onnxruntime/core/common/semver.h
+@@ -3,6 +3,7 @@
+ 
+ #pragma once
+ 
++#include <cstdint>
+ #include <optional>
+ #include <string_view>
+ 

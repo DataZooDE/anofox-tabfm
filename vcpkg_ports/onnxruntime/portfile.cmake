@@ -13,6 +13,8 @@ vcpkg_from_github(
     REF "v${VERSION}"
     SHA512 373c51575ada457b8aead5d195a5f3eba62fb747b6370a2a9889fff875c40ea30af8fd49104d58cc86f79247410e829086b0979f37ca8635c6dd34960e9cc424
     PATCHES
+        use-cxx20-on-linux.patch # abseil's std::strong_ordering aliases need C++20
+        add-missing-cstdint.patch # uint32_t without <cstdint>; needed from GCC 13 on
         fix-cmake.patch # .framework install, external library workarounds(abseil-cpp, eigen3)
         fix-cmake-cuda.patch
 )
