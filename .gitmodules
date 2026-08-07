@@ -14,3 +14,6 @@
 [submodule "vendor/limix"]
 	path = vendor/limix
 	url = https://github.com/limix-ldm-ai/LimiX.git
+[submodule "datazoo-banner"]
+	path = datazoo-banner
+	url = https://github.com/DataZooDE/duckdb-extension-banner.git

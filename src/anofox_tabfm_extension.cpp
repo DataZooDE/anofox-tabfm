@@ -7,6 +7,12 @@
 #include "duckdb/main/extension/extension_loader.hpp"
 
 #include <cstdlib>
+#include "anofox_tabfm_banner.hpp"
+
+// Deliberately outside namespace duckdb: the banner library is DuckDB-agnostic
+// and the guard macro refers to this object from every guarded source file.
+const datazoo::BannerInfo ANOFOX_TABFM_BANNER {
+    "anofox_tabfm", "0.1.0", "https://github.com/DataZooDE/anofox-tabfm"};
 
 namespace duckdb {
 
@@ -118,6 +124,11 @@ static void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterDevicesFunctions(loader);
 	anofox::RegisterPredictAggFunction(loader);
 	anofox::RegisterPredictMacros(loader);
+
+	datazoo::RegisterBannerOption(loader);
+	// Last, so a load that fails earlier never advertises itself. Silent unless
+	// stderr is a terminal and the ~/.duckdb stamp is over a day old.
+	datazoo::ShowBanner(ANOFOX_TABFM_BANNER);
 }
 
 void AnofoxTabfmExtension::Load(ExtensionLoader &loader) {

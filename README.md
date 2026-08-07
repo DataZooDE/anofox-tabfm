@@ -314,6 +314,20 @@ warms a shape bucket ahead of the first predict (builds/caches the ROCm `.mxr`).
 GPU flavors ship from the anofox extension repository
 (`SET custom_extension_repository = 'https://ext.anofox.com/tabfm/<flavor>'`).
 
+## Feedback
+
+If `anofox_tabfm` misbehaves — a model that will not load, a prediction that looks
+wrong, a device it will not use — please
+[open an issue](https://github.com/DataZooDE/anofox-tabfm/issues). Hardware, drivers and
+hub availability differ in ways we cannot reproduce here, so a report with your setup is
+the fastest path to a fix. Errors from the model functions end with that link.
+
+If it saved you time, a star on the repo helps other people find it.
+
+The first time you load the extension in an interactive terminal each day, a small
+banner says the same thing. It never prints when output is piped, in notebooks, or in
+CI. Silence it with `SET datazoo_banner = false;` or `DATAZOO_NO_BANNER=1`.
+
 ## License
 
 - **This extension's code:** MIT.

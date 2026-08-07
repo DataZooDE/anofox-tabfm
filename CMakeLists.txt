@@ -5,6 +5,13 @@ set(EXTENSION_NAME ${TARGET_NAME}_extension)
 set(LOADABLE_EXTENSION_NAME ${TARGET_NAME}_loadable_extension)
 
 project(${TARGET_NAME} LANGUAGES C CXX)
+# Feedback banner (header-only). Telemetry ON so a printed banner counts as a
+# banner_shown event through the instance configured below.
+set(DATAZOO_BANNER_TELEMETRY ON CACHE BOOL "" FORCE)
+set(DATAZOO_BANNER_TELEMETRY_INCLUDE_DIR
+    ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include CACHE PATH "" FORCE)
+add_subdirectory(datazoo-banner)
+
 include_directories(src/include)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -70,6 +77,7 @@ foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
         ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include)
     target_link_libraries(${_tgt}
         tabfm_onnxruntime
+        datazoo_banner
         OpenSSL::SSL
         OpenSSL::Crypto)
 endforeach()

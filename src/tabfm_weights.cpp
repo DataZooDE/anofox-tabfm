@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include "anofox_tabfm_banner.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -1155,38 +1156,38 @@ void RegisterSet(ExtensionLoader &loader, const string &full_name, const string 
 void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	// CALL tabfm_download(task [, revision]) — one result row per file.
 	RegisterSet(loader, "anofox_tabfm_download", "tabfm_download",
-	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::VARCHAR}}, DownloadBind, DownloadInit,
-	            DownloadExecute,
+	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::VARCHAR}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, DownloadBind), DownloadInit,
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, DownloadExecute),
 	            "Download the TabFM model weights for a task ('classification' or 'regression') from Hugging Face "
 	            "into the local cache. Requires SET anofox_tabfm_accept_hf_license = true. Returns one row per file "
 	            "(file, url, bytes, status).",
 	            "CALL tabfm_download('classification');", true);
 	// SELECT * FROM tabfm_models();
-	RegisterSet(loader, "anofox_tabfm_models", "tabfm_models", {{}}, ModelsBind, ModelsInit, ModelsExecute,
+	RegisterSet(loader, "anofox_tabfm_models", "tabfm_models", {{}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ModelsBind), ModelsInit, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ModelsExecute),
 	            "List the TabFM models known to the local cache (model, task, revision, path, bytes, loaded, "
 	            "license).",
 	            "SELECT * FROM tabfm_models();");
 	// CALL tabfm_load(task);
-	RegisterSet(loader, "anofox_tabfm_load", "tabfm_load", {{LogicalType::VARCHAR}}, LoadBind, LifecycleInit,
+	RegisterSet(loader, "anofox_tabfm_load", "tabfm_load", {{LogicalType::VARCHAR}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, LoadBind), LifecycleInit,
 	            LifecycleExecute,
 	            "Eagerly load a downloaded TabFM model for a task into memory so the first predict is warm "
 	            "(otherwise the model loads lazily on first use).",
 	            "CALL tabfm_load('classification');", true);
 	// CALL tabfm_unload([task]);
-	RegisterSet(loader, "anofox_tabfm_unload", "tabfm_unload", {{}, {LogicalType::VARCHAR}}, UnloadBind,
+	RegisterSet(loader, "anofox_tabfm_unload", "tabfm_unload", {{}, {LogicalType::VARCHAR}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, UnloadBind),
 	            LifecycleInit, LifecycleExecute,
 	            "Unload a loaded TabFM model from memory (all models if no task is given), freeing its RAM/VRAM.",
 	            "CALL tabfm_unload('classification');", true);
 	// CALL tabfm_remove(task [, revision]);
 	RegisterSet(loader, "anofox_tabfm_remove", "tabfm_remove",
-	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::VARCHAR}}, RemoveBind, RemoveInit,
-	            RemoveExecute,
+	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::VARCHAR}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, RemoveBind), RemoveInit,
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, RemoveExecute),
 	            "Delete a downloaded TabFM model's weights from the local cache (by task, optionally a specific "
 	            "revision).",
 	            "CALL tabfm_remove('classification');", true);
 	// SELECT * FROM tabfm_list_models();  — the registry (all known models).
-	RegisterSet(loader, "anofox_tabfm_list_models", "tabfm_list_models", {{}}, ListModelsBind, ListModelsInit,
-	            ListModelsExecute,
+	RegisterSet(loader, "anofox_tabfm_list_models", "tabfm_list_models", {{}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ListModelsBind), ListModelsInit,
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ListModelsExecute),
 	            "List every model in the registry (built-ins + user manifests), downloaded or not: model, family, "
 	            "capabilities, license, commercial, size regime (max_rows/features/classes), downloaded.",
 	            "SELECT * FROM tabfm_list_models();");
@@ -1201,7 +1202,7 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 
 	// CALL tabfm_register_model(id := '...', classification_graph := '...', ...);
 	{
-		TableFunction f("anofox_tabfm_register_model", {}, RegisterModelExecute, RegisterModelBind, OneRowInit);
+		TableFunction f("anofox_tabfm_register_model", {}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, RegisterModelExecute), DATAZOO_GUARD(ANOFOX_TABFM_BANNER, RegisterModelBind), OneRowInit);
 		for (auto *k : {"id", "display_name", "family", "classification_graph", "regression_graph",
 		                "classification_weights", "regression_weights", "classification_weights_url",
 		                "regression_weights_url", "weights_revision", "tensor_map", "classification_tensor_map",
@@ -1239,7 +1240,7 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	}
 	// CALL tabfm_unregister_model('id');
 	RegisterSet(loader, "anofox_tabfm_unregister_model", "tabfm_unregister_model", {{LogicalType::VARCHAR}},
-	            UnregisterModelBind, OneRowInit, UnregisterModelExecute,
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, UnregisterModelBind), OneRowInit, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, UnregisterModelExecute),
 	            "Remove a model registered with tabfm_register_model. Returns model, status.",
 	            "CALL tabfm_unregister_model('my_model');");
 }
