@@ -2,12 +2,16 @@
 //                         anofox-tabfm
 //
 // tabfm_ensemble.cpp — implementation of the ensemble-diversity layer. See
-// tabfm_ensemble.hpp for the C++ -> upstream Python symbol map and the
-// RNG-parity note. Reference (never edited):
+// tabfm_ensemble.hpp for the C++ -> upstream Python symbol map and the RNG
+// note (draws come from TabFMRandom / pcg32, not a CPython MT19937 port —
+// structurally equivalent, not draw-for-draw identical). Reference (never
+// edited):
 //   vendor/tabfm/tabfm/src/classifier_and_regressor.py
 //===----------------------------------------------------------------------===//
 
 #include "tabfm_ensemble.hpp"
+
+#include "tabfm_random.hpp"
 
 #include "duckdb/common/exception.hpp"
 
@@ -17,152 +21,6 @@
 
 namespace duckdb {
 namespace anofox {
-
-//===----------------------------------------------------------------------===//
-// PyRandom (MT19937, CPython-compatible)
-//===----------------------------------------------------------------------===//
-
-void PyRandom::InitGenrand(uint32_t s) {
-	mt_[0] = s;
-	for (int i = 1; i < N; i++) {
-		mt_[i] = (uint32_t)(1812433253UL * (mt_[i - 1] ^ (mt_[i - 1] >> 30)) + (uint32_t)i);
-	}
-	mti_ = N;
-}
-
-void PyRandom::InitByArray(const uint32_t *key, int key_length) {
-	InitGenrand(19650218UL);
-	int i = 1, j = 0;
-	int k = (N > key_length) ? N : key_length;
-	for (; k; k--) {
-		mt_[i] = (uint32_t)((mt_[i] ^ ((mt_[i - 1] ^ (mt_[i - 1] >> 30)) * 1664525UL)) +
-		                    key[j] + (uint32_t)j);
-		i++;
-		j++;
-		if (i >= N) {
-			mt_[0] = mt_[N - 1];
-			i = 1;
-		}
-		if (j >= key_length) {
-			j = 0;
-		}
-	}
-	for (k = N - 1; k; k--) {
-		mt_[i] = (uint32_t)((mt_[i] ^ ((mt_[i - 1] ^ (mt_[i - 1] >> 30)) * 1566083941UL)) -
-		                    (uint32_t)i);
-		i++;
-		if (i >= N) {
-			mt_[0] = mt_[N - 1];
-			i = 1;
-		}
-	}
-	mt_[0] = 0x80000000UL;
-}
-
-void PyRandom::SeedInt(uint64_t seed) {
-	// CPython converts abs(int) into an array of 32-bit little-endian words.
-	uint32_t key[2];
-	int key_length = 0;
-	if (seed == 0) {
-		key[0] = 0;
-		key_length = 1;
-	} else {
-		while (seed > 0 && key_length < 2) {
-			key[key_length++] = (uint32_t)(seed & 0xffffffffUL);
-			seed >>= 32;
-		}
-	}
-	InitByArray(key, key_length);
-}
-
-uint32_t PyRandom::GenrandUint32() {
-	static const uint32_t mag01[2] = {0x0UL, 0x9908b0dfUL};
-	const uint32_t UPPER_MASK = 0x80000000UL;
-	const uint32_t LOWER_MASK = 0x7fffffffUL;
-	uint32_t y;
-	if (mti_ >= N) {
-		int kk;
-		if (mti_ == N + 1) {
-			InitGenrand(5489UL);
-		}
-		for (kk = 0; kk < N - 397; kk++) {
-			y = (mt_[kk] & UPPER_MASK) | (mt_[kk + 1] & LOWER_MASK);
-			mt_[kk] = mt_[kk + 397] ^ (y >> 1) ^ mag01[y & 0x1UL];
-		}
-		for (; kk < N - 1; kk++) {
-			y = (mt_[kk] & UPPER_MASK) | (mt_[kk + 1] & LOWER_MASK);
-			mt_[kk] = mt_[kk + (397 - N)] ^ (y >> 1) ^ mag01[y & 0x1UL];
-		}
-		y = (mt_[N - 1] & UPPER_MASK) | (mt_[0] & LOWER_MASK);
-		mt_[N - 1] = mt_[396] ^ (y >> 1) ^ mag01[y & 0x1UL];
-		mti_ = 0;
-	}
-	y = mt_[mti_++];
-	y ^= (y >> 11);
-	y ^= (y << 7) & 0x9d2c5680UL;
-	y ^= (y << 15) & 0xefc60000UL;
-	y ^= (y >> 18);
-	return y;
-}
-
-uint64_t PyRandom::GetRandBits(int k) {
-	if (k <= 32) {
-		return (uint64_t)(GenrandUint32() >> (32 - k));
-	}
-	// Assemble little-endian 32-bit words (only k<=64 needed here).
-	uint64_t lo = GenrandUint32();
-	int hi_bits = k - 32;
-	uint64_t hi = (uint64_t)(GenrandUint32() >> (32 - hi_bits));
-	return lo | (hi << 32);
-}
-
-static int BitLength(uint64_t n) {
-	int b = 0;
-	while (n) {
-		b++;
-		n >>= 1;
-	}
-	return b;
-}
-
-uint64_t PyRandom::RandBelow(uint64_t n) {
-	if (n == 0) {
-		return 0;
-	}
-	int k = BitLength(n);
-	uint64_t r = GetRandBits(k);
-	while (r >= n) {
-		r = GetRandBits(k);
-	}
-	return r;
-}
-
-vector<int64_t> PyRandom::SampleRange(int64_t n, int64_t k) {
-	// CPython random.sample, pool algorithm (used when n <= setsize). For the
-	// ensemble presets n is small so the pool branch always applies; guard it.
-	int64_t setsize = 21;
-	if (k > 5) {
-		double e = std::ceil(std::log((double)(k * 3)) / std::log(4.0));
-		setsize += (int64_t)std::pow(4.0, e);
-	}
-	if (n > setsize) {
-		throw InvalidInputException(
-		    "tabfm ensemble: PyRandom::SampleRange selection-set branch is not "
-		    "ported (n=%lld exceeds pool setsize)",
-		    (long long)n);
-	}
-	vector<int64_t> pool((idx_t)n);
-	for (int64_t i = 0; i < n; i++) {
-		pool[(idx_t)i] = i;
-	}
-	vector<int64_t> result((idx_t)k);
-	for (int64_t i = 0; i < k; i++) {
-		uint64_t j = RandBelow((uint64_t)(n - i));
-		result[(idx_t)i] = pool[(idx_t)j];
-		pool[(idx_t)j] = pool[(idx_t)(n - i - 1)];
-	}
-	return result;
-}
 
 //===----------------------------------------------------------------------===//
 // Ensemble member generation (EnsembleGenerator._generate_ensemble subset)
@@ -188,11 +46,12 @@ vector<vector<int64_t>> FeatureShuffle(int64_t n_features, int64_t n_estimators,
 		patterns.push_back(std::move(ident));
 		return patterns;
 	}
-	PyRandom rng(seed);
+	TabFMRandom rng(seed);
 	if (n_features <= 5) {
-		// Enumerate permutations then rng.sample(all_perms, min(...)). Not needed
-		// by the shipped goldens (n_features is 9/2/7 after filter, but n<=5 is
-		// possible on tiny inputs); implement to stay faithful.
+		// Small feature space: enumerate every permutation and sample WITHOUT
+		// replacement, so members are guaranteed distinct. Drawing independently
+		// (the branch below) would repeat permutations often enough at <= 5
+		// features to collapse the ensemble's diversity.
 		vector<vector<int64_t>> all_perms;
 		vector<int64_t> base((idx_t)n_features);
 		for (int64_t i = 0; i < n_features; i++) {
@@ -205,14 +64,13 @@ vector<vector<int64_t>> FeatureShuffle(int64_t n_features, int64_t n_estimators,
 		} while (std::next_permutation(perm.begin(), perm.end()));
 		// itertools.permutations order == lexicographic for sorted input; ok.
 		int64_t take = std::min<int64_t>(n_estimators, (int64_t)all_perms.size());
-		// rng.sample(all_perms, take): pool algorithm over indices.
 		vector<int64_t> idx = rng.SampleRange((int64_t)all_perms.size(), take);
 		for (auto id : idx) {
 			patterns.push_back(all_perms[(idx_t)id]);
 		}
 	} else {
 		for (int64_t e = 0; e < n_estimators; e++) {
-			patterns.push_back(rng.SampleRange(n_features, n_features));
+			patterns.push_back(rng.Permutation(n_features));
 		}
 	}
 	return patterns;
@@ -239,9 +97,10 @@ vector<EnsembleMember> GenerateEnsemble(const EnsembleSpec &spec) {
 		shuffle_patterns = std::move(cycled);
 	}
 
-	// EnsembleGenerator.rng_ = Random(seed). In the shipped presets no RNG is
-	// consumed before the class-shift draw (no crosses / SVD / subsample).
-	PyRandom rng(spec.seed);
+	// EnsembleGenerator.rng_. A stream independent of FeatureShuffle's, which
+	// owns its own; in the shipped presets nothing is drawn before the
+	// class-shift draw (no crosses / SVD / subsample).
+	TabFMRandom rng(spec.seed);
 
 	// 2. Class shift offsets.
 	vector<int64_t> shift_offsets((idx_t)E, 0);

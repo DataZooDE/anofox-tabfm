@@ -10,25 +10,27 @@
 // Upstream reference (never edited):
 //   vendor/tabfm/tabfm/src/classifier_and_regressor.py
 //
-// RNG-PARITY STATUS: FULL PARITY.
-//   The upstream draws come from Python's `random.Random(seed)` (Mersenne
-//   Twister MT19937). This module ships a faithful MT19937 + CPython
-//   `getrandbits` / `_randbelow_with_getrandbits` / `random.sample` /
-//   `random.shuffle` port (PyRandom), so the generated member configs
-//   (feature permutation, class-shift offset, per-member cat_mask, norm method
-//   grouping) match the golden member_configs BIT-FOR-BIT. The tests assert
-//   this equality. Scope of the port: the ensemble presets exercised by the
-//   goldens — norm_methods {'none','power'}, feat_shuffle='random',
-//   class_shift=on, and NO feature-crosses / SVD / row-subsample / cat-permute
-//   (all disabled in the shipped presets). Those disabled paths draw extra RNG
-//   values upstream; if they are ever enabled, this port must be extended (it
-//   throws rather than silently diverging).
+// RNG STATUS: STRUCTURALLY EQUIVALENT, NOT DRAW-FOR-DRAW IDENTICAL.
+//   Upstream draws from Python's `random.Random(seed)` (MT19937); this module
+//   draws from `TabFMRandom` (duckdb::RandomEngine / pcg32, see
+//   tabfm_random.hpp). The member configs are therefore *different* from
+//   upstream's for the same seed — and that is fine. The ensemble is a
+//   variance-reduction device: what matters is that each member gets a valid
+//   permutation, a class shift in range, and a cat_mask correctly composed
+//   through its permutation, not which particular permutation it gets. The
+//   tests assert those invariants directly.
+//
+//   Deterministic within a build: same seed -> same member configs. See the
+//   determinism contract in tabfm_random.hpp.
+//
+//   Scope: the ensemble presets exercised by the goldens — norm_methods
+//   {'none','power'}, feat_shuffle='random', class_shift=on, and NO
+//   feature-crosses / SVD / row-subsample / cat-permute (all disabled in the
+//   shipped presets).
 //
 // C++ symbol → upstream Python symbol map
 // ---------------------------------------
-//   PyRandom                         → Python stdlib `random.Random` (MT19937)
-//   PyRandom::SampleRange            → random.sample(range(n), k) (pool alg.)
-//   PyRandom::Shuffle                → random.shuffle (Fisher–Yates)
+//   TabFMRandom (tabfm_random.hpp)   → Python stdlib `random.Random`
 //   FeatureShuffle (internal)        → FeatureShuffler.shuffle
 //   GenerateEnsemble / EnsembleMember→ EnsembleGenerator._generate_ensemble +
 //                                       prepare_ensemble_tensors (flattened,
@@ -52,7 +54,6 @@
 #include "duckdb/common/string.hpp"
 
 #include <cstdint>
-#include <utility>
 
 namespace duckdb {
 namespace anofox {
@@ -63,49 +64,6 @@ static constexpr uint32_t kDefaultEnsembleSeed = 42;
 static constexpr double kDefaultSoftmaxTemperature = 0.9;
 //! Default NNLS blend mixing weight against the uniform vector.
 static constexpr double kDefaultNnlsBeta = 0.75;
-
-//===----------------------------------------------------------------------===//
-// PyRandom — CPython `random.Random` (MT19937) faithful port
-//===----------------------------------------------------------------------===//
-
-//! Reproduces the exact draw sequence of Python's stdlib Mersenne Twister so
-//! ensemble member configs match the reference bit-for-bit. Only the surface
-//! the ensemble needs is implemented (getrandbits/randbelow/sample/shuffle).
-class PyRandom {
-public:
-	explicit PyRandom(uint64_t seed) {
-		SeedInt(seed);
-	}
-
-	//! Seed exactly as `random.seed(int)` does (init_by_array of the int words).
-	void SeedInt(uint64_t seed);
-	//! CPython getrandbits(k) for 1 <= k <= 64.
-	uint64_t GetRandBits(int k);
-	//! CPython Random._randbelow_with_getrandbits(n).
-	uint64_t RandBelow(uint64_t n);
-	//! random.sample(range(n), k) — returns the drawn population values.
-	vector<int64_t> SampleRange(int64_t n, int64_t k);
-	//! random.shuffle(x) in place (Fisher–Yates, CPython order).
-	template <class T>
-	void Shuffle(vector<T> &x) {
-		if (x.size() <= 1) {
-			return;
-		}
-		for (idx_t i = x.size() - 1; i >= 1; i--) {
-			uint64_t j = RandBelow((uint64_t)i + 1);
-			std::swap(x[i], x[(idx_t)j]);
-		}
-	}
-
-private:
-	uint32_t GenrandUint32();
-	static constexpr int N = 624;
-	uint32_t mt_[624];
-	int mti_ = N + 1;
-
-	void InitGenrand(uint32_t s);
-	void InitByArray(const uint32_t *key, int key_length);
-};
 
 //===----------------------------------------------------------------------===//
 // Ensemble member generation
