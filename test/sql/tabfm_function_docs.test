@@ -10,15 +10,16 @@ require anofox_tabfm
 statement ok
 LOAD anofox_tabfm
 
-# All nine user-facing functions carry a non-empty description.
+# All eleven user-facing functions carry a non-empty description.
 query I
 SELECT count(DISTINCT function_name)
 FROM duckdb_functions()
-WHERE function_name IN ('tabfm_classify','tabfm_regress','tabfm_download','tabfm_models',
+WHERE function_name IN ('tabfm_classify','tabfm_regress','tabfm_generate','tabfm_impute',
+                        'tabfm_download','tabfm_models',
                         'tabfm_load','tabfm_unload','tabfm_remove','tabfm_devices','tabfm_gpu_precompile')
   AND description IS NOT NULL AND length(description) > 0
 ----
-9
+11
 
 # No tabfm_* / anofox_tabfm_* function is left with an empty description.
 query I
@@ -29,11 +30,21 @@ WHERE (function_name LIKE 'tabfm_%' OR function_name LIKE 'anofox_tabfm_%')
 ----
 0
 
-# The predict macros ship a runnable example.
+# The predict and generation macros ship a runnable example.
 query I
 SELECT count(DISTINCT function_name)
 FROM duckdb_functions()
-WHERE function_name IN ('tabfm_classify','tabfm_regress')
+WHERE function_name IN ('tabfm_classify','tabfm_regress','tabfm_generate','tabfm_impute')
   AND len(examples) > 0
+----
+4
+
+# ...and their parameter names are surfaced, so autocomplete documents the
+# signature rather than showing bare positional slots.
+query I
+SELECT count(DISTINCT function_name)
+FROM duckdb_functions()
+WHERE function_name IN ('tabfm_generate','tabfm_impute')
+  AND len(parameters) >= 5
 ----
 2

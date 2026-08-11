@@ -1,0 +1,121 @@
+# name: test/sql/tabfm_generate_multimodel.test
+# description: G5 — generation generalizes across the registry. The chain-rule
+#              driver sits above the PredictEngine seam and never touches a
+#              graph, so any model that can classify can generate. Proven with
+#              two real fixture models (following tabfm_multimodel_v2.test):
+#              model := selects between them, and a CLASSIFY-ONLY model still
+#              generates continuous columns, because binning turns every step
+#              into a classification problem.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# Model A: the base fixture, classification only.
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture-a', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal',
+  max_classes := 3)
+
+# Model B: a genuinely different model (TabPFN fixture), both tasks, its own
+# preprocessing profile.
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture-b', base_dir := 'test/fixtures/tabpfn',
+  classification_graph := 'graph_tabpfn_classification.onnx',
+  regression_graph := 'graph_tabpfn_regression.onnx',
+  classification_weights := 'model.safetensors',
+  regression_weights := 'model_regression.safetensors',
+  classification_tensor_map := 'tensor_map_tabpfn_classification.json',
+  regression_tensor_map := 'tensor_map_tabpfn_regression.json',
+  license := 'apache-2.0', commercial := true,
+  preprocessing_profile := 'tabpfn_v2_raw',
+  max_rows := 4096, max_features := 64, max_classes := 4)
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,10.0,'a'),(1.5,20.0,'b'),(2.5,30.0,'a'),(0.2,40.0,'b'),(1.1,15.0,'a'),
+  (3.0,25.0,'b'),(0.9,35.0,'a'),(2.1,45.0,'b'),(1.3,18.0,'a'),(2.4,28.0,'b'))
+  v(f1,f2,grp);
+
+# --- Both models generate ---------------------------------------------------
+
+query I
+SELECT count(*) FROM tabfm_generate('t', 8, model := 'fixture-a')
+----
+8
+
+query I
+SELECT count(*) FROM tabfm_generate('t', 8, model := 'fixture-b')
+----
+8
+
+# and both respect the legality contract
+query I
+SELECT count(*) FROM tabfm_generate('t', 20, model := 'fixture-a')
+WHERE grp NOT IN ('a','b') OR f1 < 0.2 OR f1 > 3.0 OR f2 < 10.0 OR f2 > 45.0
+----
+0
+
+query I
+SELECT count(*) FROM tabfm_generate('t', 20, model := 'fixture-b')
+WHERE grp NOT IN ('a','b') OR f1 < 0.2 OR f1 > 3.0 OR f2 < 10.0 OR f2 > 45.0
+----
+0
+
+# --- A classify-only model still generates CONTINUOUS columns ---------------
+# This is the payoff of the binning design: fixture-a has no regression graph
+# at all, yet f1/f2 (both DOUBLE) come out fully populated and in range.
+
+query I
+SELECT count(*) FROM tabfm_generate('t', 12, model := 'fixture-a')
+WHERE f1 IS NULL OR f2 IS NULL
+----
+0
+
+# f2 actually varies — binning must not collapse it onto one value
+query I
+SELECT count(DISTINCT f2) > 1 FROM tabfm_generate('t', 20, model := 'fixture-a')
+----
+true
+
+# --- Imputation needs regression for continuous columns ---------------------
+
+# fixture-b has both tasks, so every column can be imputed
+statement ok
+CREATE TABLE gaps AS SELECT * FROM (VALUES
+  (0.5,10.0,'a'),(1.5,20.0,'b'),(2.5,30.0,'a'),(0.2,40.0,'b'),(1.1,15.0,'a'),
+  (3.0,25.0,'b'),(0.9,35.0,'a'),(2.1,45.0,'b'),(1.3,NULL,'a'),(2.4,NULL,NULL))
+  v(f1,f2,grp);
+
+query I
+SELECT count(*) FROM tabfm_impute('gaps', model := 'fixture-b')
+WHERE f2 IS NULL OR grp IS NULL
+----
+0
+
+# fixture-a can still impute a CATEGORICAL column (classification only)
+query I
+SELECT count(*) FROM tabfm_impute('gaps', columns := ['grp'], model := 'fixture-a')
+WHERE grp IS NULL
+----
+0
+
+# ...but asking it for a continuous fill names the missing capability
+statement error
+SELECT * FROM tabfm_impute('gaps', columns := ['f2'], model := 'fixture-a')
+----
+<REGEX>:.*regression.*
+
+# --- An unknown model is refused by name ------------------------------------
+
+statement error
+SELECT * FROM tabfm_generate('t', 5, model := 'no-such-model')
+----
+<REGEX>:.*no-such-model.*

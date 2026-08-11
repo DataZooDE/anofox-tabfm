@@ -1,0 +1,213 @@
+# name: test/sql/tabfm_generate.test
+# description: tabfm_generate end-to-end through the real engine, driven by the
+#              committed CI fixture model (weight-free graph + random-init
+#              safetensors). The generated VALUES are meaningless (random
+#              weights), so this asserts the contract the surface promises:
+#              row count, schema, legality of every cell, determinism, and the
+#              round trip back into the source table. Every step of the chain
+#              rule is a classification problem, so the classification fixture
+#              alone drives the whole feature.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal',
+  max_classes := 3)
+
+statement ok
+CREATE TABLE customers AS SELECT * FROM (VALUES
+  (0.5,1.0,'a','x',10),(1.5,0.2,'b','y',20),(2.5,-1.0,'a','y',30),
+  (0.2,0.8,'b','x',40),(1.1,0.4,'a','y',15),(3.0,-0.5,'b','y',25),
+  (0.9,1.2,'a','x',35),(2.1,0.1,'b','y',45),(1.3,0.3,'a','y',18),
+  (2.4,-0.2,'b','x',28),(0.7,0.9,'a','x',12),(1.8,-0.7,'b','y',22))
+  v(f1,f2,grp,seg,score);
+
+# --- Row count -------------------------------------------------------------
+
+query I
+SELECT count(*) FROM tabfm_generate('customers', 10)
+----
+10
+
+query I
+SELECT count(*) FROM tabfm_generate('customers', 1)
+----
+1
+
+query I
+SELECT count(*) FROM tabfm_generate('customers', 25)
+----
+25
+
+# --- Schema: the input columns, plus synthetic_id ---------------------------
+
+query I
+SELECT list(column_name) FROM (DESCRIBE SELECT * FROM tabfm_generate('customers', 5))
+----
+[f1, f2, grp, seg, score, synthetic_id]
+
+# column TYPES survive too — a generated table must be insertable into the source.
+# f1/f2 are DECIMAL(2,1) here on purpose: a sampled value is a double internally,
+# so this proves the coercion back to the column's own numeric type, not just to
+# whatever the sampler happened to produce.
+query I
+SELECT list(column_type) FROM (DESCRIBE SELECT * FROM tabfm_generate('customers', 5))
+----
+['DECIMAL(2,1)', 'DECIMAL(2,1)', VARCHAR, VARCHAR, INTEGER, BIGINT]
+
+# --- synthetic_id is exactly 1..n, no gaps, no duplicates -------------------
+
+query I
+SELECT count(*) FROM (
+  SELECT synthetic_id FROM tabfm_generate('customers', 12)
+  EXCEPT SELECT * FROM range(1, 13)
+)
+----
+0
+
+query I
+SELECT count(DISTINCT synthetic_id) FROM tabfm_generate('customers', 12)
+----
+12
+
+# --- Every generated cell is a LEGAL value for its column -------------------
+
+# categorical columns only ever emit observed labels
+query I
+SELECT count(*) FROM tabfm_generate('customers', 40)
+WHERE grp NOT IN ('a','b') OR seg NOT IN ('x','y')
+----
+0
+
+# numeric columns stay inside the observed range (quantile bins are built from
+# the observed min/max, so nothing may escape them)
+query I
+SELECT count(*) FROM tabfm_generate('customers', 40)
+WHERE f1 < 0.2 OR f1 > 3.0 OR f2 < -1.0 OR f2 > 1.2 OR score < 10 OR score > 45
+----
+0
+
+# nothing is NULL: no input column had a NULL, so no output column may
+query I
+SELECT count(*) FROM tabfm_generate('customers', 40)
+WHERE f1 IS NULL OR f2 IS NULL OR grp IS NULL OR seg IS NULL OR score IS NULL
+----
+0
+
+# --- Determinism ------------------------------------------------------------
+
+# same seed -> identical rows, in the same order
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM tabfm_generate('customers', 15, opts := MAP{'seed':'7'})
+   EXCEPT ALL
+   SELECT * FROM tabfm_generate('customers', 15, opts := MAP{'seed':'7'}))
+)
+----
+0
+
+# a different seed actually moves the draws
+query I
+SELECT count(*) > 0 FROM (
+  SELECT * FROM tabfm_generate('customers', 15, opts := MAP{'seed':'7'})
+  EXCEPT ALL
+  SELECT * FROM tabfm_generate('customers', 15, opts := MAP{'seed':'8'})
+)
+----
+true
+
+# --- The round trip: generated rows go back into the source table -----------
+
+statement ok
+INSERT INTO customers SELECT * EXCLUDE (synthetic_id) FROM tabfm_generate('customers', 5);
+
+query I
+SELECT count(*) FROM customers
+----
+17
+
+statement ok
+DELETE FROM customers WHERE rowid >= 12;
+
+# --- Options ----------------------------------------------------------------
+
+statement ok
+SELECT * FROM tabfm_generate('customers', 5, opts := MAP{'temperature':'2.0'});
+
+statement ok
+SELECT * FROM tabfm_generate('customers', 5, opts := MAP{'bins':'3'});
+
+statement ok
+SELECT * FROM tabfm_generate('customers', 5, opts := MAP{'column_order':'natural'});
+
+statement ok
+SELECT * FROM tabfm_generate('customers', 5, opts := MAP{'column_order':'missingness'});
+
+statement ok
+SELECT * FROM tabfm_generate('customers', 5, model := 'fixture');
+
+# named parameters work in any order
+query I
+SELECT count(*) FROM tabfm_generate(n := 4, data := 'customers')
+----
+4
+
+# --- features := narrows the modelled columns -------------------------------
+
+query I
+SELECT list(column_name) FROM (
+  DESCRIBE SELECT * FROM tabfm_generate('customers', 5, features := ['f1','grp'])
+)
+----
+[f1, grp, synthetic_id]
+
+# case-insensitive, like the predict macros
+query I
+SELECT count(*) FROM tabfm_generate('customers', 5, features := ['F1','GRP'])
+----
+5
+
+# --- The subquery form ------------------------------------------------------
+
+query I
+SELECT count(*) FROM tabfm_generate('(SELECT f1, f2, grp FROM customers WHERE grp = ''a'')', 6)
+----
+6
+
+# conditioning by filtering: every source row was grp='a', so every synthetic
+# row is too (a constant column is emitted directly, no model call)
+query I
+SELECT count(*) FROM tabfm_generate('(SELECT f1, f2, grp FROM customers WHERE grp = ''a'')', 6)
+WHERE grp <> 'a'
+----
+0
+
+# --- Constant and single-column relations -----------------------------------
+
+# one modellable column: its marginal IS the joint distribution, so this is a
+# legitimate (model-free) bootstrap rather than an error
+query I
+SELECT count(*) FROM tabfm_generate('(SELECT grp FROM customers)', 8)
+----
+8
+
+query I
+SELECT count(*) FROM tabfm_generate('(SELECT grp FROM customers)', 8) WHERE grp NOT IN ('a','b')
+----
+0
+
+# --- Generation is grouped by construction: one call per relation -----------
+
+query I
+SELECT count(*) FROM tabfm_generate('(SELECT f1, f2, grp FROM customers)', 3)
+----
+3

@@ -12,6 +12,8 @@ void RegisterWeightsFunctions(ExtensionLoader &loader);    // tabfm_weights.cpp
 void RegisterDevicesFunctions(ExtensionLoader &loader);    // tabfm_devices.cpp
 void RegisterPredictAggFunction(ExtensionLoader &loader);  // tabfm_predict_agg.cpp
 void RegisterPredictMacros(ExtensionLoader &loader);       // tabfm_macros.cpp
+void RegisterGenerateAggFunctions(ExtensionLoader &loader);// tabfm_generate.cpp
+void RegisterGenerateMacros(ExtensionLoader &loader);      // tabfm_generate_macros.cpp
 
 } // namespace anofox
 } // namespace duckdb

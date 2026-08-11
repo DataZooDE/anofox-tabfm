@@ -1,10 +1,12 @@
-# Real-model verification examples
+# Real-model examples
 
-Five end-to-end, **pure-SQL** examples that exercise the real TabFM v1 model
-(the full 6.56 GB weights) against public Hugging Face datasets, read directly
-over `hf://datasets/...`. Each splits the data into an in-context ("train") set
-and a scored ("test") set, predicts with `tabfm_classify` / `tabfm_regress`, and
-computes the metric entirely in SQL.
+End-to-end, **pure-SQL** examples exercising the real models. Two groups:
+**prediction** (classify / regress against public Hugging Face datasets, read
+directly over `hf://datasets/...`, scored entirely in SQL) and **generation**
+(synthesize rows and fill gaps, on locally generated tables so they need no
+download beyond the weights).
+
+### Prediction
 
 | example | task | dataset | metric |
 |---|---|---|---|
@@ -14,6 +16,16 @@ computes the metric entirely in SQL.
 | [`regression_tips.sql`](regression_tips.sql) | regression | `scikit-learn/tips` | MSE |
 | [`regression_wine.sql`](regression_wine.sql) | regression | `mstz/wine` | MSE |
 | [`compare_models.sql`](compare_models.sql) | **multi-model** | `scikit-learn/iris` | accuracy **+ runtime**, two models |
+
+### Generation and imputation
+
+| example | what it shows |
+|---|---|
+| [`generate_synthetic.sql`](generate_synthetic.sql) | `tabfm_generate`: sample new rows, the `temperature` knob, the insert-back round trip, seed reproducibility |
+| [`impute_missing.sql`](impute_missing.sql) | `tabfm_impute`: fill NULLs, prove known cells are untouched, score the fills against held-out truth, `columns :=` and `rounds` |
+| [`generate_fidelity.sql`](generate_fidelity.sql) | **check the output instead of trusting it** — marginals, class shares, and the correlation test that independent per-column sampling would fail |
+| [`generate_conditional.sql`](generate_conditional.sql) | conditional generation: filter the source relation, or complete partially-specified rows |
+| [`generate_breast_cancer.sql`](generate_breast_cancer.sql) | **the benchmark** — reproduces the [Prior Labs cookbook](https://docs.priorlabs.ai/cookbook/generate_synthetic_data) on the breast-cancer dataset: 30 features, 2× sample count, marginals + 435-pair correlation structure + a train-on-synthetic/test-on-real utility score |
 
 ## Running
 
@@ -30,7 +42,22 @@ duckdb :memory: < examples/classification_income.sql  # binary, F1 (+ registry)
 duckdb :memory: < examples/regression_tips.sql        # regression, MSE
 duckdb :memory: < examples/regression_wine.sql        # regression, MSE
 duckdb :memory: < examples/compare_models.sql         # multi-model: accuracy + runtime
+
+duckdb :memory: < examples/generate_synthetic.sql     # synthesize rows
+duckdb :memory: < examples/impute_missing.sql         # fill NULLs (needs both tasks)
+duckdb :memory: < examples/generate_fidelity.sql      # marginals + correlation checks
+duckdb :memory: < examples/generate_conditional.sql   # constrained generation
 ```
+
+The generation examples need only the **classification** weights, except
+`impute_missing.sql` and part of `generate_conditional.sql`, which fill numeric
+columns and therefore also need the regression weights. `tabfm_generate` never
+needs regression at all — every chain-rule step is a classification problem (see
+[`docs/GENERATE.md`](../docs/GENERATE.md)).
+
+The signatures these examples use are covered offline by
+`test/sql/tabfm_examples.test`, which runs them against the CI fixture model, so
+a signature change breaks the build rather than the docs.
 
 Every model here is **built in** — `tabfm-v1`, `mitra`, `tabpfn-v2`, `tabicl-v2`
 are usable by name (`model := '<id>'`) with no manifest file; `tabfm_list_models()`
@@ -38,7 +65,43 @@ lists them. The weight-free graphs ship inside the extension; the weights are th
 user's own download (license-clean). To register your *own* model in SQL, see
 `CALL tabfm_register_model(...)`.
 
-## Results (single 8-core x86 CPU, fp32, n_estimators = 1)
+## Synthetic-data results — the Prior Labs cookbook, reproduced
+
+`generate_breast_cancer.sql`, run with **`mitra`** on CPU. Breast-cancer
+(Wisconsin) as upstream uses it: 389 training rows, 30 features, 762 synthetic
+rows generated (2× the training split, as upstream), `temperature = 1.0`,
+`seed = 42`. 29 sequential model calls, ~15 min.
+
+**Utility — the test that matters.** Classify `diagnosis` on the *same* 180
+held-out real rows, changing only what the model gets as in-context examples:
+
+| in-context examples | accuracy |
+|---|---|
+| the real training rows | **98.33%** |
+| **762 synthetic rows** | **97.78%** |
+
+A model given only data that never existed lands within **0.55 points** of one
+given the real thing.
+
+**Fidelity:**
+
+| check | value |
+|---|---|
+| mean marginal shift (in units of each feature's own SD) | 0.033 |
+| worst marginal shift, over all 30 features | 0.096 |
+| average SD error | 0.052 |
+| correlation of correlations, over all 435 feature pairs | **0.970** |
+| mean absolute correlation error | 0.096 |
+| class balance (real → synthetic) | 63.8/36.2 → 63.6/36.4 |
+| synthetic rows identical to a real row | **0** |
+
+**Known limitation, visible in the numbers.** Correlations are *attenuated*: the
+strongest real pair (`radius_mean` / `perimeter_mean`, r = 0.998) comes back at
+0.954. This is the quantile binning — 10 bins cannot express r = 0.998 — and it
+is not fixed by better within-bin sampling. Exact bar-distribution sampling is
+the real fix; see [`docs/GENERATE.md`](../docs/GENERATE.md).
+
+## Prediction results (single 8-core x86 CPU, fp32, n_estimators = 1)
 
 **Churn classification** — `scikit-learn/churn-prediction`, 500 in-context
 rows, 150 scored, target `Churn`:

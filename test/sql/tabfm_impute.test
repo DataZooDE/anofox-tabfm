@@ -1,0 +1,182 @@
+# name: test/sql/tabfm_impute.test
+# description: tabfm_impute end-to-end through the real engine. Uses the dual
+#              (classification + regression) CI fixture, because imputation
+#              takes the conditional best estimate rather than sampling:
+#              categorical columns run classification, continuous columns run
+#              regression at full precision. Filled VALUES are meaningless
+#              (random weights); what is asserted is that NULLs get filled,
+#              known cells are untouched byte-for-byte, and types survive.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures/tabpfn',
+  classification_graph := 'graph_tabpfn_classification.onnx',
+  regression_graph := 'graph_tabpfn_regression.onnx',
+  classification_weights := 'model.safetensors',
+  regression_weights := 'model_regression.safetensors',
+  classification_tensor_map := 'tensor_map_tabpfn_classification.json',
+  regression_tensor_map := 'tensor_map_tabpfn_regression.json',
+  license := 'apache-2.0', commercial := true,
+  preprocessing_profile := 'tabpfn_v2_raw',
+  max_rows := 4096, max_features := 64, max_classes := 4)
+
+statement ok
+CREATE TABLE raw AS SELECT * FROM (VALUES
+  (1.0, 10.0, 'a'), (2.0, 20.0, 'b'), (3.0, 30.0, 'a'), (4.0, 40.0, 'b'),
+  (5.0, 50.0, 'a'), (6.0, 60.0, 'b'), (7.0, 70.0, 'a'), (8.0, 80.0, 'b'),
+  (9.0, NULL, 'a'), (10.0, NULL, 'b'), (11.0, 110.0, NULL), (12.0, 120.0, NULL))
+  v(x, y, g);
+
+# --- Shape: same rows, same columns, no synthetic_id ------------------------
+
+query I
+SELECT count(*) FROM tabfm_impute('raw')
+----
+12
+
+query I
+SELECT list(column_name) FROM (DESCRIBE SELECT * FROM tabfm_impute('raw'))
+----
+[x, y, g]
+
+# DECIMAL in, DECIMAL out: a regression fill arrives as a double, so this pins
+# the coercion back to the column's declared type and scale.
+query I
+SELECT list(column_type) FROM (DESCRIBE SELECT * FROM tabfm_impute('raw'))
+----
+['DECIMAL(3,1)', 'DECIMAL(4,1)', VARCHAR]
+
+# --- Every NULL is filled ---------------------------------------------------
+
+query I
+SELECT count(*) FROM tabfm_impute('raw') WHERE x IS NULL OR y IS NULL OR g IS NULL
+----
+0
+
+# filled categorical values come from the observed domain
+query I
+SELECT count(*) FROM tabfm_impute('raw') WHERE g NOT IN ('a','b')
+----
+0
+
+# filled continuous values stay inside the observed range
+query I
+SELECT count(*) FROM tabfm_impute('raw') WHERE y < 10.0 OR y > 120.0
+----
+0
+
+# --- Known cells are untouched, byte for byte -------------------------------
+# EXCEPT in both directions over the non-NULL projection: imputation must never
+# rewrite a value the user actually supplied.
+
+# Both sides must cover the SAME rows or the comparison proves nothing: the ten
+# rows whose y was supplied are exactly those with x NOT IN (9, 10).
+query I
+SELECT count(*) FROM (
+  (SELECT x, y FROM tabfm_impute('raw') WHERE x NOT IN (9.0, 10.0)
+   EXCEPT
+   SELECT x, y FROM raw WHERE y IS NOT NULL)
+  UNION ALL
+  (SELECT x, y FROM raw WHERE y IS NOT NULL
+   EXCEPT
+   SELECT x, y FROM tabfm_impute('raw') WHERE x NOT IN (9.0, 10.0))
+)
+----
+0
+
+# the column with no NULLs is returned completely unchanged
+query I
+SELECT count(*) FROM (
+  (SELECT x FROM tabfm_impute('raw') EXCEPT ALL SELECT x FROM raw)
+  UNION ALL
+  (SELECT x FROM raw EXCEPT ALL SELECT x FROM tabfm_impute('raw'))
+)
+----
+0
+
+# --- columns := restricts which columns get filled --------------------------
+
+# only y is filled; g keeps its NULLs
+query I
+SELECT count(*) FROM tabfm_impute('raw', columns := ['y']) WHERE y IS NULL
+----
+0
+
+query I
+SELECT count(*) FROM tabfm_impute('raw', columns := ['y']) WHERE g IS NULL
+----
+2
+
+# and the other way round
+query I
+SELECT count(*) FROM tabfm_impute('raw', columns := ['g']) WHERE y IS NULL
+----
+2
+
+query I
+SELECT count(*) FROM tabfm_impute('raw', columns := ['g']) WHERE g IS NULL
+----
+0
+
+# case-insensitive column names
+query I
+SELECT count(*) FROM tabfm_impute('raw', columns := ['Y']) WHERE y IS NULL
+----
+0
+
+# --- Determinism ------------------------------------------------------------
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM tabfm_impute('raw') EXCEPT ALL SELECT * FROM tabfm_impute('raw'))
+)
+----
+0
+
+# --- rounds := runs extra refinement sweeps ---------------------------------
+
+query I
+SELECT count(*) FROM tabfm_impute('raw', opts := MAP{'rounds':'3'})
+WHERE x IS NULL OR y IS NULL OR g IS NULL
+----
+0
+
+# --- A table with no NULLs is a no-op --------------------------------------
+
+statement ok
+CREATE TABLE complete AS SELECT * FROM raw WHERE y IS NOT NULL AND g IS NOT NULL;
+
+query I
+SELECT count(*) FROM (
+  (SELECT * FROM tabfm_impute('complete') EXCEPT ALL SELECT * FROM complete)
+  UNION ALL
+  (SELECT * FROM complete EXCEPT ALL SELECT * FROM tabfm_impute('complete'))
+)
+----
+0
+
+# --- The round trip: a repaired table --------------------------------------
+
+statement ok
+CREATE TABLE clean AS SELECT * FROM tabfm_impute('raw');
+
+query I
+SELECT count(*) FROM clean WHERE x IS NULL OR y IS NULL OR g IS NULL
+----
+0
+
+# --- The subquery form and model := ----------------------------------------
+
+query I
+SELECT count(*) FROM tabfm_impute('(SELECT x, g FROM raw)') WHERE g IS NULL
+----
+0
+
+statement ok
+SELECT * FROM tabfm_impute('raw', model := 'fixture');

@@ -62,6 +62,8 @@ set(EXTENSION_SOURCES
         src/tabfm_weights.cpp
         src/tabfm_predict_agg.cpp
         src/tabfm_macros.cpp
+        src/tabfm_generate.cpp
+        src/tabfm_generate_macros.cpp
         src/tabfm_engine.cpp
         src/tabfm_migraphx.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
@@ -136,6 +138,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_ckpt.cpp
     test/cpp/test_tabfm_preprocess.cpp
     test/cpp/test_tabfm_ensemble.cpp
+    test/cpp/test_tabfm_generate.cpp
     test/cpp/test_tabfm_bundled_resources.cpp
     test/cpp/test_tabfm_weights.cpp
 )
