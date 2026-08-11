@@ -175,25 +175,67 @@ string ResolveWeightsPath(FileSystem &fs, const ModelManifest &manifest, const s
 		throw InvalidInputException("tabfm: manifest for task '%s' lists no weight files", task_name);
 	}
 	const auto &file = manifest.files.front();
+
+	// A manifest declares the DOWNLOADABLE artifact, which for several models is
+	// a raw PyTorch `.ckpt`. Some of those checkpoints cannot be injected as-is:
+	// their state_dict keys are the upstream module names, while the committed
+	// tensor map is keyed to the names the model exposes only after being loaded
+	// through its Python package (TabPFN, for instance, maps `m.blocks.*` ->
+	// `blocks.*`, but the raw ckpt carries `transformer_encoder.layers.*`). For
+	// those, `tools/export_*/convert_weights.py` writes a `model.safetensors`
+	// NEXT TO the checkpoint, in the same cache slug.
+	//
+	// So prefer a sibling `model.safetensors` over the declared file. Nothing
+	// else pointed at the converter's output, which is why `model :=
+	// 'tabpfn-v2'` failed with "Failed to find existing initializer" even
+	// though the correctly converted weights were sitting in the cache.
+	// Restricted to `.ckpt` on purpose. A manifest that already names a
+	// safetensors is authoritative — several fixtures keep both tasks' weights in
+	// ONE directory under different names (`model.safetensors` +
+	// `model_regression.safetensors`), so rewriting the basename unconditionally
+	// makes the regression task silently load the classification weights.
+	auto converted_sibling = [&](const string &path) {
+		if (!StringUtil::EndsWith(StringUtil::Lower(path), ".ckpt")) {
+			return string();
+		}
+		auto parts = StringUtil::Split(path, "/");
+		if (parts.empty()) {
+			return string();
+		}
+		parts.back() = "model.safetensors";
+		return StringUtil::Join(parts, "/");
+	};
+
 	vector<string> candidates;
-	if (!cache_dir.empty()) {
-		// Match the download-side cache slug (WeightsManifest::CacheSlug): a
-		// repo-less model (e.g. a user manifest with per-file urls) caches under
-		// its model id, not a repo path. Resolve must look there too, else a
-		// downloaded repo-less model reads as "not downloaded".
-		auto slug_base = manifest.repo.empty() ? manifest.model : StringUtil::Replace(manifest.repo, "/", "__");
-		candidates.push_back(fs.JoinPath(fs.JoinPath(cache_dir, slug_base + "@" + manifest.revision), file.path));
-	}
-	candidates.push_back(JoinPath(fs, dir, file.path));
-	// fixture layout: a bare model.safetensors beside the manifest
-	candidates.push_back(JoinPath(fs, dir, StringUtil::Split(file.path, "/").back()));
+	auto add_candidates = [&](const string &relative) {
+		if (relative.empty()) {
+			return;
+		}
+		if (!cache_dir.empty()) {
+			// Match the download-side cache slug (WeightsManifest::CacheSlug): a
+			// repo-less model (e.g. a user manifest with per-file urls) caches
+			// under its model id, not a repo path. Resolve must look there too,
+			// else a downloaded repo-less model reads as "not downloaded".
+			auto slug_base = manifest.repo.empty() ? manifest.model : StringUtil::Replace(manifest.repo, "/", "__");
+			candidates.push_back(fs.JoinPath(fs.JoinPath(cache_dir, slug_base + "@" + manifest.revision), relative));
+		}
+		candidates.push_back(JoinPath(fs, dir, relative));
+		// fixture layout: a bare model.safetensors beside the manifest
+		candidates.push_back(JoinPath(fs, dir, StringUtil::Split(relative, "/").back()));
+	};
+	add_candidates(converted_sibling(file.path));
+	add_candidates(file.path);
 	for (auto &candidate : candidates) {
 		if (fs.FileExists(candidate)) {
 			return candidate;
 		}
 	}
-	throw InvalidInputException("tabfm: model '%s' is not downloaded. Run: CALL tabfm_download('%s');",
-	                            task_name, task_name);
+	// Name the MODEL and the task separately — this used to interpolate the task
+	// into the "model '%s'" slot, so a missing tabpfn-v2-5 reported itself as
+	// model 'classification'.
+	throw InvalidInputException(
+	    "tabfm: model '%s' has no downloaded weights for task '%s'. Run: CALL tabfm_download('%s', model := '%s');",
+	    manifest.model, task_name, task_name, manifest.model);
 }
 
 // Bridge a resolved ModelSpec's per-task artifacts into the per-(model,task)
@@ -593,6 +635,39 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		// tensor by graph name. The bytes alias the mmap/read buffer (kept alive by
 		// the backend below), so no arena copy is needed for f32/i64.
 		auto sd = ReadTorchCkpt(bytes, nbytes);
+		// Does this checkpoint's namespace actually match the committed tensor
+		// map? For some models it does not: the map is keyed to the names the
+		// weights carry only after a `convert_weights.py` pass, and injecting the
+		// raw ckpt would fail later with an opaque ORT "initializer not found".
+		// Say so here, where we can name the fix.
+		//
+		// Count from the MAP's side, not the checkpoint's: st_to_onnx's keys are
+		// exactly the tensors the graph needs. Even one missing means injection
+		// cannot succeed, so a "did anything match?" test is too weak — TabPFN-2.5
+		// shares enough names with its raw checkpoint to pass that and still die
+		// on an opaque ORT shape error further down.
+		if (!st_to_onnx.empty()) {
+			idx_t missing = 0;
+			string first_missing;
+			for (auto &kv : st_to_onnx) {
+				if (sd.find(kv.first) == sd.end()) {
+					if (missing == 0) {
+						first_missing = kv.first;
+					}
+					missing++;
+				}
+			}
+			if (missing > 0) {
+				throw InvalidInputException(
+				    "tabfm: the checkpoint at '%s' is missing %llu of the %llu tensors model '%s' needs (e.g. '%s') "
+				    "— its tensor names are not the ones the graph was exported against. This checkpoint needs the "
+				    "one-time conversion step: run tools/export_*/convert_weights.py for this model, which writes a "
+				    "model.safetensors next to it that the engine then prefers automatically. See "
+				    "docs/REAL_MODELS.md.",
+				    resolved.weights_path, static_cast<unsigned long long>(missing),
+				    static_cast<unsigned long long>(st_to_onnx.size()), resolved.manifest.model, first_missing);
+			}
+		}
 		initializers.reserve(sd.size());
 		for (auto &entry : sd) {
 			const CkptTensor &t = entry.second;
