@@ -124,6 +124,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterDevicesFunctions(loader);
 	anofox::RegisterPredictAggFunction(loader);
 	anofox::RegisterPredictMacros(loader);
+	anofox::RegisterGenerateAggFunctions(loader);
+	anofox::RegisterGenerateMacros(loader);
 
 	datazoo::RegisterBannerOption(loader);
 	// Last, so a load that fails earlier never advertises itself. Silent unless

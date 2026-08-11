@@ -6,8 +6,9 @@ classification and regression become a single SQL statement. No Python, no
 training loop, no MLOps: the model reads your labelled rows as context and
 predicts the rest.
 
-**Six models are built in and selectable by name** — `mitra` (AWS AutoGluon,
-Apache-2.0), `tabpfn-v2` and `tabpfn-v2-5` (Prior Labs), `tabicl-v2` (Inria),
+**Seven models are built in and selectable by name** — `mitra` (AWS AutoGluon,
+Apache-2.0), `tabpfn-v2`, `tabpfn-v2-5` and `tabpfn-v3` (Prior Labs),
+`tabicl-v2` (Inria),
 `orion-bix` (Lexsi Labs, MIT), and `tabfm-v1` (Google TabFM) — and you can
 register your own entirely in SQL. Everything is
 operated in SQL: no manifest file, no config.
@@ -26,7 +27,7 @@ LOAD anofox_tabfm;
 
 ### 2. Pick a model and download its weights (once)
 
-`SELECT * FROM tabfm_list_models();` shows the six built-in models. `mitra` is a
+`SELECT * FROM tabfm_list_models();` shows the seven built-in models. `mitra` is a
 good default — Apache-2.0, ~303 MB. It also has a permissive license. The extension ships only
 **weight-free** graphs; the weights have to be downloaded from Hugging Face before using the model:
 
@@ -148,10 +149,77 @@ Every column of the scored rows, plus:
 
 ---
 
+## Generate synthetic data and fill gaps
+
+The same in-context engine also works *backwards*: instead of predicting one
+column, it can model the whole table as a joint distribution and sample from it.
+
+```sql
+tabfm_generate(data, n [, features] [, opts] [, model])           -- sample new rows
+tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
+```
+
+```sql
+-- 500 synthetic customers that look like the real ones
+SELECT * FROM tabfm_generate('customers', 500);
+
+-- ...and straight back into the table, since the shape matches
+INSERT INTO customers SELECT * EXCLUDE (synthetic_id) FROM tabfm_generate('customers', 500);
+
+-- fill every NULL cell, conditioned on the rest of each row
+CREATE TABLE clean AS SELECT * FROM tabfm_impute('raw');
+SELECT * FROM tabfm_impute('raw', columns := ['income', 'plan']);
+```
+
+Generation works column by column: each column is sampled conditioned on the
+ones already generated (the chain rule), so the **relationships between columns
+survive** — not just each column's marginal. It needs only classification
+weights, and works with every model in the registry, including classify-only
+ones.
+
+Imputation is the deterministic sibling: it takes the conditional best estimate
+rather than sampling, so continuous fills keep full precision. Non-NULL cells
+are never modified.
+
+### Output columns
+
+`tabfm_generate` returns every column of `data`, plus:
+
+| column | meaning |
+|---|---|
+| `synthetic_id` | `1..n` in generation order — joinable and reproducible |
+
+`tabfm_impute` returns **exactly** the columns of `data`, so it round-trips.
+
+### Options
+
+| key | default | applies to | meaning |
+|---|---|---|---|
+| `seed` | `42` | both | RNG seed; same seed → same rows within a build |
+| `temperature` | `1.0` | generate | diversity; higher explores more, lower hugs the data |
+| `bins` | `10` | generate | quantile buckets per continuous column, 2–10 (clamped to the model's class-head width) |
+| `column_order` | `random` | both | `random` \| `natural` \| `missingness` |
+| `rounds` | `1` | impute | MICE-style refinement sweeps, 1–16 |
+
+Cost is one model call per column, run sequentially — it scales with the number
+of **columns**, not with `n`. Continuous columns are sampled through quantile
+bins, so generated values never leave the observed range and resolution is
+capped at `bins` levels; high-cardinality and temporal columns cannot be
+generation targets and must be excluded with `features :=`.
+
+**[`docs/GENERATE.md`](docs/GENERATE.md)** explains the method, what the binning
+does and does not preserve, and why this is *not* a privacy mechanism.
+Runnable samples: [`examples/generate_synthetic.sql`](examples/generate_synthetic.sql),
+[`examples/impute_missing.sql`](examples/impute_missing.sql),
+[`examples/generate_fidelity.sql`](examples/generate_fidelity.sql),
+[`examples/generate_conditional.sql`](examples/generate_conditional.sql).
+
+---
+
 ## Multiple models (the registry)
 
 `anofox_tabfm` is one entrypoint for many **tabular foundation models** — "TabFM"
-is the *category*, not a single model. Six models are **built in** and usable by
+is the *category*, not a single model. Seven models are **built in** and usable by
 name with no config, no manifest file:
 
 ```sql
@@ -166,6 +234,7 @@ SELECT * FROM tabfm_list_models();          -- the registry: every known model
 | `tabicl-v2` | Inria | BSD-3-Clause | `true` |
 | `orion-bix` | Lexsi Labs | MIT | `true` (classify only) |
 | `tabpfn-v2-5` | Prior Labs | TabPFN-2.5 (non-commercial, gated) | `false` |
+| `tabpfn-v3` | Prior Labs | TabPFN-3 (non-commercial, gated) | `false` |
 
 Pick a model per call (a first-class argument, promoted out of `opts`), or set a
 session default; precedence is **per-call → `anofox_tabfm_default_model` → a

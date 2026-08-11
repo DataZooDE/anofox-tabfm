@@ -1,0 +1,134 @@
+# name: test/sql/tabfm_examples.test
+# description: Keeps examples/*.sql honest. The shipped generation samples need
+#              real weights and are therefore not runnable in CI, but their
+#              SIGNATURES are: every call form the samples use is replayed here
+#              against the committed fixture model, so renaming a parameter or
+#              changing an option key breaks the build instead of silently
+#              rotting the documentation.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal',
+  max_classes := 3)
+
+# The shape examples/generate_synthetic.sql builds.
+statement ok
+CREATE TABLE customers AS SELECT * FROM (VALUES
+  (12, 68.0, 'basic', false), (24, 84.0, 'plus', false), (36, 120.0, 'premium', true),
+  (18, 72.0, 'basic', false), (48, 140.0, 'premium', true), (30, 96.0, 'plus', false),
+  (15, 70.0, 'basic', true),  (42, 132.0, 'premium', false), (21, 80.0, 'plus', true),
+  (60, 150.0, 'premium', false), (10, 64.0, 'basic', false), (27, 92.0, 'plus', true))
+  v(tenure_months, monthly_spend, plan, churned);
+
+# --- generate_synthetic.sql -------------------------------------------------
+
+statement ok
+SELECT * FROM tabfm_generate('customers', 8, opts := MAP{'seed': '42'});
+
+statement ok
+SELECT * FROM tabfm_generate('customers', 6, opts := MAP{'seed': '1', 'temperature': '0.5'});
+
+statement ok
+SELECT * FROM tabfm_generate('customers', 6, opts := MAP{'seed': '1', 'temperature': '2.0'});
+
+# the insert-back round trip the sample performs
+statement ok
+INSERT INTO customers SELECT * EXCLUDE (synthetic_id) FROM tabfm_generate('customers', 4);
+
+# DESCRIBE is used in the sample to show the output schema
+statement ok
+DESCRIBE SELECT * FROM tabfm_generate('customers', 3);
+
+# the seed-reproducibility query the sample ends on
+query I
+SELECT count(*) FROM (
+  SELECT * FROM tabfm_generate('customers', 5, opts := MAP{'seed': '7'})
+  EXCEPT ALL
+  SELECT * FROM tabfm_generate('customers', 5, opts := MAP{'seed': '7'})
+)
+----
+0
+
+# --- generate_conditional.sql ----------------------------------------------
+
+statement ok
+SELECT * FROM tabfm_generate('(SELECT * FROM customers WHERE churned)', 6, opts := MAP{'seed': '42'});
+
+statement ok
+SELECT * FROM tabfm_generate(
+  '(SELECT * FROM customers WHERE plan = ''premium'' AND tenure_months > 20)', 4);
+
+# --- generate_fidelity.sql --------------------------------------------------
+
+statement ok
+CREATE TABLE real_data AS SELECT * FROM (VALUES
+  (1.0, 3.0, 'common'), (2.0, 5.0, 'common'), (3.0, 7.0, 'rare'),
+  (4.0, 9.0, 'common'), (5.0, 11.0, 'rare'),  (6.0, 13.0, 'common'),
+  (7.0, 15.0, 'common'), (8.0, 17.0, 'rare'), (9.0, 19.0, 'common'),
+  (10.0, 21.0, 'common'))
+  v(x, y, grp);
+
+statement ok
+CREATE TABLE fake_data AS
+SELECT * EXCLUDE (synthetic_id) FROM tabfm_generate('real_data', 10, opts := MAP{'seed': '42'});
+
+# the marginal-quantile comparison
+statement ok
+SELECT quantile_cont(x, [0.1, 0.5, 0.9]) FROM fake_data;
+
+# the class-share comparison
+statement ok
+SELECT grp, count(*) / (SELECT count(*) FROM fake_data)::DOUBLE AS share
+FROM fake_data GROUP BY grp;
+
+# the correlation test — the one that catches independent per-column sampling
+statement ok
+SELECT corr(x, y) FROM fake_data;
+
+# the exact-row-reuse smoke check
+statement ok
+SELECT count(*) FROM (SELECT x, y, grp FROM fake_data INTERSECT SELECT x, y, grp FROM real_data);
+
+# --- impute_missing.sql (categorical fills; numeric fills need regression) ---
+
+statement ok
+CREATE TABLE gappy AS SELECT * FROM (VALUES
+  (1, 10.0, 'basic'), (2, 20.0, 'premium'), (3, 30.0, 'basic'), (4, 40.0, 'premium'),
+  (5, 50.0, 'basic'), (6, 60.0, 'premium'), (7, 70.0, 'basic'), (8, 80.0, 'premium'),
+  (9, 90.0, NULL),   (10, 100.0, NULL))
+  v(id, monthly_spend, plan);
+
+statement ok
+SELECT * FROM tabfm_impute('gappy', columns := ['plan']);
+
+statement ok
+SELECT * FROM tabfm_impute('gappy', columns := ['plan'], opts := MAP{'rounds': '3'});
+
+# the repaired-table round trip
+statement ok
+CREATE TABLE repaired AS SELECT * FROM tabfm_impute('gappy', columns := ['plan']);
+
+query I
+SELECT count(*) FROM repaired WHERE plan IS NULL
+----
+0
+
+# the known-cells-untouched check the sample performs
+query I
+SELECT count(*) FROM (
+  SELECT id, monthly_spend, plan FROM repaired WHERE id <= 8
+  EXCEPT
+  SELECT id, monthly_spend, plan FROM gappy WHERE plan IS NOT NULL
+)
+----
+0

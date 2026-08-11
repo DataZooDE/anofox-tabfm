@@ -1,18 +1,34 @@
 // Catch2 tests for tabfm_ensemble — WS-F.
 //
-// Red-green parity against test/fixtures/golden_preprocess.json (seed 42):
-//  * PyRandom (MT19937) reproduces the exact member configs EnsembleGenerator
-//    draws for n_estimators {1,4} (feature permutation, class-shift offset,
-//    per-member cat_mask, norm-method grouping) — FULL RNG PARITY.
+//  * TabFMRandom (duckdb::RandomEngine / pcg32) satisfies the properties the
+//    ensemble relies on: seeded determinism, half-open ranges, real
+//    permutations, weighted draws that track their weights.
+//  * member configs for n_estimators {1,4} satisfy their STRUCTURAL invariants
+//    — a permutation really is a permutation, cat_mask is composed through it,
+//    class shifts are in range, norm methods group in emission order.
+//
+//    These deliberately do NOT pin literal permutations. An earlier revision
+//    asserted the exact draws of a CPython MT19937 port so member configs
+//    matched upstream TabFM bit-for-bit; the port is gone (see
+//    tabfm_random.hpp). The ensemble is a variance-reduction device — any set
+//    of valid permutations is statistically equivalent — so the invariants
+//    below are what the literals were standing in for, asserted directly and
+//    without a hand-ported Mersenne Twister to maintain.
+//
 //  * temperature softmax matches blend.softmax_temperature.
 //  * NNLS blend reproduces BOTH golden toy cases (classification + regression):
 //    raw weights, blended weights, and the blended probabilities/predictions.
+//    These goldens STAY: NNLS and softmax have unique mathematically-defined
+//    answers, so checking them against scipy is checking arithmetic, not
+//    mimicking another implementation's arbitrary choices.
 //  * apply / inverse (feature permutation, class shift, logit un-shift).
 
 #include "catch.hpp"
 
 #include "tabfm_ensemble.hpp"
+#include "tabfm_random.hpp"
 
+#include <algorithm>
 #include <vector>
 
 using namespace duckdb;
@@ -45,20 +61,129 @@ void CheckMask(const vector<bool> &actual, const std::vector<bool> &expected) {
 	}
 }
 
-} // namespace
-
-TEST_CASE("ensemble: PyRandom MT19937 matches CPython random", "[tabfm][ensemble]") {
-	// Reference values from CPython 3: random.Random(42).getrandbits(32).
-	PyRandom r(42);
-	REQUIRE(r.GetRandBits(32) == 2746317213u);
-	REQUIRE(r.GetRandBits(32) == 478163327u);
-	// random.Random(42).sample(range(9), 9) reference sequence.
-	PyRandom r2(42);
-	auto s = r2.SampleRange(9, 9);
-	CheckPerm(s, {1, 0, 5, 2, 8, 4, 7, 6, 3});
+//! A permutation of [0, n): right length, every value in range, no repeats.
+void RequirePermutationOf(const vector<int64_t> &perm, int64_t n) {
+	REQUIRE(perm.size() == (size_t)n);
+	std::vector<bool> seen((size_t)n, false);
+	for (auto v : perm) {
+		INFO("value " << v << " of " << n);
+		REQUIRE(v >= 0);
+		REQUIRE(v < n);
+		REQUIRE_FALSE(seen[(size_t)v]);
+		seen[(size_t)v] = true;
+	}
 }
 
-TEST_CASE("ensemble: member configs n_estimators=1 (golden)", "[tabfm][ensemble]") {
+} // namespace
+
+TEST_CASE("random: seeded determinism and divergence", "[tabfm][random]") {
+	TabFMRandom a(42), b(42), c(43);
+	std::vector<double> da, db, dc;
+	for (int i = 0; i < 64; i++) {
+		da.push_back(a.NextDouble());
+		db.push_back(b.NextDouble());
+		dc.push_back(c.NextDouble());
+	}
+	// Same seed -> identical stream.
+	REQUIRE(da == db);
+	// Different seed -> a different stream (not merely a shifted one).
+	REQUIRE(da != dc);
+}
+
+TEST_CASE("random: NextDouble stays in [0,1) and spans the range", "[tabfm][random]") {
+	TabFMRandom r(7);
+	double lo = 1.0, hi = 0.0, sum = 0.0;
+	const int kDraws = 20000;
+	for (int i = 0; i < kDraws; i++) {
+		double v = r.NextDouble();
+		REQUIRE(v >= 0.0);
+		REQUIRE(v < 1.0);
+		lo = std::min(lo, v);
+		hi = std::max(hi, v);
+		sum += v;
+	}
+	// "Close enough": a uniform generator's mean is 1/2, and 20k draws should
+	// reach into both tails. Loose bounds — this catches a broken generator
+	// (constant, clumped, out of range), not a subtly biased one.
+	REQUIRE(sum / kDraws == Approx(0.5).margin(0.02));
+	REQUIRE(lo < 0.01);
+	REQUIRE(hi > 0.99);
+}
+
+TEST_CASE("random: NextBelow is half-open and covers every value", "[tabfm][random]") {
+	TabFMRandom r(11);
+	REQUIRE(r.NextBelow(0) == 0);
+	REQUIRE(r.NextBelow(1) == 0);
+	std::vector<int> counts(5, 0);
+	for (int i = 0; i < 5000; i++) {
+		auto v = r.NextBelow(5);
+		// The boundary that is easy to get wrong: n itself must never appear.
+		REQUIRE(v < 5);
+		counts[(size_t)v]++;
+	}
+	for (auto c : counts) {
+		REQUIRE(c > 700); // uniform would be 1000 each
+	}
+}
+
+TEST_CASE("random: NextDouble(lo,hi) respects bounds and degenerate spans", "[tabfm][random]") {
+	TabFMRandom r(3);
+	for (int i = 0; i < 1000; i++) {
+		double v = r.NextDouble(-2.5, 4.0);
+		REQUIRE(v >= -2.5);
+		REQUIRE(v < 4.0);
+	}
+	// A collapsed quantile bin (ties in the column) must not produce garbage.
+	REQUIRE(r.NextDouble(1.5, 1.5) == 1.5);
+	REQUIRE(r.NextDouble(2.0, 1.0) == 2.0);
+}
+
+TEST_CASE("random: SampleRange draws without replacement", "[tabfm][random]") {
+	TabFMRandom r(42);
+	auto full = r.SampleRange(9, 9);
+	RequirePermutationOf(full, 9);
+
+	auto partial = r.SampleRange(20, 5);
+	REQUIRE(partial.size() == 5);
+	std::vector<int64_t> sorted(partial.begin(), partial.end());
+	std::sort(sorted.begin(), sorted.end());
+	REQUIRE(std::unique(sorted.begin(), sorted.end()) == sorted.end());
+	for (auto v : partial) {
+		REQUIRE(v >= 0);
+		REQUIRE(v < 20);
+	}
+
+	// k > n is clamped, not an error (callers pass min(n_estimators, perms)).
+	REQUIRE(r.SampleRange(3, 10).size() == 3);
+	REQUIRE(r.SampleRange(0, 5).empty());
+	REQUIRE(r.SampleRange(5, 0).empty());
+}
+
+TEST_CASE("random: WeightedChoice tracks its weights", "[tabfm][random]") {
+	TabFMRandom r(5);
+	// Degenerate distribution: the certain label must always win.
+	for (int i = 0; i < 100; i++) {
+		REQUIRE(r.WeightedChoice({0.0, 1.0, 0.0}) == 1);
+	}
+	// Zero-weight entries are never drawn, and the empirical shares track the
+	// weights. This is the property tabfm_generate depends on when it samples a
+	// class from the model's proba MAP.
+	vector<double> weights = {0.6, 0.0, 0.3, 0.1};
+	std::vector<int> counts(4, 0);
+	const int kDraws = 20000;
+	for (int i = 0; i < kDraws; i++) {
+		counts[r.WeightedChoice(weights)]++;
+	}
+	REQUIRE(counts[1] == 0);
+	REQUIRE((double)counts[0] / kDraws == Approx(0.6).margin(0.02));
+	REQUIRE((double)counts[2] / kDraws == Approx(0.3).margin(0.02));
+	REQUIRE((double)counts[3] / kDraws == Approx(0.1).margin(0.02));
+	// Un-normalized weights behave identically.
+	REQUIRE(r.WeightedChoice({0.0, 0.0}) == 0);
+	REQUIRE(r.WeightedChoice({}) == 0);
+}
+
+TEST_CASE("ensemble: member configs n_estimators=1", "[tabfm][ensemble]") {
 	EnsembleSpec spec;
 	spec.n_estimators = 1;
 	spec.seed = 42;
@@ -77,7 +202,7 @@ TEST_CASE("ensemble: member configs n_estimators=1 (golden)", "[tabfm][ensemble]
 	          {true, true, false, false, false, false, false, false, false});
 }
 
-TEST_CASE("ensemble: member configs n_estimators=4 (golden)", "[tabfm][ensemble]") {
+TEST_CASE("ensemble: member configs n_estimators=4 invariants", "[tabfm][ensemble]") {
 	EnsembleSpec spec;
 	spec.n_estimators = 4;
 	spec.seed = 42;
@@ -89,30 +214,92 @@ TEST_CASE("ensemble: member configs n_estimators=4 (golden)", "[tabfm][ensemble]
 	auto members = GenerateEnsemble(spec);
 	REQUIRE(members.size() == 4);
 
-	// flat 0: norm none
+	// prepare_ensemble_tensors emits all members of norm_methods[0] before any
+	// of norm_methods[1]; with E=4 and {none,power} cycled that is 2 and 2.
 	REQUIRE(members[0].norm_method == "none");
-	CheckPerm(members[0].feature_permutation, {6, 0, 7, 8, 1, 4, 2, 5, 3});
-	REQUIRE(members[0].class_shift_offset == 0);
-	CheckMask(members[0].cat_mask,
-	          {false, true, false, false, true, false, false, false, false});
-	// flat 1: norm none
 	REQUIRE(members[1].norm_method == "none");
-	CheckPerm(members[1].feature_permutation, {1, 0, 5, 2, 8, 4, 7, 6, 3});
-	REQUIRE(members[1].class_shift_offset == 2);
-	CheckMask(members[1].cat_mask,
-	          {true, true, false, false, false, false, false, false, false});
-	// flat 2: norm power
 	REQUIRE(members[2].norm_method == "power");
-	CheckPerm(members[2].feature_permutation, {5, 4, 1, 6, 2, 0, 3, 8, 7});
-	REQUIRE(members[2].class_shift_offset == 2);
-	CheckMask(members[2].cat_mask,
-	          {false, false, true, false, false, true, false, false, false});
-	// flat 3: norm power
 	REQUIRE(members[3].norm_method == "power");
-	CheckPerm(members[3].feature_permutation, {8, 6, 1, 3, 4, 2, 0, 5, 7});
-	REQUIRE(members[3].class_shift_offset == 1);
-	CheckMask(members[3].cat_mask,
-	          {false, false, true, false, false, false, true, false, false});
+
+	for (idx_t i = 0; i < members.size(); i++) {
+		INFO("member " << i);
+		auto &m = members[i];
+		RequirePermutationOf(m.feature_permutation, spec.n_features);
+		REQUIRE(m.d == spec.n_features);
+
+		// The composition that is genuinely easy to invert: cat_mask is indexed
+		// by POST-permutation position, and is true exactly where the permutation
+		// points at an original categorical column ({0,1} here).
+		REQUIRE(m.cat_mask.size() == (size_t)spec.n_features);
+		for (idx_t j = 0; j < m.cat_mask.size(); j++) {
+			auto source = m.feature_permutation[j];
+			bool source_is_cat = (source == 0 || source == 1);
+			INFO("position " << j << " <- source column " << source);
+			REQUIRE(m.cat_mask[j] == source_is_cat);
+		}
+		// Exactly as many categorical flags as there are categorical columns.
+		REQUIRE(std::count(m.cat_mask.begin(), m.cat_mask.end(), true) == 2);
+
+		REQUIRE(m.class_shift_offset >= 0);
+		REQUIRE(m.class_shift_offset < spec.n_classes);
+	}
+}
+
+TEST_CASE("ensemble: member configs are deterministic per seed", "[tabfm][ensemble]") {
+	EnsembleSpec spec;
+	spec.n_estimators = 4;
+	spec.seed = 42;
+	spec.n_features = 9;
+	spec.cat_feature_indices = {0, 1};
+	spec.n_classes = 3;
+	spec.classification = true;
+
+	auto a = GenerateEnsemble(spec);
+	auto b = GenerateEnsemble(spec);
+	REQUIRE(a.size() == b.size());
+	for (idx_t i = 0; i < a.size(); i++) {
+		INFO("member " << i);
+		CheckPerm(a[i].feature_permutation, std::vector<int64_t>(b[i].feature_permutation.begin(),
+		                                                         b[i].feature_permutation.end()));
+		REQUIRE(a[i].class_shift_offset == b[i].class_shift_offset);
+		REQUIRE(a[i].norm_method == b[i].norm_method);
+	}
+
+	// A different seed must actually move the draws, or the ensemble has no
+	// diversity to contribute.
+	spec.seed = 43;
+	auto c = GenerateEnsemble(spec);
+	bool any_differs = false;
+	for (idx_t i = 0; i < a.size() && !any_differs; i++) {
+		any_differs = a[i].feature_permutation != c[i].feature_permutation;
+	}
+	REQUIRE(any_differs);
+}
+
+TEST_CASE("ensemble: members are distinct when the permutation space is small",
+          "[tabfm][ensemble]") {
+	// <= 5 features enumerates permutations and samples without replacement, so
+	// four members must be four DIFFERENT views (drawing independently would
+	// collide often at 4! = 24 possibilities).
+	EnsembleSpec spec;
+	spec.n_estimators = 4;
+	spec.seed = 42;
+	spec.n_features = 4;
+	spec.cat_feature_indices = {0};
+	spec.n_classes = 3;
+	spec.classification = true;
+
+	auto members = GenerateEnsemble(spec);
+	REQUIRE(members.size() == 4);
+	for (auto &m : members) {
+		RequirePermutationOf(m.feature_permutation, spec.n_features);
+	}
+	for (idx_t i = 0; i < members.size(); i++) {
+		for (idx_t j = i + 1; j < members.size(); j++) {
+			INFO("members " << i << " and " << j);
+			REQUIRE(members[i].feature_permutation != members[j].feature_permutation);
+		}
+	}
 }
 
 TEST_CASE("ensemble: apply / inverse transforms", "[tabfm][ensemble]") {

@@ -1,0 +1,178 @@
+# name: test/sql/tabfm_generate_errors.test
+# description: The SQL-API §5 error catalog for tabfm_generate / tabfm_impute.
+#              Every failure must be a DuckDB exception whose message names the
+#              fix (a SET, an option value, or the features := escape hatch) —
+#              error paths are first-class here, not an afterthought.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal',
+  max_classes := 3)
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,'a',1),(1.5,'b',2),(2.5,'a',3),(0.2,'b',4),(1.1,'a',5),(3.0,'b',6),
+  (0.9,'a',7),(2.1,'b',8),(1.3,'a',9),(2.4,'b',10))
+  v(f1,grp,n);
+
+# --- n must be a positive integer -------------------------------------------
+
+statement error
+SELECT * FROM tabfm_generate('t', 0)
+----
+<REGEX>:.*n must be a positive integer.*
+
+statement error
+SELECT * FROM tabfm_generate('t', -5)
+----
+<REGEX>:.*n must be a positive integer.*
+
+statement error
+SELECT * FROM tabfm_generate('t', NULL)
+----
+<REGEX>:.*n must be a positive integer.*
+
+# --- Option validation ------------------------------------------------------
+
+statement error
+SELECT * FROM tabfm_generate('t', 5, opts := MAP{'bins':'1'})
+----
+<REGEX>:.*bins must be an integer between 2 and 10.*
+
+statement error
+SELECT * FROM tabfm_generate('t', 5, opts := MAP{'bins':'99'})
+----
+<REGEX>:.*bins must be an integer between 2 and 10.*
+
+statement error
+SELECT * FROM tabfm_generate('t', 5, opts := MAP{'bins':'abc'})
+----
+<REGEX>:.*bins.*
+
+statement error
+SELECT * FROM tabfm_generate('t', 5, opts := MAP{'temperature':'0'})
+----
+<REGEX>:.*temperature must be a positive number.*
+
+statement error
+SELECT * FROM tabfm_generate('t', 5, opts := MAP{'temperature':'-1'})
+----
+<REGEX>:.*temperature must be a positive number.*
+
+statement error
+SELECT * FROM tabfm_generate('t', 5, opts := MAP{'column_order':'sideways'})
+----
+<REGEX>:.*column_order must be 'random', 'natural' or 'missingness'.*
+
+statement error
+SELECT * FROM tabfm_generate('t', 5, opts := MAP{'seed':'not_a_number'})
+----
+<REGEX>:.*seed must be an integer.*
+
+statement error
+SELECT * FROM tabfm_impute('t', opts := MAP{'rounds':'0'})
+----
+<REGEX>:.*rounds must be an integer between 1 and 16.*
+
+# an unknown key lists the ones that exist, rather than being ignored silently
+statement error
+SELECT * FROM tabfm_generate('t', 5, opts := MAP{'n_estimators':'4'})
+----
+<REGEX>:.*unknown option 'n_estimators'.*seed, temperature, bins, column_order, rounds, model.*
+
+# context_rows is deliberately NOT accepted here: it is a no-op in the predict
+# surface (the engine never reads it), so mirroring it would ship a dead knob.
+statement error
+SELECT * FROM tabfm_generate('t', 5, opts := MAP{'context_rows':'100'})
+----
+<REGEX>:.*unknown option 'context_rows'.*
+
+# --- Guardrails -------------------------------------------------------------
+
+statement ok
+SET anofox_tabfm_max_rows = 12
+
+# 10 input rows + 5 generated exceeds the cap, and the message names the SET
+statement error
+SELECT * FROM tabfm_generate('t', 5)
+----
+<REGEX>:.*anofox_tabfm_max_rows.*SET anofox_tabfm_max_rows.*
+
+statement ok
+RESET anofox_tabfm_max_rows
+
+# --- Columns that cannot be generated ---------------------------------------
+
+statement ok
+CREATE TABLE with_id AS
+SELECT f1, grp, 'id_' || CAST(row_number() OVER () AS VARCHAR) AS user_id FROM t;
+
+# a high-cardinality column names itself, its cardinality, and the escape hatch
+statement error
+SELECT * FROM tabfm_generate('with_id', 5)
+----
+<REGEX>:.*user_id.*distinct values.*features :=.*
+
+# ...and excluding it makes the call work
+query I
+SELECT count(*) FROM tabfm_generate('with_id', 5, features := ['f1','grp'])
+----
+5
+
+statement ok
+CREATE TABLE with_time AS SELECT f1, grp, DATE '2024-01-01' + INTERVAL (n) DAY AS ts FROM t;
+
+statement error
+SELECT * FROM tabfm_generate('with_time', 5)
+----
+<REGEX>:.*ts.*temporal.*features :=.*
+
+query I
+SELECT count(*) FROM tabfm_generate('with_time', 5, features := ['f1','grp'])
+----
+5
+
+# a temporal column is fine as long as it is not a target — imputing only `grp`
+# leaves `ts` as a feature, which the preprocessor handles
+query I
+SELECT count(*) FROM tabfm_impute('with_time', columns := ['grp'])
+----
+10
+
+# --- Nothing to learn from --------------------------------------------------
+
+statement error
+SELECT * FROM tabfm_generate('(SELECT * FROM t WHERE false)', 5)
+----
+<REGEX>:.*empty.*
+
+statement error
+SELECT * FROM tabfm_generate('(SELECT 1 AS only_one FROM t)', 5)
+----
+<REGEX>:.*constant.*
+
+# --- Bad arguments ----------------------------------------------------------
+
+statement error
+SELECT * FROM tabfm_impute('t', columns := ['no_such_column'])
+----
+<REGEX>:.*no_such_column.*not found.*
+
+# A non-MAP `opts` is caught by the macro's CAST before the aggregate binds, so
+# the message is DuckDB's conversion error rather than ours. It already names the
+# destination type, which is the actionable part — the aggregate's own
+# "options must be a MAP" text still guards direct use of the internal aggregate.
+statement error
+SELECT * FROM tabfm_generate('t', 5, opts := 'not a map')
+----
+<REGEX>:.*can't be cast to the destination type MAP.*
