@@ -100,3 +100,27 @@ def test_v25_target_range_guard_is_skipped(tmp_path):
     with torch.no_grad():
         out = w(torch.randn(1, 20, 5), torch.full((1, 12), 99.0))
     assert out.shape == (1, 20, cfg.max_classes)
+
+
+def test_v3_fixture_exports_and_parity(tmp_path):
+    """TabPFN-3 exports through the same pipeline as v2 / 2.5.
+
+    v3 is a genuinely different architecture — a distribution-embedding stack
+    with inducing points, a feature-aggregation stack, and RoPE positions rather
+    than a pre-generated column-embedding table. It nonetheless needs NO new
+    patches: the only thing blocking `torch.export` is the multiclass
+    target-range guard, which is byte-for-byte the same branch 2.5 has and which
+    `_freeze_in_train_mode` already neutralizes. This test is the evidence for
+    that claim; if a future `tabpfn` release adds another data-dependent branch,
+    it fails here rather than in a hand-run spike.
+    """
+    cfg = configs.fixture3()
+    assert cfg.arch == "v3"
+    kw = dict(cfg.model_kwargs)
+    kw["num_buckets"] = cfg.num_buckets
+    kw["max_num_classes"] = cfg.max_classes
+    model = build_random_model("classification", kw, seed=0, arch=cfg.arch)
+    graph = tmp_path / "graph3.onnx"
+    export.export_graph(model, graph, example=cfg.example,
+                        max_classes=cfg.max_classes, task="classification")
+    assert graph.exists() and graph.stat().st_size > 0

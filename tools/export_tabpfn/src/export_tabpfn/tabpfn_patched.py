@@ -46,6 +46,7 @@ import torch
 
 import tabpfn.architectures.tabpfn_v2 as v2mod
 import tabpfn.architectures.tabpfn_v2_5 as v25mod
+import tabpfn.architectures.tabpfn_v3 as v3mod
 from tabpfn.architectures.tabpfn_v2 import TabPFNV2Config, get_architecture
 from tabpfn.preprocessing.torch import ops as opsmod
 
@@ -66,6 +67,18 @@ ARCHES = {
         "module": v25mod,
         "config": v25mod.TabPFNV2p5Config,
         "get_architecture": v25mod.get_architecture,
+    },
+    # TabPFN-3 (Prior Labs, released 2026-05-12). Exports with the SAME patch
+    # surface as 2.5 minus the column-embedding patch: v3 uses RoPE
+    # (`use_rope` / `feat_agg_rope_base`) instead of a pre-generated column
+    # embedding table, so there is no randn-at-runtime to freeze. The one thing
+    # it does share is the multiclass target-range guard — byte-for-byte the same
+    # `(y > self.n_out - 1).any()` branch as 2.5 — which `_freeze_in_train_mode`
+    # neutralizes. Verified: a fixture-dims v3 model dynamo-exports to ONNX.
+    "v3": {
+        "module": v3mod,
+        "config": v3mod.TabPFNV3Config,
+        "get_architecture": v3mod.get_architecture,
     },
 }
 
@@ -186,6 +199,13 @@ def prepare_model_for_export(model, *, max_cols: int = MAX_COLS, arch: str = "v2
     # 2.5 dropped the multiclass target encoding; setting the attribute is inert.
     model.use_multiclass_target_encoding = False
     model._do_encoder_nan_check = False
+    if arch == "v3":
+        # v3 positions features with RoPE, so there is no pre-generated column
+        # embedding table and no runtime randn to patch away. Only the shared
+        # multiclass target-range guard needs neutralizing (see
+        # _freeze_in_train_mode); everything else exports as-is.
+        _freeze_in_train_mode(model)
+        return model.eval()
     e_quarter = model.emsize // 4
     if arch == "v2":
         g = torch.Generator().manual_seed(int(model.seed))

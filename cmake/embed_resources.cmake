@@ -44,7 +44,13 @@ set(_tabfm_inputs
     "tensor_map_tabpfn25_regression.json"
     # Orion-BiX (MIT) — classification only, no regression graph upstream.
     "graph_orion_bix_classification.onnx"
-    "tensor_map_orion_bix_classification.json")
+    "tensor_map_orion_bix_classification.json"
+    # TabPFN-3 (Prior Labs, non-commercial) — a different architecture again:
+    # distribution-embedding + feature-aggregation stacks with RoPE positions.
+    "graph_tabpfn3_classification.onnx"
+    "graph_tabpfn3_regression.onnx"
+    "tensor_map_tabpfn3_classification.json"
+    "tensor_map_tabpfn3_regression.json")
 
 # Re-run configure when a resource changes so the generated source stays fresh.
 foreach(_f ${_tabfm_inputs})

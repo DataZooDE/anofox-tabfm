@@ -20,8 +20,54 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
 | **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert |
 | **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert |
-| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB .ckpt read natively; upstream ships no regressor |
+| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; needs the ckpt→safetensors convert (native reader rejects opcode 0x65); upstream ships no regressor |
 | **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
+| **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; ckpt→safetensors convert required |
+
+### TabPFN-3 — done
+
+Released 2026-05-12 and **not** 2.5 scaled up: a distribution-embedding stack
+with inducing points feeds a feature-aggregation stack, and RoPE replaces the
+pre-generated column-embedding table. Released dims (`embed_dim=128`,
+`nlayers=24`, 27 config fields) are transcribed into `configs.real3()` from the
+checkpoint's own `config` block.
+
+It needed **no engine change and no new export patches**. The only thing
+blocking `torch.export` was the multiclass target-range guard — byte-for-byte
+the same branch 2.5 has — which `_freeze_in_train_mode` already neutralizes
+(`dropout = 0.0` in the released config is what makes pinning train mode
+numerically inert). v3 actually needs *fewer* patches than 2.5: with RoPE there
+is no runtime `randn` column-embedding table to freeze.
+
+```bash
+cd tools/export_tabpfn
+uv run python convert_weights.py classification   # writes model.safetensors
+uv run python make_fixture.py --arch=v3           # regenerate the CI fixture
+```
+
+Offline fixture: `test/sql/tabfm_tabpfn3.test`.
+
+### Capabilities per model
+
+`tabfm_generate` and `tabfm_impute` (see `docs/GENERATE.md`) are built on the
+predict engine, so their availability follows directly from the classify /
+regress capabilities above — there is no separate per-model work.
+
+| model | classify | regress | `tabfm_generate` | `tabfm_impute` |
+|---|---|---|---|---|
+| `tabfm-v1` | ✅ | ✅ | ✅ | ✅ all columns |
+| `mitra` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabpfn-v2` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabpfn-v2-5` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabpfn-v3` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabicl-v2` | ✅ | ✅ | ✅ | ✅ all columns |
+| `orion-bix` | ✅ | ✗ | ✅ | categorical columns only |
+
+`tabfm_generate` needs **only** classification, because every chain-rule step is
+a classification problem — continuous columns go through quantile bins. That is
+why Orion-BiX, which ships no regressor, can still generate numeric columns.
+`tabfm_impute` deliberately does *not* bin (it wants full precision), so filling
+a numeric column requires the model's regression weights.
 
 ## Mitra — done
 
@@ -122,8 +168,18 @@ Three things the export had to establish, all recorded in
 Unlike TabPFN/TabICL it does **not** normalize internally (its sklearn wrapper
 uses `CustomStandardScaler` / `RTDLQuantileTransformer` externally), so it
 declares `orion_bix_v1_minimal` — a normal engine-standardizes profile, not
-`_raw`. Export parity **2.24e-07**. The ~315 MB `.ckpt` is read natively by the
-extension; no conversion step is needed.
+`_raw`. Export parity **2.24e-07**.
+
+**Conversion IS required** (verified 2026-08-11 against the current upstream
+file). This section previously claimed the ~315 MB `.ckpt` is read natively and
+needs no conversion step; that is no longer true for `Orion-BiX-v1.1.ckpt`, which
+the native reader rejects with `unsupported pickle opcode 0x65` (`APPENDS`).
+Until `src/tabfm_ckpt.cpp` learns that opcode, run the one-time conversion — the
+engine then prefers the `model.safetensors` it writes next to the checkpoint:
+
+```bash
+cd tools/export_orion_bix && uv run python convert_weights.py   # 277/277 tensors
+```
 
 ## TabPFN-2.5 — shipped (classify + regress)
 

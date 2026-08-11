@@ -95,6 +95,41 @@ static const char *const BUILTIN_TABPFN25 = R"json({
   "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
 })json";
 
+// TabPFN-3 (released 2026-05-12). Same licensing posture as 2.5 —
+// `tabpfn-3-license-v1.0` allows testing/evaluation/internal benchmarking only,
+// so commercial:false + gated. Architecturally it is NOT 2.5 scaled up: a
+// distribution-embedding stack with inducing points feeds a feature-aggregation
+// stack, and RoPE replaces the pre-generated column-embedding table. It exports
+// through the same pipeline nonetheless (tools/export_tabpfn, `--arch v3`);
+// parity 2.4e-07 classification / 2.4e-06 regression.
+//
+// Like the other .ckpt models, the downloadable artifact needs the one-time
+// `convert_weights.py` pass; the engine then prefers the `model.safetensors` it
+// writes next to the checkpoint.
+static const char *const BUILTIN_TABPFN3 = R"json({
+  "schema_version": 2, "id": "tabpfn-v3", "display_name": "TabPFN 3 (Prior Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "tabpfn-3-license-v1.0", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "TabPFN-3 by Prior Labs GmbH. Weights are testing/evaluation/internal-benchmarking only — NO commercial or production use. Contact sales@priorlabs.ai for a commercial license."},
+  "preprocessing_profile": "tabpfn_v3_raw",
+  "weights": {
+    "classification": {"repo": "Prior-Labs/tabpfn_3", "revision": "main",
+      "files": [{"path": "classification/model.ckpt", "bytes": 212804803,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3/resolve/main/tabpfn-v3-classifier-v3_default.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_3", "revision": "main",
+      "files": [{"path": "regression/model.ckpt",
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3/resolve/main/tabpfn-v3-regressor-v3_default.ckpt"}]}
+  },
+  "graph": {"classification": "graph_tabpfn3_classification", "regression": "graph_tabpfn3_regression",
+    "tensor_map": {"classification": "tensor_map_tabpfn3_classification.json",
+                   "regression": "tensor_map_tabpfn3_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+})json";
+
 static const char *const BUILTIN_TABICL = R"json({
   "schema_version": 2, "id": "tabicl-v2", "display_name": "TabICL v2 (soda-inria)",
   "family": "icl-transformer",
@@ -165,6 +200,7 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_MITRA, "(built-in mitra)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN, "(built-in tabpfn-v2)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN25, "(built-in tabpfn-v2-5)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABPFN3, "(built-in tabpfn-v3)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABICL, "(built-in tabicl-v2)"));
 	specs.push_back(ParseModelSpec(BUILTIN_ORION_BIX, "(built-in orion-bix)"));
 	return specs;
