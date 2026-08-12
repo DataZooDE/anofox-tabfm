@@ -9,6 +9,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "tabfm_generate.hpp"
+#include "tabfm_preprocess.hpp"
 #include "tabfm_registration.hpp"
 #include "tabfm_registry.hpp"
 #include "tabfm_state.hpp"
@@ -956,6 +957,18 @@ unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, AggregateF
 	auto &fields = StructType::GetChildTypes(bind->row_type);
 	if (fields.empty()) {
 		throw BinderException("%s: the input relation has no columns", fname);
+	}
+	// Every column is both a feature and (in turn) a target of the chain rule, so
+	// a nested column is unusable in either role: it would be ordinal-encoded as
+	// garbage and — for generate — SAMPLED, silently emitting meaningless values
+	// in that column. Reject it here (issue #17).
+	for (auto &field : fields) {
+		if (!IsUnsupportedNestedType(field.second)) {
+			continue;
+		}
+		throw BinderException("%s: column '%s' has unsupported type %s; columns must be scalar — project it into "
+		                      "scalar columns (e.g. %s[1] AS f1, %s[2] AS f2) or exclude it with features := [...]",
+		                      fname, field.first, field.second.ToString(), field.first, field.first);
 	}
 
 	// arg 1: generate -> n (BIGINT); impute -> columns (VARCHAR[] or NULL)

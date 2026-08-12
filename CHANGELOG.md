@@ -50,10 +50,14 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   returned predictions with no warning at all. `tabfm_classify`/`tabfm_regress`
   now reject nested feature (and target) columns at bind time, naming the column,
   its type, and both remedies — projecting into scalar columns or excluding it
-  with `features := [...]`. Independently, a batch that loses every feature
-  column (a relation with none besides the target, or all of them constant across
-  the training rows) now raises an actionable `Invalid Input Error` rather than
-  the same assertion.
+  with `features := [...]`. `tabfm_generate`/`tabfm_impute` got the same guard:
+  there every column is a chain-rule target, so a nested one was not merely an
+  unusable feature but was *sampled*, silently emitting meaningless values.
+  Independently, a batch that loses every feature column (a relation with none
+  besides the target, or all of them constant across the training rows) now
+  raises an actionable `Invalid Input Error` rather than the same assertion, and
+  that check runs before the model's weights are resolved — a relation that can
+  never be scored no longer reports "model not downloaded" first.
 - **Checkpoint-based models could not load their converted weights.** Every
   `tools/export_*/convert_weights.py` writes a `model.safetensors` into the cache
   slug, but the manifests declare the downloadable `model.ckpt`, so nothing

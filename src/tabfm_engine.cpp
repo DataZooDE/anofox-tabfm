@@ -104,6 +104,10 @@ struct ResolvedModel {
 	// against the actual graph at load. Empty = no declared contract.
 	vector<string> contract_inputs;
 	vector<string> contract_outputs;
+	// Set by the spec phase, consumed by the artifact phase: built-ins carry a
+	// bundled graph + cache weights, a user manifest resolves next to itself.
+	bool is_builtin = false;
+	string source_dir;
 };
 
 // Load {onnx -> safetensors} from the manifest: inline map, or the
@@ -257,7 +261,10 @@ ModelManifest SpecTaskToManifest(const ModelSpec &spec, TabFMTask task) {
 	return m;
 }
 
-ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask task, const string &requested_model) {
+// Phase 1 — registry lookup only: which model, and does it declare the task?
+// Pure in-memory, so callers can learn the preprocessing profile (and validate
+// their data against it) before phase 2 touches the filesystem.
+ResolvedModel ResolveModelSpec(const PredictContext &ctx, TabFMTask task, const string &requested_model) {
 	ResolvedModel resolved;
 	const auto task_name = TabFMTaskName(task);
 	// The registry: built-ins + SQL-registered models (CALL tabfm_register_model).
@@ -282,8 +289,18 @@ ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	// relative paths resolve against its own directory. Only built-ins consult the
 	// bundle: a fixture that shares a filename with a bundled resource must load
 	// its OWN local file, not the embedded real-model one.
-	const bool is_builtin = spec.source_dir.empty();
-	resolved.manifest_dir = is_builtin ? ctx.cache_dir : spec.source_dir;
+	resolved.is_builtin = spec.source_dir.empty();
+	resolved.source_dir = spec.source_dir;
+	return resolved;
+}
+
+// Phase 2 — the filesystem work: weights, graph and tensor map. Split from the
+// spec phase so a data error (e.g. no usable feature columns) is reported
+// before "model not downloaded" for a query that could never run anyway.
+void ResolveModelArtifacts(FileSystem &fs, const PredictContext &ctx, TabFMTask task, ResolvedModel &resolved) {
+	const auto task_name = TabFMTaskName(task);
+	const bool is_builtin = resolved.is_builtin;
+	resolved.manifest_dir = is_builtin ? ctx.cache_dir : resolved.source_dir;
 	// weights first: "not downloaded" is the common, actionable error (§5).
 	resolved.weights_path =
 	    ResolveWeightsPath(fs, resolved.manifest, resolved.manifest_dir, ctx.cache_dir, task_name);
@@ -297,6 +314,11 @@ ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	}
 	resolved.tensor_map = LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin);
 	resolved.cache_key = TabFMModelCacheKey(resolved.manifest.model, task_name, resolved.manifest.revision);
+}
+
+ResolvedModel ResolveModel(FileSystem &fs, const PredictContext &ctx, TabFMTask task, const string &requested_model) {
+	auto resolved = ResolveModelSpec(ctx, task, requested_model);
+	ResolveModelArtifacts(fs, ctx, task, resolved);
 	return resolved;
 }
 
@@ -816,12 +838,14 @@ public:
 		const auto task =
 		    in.opts.task == TabFMTask::CLASSIFICATION ? TabFMTask::CLASSIFICATION : TabFMTask::REGRESSION;
 
-		// Resolve the model up front (no engine access yet): its preprocessing
-		// profile decides whether the engine standardizes features. TabFM/Mitra
-		// want the default z-score (Mitra is rank-invariant to it); TabPFN/TabICL
-		// normalize INSIDE the graph and must get raw features — they declare a
-		// "*_raw" profile, and z-scoring here would double-normalize them.
-		auto resolved = ResolveModel(*fs, in.ctx, task, in.opts.model);
+		// Pick the model up front (registry only, no filesystem yet): its
+		// preprocessing profile decides whether the engine standardizes features.
+		// TabFM/Mitra want the default z-score (Mitra is rank-invariant to it);
+		// TabPFN/TabICL normalize INSIDE the graph and must get raw features —
+		// they declare a "*_raw" profile, and z-scoring here would double-normalize
+		// them. The model's ARTIFACTS are resolved after preprocessing, so a
+		// relation that can never be scored says so before "not downloaded".
+		auto resolved = ResolveModelSpec(in.ctx, task, in.opts.model);
 		const bool standardize = !StringUtil::EndsWith(resolved.manifest.preprocessing_profile, "_raw");
 
 		// 1. preprocess
@@ -841,6 +865,9 @@ public:
 			    "the features := [...] list.",
 			    in.target_name);
 		}
+
+		// The data is scorable — now resolve weights/graph/tensor map from disk.
+		ResolveModelArtifacts(*fs, in.ctx, task, resolved);
 
 		if (task == TabFMTask::CLASSIFICATION && batch.label_decoder.size() > 10) {
 			throw InvalidInputException(

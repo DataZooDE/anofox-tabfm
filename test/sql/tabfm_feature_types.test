@@ -99,6 +99,24 @@ SELECT count(*) FROM tabfm_classify('nested_target', 'label')
 ----
 <REGEX>:.*target column 'label' has unsupported type DOUBLE\[\].*
 
+# UNION
+statement ok
+CREATE VIEW union_mixed AS
+SELECT label, f0, union_value(num := f1)::UNION(num DOUBLE, txt VARCHAR) AS u FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('union_mixed', 'label')
+----
+<REGEX>:.*feature column 'u' has unsupported type UNION.*
+
+# the window variant shares the bind, so it rejects nested columns identically
+statement error
+SELECT __anofox_tabfm_predict_win(t, 'label')
+       OVER (ORDER BY f0 ROWS BETWEEN 8 PRECEDING AND CURRENT ROW)
+FROM list_mixed t
+----
+<REGEX>:.*tabfm_predict_win: feature column 'feats' has unsupported type DOUBLE\[\].*
+
 # the same guard applies to tabfm_regress
 statement error
 SELECT count(*) FROM tabfm_regress('list_mixed', 'f0')
@@ -110,6 +128,43 @@ query I
 SELECT count(*) FROM tabfm_classify('list_mixed', 'label', features := ['f0'])
 ----
 12
+
+# --- generate / impute reject them too ----------------------------------------
+# Every column is a chain-rule target there, so a nested column was not just an
+# unusable feature: tabfm_generate SAMPLED it and emitted garbage values.
+
+statement ok
+CREATE VIEW gen_src AS SELECT f0, num, [f0, f1]::DOUBLE[] AS feats FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_generate('gen_src', 5)
+----
+<REGEX>:.*column 'feats' has unsupported type DOUBLE\[\].*scalar.*
+
+statement error
+SELECT count(*) FROM tabfm_impute('gen_src')
+----
+<REGEX>:.*column 'feats' has unsupported type DOUBLE\[\].*scalar.*
+
+# excluding it keeps generation working (the fixture's class head is 3 wide, so
+# the generation model must declare max_classes := 3 — see tabfm_generate.test)
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture_gen', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal',
+  max_classes := 3)
+
+# a second registered fixture makes the default ambiguous; pin it back
+statement ok
+SET anofox_tabfm_default_model = 'fixture'
+
+query I
+SELECT count(*) FROM tabfm_generate('gen_src', 5, features := ['f0', 'num'], model := 'fixture_gen')
+----
+5
 
 # --- Scalar unknowns keep the categorical fallback ----------------------------
 
