@@ -237,6 +237,25 @@ string ExpandUserHome(const string &path) {
 	return string(home) + path.substr(1);
 }
 
+// Nested types (LIST/ARRAY/STRUCT/MAP/UNION) have no scalar encoding: the
+// preprocessing classifier's "unknown -> categorical" fallback (correct for
+// scalar unknowns like BLOB) would silently turn them into garbage ordinals,
+// and a relation whose only feature is nested reaches the engine with an empty
+// feature matrix. Reject them here, while the column name and type are still
+// in hand (issue #17).
+static bool IsNestedType(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::ARRAY:
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::MAP:
+	case LogicalTypeId::UNION:
+		return true;
+	default:
+		return false;
+	}
+}
+
 unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFunction &function,
                                              vector<unique_ptr<Expression>> &arguments, const string &fname,
                                              bool is_window) {
@@ -275,6 +294,20 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 		throw BinderException("%s: target column '%s' not found in the row struct (pass the bare column name, "
 		                      "no quotes)",
 		                      fname, bind->target);
+	}
+
+	if (IsNestedType(bind->target_type)) {
+		throw BinderException("%s: target column '%s' has unsupported type %s; the target must be scalar", fname,
+		                      bind->target, bind->target_type.ToString());
+	}
+	for (idx_t i = 0; i < fields.size(); i++) {
+		if (i == bind->target_idx || !IsNestedType(fields[i].second)) {
+			continue;
+		}
+		throw BinderException("%s: feature column '%s' has unsupported type %s; feature columns must be scalar — "
+		                      "project it into scalar columns (e.g. %s[1] AS f1, %s[2] AS f2) or exclude it with "
+		                      "features := [...]",
+		                      fname, fields[i].first, fields[i].second.ToString(), fields[i].first, fields[i].first);
 	}
 
 	// FR-3.2 task inference: non-numeric target (VARCHAR/ENUM/BOOL/…) →

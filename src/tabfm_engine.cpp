@@ -830,6 +830,18 @@ public:
 		auto pp_task = task == TabFMTask::CLASSIFICATION ? PreprocessTask::CLASSIFICATION : PreprocessTask::REGRESSION;
 		auto batch = PreprocessBatch(collection, columns, pp_task, standardize);
 
+		// Nothing survived the unique-feature filter (no feature columns at all,
+		// or every one is constant on the training rows). The tensors would be
+		// empty and the engine would trip its null-buffer assertion, so say what
+		// actually went wrong instead (issue #17).
+		if (batch.H == 0) {
+			throw InvalidInputException(
+			    "tabfm: no usable feature columns — the relation has none besides the target '%s', or every feature "
+			    "column is constant across the training rows. Add at least one feature column that varies, or widen "
+			    "the features := [...] list.",
+			    in.target_name);
+		}
+
 		if (task == TabFMTask::CLASSIFICATION && batch.label_decoder.size() > 10) {
 			throw InvalidInputException(
 			    "target '%s' has %llu distinct labels; TabFM v1 supports at most 10. Consider grouping rare labels.",

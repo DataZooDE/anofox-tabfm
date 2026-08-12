@@ -1,0 +1,166 @@
+# name: test/sql/tabfm_feature_types.test
+# description: Feature-column type/usability guardrails (issue #17). A nested
+#              (LIST/ARRAY/STRUCT/MAP/UNION) feature column must be rejected at
+#              BIND time naming the column and its type — previously it fell
+#              through ClassifyColumn's categorical fallback, produced no usable
+#              encoding, and only surfaced as an INTERNAL "Run() called with null
+#              input buffers" assertion. Independently, a relation whose feature
+#              columns all vanish (none at all, or all constant on the training
+#              rows) must raise an actionable error instead of the same assert.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
+
+statement ok
+CREATE TABLE base AS SELECT
+  CASE WHEN i < 8 THEN 'c' || (i % 2)::VARCHAR END AS label,
+  (i % 3) * 1.0                                    AS num,
+  i * 0.5                                          AS f0,
+  i * 1.5                                          AS f1
+FROM range(12) t(i);
+
+# --- Nested feature columns are a bind error, not an INTERNAL assert ----------
+
+# the issue's reproduction: a single LIST feature column
+statement ok
+CREATE VIEW list_only AS SELECT label, [f0, f1]::DOUBLE[] AS feats FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('list_only', 'label')
+----
+<REGEX>:.*feature column 'feats' has unsupported type DOUBLE\[\].*scalar.*
+
+# ... and it must be a BinderException, never the INTERNAL null-buffer assert
+statement error
+SELECT count(*) FROM tabfm_classify('list_only', 'label')
+----
+<REGEX>:^Binder Error.*
+
+# a nested column ALONGSIDE usable scalars used to be silently encoded as
+# garbage categorical data and returned wrong predictions without any error
+statement ok
+CREATE VIEW list_mixed AS SELECT label, f0, [f0, f1]::DOUBLE[] AS feats FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('list_mixed', 'label')
+----
+<REGEX>:.*feature column 'feats' has unsupported type DOUBLE\[\].*
+
+# STRUCT
+statement ok
+CREATE VIEW struct_mixed AS SELECT label, f0, {'a': f1} AS s FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('struct_mixed', 'label')
+----
+<REGEX>:.*feature column 's' has unsupported type STRUCT.*
+
+# MAP
+statement ok
+CREATE VIEW map_mixed AS SELECT label, f0, MAP{'a': f1} AS m FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('map_mixed', 'label')
+----
+<REGEX>:.*feature column 'm' has unsupported type MAP.*
+
+# fixed-size ARRAY
+statement ok
+CREATE VIEW array_mixed AS SELECT label, f0, [f0, f1]::DOUBLE[2] AS a FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('array_mixed', 'label')
+----
+<REGEX>:.*feature column 'a' has unsupported type DOUBLE\[2\].*
+
+# the error is actionable: it names both remedies
+statement error
+SELECT count(*) FROM tabfm_classify('list_only', 'label')
+----
+<REGEX>:.*(project|features :=).*
+
+# a nested TARGET column is likewise a bind error, not an obscure failure
+statement ok
+CREATE VIEW nested_target AS SELECT [f0, f1]::DOUBLE[] AS label, f0, f1 FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('nested_target', 'label')
+----
+<REGEX>:.*target column 'label' has unsupported type DOUBLE\[\].*
+
+# the same guard applies to tabfm_regress
+statement error
+SELECT count(*) FROM tabfm_regress('list_mixed', 'f0')
+----
+<REGEX>:.*feature column 'feats' has unsupported type DOUBLE\[\].*
+
+# excluding the nested column with features := [...] keeps the query working
+query I
+SELECT count(*) FROM tabfm_classify('list_mixed', 'label', features := ['f0'])
+----
+12
+
+# --- Scalar unknowns keep the categorical fallback ----------------------------
+
+# BLOB is not numeric and not explicitly classified — it must still work
+statement ok
+CREATE VIEW blob_feat AS SELECT label, f0, ('b' || (i % 4)::VARCHAR)::BLOB AS b
+FROM base POSITIONAL JOIN range(12) t(i);
+
+query I
+SELECT count(*) FROM tabfm_classify('blob_feat', 'label')
+----
+12
+
+# --- Zero usable feature columns is an actionable error, not an assert --------
+
+# no feature columns at all
+statement ok
+CREATE VIEW target_only AS SELECT label FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('target_only', 'label')
+----
+<REGEX>:.*no usable feature columns.*
+
+statement error
+SELECT count(*) FROM tabfm_classify('target_only', 'label')
+----
+<REGEX>:^Invalid Input Error.*
+
+# the only feature column is constant on the training rows -> dropped by the
+# unique-feature filter, leaving nothing to feed the model
+statement ok
+CREATE VIEW const_feat AS SELECT label, 1.0 AS f0 FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('const_feat', 'label')
+----
+<REGEX>:.*no usable feature columns.*
+
+# regression path hits the same guard
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture_reg', base_dir := 'test/fixtures/regression',
+  regression_graph := 'graph_fixture.onnx',
+  regression_weights := 'model.safetensors',
+  regression_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
+
+statement error
+SELECT count(*) FROM tabfm_regress(
+  '(SELECT CASE WHEN i < 8 THEN i * 1.0 END AS y, 1.0 AS f0 FROM range(12) t(i))', 'y',
+  model := 'fixture_reg')
+----
+<REGEX>:.*no usable feature columns.*

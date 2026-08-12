@@ -39,6 +39,21 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   like 2.5. Offline fixture: `test/sql/tabfm_tabpfn3.test`.
 
 ### Fixed
+- **A nested feature column crashed with an INTERNAL error instead of a binder
+  error** ([#17](https://github.com/DataZooDE/anofox-tabfm/issues/17)). A
+  `LIST`/`ARRAY`/`STRUCT`/`MAP`/`UNION` column fell through the preprocessing
+  classifier's "unknown → categorical" fallback (right for scalar unknowns like
+  `BLOB`, wrong for nested ones): it produced no usable encoding, so a relation
+  whose only feature was nested reached the engine with an empty feature matrix
+  and failed as `INTERNAL Error: … Run() called with null input buffers`, while a
+  nested column *next to* usable scalars was silently encoded as garbage and
+  returned predictions with no warning at all. `tabfm_classify`/`tabfm_regress`
+  now reject nested feature (and target) columns at bind time, naming the column,
+  its type, and both remedies — projecting into scalar columns or excluding it
+  with `features := [...]`. Independently, a batch that loses every feature
+  column (a relation with none besides the target, or all of them constant across
+  the training rows) now raises an actionable `Invalid Input Error` rather than
+  the same assertion.
 - **Checkpoint-based models could not load their converted weights.** Every
   `tools/export_*/convert_weights.py` writes a `model.safetensors` into the cache
   slug, but the manifests declare the downloadable `model.ckpt`, so nothing
