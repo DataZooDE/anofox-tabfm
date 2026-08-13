@@ -28,6 +28,17 @@
 
 #ifdef TABFM_EP_CUDA
 #ifdef _WIN32
+// NOMINMAX and WIN32_LEAN_AND_MEAN before <windows.h>: without them it defines
+// min/max as macros (which collide with std::min/std::max and DuckDB's
+// MinValue/MaxValue) and pulls in the winsock/RPC headers this file has no use
+// for. Guarded rather than defined outright so a toolchain that already sets
+// them does not warn about redefinition.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #else
 #include <dlfcn.h>
