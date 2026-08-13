@@ -1,5 +1,6 @@
 #include "tabfm_cpu_budget.hpp"
 
+#include <cerrno>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -119,15 +120,22 @@ idx_t QuotaCoreCount() {
 	if (self.empty()) {
 		return 0;
 	}
+	// Both lookups run: in a HYBRID layout /proc/self/cgroup carries a unified
+	// line AND v1 lines, and a controller may only be active in one hierarchy at
+	// a time — so the quota we are looking for is precisely the one the unified
+	// lookup cannot see. Trying only the unified path there would silently miss
+	// the cap. Uncapped/undiscoverable is 0 from either, which CombineCoreLimits
+	// ignores.
+	idx_t limit = 0;
 	const auto unified = ParseUnifiedCgroupPath(self);
 	if (!unified.empty()) {
-		return UnifiedQuotaCoreCount(unified);
+		limit = CombineCoreLimits(limit, UnifiedQuotaCoreCount(unified));
 	}
 	const auto legacy = ParseLegacyCpuCgroupPath(self);
 	if (!legacy.empty()) {
-		return LegacyQuotaCoreCount(legacy);
+		limit = CombineCoreLimits(limit, LegacyQuotaCoreCount(legacy));
 	}
-	return 0;
+	return limit;
 }
 
 //! Cores in the affinity mask, or 0 if undiscoverable.

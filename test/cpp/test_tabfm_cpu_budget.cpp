@@ -87,6 +87,11 @@ TEST_CASE("cpu_budget: locating our own cgroup", "[cpu_budget][tabfm]") {
 		                           "4:memory:/kubepods/pod123\n"
 		                           "0::/kubepods/pod123\n";
 		REQUIRE(ParseUnifiedCgroupPath(hybrid) == "/kubepods/pod123");
+		// Both hierarchies resolve from the same file, and a controller can only be
+		// active in one of them — so a hybrid host's cpu quota may sit on v1 while
+		// a unified line exists. QuotaCoreCount must consult both, not stop at the
+		// unified one.
+		REQUIRE(ParseLegacyCpuCgroupPath(hybrid) == "/kubepods/pod123");
 	}
 	SECTION("pure v1 has no unified line") {
 		REQUIRE(ParseUnifiedCgroupPath("5:cpu,cpuacct:/kubepods/pod123\n").empty());
