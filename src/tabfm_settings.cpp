@@ -1,13 +1,8 @@
 #include "tabfm_registration.hpp"
+#include "tabfm_cpu_budget.hpp"
 
 #include "duckdb/main/config.hpp"
 #include "duckdb/common/string_util.hpp"
-
-#include <thread>
-
-#ifdef __linux__
-#include <sched.h>
-#endif
 
 namespace duckdb {
 namespace anofox {
@@ -71,32 +66,6 @@ void ValidateMaxRows(ClientContext &context, SetScope scope, Value &parameter) {
 
 void ValidateMaxFeatures(ClientContext &context, SetScope scope, Value &parameter) {
 	ValidatePositive("anofox_tabfm_max_features", context, scope, parameter);
-}
-
-//! Cores this process may actually run on.
-//!
-//! `std::thread::hardware_concurrency()` reports what the kernel can see, which inside a
-//! container is the host. On a 64-core cpuset inside a 256-core host it returns 256, so a
-//! default of `hardware_concurrency() / 2` becomes 128 intra-op threads per session -- and the
-//! host runs several sessions concurrently, one per DuckDB task. Measured on such a pod: 132
-//! threads in one duckdb process and a load average of 143 against 64 usable cores, for a query
-//! configured with `SET threads = 4`.
-//!
-//! `sched_getaffinity` respects the cpuset and is the number that matters. Everything else falls
-//! back to `hardware_concurrency()`, so behaviour is unchanged off Linux.
-idx_t UsableCoreCount() {
-#ifdef __linux__
-	cpu_set_t set;
-	CPU_ZERO(&set);
-	if (sched_getaffinity(0, sizeof(set), &set) == 0) {
-		const auto affine = static_cast<idx_t>(CPU_COUNT(&set));
-		if (affine > 0) {
-			return affine;
-		}
-	}
-#endif
-	const auto visible = static_cast<idx_t>(std::thread::hardware_concurrency());
-	return visible > 0 ? visible : 1;
 }
 
 } // anonymous namespace

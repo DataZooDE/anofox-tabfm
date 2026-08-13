@@ -49,6 +49,7 @@ target_compile_features(posthog_telemetry_obj PUBLIC cxx_std_17)
 set(EXTENSION_SOURCES
         src/anofox_tabfm_extension.cpp
         src/tabfm_settings.cpp
+        src/tabfm_cpu_budget.cpp
         src/tabfm_state.cpp
         src/tabfm_manifest.cpp
         src/tabfm_model_spec.cpp
@@ -141,6 +142,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_generate.cpp
     test/cpp/test_tabfm_bundled_resources.cpp
     test/cpp/test_tabfm_weights.cpp
+    test/cpp/test_tabfm_cpu_budget.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     add_library(anofox_tabfm_unittest_tests OBJECT ${TABFM_CPP_TEST_SOURCES})
