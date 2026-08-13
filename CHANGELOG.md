@@ -39,25 +39,6 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   like 2.5. Offline fixture: `test/sql/tabfm_tabpfn3.test`.
 
 ### Fixed
-- **A nested feature column crashed with an INTERNAL error instead of a binder
-  error** ([#17](https://github.com/DataZooDE/anofox-tabfm/issues/17)). A
-  `LIST`/`ARRAY`/`STRUCT`/`MAP`/`UNION` column fell through the preprocessing
-  classifier's "unknown → categorical" fallback (right for scalar unknowns like
-  `BLOB`, wrong for nested ones): it produced no usable encoding, so a relation
-  whose only feature was nested reached the engine with an empty feature matrix
-  and failed as `INTERNAL Error: … Run() called with null input buffers`, while a
-  nested column *next to* usable scalars was silently encoded as garbage and
-  returned predictions with no warning at all. `tabfm_classify`/`tabfm_regress`
-  now reject nested feature (and target) columns at bind time, naming the column,
-  its type, and both remedies — projecting into scalar columns or excluding it
-  with `features := [...]`. `tabfm_generate`/`tabfm_impute` got the same guard:
-  there every column is a chain-rule target, so a nested one was not merely an
-  unusable feature but was *sampled*, silently emitting meaningless values.
-  Independently, a batch that loses every feature column (a relation with none
-  besides the target, or all of them constant across the training rows) now
-  raises an actionable `Invalid Input Error` rather than the same assertion, and
-  that check runs before the model's weights are resolved — a relation that can
-  never be scored no longer reports "model not downloaded" first.
 - **Checkpoint-based models could not load their converted weights.** Every
   `tools/export_*/convert_weights.py` writes a `model.safetensors` into the cache
   slug, but the manifests declare the downloadable `model.ckpt`, so nothing
@@ -112,3 +93,26 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 - Real 6.6 GB weights, the numeric regression fixture, and NFR-Q1 parity are
   the next milestone; today's e2e coverage uses the classification CI fixture.
 - Telemetry is a deliberate deviation from spec NFR-S1 — see the README.
+
+## [v2026.08.13] - 2026-08-13
+
+### Fixed
+- **A nested feature column crashed with an INTERNAL error instead of a binder
+  error** ([#17](https://github.com/DataZooDE/anofox-tabfm/issues/17)). A
+  `LIST`/`ARRAY`/`STRUCT`/`MAP`/`UNION` column fell through the preprocessing
+  classifier's "unknown → categorical" fallback (right for scalar unknowns like
+  `BLOB`, wrong for nested ones): it produced no usable encoding, so a relation
+  whose only feature was nested reached the engine with an empty feature matrix
+  and failed as `INTERNAL Error: … Run() called with null input buffers`, while a
+  nested column *next to* usable scalars was silently encoded as garbage and
+  returned predictions with no warning at all. `tabfm_classify`/`tabfm_regress`
+  now reject nested feature (and target) columns at bind time, naming the column,
+  its type, and both remedies — projecting into scalar columns or excluding it
+  with `features := [...]`. `tabfm_generate`/`tabfm_impute` got the same guard:
+  there every column is a chain-rule target, so a nested one was not merely an
+  unusable feature but was *sampled*, silently emitting meaningless values.
+  Independently, a batch that loses every feature column (a relation with none
+  besides the target, or all of them constant across the training rows) now
+  raises an actionable `Invalid Input Error` rather than the same assertion, and
+  that check runs before the model's weights are resolved — a relation that can
+  never be scored no longer reports "model not downloaded" first.
