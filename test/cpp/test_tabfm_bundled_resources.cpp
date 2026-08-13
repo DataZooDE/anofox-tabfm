@@ -110,6 +110,10 @@ TEST_CASE("tabfm_bundled_resources: bundled graph is a valid weight-free ONNX gr
 		FAIL("expected an exception (weight-free graph, no injection)");
 	} catch (std::exception &error) {
 		string message = error.what();
+		// Print what was actually thrown when the mapping misses: this assertion
+		// only runs on CI for the platforms that execute the C++ suite, and a
+		// bare npos != npos says nothing about which ORT phrasing slipped through.
+		INFO("session creation threw: " << message);
 		REQUIRE(message.find("model weights are not loaded") != string::npos);
 		REQUIRE(message.find("tabfm_download") != string::npos);
 	}

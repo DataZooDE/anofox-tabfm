@@ -192,9 +192,10 @@ string ExtractTensorName(const string &message) {
 	return string();
 }
 
-[[noreturn]] void ThrowMappedCreateError(const Ort::Exception &error, const TabFMSessionConfig &config) {
-	const string message = error.what();
-	const int code = error.GetOrtErrorCode();
+// Maps a session-creation failure onto an actionable message. Takes the text
+// and code rather than the exception because the failure does not always arrive
+// as an Ort::Exception — see the catch chain in CreateSession.
+[[noreturn]] void ThrowMappedCreateError(const string &message, int code, const TabFMSessionConfig &config) {
 	const string task = config.model_tag.empty() ? string("classification") : config.model_tag;
 
 	// Missing injection: the weight-free graph's external-data stubs cannot be
@@ -457,7 +458,19 @@ TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
 		ValidateDeclaredContract(*handle, config);
 		return handle;
 	} catch (const Ort::Exception &error) {
-		ThrowMappedCreateError(error, config);
+		ThrowMappedCreateError(error.what(), error.GetOrtErrorCode(), config);
+	} catch (const Exception &) {
+		// ValidateDeclaredContract's own diagnostics are already actionable.
+		throw;
+	} catch (const std::exception &error) {
+		// A STATICALLY linked ORT — the vcpkg build this extension uses on
+		// Windows — can let its native exception escape initialization instead
+		// of converting it into an OrtStatus for the C++ wrapper to rethrow as
+		// an Ort::Exception. The text is the same, so map on it: without this
+		// the missing-weights case surfaces on Windows as a raw
+		// "model_path must not be empty" stack message rather than the
+		// tabfm_load remediation. No ORT code is available here.
+		ThrowMappedCreateError(error.what(), ORT_OK, config);
 	}
 }
 
@@ -481,7 +494,19 @@ TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<
 		ValidateDeclaredContract(*handle, config);
 		return handle;
 	} catch (const Ort::Exception &error) {
-		ThrowMappedCreateError(error, config);
+		ThrowMappedCreateError(error.what(), error.GetOrtErrorCode(), config);
+	} catch (const Exception &) {
+		// ValidateDeclaredContract's own diagnostics are already actionable.
+		throw;
+	} catch (const std::exception &error) {
+		// A STATICALLY linked ORT — the vcpkg build this extension uses on
+		// Windows — can let its native exception escape initialization instead
+		// of converting it into an OrtStatus for the C++ wrapper to rethrow as
+		// an Ort::Exception. The text is the same, so map on it: without this
+		// the missing-weights case surfaces on Windows as a raw
+		// "model_path must not be empty" stack message rather than the
+		// tabfm_load remediation. No ORT code is available here.
+		ThrowMappedCreateError(error.what(), ORT_OK, config);
 	}
 }
 
