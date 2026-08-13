@@ -426,12 +426,31 @@ CI environments are auto-detected and telemetry is disabled there.
 ## Building
 
 ```bash
-GEN=ninja make release        # cpu flavor
-make test_release             # sqllogictests + C++ unit tests
+# vcpkg is required for EVERY flavor: vcpkg.json depends on openssl unconditionally.
+git clone https://github.com/microsoft/vcpkg && ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
+export VCPKG_TOOLCHAIN_PATH=$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake
+
+GEN=ninja make release                     # cpu flavor
+GEN=ninja TABFM_FLAVOR=cuda make release   # cuda flavor (linux_amd64 / win_amd64)
+make test_release                          # sqllogictests + C++ unit tests
 ```
 
+Without `VCPKG_TOOLCHAIN_PATH` the build stops during configure with a cascade in which only the
+first line is the real cause:
+
+```
+CMake Error: Could not find toolchain file:
+  .../vcpkg_installed//share/vcpkg/scripts/buildsystems/vcpkg.cmake
+CMake Error: CMake was unable to find a build program corresponding to "Ninja".
+CMake Error: CMAKE_C_COMPILER not set, after EnableLanguage
+CMake Error: CMAKE_CXX_COMPILER not set, after EnableLanguage
+```
+
+CMake aborts before probing for the generator or the compilers, so the last three are reported
+missing even when Ninja and the toolchain are installed and on `PATH`.
+
 Requires CMake ≥ 3.10 (≥ 3.19 to also build the bundled C++ unit tests) and a
-C++17 toolchain. ONNX Runtime is fetched as a
+C++17 toolchain, and vcpkg. ONNX Runtime is fetched as a
 prebuilt archive by default; enable the `ort-vcpkg` manifest feature to build it
 from source. See [`CLAUDE.md`](CLAUDE.md) for the module map and
 [`examples/`](examples/README.md) for end-to-end examples.
