@@ -197,24 +197,7 @@ string ExtractTensorName(const string &message) {
 	const int code = error.GetOrtErrorCode();
 	const string task = config.model_tag.empty() ? string("classification") : config.model_tag;
 
-	// Missing injection: the weight-free graph's external-data stubs cannot be
-	// resolved because no initializers were injected. The signature depends on
-	// how the session is created:
-	//   * from a file (S02): ORT_NO_SUCHFILE + "cannot get file size";
-	//   * from a byte array (how this extension loads the embedded graph):
-	//     ORT_RUNTIME_EXCEPTION (code 6) + "model_path must not be empty"
-	//     (initializer.cc cannot locate the external file with no model path).
-	// Also match the export-time "External data path ... does not exist"
-	// phrasing (S01). Match message shapes as well as codes to stay robust
-	// across ORT versions and load paths.
-	const bool missing_weights = code == ORT_NO_SUCHFILE || message.find("No such file") != string::npos ||
-	                             message.find("cannot get file size") != string::npos ||
-	                             message.find("filesystem error") != string::npos ||
-	                             message.find("model_path must not be empty") != string::npos ||
-	                             message.find("External data") != string::npos ||
-	                             message.find("external data") != string::npos ||
-	                             message.find("external file") != string::npos;
-	if (missing_weights) {
+	if (IsMissingWeightsMessage(message, code)) {
 		throw InvalidInputException(
 		    "anofox_tabfm: model weights are not loaded — the model graph references external weights that were "
 		    "not injected. Run: CALL tabfm_load('" +
@@ -298,6 +281,38 @@ void AppendExecutionProviders(Ort::SessionOptions &options, const TabFMSessionCo
 }
 
 } // anonymous namespace
+
+bool IsMissingWeightsMessage(const string &message, int ort_error_code) {
+	// Missing injection: the weight-free graph's external-data stubs cannot be
+	// resolved because no initializers were injected. The signature depends on
+	// how the session is created:
+	//   * from a file (S02): ORT_NO_SUCHFILE + "cannot get file size";
+	//   * from a byte array (how this extension loads the embedded graph):
+	//     ORT_RUNTIME_EXCEPTION (code 6) + "model_path must not be empty"
+	//     (initializer.cc cannot locate the external file with no model path).
+	// Also match the export-time "External data path ... does not exist"
+	// phrasing (S01). Match message shapes as well as codes to stay robust
+	// across ORT versions and load paths.
+	//
+	// The phrasing is PLATFORM-specific: ORT's Windows env reports the failed
+	// stat as `file_size: The system cannot find the file specified.:
+	// "graph_classification.onnx.data"` (the strerror equivalent comes from
+	// FormatMessage, not errno), where POSIX says "cannot get file size" /
+	// "No such file". Missing the Windows shape sent every Windows user who
+	// forgot tabfm_load to ThrowMappedCreateError's generic fallthrough
+	// instead of the remediation.
+	return ort_error_code == ORT_NO_SUCHFILE ||                              //
+	       message.find("No such file") != string::npos ||                   //
+	       message.find("cannot get file size") != string::npos ||           // POSIX, from a path
+	       message.find("file_size") != string::npos ||                      // Windows env stat
+	       message.find("The system cannot find the file") != string::npos || // Windows FormatMessage
+	       message.find("filesystem error") != string::npos ||               //
+	       message.find("model_path must not be empty") != string::npos ||   // from bytes
+	       message.find("External data") != string::npos ||                  //
+	       message.find("external data") != string::npos ||                  //
+	       message.find("external file") != string::npos;
+}
+
 
 //===----------------------------------------------------------------------===//
 // TabFMSession

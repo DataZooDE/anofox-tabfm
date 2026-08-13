@@ -1,9 +1,8 @@
 #include "tabfm_registration.hpp"
+#include "tabfm_cpu_budget.hpp"
 
 #include "duckdb/main/config.hpp"
 #include "duckdb/common/string_util.hpp"
-
-#include <thread>
 
 namespace duckdb {
 namespace anofox {
@@ -83,7 +82,7 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	                          "Weight cache root directory (default ~/.cache/anofox-tabfm)", LogicalType::VARCHAR,
 	                          Value("~/.cache/anofox-tabfm"));
 
-	const auto default_threads = MaxValue<int64_t>(1, static_cast<int64_t>(std::thread::hardware_concurrency()) / 2);
+	const auto default_threads = MaxValue<int64_t>(1, static_cast<int64_t>(UsableCoreCount()) / 2);
 	config.AddExtensionOption("anofox_tabfm_threads", "ONNX Runtime intra-op thread count for CPU inference",
 	                          LogicalType::BIGINT, Value::BIGINT(default_threads), ValidateThreads);
 
