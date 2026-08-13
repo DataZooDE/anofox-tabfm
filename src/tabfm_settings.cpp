@@ -5,6 +5,10 @@
 
 #include <thread>
 
+#ifdef __linux__
+#include <sched.h>
+#endif
+
 namespace duckdb {
 namespace anofox {
 
@@ -69,6 +73,32 @@ void ValidateMaxFeatures(ClientContext &context, SetScope scope, Value &paramete
 	ValidatePositive("anofox_tabfm_max_features", context, scope, parameter);
 }
 
+//! Cores this process may actually run on.
+//!
+//! `std::thread::hardware_concurrency()` reports what the kernel can see, which inside a
+//! container is the host. On a 64-core cpuset inside a 256-core host it returns 256, so a
+//! default of `hardware_concurrency() / 2` becomes 128 intra-op threads per session -- and the
+//! host runs several sessions concurrently, one per DuckDB task. Measured on such a pod: 132
+//! threads in one duckdb process and a load average of 143 against 64 usable cores, for a query
+//! configured with `SET threads = 4`.
+//!
+//! `sched_getaffinity` respects the cpuset and is the number that matters. Everything else falls
+//! back to `hardware_concurrency()`, so behaviour is unchanged off Linux.
+idx_t UsableCoreCount() {
+#ifdef __linux__
+	cpu_set_t set;
+	CPU_ZERO(&set);
+	if (sched_getaffinity(0, sizeof(set), &set) == 0) {
+		const auto affine = static_cast<idx_t>(CPU_COUNT(&set));
+		if (affine > 0) {
+			return affine;
+		}
+	}
+#endif
+	const auto visible = static_cast<idx_t>(std::thread::hardware_concurrency());
+	return visible > 0 ? visible : 1;
+}
+
 } // anonymous namespace
 
 void RegisterTabfmSettings(ExtensionLoader &loader) {
@@ -83,7 +113,7 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	                          "Weight cache root directory (default ~/.cache/anofox-tabfm)", LogicalType::VARCHAR,
 	                          Value("~/.cache/anofox-tabfm"));
 
-	const auto default_threads = MaxValue<int64_t>(1, static_cast<int64_t>(std::thread::hardware_concurrency()) / 2);
+	const auto default_threads = MaxValue<int64_t>(1, static_cast<int64_t>(UsableCoreCount()) / 2);
 	config.AddExtensionOption("anofox_tabfm_threads", "ONNX Runtime intra-op thread count for CPU inference",
 	                          LogicalType::BIGINT, Value::BIGINT(default_threads), ValidateThreads);
 
