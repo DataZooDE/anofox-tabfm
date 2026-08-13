@@ -26,8 +26,12 @@
 #include <onnxruntime_cxx_api.h>
 #endif
 
-#if defined(TABFM_EP_CUDA) && !defined(_WIN32)
+#ifdef TABFM_EP_CUDA
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #endif
 
 #ifdef TABFM_EP_MIGRAPHX
@@ -99,14 +103,18 @@ bool OrtProviderAvailable(const char *provider_name) {
 // CUDA discovery (cuda flavor only)
 //
 // Design: EP presence comes from Ort::GetAvailableProviders(); device
-// enumeration goes through NVML (libnvidia-ml.so.1), dlopen'd at runtime —
-// NVML ships with every NVIDIA driver install and has a stable C ABI, so the
-// extension links nothing NVIDIA-specific. No driver == no NVML == only the
-// cpu row, which is exactly the "missing driver is a diagnosable one-liner"
-// behavior HLD §9 asks for.
+// enumeration goes through NVML, loaded at runtime — NVML ships with every
+// NVIDIA driver install and has a stable C ABI, so the extension links nothing
+// NVIDIA-specific. No driver == no NVML == only the cpu row, which is exactly
+// the "missing driver is a diagnosable one-liner" behavior HLD §9 asks for.
+//
+// Linux and Windows both. The probe was once Linux-only, which made the cuda
+// flavor unusable on Windows for a reason unrelated to inference: the CUDA EP
+// itself was never guarded, but with no device discovered ResolveDevice refused
+// 'cuda' and there was nothing to run on. Only the loader differs.
 //===----------------------------------------------------------------------===//
 
-#if defined(TABFM_EP_CUDA) && !defined(_WIN32)
+#ifdef TABFM_EP_CUDA
 
 struct NvmlMemory {
 	unsigned long long total;
@@ -114,12 +122,44 @@ struct NvmlMemory {
 	unsigned long long used;
 };
 
+// NVML is the same C ABI on both platforms; only the loader differs. It ships
+// with every NVIDIA driver install — libnvidia-ml.so.1 on Linux, nvml.dll in
+// System32 on Windows — so the extension still links nothing NVIDIA-specific.
+#ifdef _WIN32
+using NvmlHandle = HMODULE;
+static const char *const kNvmlLibraries[] = {"nvml.dll"};
+NvmlHandle NvmlOpen(const char *name) {
+	return LoadLibraryA(name);
+}
+void *NvmlSymbol(NvmlHandle lib, const char *symbol) {
+	return reinterpret_cast<void *>(GetProcAddress(lib, symbol));
+}
+void NvmlClose(NvmlHandle lib) {
+	FreeLibrary(lib);
+}
+#else
+using NvmlHandle = void *;
+static const char *const kNvmlLibraries[] = {"libnvidia-ml.so.1", "libnvidia-ml.so"};
+NvmlHandle NvmlOpen(const char *name) {
+	return dlopen(name, RTLD_LAZY | RTLD_LOCAL);
+}
+void *NvmlSymbol(NvmlHandle lib, const char *symbol) {
+	return dlsym(lib, symbol);
+}
+void NvmlClose(NvmlHandle lib) {
+	dlclose(lib);
+}
+#endif
+
 void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 	const bool ep_available = OrtProviderAvailable("CUDAExecutionProvider");
 
-	void *nvml = dlopen("libnvidia-ml.so.1", RTLD_LAZY | RTLD_LOCAL);
-	if (!nvml) {
-		nvml = dlopen("libnvidia-ml.so", RTLD_LAZY | RTLD_LOCAL);
+	NvmlHandle nvml = nullptr;
+	for (auto *candidate : kNvmlLibraries) {
+		nvml = NvmlOpen(candidate);
+		if (nvml) {
+			break;
+		}
 	}
 	if (!nvml) {
 		return; // no NVIDIA driver -> no cuda rows; tabfm_devices() shows cpu only
@@ -133,17 +173,17 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 	using CcFn = int (*)(void *, int *, int *);
 	using DriverFn = int (*)(char *, unsigned int);
 
-	auto nvml_init = reinterpret_cast<InitFn>(dlsym(nvml, "nvmlInit_v2"));
-	auto nvml_shutdown = reinterpret_cast<InitFn>(dlsym(nvml, "nvmlShutdown"));
-	auto nvml_count = reinterpret_cast<CountFn>(dlsym(nvml, "nvmlDeviceGetCount_v2"));
-	auto nvml_handle = reinterpret_cast<HandleFn>(dlsym(nvml, "nvmlDeviceGetHandleByIndex_v2"));
-	auto nvml_name = reinterpret_cast<NameFn>(dlsym(nvml, "nvmlDeviceGetName"));
-	auto nvml_memory = reinterpret_cast<MemFn>(dlsym(nvml, "nvmlDeviceGetMemoryInfo"));
-	auto nvml_cc = reinterpret_cast<CcFn>(dlsym(nvml, "nvmlDeviceGetCudaComputeCapability"));
-	auto nvml_driver = reinterpret_cast<DriverFn>(dlsym(nvml, "nvmlSystemGetDriverVersion"));
+	auto nvml_init = reinterpret_cast<InitFn>(NvmlSymbol(nvml, "nvmlInit_v2"));
+	auto nvml_shutdown = reinterpret_cast<InitFn>(NvmlSymbol(nvml, "nvmlShutdown"));
+	auto nvml_count = reinterpret_cast<CountFn>(NvmlSymbol(nvml, "nvmlDeviceGetCount_v2"));
+	auto nvml_handle = reinterpret_cast<HandleFn>(NvmlSymbol(nvml, "nvmlDeviceGetHandleByIndex_v2"));
+	auto nvml_name = reinterpret_cast<NameFn>(NvmlSymbol(nvml, "nvmlDeviceGetName"));
+	auto nvml_memory = reinterpret_cast<MemFn>(NvmlSymbol(nvml, "nvmlDeviceGetMemoryInfo"));
+	auto nvml_cc = reinterpret_cast<CcFn>(NvmlSymbol(nvml, "nvmlDeviceGetCudaComputeCapability"));
+	auto nvml_driver = reinterpret_cast<DriverFn>(NvmlSymbol(nvml, "nvmlSystemGetDriverVersion"));
 
 	if (!nvml_init || !nvml_count || !nvml_handle || nvml_init() != 0) {
-		dlclose(nvml);
+		NvmlClose(nvml);
 		return;
 	}
 
@@ -186,10 +226,10 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 	if (nvml_shutdown) {
 		nvml_shutdown();
 	}
-	dlclose(nvml);
+	NvmlClose(nvml);
 }
 
-#endif // TABFM_EP_CUDA && !_WIN32
+#endif // TABFM_EP_CUDA
 
 //===----------------------------------------------------------------------===//
 // ROCm / MIGraphX discovery (rocm flavor only)
@@ -376,7 +416,7 @@ void ProbeCoreMLDevices(vector<TabFMDeviceInfo> &devices) {
 vector<TabFMDeviceInfo> DiscoverDevices() {
 	vector<TabFMDeviceInfo> devices;
 	devices.push_back(MakeCpuDevice());
-#if defined(TABFM_EP_CUDA) && !defined(_WIN32)
+#ifdef TABFM_EP_CUDA
 	ProbeCudaDevices(devices);
 #endif
 #ifdef TABFM_EP_MIGRAPHX
