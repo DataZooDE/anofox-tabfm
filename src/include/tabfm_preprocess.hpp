@@ -165,6 +165,14 @@ struct PreprocessedBatch {
 //! classification (upstream FR-3.2 semantics).
 PreprocessTask InferTask(const LogicalType &target_type);
 
+//! True for the nested types (LIST/ARRAY/STRUCT/MAP/UNION) this pipeline cannot
+//! encode. Column classification falls back to CATEGORICAL for unrecognised
+//! types — right for scalar unknowns like BLOB, but a nested column has no
+//! meaningful ordinal encoding, so it would contribute a garbage feature (or, if
+//! it is the only one, an empty feature matrix). Binders call this to reject such
+//! columns while the column name and type are still in hand (issue #17).
+bool IsUnsupportedNestedType(const LogicalType &type);
+
 //! Run the minimal preprocessing pipeline over `data`, whose columns are
 //! described by `columns` (same order). Exactly one column must have
 //! is_target=true; feature columns are those with is_feature=true. Rows whose

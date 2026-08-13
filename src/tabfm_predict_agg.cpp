@@ -1,4 +1,5 @@
 #include "tabfm_predict.hpp"
+#include "tabfm_preprocess.hpp"
 #include "tabfm_registration.hpp"
 
 #include "duckdb/common/string_util.hpp"
@@ -275,6 +276,20 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 		throw BinderException("%s: target column '%s' not found in the row struct (pass the bare column name, "
 		                      "no quotes)",
 		                      fname, bind->target);
+	}
+
+	if (IsUnsupportedNestedType(bind->target_type)) {
+		throw BinderException("%s: target column '%s' has unsupported type %s; the target must be scalar", fname,
+		                      bind->target, bind->target_type.ToString());
+	}
+	for (idx_t i = 0; i < fields.size(); i++) {
+		if (i == bind->target_idx || !IsUnsupportedNestedType(fields[i].second)) {
+			continue;
+		}
+		throw BinderException("%s: feature column '%s' has unsupported type %s; feature columns must be scalar — "
+		                      "project it into scalar columns (e.g. %s[1] AS f1, %s[2] AS f2) or exclude it with "
+		                      "features := [...]",
+		                      fname, fields[i].first, fields[i].second.ToString(), fields[i].first, fields[i].first);
 	}
 
 	// FR-3.2 task inference: non-numeric target (VARCHAR/ENUM/BOOL/…) →

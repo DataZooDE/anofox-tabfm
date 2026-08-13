@@ -61,6 +61,19 @@ static FeatureKind ClassifyColumn(const LogicalType &type) {
 	}
 }
 
+bool IsUnsupportedNestedType(const LogicalType &type) {
+	switch (type.id()) {
+	case LogicalTypeId::LIST:
+	case LogicalTypeId::ARRAY:
+	case LogicalTypeId::STRUCT:
+	case LogicalTypeId::MAP:
+	case LogicalTypeId::UNION:
+		return true;
+	default:
+		return false;
+	}
+}
+
 PreprocessTask InferTask(const LogicalType &target_type) {
 	// Upstream: a numeric target -> regression, otherwise classification.
 	switch (target_type.id()) {
