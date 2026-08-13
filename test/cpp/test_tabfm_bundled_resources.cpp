@@ -94,6 +94,46 @@ TEST_CASE("tabfm_bundled_resources: unknown ids and paths do not match", "[tabfm
 	REQUIRE(GetBundledResource("resources/graph_classification.onnx").data == nullptr);
 }
 
+// The message the previous test asserts is produced by a PLATFORM-SPECIFIC ORT
+// phrasing, so that test can only ever check the shape of the platform it runs
+// on. These pin every phrasing seen in the wild on every platform — the Windows
+// one went unmatched for the whole life of the Windows build, because the C++
+// suite was never executed in CI and no Linux run could have noticed.
+TEST_CASE("tabfm_ort_engine: missing-weights phrasings are recognised everywhere", "[tabfm][ort]") {
+	SECTION("Windows: the env reports the failed stat via FormatMessage") {
+		REQUIRE(IsMissingWeightsMessage(
+		    "Exception during initialization: file_size: The system cannot find the file specified.: "
+		    "\"graph_classification.onnx.data\"",
+		    6));
+	}
+	SECTION("POSIX: from a path, and from bytes") {
+		REQUIRE(IsMissingWeightsMessage("Load model failed: cannot get file size", 6));
+		REQUIRE(IsMissingWeightsMessage(
+		    "Exception during initialization: initializer.cc:45 !model_path.empty() was false. "
+		    "model_path must not be empty.",
+		    6));
+		REQUIRE(IsMissingWeightsMessage("open file failed: No such file or directory", 6));
+	}
+	SECTION("the ORT_NO_SUCHFILE code alone is enough") {
+		// 3 == ORT_NO_SUCHFILE. Spelled numerically because this TU deliberately
+		// does not pull in the ONNX Runtime headers; the value is fixed by ORT's
+		// stable C ABI enum.
+		REQUIRE(IsMissingWeightsMessage("anything at all", 3));
+	}
+	SECTION("export-time external-data phrasings") {
+		REQUIRE(IsMissingWeightsMessage("External data path does not exist", 1));
+		REQUIRE(IsMissingWeightsMessage("failed to load external data file", 1));
+	}
+	SECTION("unrelated failures are NOT swallowed as missing weights") {
+		// These must fall through to the corrupted-checkpoint and generic
+		// branches; matching them here would hide a real diagnostic.
+		REQUIRE_FALSE(IsMissingWeightsMessage("Replacement tensor's dimensions do not match", 1));
+		REQUIRE_FALSE(IsMissingWeightsMessage("data type does not match", 1));
+		REQUIRE_FALSE(IsMissingWeightsMessage("Node (foo) has an invalid attribute", 1));
+		REQUIRE_FALSE(IsMissingWeightsMessage("", 1));
+	}
+}
+
 TEST_CASE("tabfm_bundled_resources: bundled graph is a valid weight-free ONNX graph", "[tabfm][bundled]") {
 	// Loading the real bundled graph through ORT with no injected weights must
 	// fail cleanly with the weights-not-loaded remediation (S01/S02): this both

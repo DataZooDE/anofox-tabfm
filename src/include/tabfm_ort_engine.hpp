@@ -203,6 +203,17 @@ TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
 TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<TabFMTensorRef> &initializers,
                                          const TabFMSessionConfig &config);
 
+//! True when an ORT session-creation failure means "the graph's external-data
+//! references were never satisfied" — i.e. the weights were not injected.
+//!
+//! Exposed so the phrasings can be pinned by a unit test on ANY platform: the
+//! text is platform-specific (Windows reports the failed stat through
+//! FormatMessage, POSIX through strerror), so a Linux-only check cannot tell
+//! that the Windows shape stopped matching. It silently did, and every Windows
+//! user who forgot tabfm_load got the generic fallthrough instead of the
+//! tabfm_load remediation.
+bool IsMissingWeightsMessage(const string &message, int ort_error_code);
+
 //! One TabFM forward pass. Buffers are non-owning and read-only:
 //!   x [1,T,H] f32, y [1,T] f32, train_size [1] i64, cat_mask [1,H] bool,
 //!   d [1] i64  ->  logits [1,T,C] f32 (HLD §4.4).
