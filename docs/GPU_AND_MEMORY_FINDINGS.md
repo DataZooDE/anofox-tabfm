@@ -168,3 +168,71 @@ Run: manifest → `graph_ext.onnx`, `TABFM_EXTERNAL_DATA=1`, `device='cpu'`.
    manifests without external-data).
 
 Expected result: default CPU RSS ~7.3 GB instead of ~18.6 GB.
+
+## CUDA: `tabicl-v2` and the untrimmed `Slice` (2026-08-13)
+
+Separate blocker, separate vendor, same shape of problem: a graph that runs
+correctly on the CPU EP fails inside inference on the GPU one.
+
+Both TabICL graphs died at a `ScatterND`:
+
+```
+updates shape: {9,7,1,128}, indices shape: {12,1}, data shape: {12,7,1,128}
+```
+
+with 9 training rows and 12 total. **The export is correct.** `indices` is
+
+```
+Unsqueeze( Slice( Range(0, T, 1), starts=[0], ends=[S] ), -1 )
+```
+
+which is length `S` by construction, matching `updates`. ONNX cannot evaluate
+`min(T,S)` symbolically, so the inferred shapes merely *look* mismatched — that
+misreading cost a day, and is worth remembering the next time a shape-inference
+result disagrees with a graph you can read.
+
+Reading the tensor off the device (feed `updates` with `T` rows so the shape
+check passes on CUDA, then expose `indices`) shows the CUDA `Slice` returning its
+input **unmodified** — `[0,1,…,11]`, the whole `Range`, not garbage.
+
+Which buffer, by exposing one intermediate at a time as a graph output (graph
+outputs are exempt from buffer reuse):
+
+| exposed | CUDA |
+|---|---|
+| *(none)* | FAIL |
+| the **T** scalar | FAIL |
+| **the `S` scalar** | **OK** |
+| **`ends`** | **OK** |
+| the `Range` / `Slice` / `indices` / `data` tensors (CUDA-side) | FAIL |
+
+Only the two tensors carrying `S` fix it, and `enable_cpu_mem_arena=False` fixes
+a reduced 68-node cut (though *not* the full graph). So: the CPU-side buffer
+holding `S` is recycled before the CUDA `Slice` reads it, the `Slice` sees a
+bound ≥ T, and trims nothing.
+
+### The workaround
+
+`tools/pin_dynamic_slice_bounds.py` names those bounds as graph outputs. It finds
+them structurally — `ScatterND.indices` → `Slice` → `ends` — because the
+classification and regression graphs number their nodes differently and a
+re-export renumbers them again. `--check` re-verifies and exits non-zero, so a
+re-export cannot silently drop it.
+
+Measured (RTX 3060 sm_86, ORT 1.26.0, random f32 weights, requesting only
+`logits` exactly as the engine does):
+
+| graph | CUDA before | CUDA after | CPU vs CUDA after | CPU before vs after |
+|---|---|---|---|---|
+| classification | FAIL | OK | rel 3.5e-04 | **bit-identical** |
+| regression | FAIL | OK | rel 1.5e-06 | **bit-identical** |
+
+The CPU path is unchanged byte for byte, which is what makes this safe to ship.
+
+**Caveats.** Random weights, not the real checkpoint — the agreement shows CPU
+and CUDA compute the same function, not that the real checkpoint behaves
+identically; the golden fixture is the check worth doing. One GPU. Shapes
+T ∈ {12,20}, S ∈ {9,12}, F=3. And this masks an ONNX Runtime bug rather than
+fixing it — still present in 1.28.0, so an ORT bump does not help. Upstream
+detail, including a 68-node reproduction that needs no weights and no licence,
+is in issue #21.

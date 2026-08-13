@@ -39,6 +39,19 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   like 2.5. Offline fixture: `test/sql/tabfm_tabpfn3.test`.
 
 ### Fixed
+- **`tabicl-v2` could not run on CUDA at all.** Both TabICL graphs failed inside
+  inference at a `ScatterND` node — `updates {S,…}` against `indices {T,1}` —
+  while running correctly on the CPU EP. The graphs are not at fault: `indices`
+  is `Slice(Range(0,T,1), 0, S)` and is length `S` by construction. On the CUDA
+  EP that `Slice` returns its input **untrimmed**, `[0..T-1]`, because the
+  CPU-side buffer holding `S` is recycled before the kernel reads it — an ONNX
+  Runtime bug, still present in 1.28.0 (#21). Naming the bound tensors as graph
+  outputs excludes them from buffer reuse, and both graphs now run on CUDA,
+  agreeing with the CPU EP to 3.5e-4 (classification) and 1.5e-6 (regression)
+  relative. CPU output is bit-identical to before, so nothing on the CPU path
+  changes. `tools/pin_dynamic_slice_bounds.py` applies the pins structurally,
+  and `--check` re-verifies them so a re-export cannot silently drop the
+  workaround.
 - **Checkpoint-based models could not load their converted weights.** Every
   `tools/export_*/convert_weights.py` writes a `model.safetensors` into the cache
   slug, but the manifests declare the downloadable `model.ckpt`, so nothing
