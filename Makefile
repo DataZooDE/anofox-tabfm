@@ -54,11 +54,19 @@ BUILD_ROOT:=$(or $(TABFM_BUILD_ROOT),build)
 
 # Override test targets to disable telemetry during test runs.
 # This prevents local tests and CI/CD from polluting PostHog telemetry data.
+#
+# TWO invocations per flavor, because one filter cannot match both: the
+# sqllogictests register under their PATH ("test/sql/foo.test"), while the
+# Catch2 TUs in TABFM_CPP_TEST_SOURCES register under their tag ([tabfm]).
+# "test/*" alone silently skipped every C++ case in CI.
 test_release_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/release/test/unittest "test/*"
+	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/release/test/unittest "[tabfm]"
 
 test_debug_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/debug/test/unittest "test/*"
+	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/debug/test/unittest "[tabfm]"
 
 test_reldebug_internal:
 	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/reldebug/test/unittest "test/*"
+	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/reldebug/test/unittest "[tabfm]"
