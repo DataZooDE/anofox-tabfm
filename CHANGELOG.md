@@ -96,7 +96,40 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [v2026.08.13] - 2026-08-13
 
+### Changed
+- **`anofox_tabfm_threads` now defaults to the container's CPU allocation, not
+  the host's core count** ([#19](https://github.com/DataZooDE/anofox-tabfm/pull/19),
+  contributed by [@maxdemarzi](https://github.com/maxdemarzi)).
+  `std::thread::hardware_concurrency()` reports what the kernel can see, which
+  inside a container is the whole machine: on a 64-CPU allocation in a 256-core
+  host the default resolved to 128 intra-op threads *per ONNX session*, and
+  DuckDB builds one session per concurrent task (measured: 132 threads and a
+  load average of 143 against 64 usable cores, for a query with `SET threads =
+  4`). The default is now sized by the smaller of the two limits a container can
+  impose — the **cpuset** (`sched_getaffinity`) and the **CFS bandwidth quota**
+  (cgroup v2 `cpu.max` or v1 `cpu.cfs_quota_us`), taken from the process's own
+  cgroup and up the hierarchy. Kubernetes only pins a cpuset under the static
+  CPU Manager policy, while the default enforcement for `limits.cpu` is quota,
+  so honouring one and not the other leaves the other deployment
+  oversubscribed. Unchanged off Linux, on an unconstrained host, and for anyone
+  already setting `anofox_tabfm_threads`.
+
 ### Fixed
+- **Missing weights were reported as a raw ONNX Runtime error on Windows.** ORT
+  phrases an unresolvable external-data file per platform — POSIX says `cannot
+  get file size`, Windows says `file_size: The system cannot find the file
+  specified` (from `FormatMessage`, not `strerror`) — and only the POSIX shapes
+  were matched. A Windows user who had not run `tabfm_load` got that raw text
+  instead of the remediation naming it. The predicate is now
+  `IsMissingWeightsMessage()` with every phrasing pinned by unit tests, since an
+  end-to-end test can only assert the shape of the platform it runs on.
+- **CI never executed the C++ test suite.** The test targets filtered on
+  `"test/*"`, which matches how the sqllogictests register (by path) but not how
+  the Catch2 TUs do (by tag), so 106 cases and ~72,000 assertions were compiled
+  into every build and then skipped — locally and in CI. Each flavor now runs
+  the binary twice. Turning it on immediately surfaced the Windows error-mapping
+  bug above. Spotted by [@maxdemarzi](https://github.com/maxdemarzi) while
+  contributing #19.
 - **A nested feature column crashed with an INTERNAL error instead of a binder
   error** ([#17](https://github.com/DataZooDE/anofox-tabfm/issues/17)). A
   `LIST`/`ARRAY`/`STRUCT`/`MAP`/`UNION` column fell through the preprocessing
