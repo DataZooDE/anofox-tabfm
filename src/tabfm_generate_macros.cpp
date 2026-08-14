@@ -60,8 +60,14 @@ R"(
                anofox_tabfm_row, n,
                map_concat(
                  CAST(opts AS MAP(VARCHAR, VARCHAR)),
-                 CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
-                      ELSE MAP{'model': model::VARCHAR} END)) AS res
+                 map_concat(
+                   CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                        ELSE MAP{'model': model::VARCHAR} END,
+                   -- See the predict macros: the COLUMNS(lambda) filter drops a
+                   -- name that matches nothing, so a misspelling would silently
+                   -- generate FEWER columns than asked for. Forward the request.
+                   CASE WHEN features IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                        ELSE MAP{'__features': array_to_string(features, chr(31))} END))) AS res
       FROM (
         SELECT COLUMNS(lambda c: features IS NULL
                                  OR list_contains(list_transform(features, lambda f: lcase(f)), lcase(c)))
@@ -87,8 +93,14 @@ R"(
                anofox_tabfm_row, columns,
                map_concat(
                  CAST(opts AS MAP(VARCHAR, VARCHAR)),
-                 CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
-                      ELSE MAP{'model': model::VARCHAR} END)) AS res
+                 map_concat(
+                   CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                        ELSE MAP{'model': model::VARCHAR} END,
+                   -- See the predict macros: the COLUMNS(lambda) filter drops a
+                   -- name that matches nothing, so a misspelling would silently
+                   -- generate FEWER columns than asked for. Forward the request.
+                   CASE WHEN features IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                        ELSE MAP{'__features': array_to_string(features, chr(31))} END))) AS res
       FROM (
         SELECT COLUMNS(lambda c: features IS NULL
                                  OR list_contains(list_transform(features, lambda f: lcase(f)), lcase(c)))

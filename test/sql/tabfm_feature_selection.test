@@ -1,0 +1,84 @@
+# name: test/sql/tabfm_feature_selection.test
+# description: `features := [...]` names are validated. An unknown name used to
+#              be dropped in silence by the macro's COLUMNS(lambda) filter: the
+#              call succeeded, the model trained on FEWER features than the
+#              caller asked for, and the predictions came back looking normal.
+#              A misspelling has to be an error, not a quieter model.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fx', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal',
+  max_classes := 3)
+
+statement ok
+SET anofox_tabfm_default_model = 'fx'
+
+statement ok
+CREATE TABLE feats AS SELECT
+  CASE WHEN i < 8 THEN 'c' || (i % 2)::VARCHAR END AS label,
+  i * 0.5  AS f1,
+  i * 1.5  AS f2,
+  i * 2.5  AS f3
+FROM range(12) t(i);
+
+# --- the silent case: one name of several misspelled -----------------------
+
+statement error
+SELECT count(*) FROM tabfm_classify('feats', 'label', features := ['f1', 'f2_TYPO', 'f3'])
+----
+<REGEX>:.*f2_TYPO.*
+
+# it says where to look WITHOUT listing "available" columns: the row struct is
+# already filtered to the requested names, so such a list would omit exactly the
+# column the caller misspelled
+statement error
+SELECT count(*) FROM tabfm_classify('feats', 'label', features := ['f1', 'f2_TYPO', 'f3'])
+----
+<REGEX>:.*matched no column.*
+
+# --- every surface that takes `features` ------------------------------------
+
+statement error
+SELECT count(*) FROM tabfm_regress('feats', 'f1', features := ['f2', 'nope'])
+----
+<REGEX>:.*nope.*
+
+statement error
+SELECT count(*) FROM tabfm_generate('feats', 3, features := ['f1', 'nope'])
+----
+<REGEX>:.*nope.*
+
+statement error
+SELECT count(*) FROM tabfm_impute('feats', features := ['f1', 'nope'])
+----
+<REGEX>:.*nope.*
+
+# --- matching stays case-insensitive, as the column filter always was --------
+
+query I
+SELECT count(*) FROM tabfm_classify('feats', 'label', features := ['F1', 'f2'])
+----
+12
+
+# --- and a correct list still works -----------------------------------------
+
+query I
+SELECT count(*) FROM tabfm_classify('feats', 'label', features := ['f1', 'f2', 'f3'])
+----
+12
+
+# naming the target in `features` is not an error: it is always included
+query I
+SELECT count(*) FROM tabfm_classify('feats', 'label', features := ['label', 'f1'])
+----
+12

@@ -776,6 +776,8 @@ struct GenerateBindData : public FunctionData {
 	bool targets_explicit = false;
 	TabFMGenerateOptions options;
 	idx_t max_rows = 10000;
+	//! What `features := [...]` asked for, unit-separated, as the macro saw it.
+	string requested_features;
 	PredictContext context;
 
 	unique_ptr<FunctionData> Copy() const override {
@@ -860,6 +862,10 @@ void ParseOneOption(const string &fname, GenerateBindData &bind, const string &k
 			throw BinderException("%s: rounds must be an integer between 1 and 16, got '%s'", fname, val);
 		}
 		opts.rounds = NumericCast<idx_t>(n);
+	} else if (key == "__features") {
+		// Internal: what `features := [...]` asked for, so bind can tell a
+		// misspelled column from one deliberately excluded.
+		bind.requested_features = val;
 	} else if (key == "model") {
 		opts.model = val;
 	} else {
@@ -1040,6 +1046,41 @@ unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, AggregateF
 		// keep kMaxGenerateBins
 	}
 	bind->options.bins = MinValue<idx_t>(bind->options.bins, bind->options.max_classes);
+
+	// A name that matches no column is dropped by the macro's COLUMNS(lambda)
+	// filter, so without this the call succeeds having generated FEWER columns
+	// than the caller listed — silently, and with plausible-looking output.
+	if (!bind->requested_features.empty()) {
+		size_t start = 0;
+		while (start <= bind->requested_features.size()) {
+			auto end = bind->requested_features.find('\x1f', start);
+			if (end == string::npos) {
+				end = bind->requested_features.size();
+			}
+			auto wanted = bind->requested_features.substr(start, end - start);
+			start = end + 1;
+			if (wanted.empty()) {
+				continue;
+			}
+			bool found = false;
+			for (auto &field : fields) {
+				if (StringUtil::CIEquals(field.first, wanted)) {
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				// Deliberately no list of "available" columns: by the time this
+				// runs the row struct has ALREADY been filtered to the requested
+				// names, so the one column a caller most needs to see — the one
+				// they misspelled — is precisely the one missing from it.
+				throw BinderException(
+				    "%s: features := [...] names '%s', which matched no column. Check it against the relation's "
+				    "columns (matching is case-insensitive); every other listed name was found.",
+				    fname, wanted);
+			}
+		}
+	}
 
 	bind->max_rows = ReadSettingUBigint(context, "anofox_tabfm_max_rows", 10000);
 	const auto max_features = ReadSettingUBigint(context, "anofox_tabfm_max_features", 500);

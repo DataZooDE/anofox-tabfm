@@ -83,8 +83,15 @@ R"(
                    map_concat(
                      map_concat(MAP{'output_mode':'detail'}, CAST(opts AS MAP(VARCHAR, VARCHAR))),
                      MAP{'task':'classification'}),
-                   CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
-                        ELSE MAP{'model': model::VARCHAR} END)) AS res
+                   map_concat(
+                     CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                          ELSE MAP{'model': model::VARCHAR} END,
+                     -- The COLUMNS(lambda) filter below drops any name that
+                     -- does not match a column, so a misspelling would reach
+                     -- the aggregate as a QUIETER MODEL rather than an error.
+                     -- Pass what was ASKED for so bind can compare the two.
+                     CASE WHEN features IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                          ELSE MAP{'__features': array_to_string(features, chr(31))} END))) AS res
         FROM (
           SELECT COLUMNS(lambda c: features IS NULL
                                    OR list_contains(list_transform(features, lambda f: lcase(f)), lcase(c))
@@ -116,8 +123,15 @@ R"(
                  anofox_tabfm_row, target,
                  map_concat(
                    map_concat(CAST(opts AS MAP(VARCHAR, VARCHAR)), MAP{'task':'regression'}),
-                   CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
-                        ELSE MAP{'model': model::VARCHAR} END)) AS res
+                   map_concat(
+                     CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                          ELSE MAP{'model': model::VARCHAR} END,
+                     -- The COLUMNS(lambda) filter below drops any name that
+                     -- does not match a column, so a misspelling would reach
+                     -- the aggregate as a QUIETER MODEL rather than an error.
+                     -- Pass what was ASKED for so bind can compare the two.
+                     CASE WHEN features IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                          ELSE MAP{'__features': array_to_string(features, chr(31))} END))) AS res
         FROM (
           SELECT COLUMNS(lambda c: features IS NULL
                                    OR list_contains(list_transform(features, lambda f: lcase(f)), lcase(c))
