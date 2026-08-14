@@ -477,12 +477,15 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 		const bool carried =
 		    setting == "cuda" ? flavor_has_cuda : (setting == "rocm" ? flavor_has_rocm : flavor_has_coreml);
 		if (!carried) {
+			// Mirrors ThrowFlavorMissingDeviceLocal in tabfm_ort_engine.cpp: the
+			// anofox repository serves the cpu flavor only, so a GPU user sent
+			// there would land back here (issue #25).
 			throw InvalidInputException(
 			    "anofox_tabfm: this build is the '" + flavor + "' flavor and does not carry '" + setting +
-			    "'; install the '" + setting +
-			    "' flavor from the anofox extension repository (SET custom_extension_repository = "
-			    "'https://ext.anofox.com/tabfm/" +
-			    setting + "') or SET anofox_tabfm_device='cpu'");
+			    "'; the GPU flavors are not published yet, so build one from source with TABFM_FLAVOR=" +
+			    setting + " (see docs/rocm-build.md for the rocm toolchain), or SET "
+			    "anofox_tabfm_device='cpu'. Released cpu builds: SET custom_extension_repository = "
+			    "'https://get.anofox.com'");
 		}
 		if (auto *device = find_usable(setting)) {
 			return *device;
