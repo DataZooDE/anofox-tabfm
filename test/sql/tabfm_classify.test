@@ -119,6 +119,41 @@ SELECT * FROM tabfm_classify('many','y')
 ----
 <REGEX>:.*at most 10.*
 
+# ... and the limit comes from the SELECTED model's registry entry, not a
+# hardcoded 10, so a model declaring a narrower head says so before running a
+# forward pass. The message must name the model and its actual limit (#26) —
+# "check the registered model's graph" sent people auditing a registration
+# that was never wrong.
+statement ok
+CALL tabfm_register_model(
+  id := 'narrow', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal',
+  max_classes := 3)
+
+statement ok
+CREATE TABLE five_classes AS SELECT (i*0.1) AS x, 'l' || (i % 5)::VARCHAR AS y FROM range(20) t(i);
+
+statement error
+SELECT * FROM tabfm_classify('five_classes','y', model := 'narrow')
+----
+<REGEX>:.*'narrow' supports at most 3 classes.*
+
+# the label count and column are named too
+statement error
+SELECT * FROM tabfm_classify('five_classes','y', model := 'narrow')
+----
+<REGEX>:.*'y' has 5.*
+
+# and it attributes the limit to the model rather than to the user's graph —
+# the wording that distinguishes it from ValidateTabFMOutput's backstop
+statement error
+SELECT * FROM tabfm_classify('five_classes','y', model := 'narrow')
+----
+<REGEX>:.*property of the model.*
+
 # all-NULL target: no context
 statement ok
 CREATE TABLE none AS SELECT (i*0.1) AS x, NULL::VARCHAR AS y FROM range(4) t(i);
