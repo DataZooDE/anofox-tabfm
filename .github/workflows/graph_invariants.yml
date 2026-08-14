@@ -1,0 +1,41 @@
+#
+# Structural invariants of the committed weight-free graphs in resources/.
+#
+# Deliberately separate from MainDistributionPipeline.yml: this needs none of
+# the platform matrix, no ONNX Runtime and no weights — it reads the graphs and
+# exits in seconds — and keeping it out avoids touching the scaffold pipeline.
+#
+name: Graph invariants
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scatternd-pins:
+    name: ScatterND slice bounds stay pinned
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install --quiet onnx
+
+      # A re-export drops the pins that keep tabicl-v2 running on the CUDA EP
+      # (issue #21), and nothing else would notice: the graphs still load, CPU
+      # results are unchanged, and no CI runner has an NVIDIA GPU to fail on.
+      # The glob is the point — a NEW graph carrying the same construct fails
+      # here until someone decides to pin it or exclude it deliberately.
+      - name: Every ScatterND slice bound is a graph output
+        run: python tools/pin_dynamic_slice_bounds.py --check resources/graph_*.onnx
