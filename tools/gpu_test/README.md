@@ -29,6 +29,22 @@ outputs differed. `--opt-level` and `--no-mem-pattern` exist for isolating ORT
 optimiser and allocator behaviour — both were used to eliminate hypotheses in
 issue #21.
 
+## `ort_repro.py` — the standalone upstream reproducer
+
+Attached to [onnxruntime#32083](https://github.com/microsoft/onnxruntime/issues/32083).
+Self-contained: fetches the public weight-free graph over HTTPS, synthesizes
+initializers, runs it on both providers. Nothing from this repo is needed
+besides the file itself, so ORT maintainers can run it directly.
+
+```bash
+pip install onnxruntime-gpu==1.23.2 onnx numpy 'nvidia-cudnn-cu12<10'
+python ort_repro.py            # pre-fix graph:  CPU ok, CUDA fails at ScatterND
+python ort_repro.py --pinned   # bounds pinned as outputs: both providers ok
+```
+
+Keep the URLs in it working: the upstream issue tells maintainers to `curl`
+this file from `main`.
+
 ## `runpod_run.py` — rent a GPU, run, destroy
 
 ```bash
