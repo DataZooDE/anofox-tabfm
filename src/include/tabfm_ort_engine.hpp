@@ -108,6 +108,15 @@ inline const char *TabFMFlavorName() {
 #endif
 }
 
+//! Create the process-wide Ort::Env if it does not exist yet. Call before the
+//! first ORT API use in any entry point: the env registers ORT's default
+//! logger, and ORT reports execution-provider load failures through that
+//! logger, so without an env those failures are replaced by "Attempt to use
+//! DefaultLogger but none has been registered" and the real cause is lost.
+//! Idempotent and cheap (the env is a leaked singleton). No ORT type crosses
+//! this boundary, so consumers still need no ORT headers.
+void EnsureOrtEnv();
+
 //! Enumerate devices this build can see. Always contains the 'cpu' row;
 //! GPU rows appear only in the cuda/rocm flavors (probes compiled per macro).
 vector<TabFMDeviceInfo> DiscoverDevices();

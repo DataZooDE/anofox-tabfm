@@ -374,6 +374,12 @@ void ProbeCoreMLDevices(vector<TabFMDeviceInfo> &devices) {
 //===----------------------------------------------------------------------===//
 
 vector<TabFMDeviceInfo> DiscoverDevices() {
+	// tabfm_devices() is usually the first ORT call a session makes, and the
+	// probes below reach into ORT. Register the default logger first so any ORT
+	// diagnostic here is reported as itself rather than as a DefaultLogger
+	// error (see EnsureOrtEnv in tabfm_ort_engine.hpp).
+	EnsureOrtEnv();
+
 	vector<TabFMDeviceInfo> devices;
 	devices.push_back(MakeCpuDevice());
 #if defined(TABFM_EP_CUDA) && !defined(_WIN32)

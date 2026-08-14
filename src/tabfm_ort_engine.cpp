@@ -133,6 +133,35 @@ Ort::Env &GetOrtEnv() {
 	return *env;
 }
 
+} // anonymous namespace
+
+// Constructing the Ort::Env is what registers ORT's *default logger*, and ORT
+// reports execution-provider load failures through exactly that logger:
+//
+//   CudaProviderFactoryCreator::Create(...) try { ... }
+//   catch (const std::exception &exception) {
+//     // Will get an exception when fail to load EP library.
+//     LOGS_DEFAULT(ERROR) << exception.what();
+//     return nullptr;
+//   }
+//
+// (onnxruntime/core/session/provider_bridge_ort.cc). With no env yet,
+// LoggingManager::DefaultLogger() throws on its own account — so a failure to
+// load libonnxruntime_providers_cuda.so surfaces as the wholly unrelated
+//
+//   Invalid Error: .../logging.h:365 LoggingManager::DefaultLogger
+//   Attempt to use DefaultLogger but none has been registered.
+//
+// and ORT's real diagnosis (which library, which version it wanted) is
+// destroyed on the way out. Creating the env first costs nothing — it is a
+// leaked process-wide singleton either way — and it is the difference between
+// an actionable message and bisecting the wrong thing for an afternoon.
+void EnsureOrtEnv() {
+	GetOrtEnv();
+}
+
+namespace {
+
 // Guard the FIRST ORT API use. If the onnxruntime shared library resolved at
 // runtime is older than the headers this was compiled against,
 // OrtGetApiBase()->GetApi(ORT_API_VERSION) returns null and the very next ORT
@@ -234,6 +263,13 @@ string ExtractTensorName(const string &message) {
 }
 
 void AppendExecutionProviders(Ort::SessionOptions &options, const TabFMSessionConfig &config) {
+	// BEFORE any AppendExecutionProvider_*: appending a GPU EP dlopen's its
+	// provider library, and ORT logs that failure through the default logger,
+	// which only exists once the env does (see EnsureOrtEnv above). Without
+	// this line a missing/mismatched provider library is reported as
+	// "Attempt to use DefaultLogger but none has been registered".
+	EnsureOrtEnv();
+
 	const auto &device = config.device_id;
 	if (device == "cpu" || device.empty()) {
 		return; // CPU EP is implicit
