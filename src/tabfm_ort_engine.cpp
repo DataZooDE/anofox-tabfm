@@ -255,11 +255,17 @@ string ExtractTensorName(const string &message) {
 }
 
 [[noreturn]] void ThrowFlavorMissingDeviceLocal(const string &requested) {
+	// The anofox repository (https://get.anofox.com) currently serves the cpu
+	// flavor only, so pointing a GPU user at it would loop them back to this
+	// same error. Name the build-from-source route instead, which is the one
+	// that works today (issue #25).
 	throw InvalidInputException("anofox_tabfm: this build is the '" + string(TabFMFlavorName()) +
-	                            "' flavor and does not carry '" + requested + "'; install the '" + requested +
-	                            "' flavor from the anofox extension repository (SET custom_extension_repository = "
-	                            "'https://ext.anofox.com/tabfm/" +
-	                            requested + "') or SET anofox_tabfm_device='cpu'");
+	                            "' flavor and does not carry '" + requested +
+	                            "'; the GPU flavors are not published yet, so build one from source with "
+	                            "TABFM_FLAVOR=" + requested +
+	                            " (see docs/rocm-build.md for the rocm toolchain), or SET "
+	                            "anofox_tabfm_device='cpu'. Released cpu builds: SET "
+	                            "custom_extension_repository = 'https://get.anofox.com'");
 }
 
 void AppendExecutionProviders(Ort::SessionOptions &options, const TabFMSessionConfig &config) {

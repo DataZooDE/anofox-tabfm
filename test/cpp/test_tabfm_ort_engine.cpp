@@ -357,7 +357,12 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		} catch (std::exception &error) {
 			string message = error.what();
 			REQUIRE(message.find("does not carry 'cuda'") != string::npos);
-			REQUIRE(message.find("install the 'cuda' flavor") != string::npos);
+			// The route must be one that exists: the repository serves the cpu
+			// flavor only, so the message names the from-source build instead,
+			// and must never point at the dead ext.anofox.com host (issue #25).
+			REQUIRE(message.find("TABFM_FLAVOR=cuda") != string::npos);
+			REQUIRE(message.find("ext.anofox.com") == string::npos);
+			REQUIRE(message.find("get.anofox.com") != string::npos);
 			REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
 		}
 		REQUIRE_THROWS(ResolveDevice("rocm", devices, false, false));
@@ -411,7 +416,12 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		} catch (std::exception &error) {
 			string message = error.what();
 			REQUIRE(message.find("does not carry 'coreml'") != string::npos);
-			REQUIRE(message.find("install the 'coreml' flavor") != string::npos);
+			// The route must be one that exists: the repository serves the cpu
+			// flavor only, so the message names the from-source build instead,
+			// and must never point at the dead ext.anofox.com host (issue #25).
+			REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
+			REQUIRE(message.find("ext.anofox.com") == string::npos);
+			REQUIRE(message.find("get.anofox.com") != string::npos);
 			REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
 		}
 	}
@@ -510,7 +520,8 @@ TEST_CASE("tabfm_ort_engine: coreml device on a non-coreml flavor gives the acti
 	} catch (std::exception &error) {
 		string message = error.what();
 		REQUIRE(message.find("does not carry 'coreml'") != string::npos);
-		REQUIRE(message.find("install the 'coreml' flavor") != string::npos);
+		REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
+		REQUIRE(message.find("ext.anofox.com") == string::npos);
 		REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
 	}
 }

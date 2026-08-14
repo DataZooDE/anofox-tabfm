@@ -380,8 +380,11 @@ link no vendor runtime — CUDA/cuDNN or ROCm resolve from your system, and
 `tabfm_devices()` reports what was found. GPU dtype is set by
 `anofox_tabfm_gpu_precision` (default `bf16`); `CALL tabfm_gpu_precompile(task)`
 warms a shape bucket ahead of the first predict (builds/caches the ROCm `.mxr`).
-GPU flavors ship from the anofox extension repository
-(`SET custom_extension_repository = 'https://ext.anofox.com/tabfm/<flavor>'`).
+Released cpu builds are served from the anofox extension repository
+(`SET custom_extension_repository = 'https://get.anofox.com'`) as well as from
+the DuckDB community repository. The GPU flavors are **not published yet** —
+build one from source with `TABFM_FLAVOR=cuda|rocm` (see
+[`docs/rocm-build.md`](docs/rocm-build.md) for the ROCm toolchain).
 
 ## Feedback
 
