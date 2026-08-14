@@ -94,6 +94,59 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   the next milestone; today's e2e coverage uses the classification CI fixture.
 - Telemetry is a deliberate deviation from spec NFR-S1 — see the README.
 
+## [v2026.08.15] - 2026-08-15
+
+Two reports from [@maxdemarzi](https://github.com/maxdemarzi) and the follow-up
+work they prompted.
+
+### Fixed
+- **The flavor-install route pointed at a host that does not exist**
+  ([#25](https://github.com/DataZooDE/anofox-tabfm/issues/25)). `ext.anofox.com`
+  has no DNS record, so the route the extension printed — and the README
+  documented — could not work for anyone. It was wrong in both host and path:
+  the repository is `https://get.anofox.com`, serving
+  `/<duckdb_version>/<platform>/anofox_tabfm.duckdb_extension.gz`. Correcting
+  the host alone would still have dead-ended a GPU user, because that
+  repository serves the cpu flavor only, so the message now names the route
+  that works — building the flavor from source — and cites the repository for
+  released cpu builds. See `docs/GPU_DISTRIBUTION.md` for why a published GPU
+  artifact is not a pipeline change.
+- **The class ceiling was hardcoded and blamed the user's graph**
+  ([#26](https://github.com/DataZooDE/anofox-tabfm/issues/26)). The 10-class
+  limit was asserted in the engine and reported as "TabFM v1 supports at most
+  10" whatever model was selected, while `size_regime.max_classes` sat in the
+  registry read only for display and for generate's bin sizing. A model with a
+  narrower head than 10 got no early check at all: it ran preprocessing, weight
+  resolution and a full forward pass before the graph-mismatch backstop fired,
+  sending people to audit a registration that was not wrong. The ceiling now
+  comes from the selected model's registry entry and the message names the
+  model, the limit, the column and its class count. A spec that declares
+  nothing keeps the historical 10.
+
+### Changed
+- **Every ScatterND slice bound is pinned, and CI enforces it.** The pins that
+  keep `tabicl-v2` running on the CUDA EP (v2026.08.14) now cover `tabpfn-v3`
+  and `orion-bix` too. Those two do *not* currently fail on CUDA — measured,
+  unpinned, on an RTX 3070 — so this is insurance: the trigger is a recycled
+  CPU-side buffer, an allocation pattern rather than a property of the
+  construct, and nothing characterises when it bites. Each newly pinned graph
+  was verified against its **real cached checkpoint**: `logits` bit-identical on
+  CPU at three shapes, and agreeing with the unpinned graph on CUDA. With every
+  affected graph pinned, `.github/workflows/graph_invariants.yml` checks them
+  with a plain glob, so a new graph carrying the construct fails until someone
+  pins it or excludes it deliberately. The three exporters that can emit the
+  construct also apply the pass themselves, so a re-export cannot regress it.
+
+### Added
+- `tools/gpu_test/` — a harness for exercising GPU paths on a machine with no
+  GPU: rent the cheapest one by the minute, ship files to it, run, destroy. Not
+  wired into CI (it costs money per run). Includes the standalone reproducer
+  filed as [onnxruntime#32083](https://github.com/microsoft/onnxruntime/issues/32083)
+  for the CUDA `Slice` bug the pins work around.
+- `docs/GPU_DISTRIBUTION.md` — why `SET custom_extension_repository` cannot hand
+  anyone a working CUDA build today, with the measurements, and the one
+  unanswered question that gates the only route which would.
+
 ## [v2026.08.14] - 2026-08-14
 
 Everything in this release is CUDA, and all of it comes from
