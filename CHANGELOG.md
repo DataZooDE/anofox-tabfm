@@ -39,19 +39,6 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   like 2.5. Offline fixture: `test/sql/tabfm_tabpfn3.test`.
 
 ### Fixed
-- **`tabicl-v2` could not run on CUDA at all.** Both TabICL graphs failed inside
-  inference at a `ScatterND` node — `updates {S,…}` against `indices {T,1}` —
-  while running correctly on the CPU EP. The graphs are not at fault: `indices`
-  is `Slice(Range(0,T,1), 0, S)` and is length `S` by construction. On the CUDA
-  EP that `Slice` returns its input **untrimmed**, `[0..T-1]`, because the
-  CPU-side buffer holding `S` is recycled before the kernel reads it — an ONNX
-  Runtime bug, still present in 1.28.0 (#21). Naming the bound tensors as graph
-  outputs excludes them from buffer reuse, and both graphs now run on CUDA,
-  agreeing with the CPU EP to 3.5e-4 (classification) and 1.5e-6 (regression)
-  relative. CPU output is bit-identical to before, so nothing on the CPU path
-  changes. `tools/pin_dynamic_slice_bounds.py` applies the pins structurally,
-  and `--check` re-verifies them so a re-export cannot silently drop the
-  workaround.
 - **Checkpoint-based models could not load their converted weights.** Every
   `tools/export_*/convert_weights.py` writes a `model.safetensors` into the cache
   slug, but the manifests declare the downloadable `model.ckpt`, so nothing
@@ -106,6 +93,46 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 - Real 6.6 GB weights, the numeric regression fixture, and NFR-Q1 parity are
   the next milestone; today's e2e coverage uses the classification CI fixture.
 - Telemetry is a deliberate deviation from spec NFR-S1 — see the README.
+
+## [v2026.08.14] - 2026-08-14
+
+Everything in this release is CUDA, and all of it comes from
+[@maxdemarzi](https://github.com/maxdemarzi).
+
+### Fixed
+- **`tabicl-v2` could not run on CUDA at all.** Both TabICL graphs failed inside
+  inference at a `ScatterND` node — `updates {S,…}` against `indices {T,1}` —
+  while running correctly on the CPU EP. The graphs are not at fault: `indices`
+  is `Slice(Range(0,T,1), 0, S)` and is length `S` by construction. On the CUDA
+  EP that `Slice` returns its input **untrimmed**, `[0..T-1]`, because the
+  CPU-side buffer holding `S` is recycled before the kernel reads it — an ONNX
+  Runtime bug, still present in 1.28.0 (#21). Naming the bound tensors as graph
+  outputs excludes them from buffer reuse, and both graphs now run on CUDA,
+  agreeing with the CPU EP to 3.5e-4 (classification) and 1.5e-6 (regression)
+  relative. CPU output is bit-identical to before, so nothing on the CPU path
+  changes. `tools/pin_dynamic_slice_bounds.py` applies the pins structurally,
+  and `--check` re-verifies them so a re-export cannot silently drop the
+  workaround ([#23](https://github.com/DataZooDE/anofox-tabfm/pull/23)).
+  The recycled buffer was isolated by exposing graph intermediates one at a
+  time — only the two tensors carrying `S` change the outcome.
+- **A failed execution-provider load reported the wrong error entirely**
+  ([#22](https://github.com/DataZooDE/anofox-tabfm/pull/22)). ORT logs EP load
+  failures through its *default* logger, which only exists once an `Ort::Env`
+  does. Appending a GPU EP before creating the env therefore replaced ORT's real
+  diagnosis — which library, which version it wanted — with the unrelated
+  `Attempt to use DefaultLogger but none has been registered`. This is what made
+  a newer ONNX Runtime look incompatible in #21 when the actual fault was a
+  provider library that would not load. The env is now created before any EP is
+  appended and before device discovery.
+
+### Added
+- **CUDA device discovery on Windows** ([#24](https://github.com/DataZooDE/anofox-tabfm/pull/24)).
+  The NVML probe behind `tabfm_devices()` was Linux-only, so on Windows no CUDA
+  device was ever discovered and `SET anofox_tabfm_device='cuda'` was refused —
+  the CUDA execution provider itself was never the problem. NVML has the same C
+  ABI on both platforms, so only the loader differs (`nvml.dll` via
+  `LoadLibrary` against `libnvidia-ml.so.1` via `dlopen`); the probe is
+  single-sourced. See `docs/WINDOWS_INFERENCE.md`.
 
 ## [v2026.08.13] - 2026-08-13
 
