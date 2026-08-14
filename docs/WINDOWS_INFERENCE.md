@@ -60,3 +60,41 @@ is not on that process's DLL search path. Options for the packaging story: ship
 `onnxruntime.dll` alongside the extension and load it with an altered search path,
 or statically link ORT. Until then, `EnsureUsableOrtApi()` guarantees a clear
 error rather than a crash.
+
+## GPU on Windows
+
+`tabfm_devices()` used to return the cpu row alone on Windows even with a working
+NVIDIA card, because `ProbeCudaDevices` was compiled only on non-Windows. The
+CUDA execution provider itself was never guarded — with no device discovered,
+`ResolveDevice` simply refused `'cuda'` and there was nothing to run on. NVML is
+the same C ABI on both platforms (`nvml.dll`, in System32, from any driver
+install), so only the loader differed.
+
+Building and running the `cuda` flavor here, on a self-built extension (there is
+no published GPU build — see below):
+
+```
+tabfm_devices()
+  cuda:0  CUDAExecutionProvider  NVIDIA GeForce RTX 3060  sm_86  12 GB  usable = true
+```
+
+Two runtime requirements, neither of which the build enforces:
+
+* **ORT's CUDA provider DLLs must sit next to the host executable**, same as
+  `onnxruntime.dll` (§ above). `cmake/ort.cmake` stages
+  `onnxruntime_providers_cuda.dll` and `onnxruntime_providers_shared.dll` into
+  the build tree alongside it.
+* **The CUDA 12 runtime must be on `PATH`.** ORT 1.23.2's GPU build wants
+  `cudart64_12` / `cublas64_12` / `cublasLt64_12` / `cufft64_11` / `curand64_10`
+  / `cudnn64_9`. A CUDA Toolkit install provides them; failing that, the
+  `nvidia-*-cu12` pip wheels ship the same DLLs and their `bin` directories can
+  be prepended to `PATH`. Without them the EP fails to load, and — because the
+  env is created after the provider is appended — that surfaces as
+  `Attempt to use DefaultLogger but none has been registered` rather than
+  anything mentioning CUDA (#22 fixes the message).
+
+Measured end to end on this box against the Linux baseline, real `tabicl-v2`
+checkpoint, 60-row fixture: **0/60 label mismatches** between Windows CUDA and
+the Linux CPU baseline (max softmax delta 3.0e-3, ordinary fp32 CPU/GPU
+divergence). Note that `tabicl-v2` additionally needs the ScatterND graph
+workaround (#23) to run on CUDA at all, on either platform.
