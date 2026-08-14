@@ -108,6 +108,8 @@ struct ResolvedModel {
 	// bundled graph + cache weights, a user manifest resolves next to itself.
 	bool is_builtin = false;
 	string source_dir;
+	//! size_regime.max_classes from the registry; -1 when the spec omits it.
+	int64_t max_classes = -1;
 };
 
 // Load {onnx -> safetensors} from the manifest: inline map, or the
@@ -291,6 +293,7 @@ ResolvedModel ResolveModelSpec(const PredictContext &ctx, TabFMTask task, const 
 	// its OWN local file, not the embedded real-model one.
 	resolved.is_builtin = spec.source_dir.empty();
 	resolved.source_dir = spec.source_dir;
+	resolved.max_classes = spec.size_regime.max_classes;
 	return resolved;
 }
 
@@ -869,10 +872,23 @@ public:
 		// The data is scorable — now resolve weights/graph/tensor map from disk.
 		ResolveModelArtifacts(*fs, in.ctx, task, resolved);
 
-		if (task == TabFMTask::CLASSIFICATION && batch.label_decoder.size() > 10) {
+		// The class ceiling is a property of the SELECTED model — its head is
+		// exactly this wide — so read it from that model's registry entry rather
+		// than asserting a number that happens to be right for the built-ins.
+		// Saying "TabFM v1" while running tabicl-v2, or blaming the graph, sends
+		// people auditing a registration that is not wrong (#26). A spec that
+		// declares nothing keeps the historical ceiling; ValidateTabFMOutput
+		// remains the backstop for a graph that contradicts its own spec.
+		const idx_t class_ceiling =
+		    resolved.max_classes > 0 ? NumericCast<idx_t>(resolved.max_classes) : 10;
+		if (task == TabFMTask::CLASSIFICATION && batch.label_decoder.size() > class_ceiling) {
 			throw InvalidInputException(
-			    "target '%s' has %llu distinct labels; TabFM v1 supports at most 10. Consider grouping rare labels.",
-			    in.target_name, static_cast<unsigned long long>(batch.label_decoder.size()));
+			    "anofox_tabfm: '%s' supports at most %llu classes and '%s' has %llu. This is a property of the "
+			    "model, not of your data or your graph. Reduce the class count, or decompose the problem "
+			    "(one-vs-rest, hierarchical grouping) so each call stays within the limit; SELECT model, "
+			    "max_classes FROM tabfm_list_models(); shows the ceiling for every registered model.",
+			    resolved.manifest.model, static_cast<unsigned long long>(class_ceiling), in.target_name,
+			    static_cast<unsigned long long>(batch.label_decoder.size()));
 		}
 
 		// 2. materialize the input tensors (float32) — CPU-only work, done OUTSIDE
