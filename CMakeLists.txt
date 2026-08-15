@@ -67,6 +67,7 @@ set(EXTENSION_SOURCES
         src/tabfm_generate_macros.cpp
         src/tabfm_engine.cpp
         src/tabfm_migraphx.cpp
+        src/tabfm_plugin_backend.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
 )
 
@@ -142,10 +143,31 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_generate.cpp
     test/cpp/test_tabfm_bundled_resources.cpp
     test/cpp/test_tabfm_weights.cpp
+    test/cpp/test_tabfm_plugin_backend.cpp
     test/cpp/test_tabfm_cpu_budget.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
+    # Backend-plugin fixtures (docs/DYNAMIC_BACKENDS.md phase 1). The real GPU
+    # backend needs hardware CI does not have, which would leave the LOADER —
+    # where an ABI mismatch is undefined behaviour rather than a wrong answer —
+    # untested. These stand in for it: real shared libraries, one correct and
+    # one built with a deliberately wrong ABI version.
+    add_library(anofox_tabfm_fake_plugin SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
+    target_include_directories(anofox_tabfm_fake_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_compile_features(anofox_tabfm_fake_plugin PRIVATE cxx_std_17)
+    set_target_properties(anofox_tabfm_fake_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+    add_library(anofox_tabfm_fake_plugin_bad_abi SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
+    target_include_directories(anofox_tabfm_fake_plugin_bad_abi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_compile_features(anofox_tabfm_fake_plugin_bad_abi PRIVATE cxx_std_17)
+    target_compile_definitions(anofox_tabfm_fake_plugin_bad_abi PRIVATE TABFM_FAKE_PLUGIN_BAD_ABI=1)
+    set_target_properties(anofox_tabfm_fake_plugin_bad_abi PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
     add_library(anofox_tabfm_unittest_tests OBJECT ${TABFM_CPP_TEST_SOURCES})
+    add_dependencies(anofox_tabfm_unittest_tests anofox_tabfm_fake_plugin anofox_tabfm_fake_plugin_bad_abi)
+    target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
+        TABFM_FAKE_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_fake_plugin>"
+        TABFM_FAKE_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:anofox_tabfm_fake_plugin_bad_abi>")
     target_compile_features(anofox_tabfm_unittest_tests PRIVATE cxx_std_17)
     target_include_directories(anofox_tabfm_unittest_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
