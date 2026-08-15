@@ -212,15 +212,36 @@ mismatches=0`, exit code 0.** The graph runs cleanly.
 That settles it: CUDA hardware, driver, and this exact ORT 1.28.0 build all
 work fine on this GPU. The crash is specific to the **plugin-EP registration
 path** (`RegisterExecutionProviderLibrary` → `GetEpDevices` →
-`AppendExecutionProvider_V2`) — very likely an ORT 1.28 bug in that newer,
-less-exercised code path, not something wrong in `tabfm_ort_engine.cpp`'s
-`RegisterCudaProvider`, not the fixture graph, not this environment. Worth an
-upstream report (same shape as issue #21 → onnxruntime#32083 earlier this
-project's history: a self-contained repro handed to ORT maintainers, not a
-bug this codebase can fix on its own). Until ORT fixes it (or a workaround —
-e.g. explicit `ep_options` — is found and verified), `SET anofox_tabfm_device
-= 'cuda'` should be expected to fail at `Run()` on ORT 1.28, despite
-registration succeeding.
+`AppendExecutionProvider_V2`) — not something wrong in `tabfm_ort_engine.cpp`'s
+`RegisterCudaProvider`, not the fixture graph, not this environment.
+
+**Root cause: almost certainly [onnxruntime#28329](https://github.com/microsoft/onnxruntime/issues/28329)**,
+open upstream, not our bug to fix. Its description matches this crash beat
+for beat: "session creation succeeds but the first `session.Run()` crashes...
+The built-in CUDA EP works correctly with the same model and inputs... Model:
+Any ONNX model — crash occurs on first Run, not model-specific... No C# tests
+exist for the Plugin EP path... all CUDA C# tests use `AppendExecutionProvider_CUDA`."
+Root cause per that report: the plugin-EP's `cuda_ep_factory.cc` builds an
+`OrtMemoryInfo` for pinned memory using the legacy `OrtMemTypeCPU(-1)` value,
+and inference code reads that raw `-1` into an `OrtDevice` constructor that
+now asserts `memory_type == DEFAULT || memory_type == HOST_ACCESSIBLE` — the
+built-in EP maps this correctly (`GetOrtDeviceByMemType`), the plugin-EP
+factory does not. Filed 2026-05-03 against v1.25.1, still open, and the
+underlying `cuda_ep_factory.cc`/`ortdevice.h` code is unchanged by anything
+in 1.28.0's release notes — this is a shared code path, not a
+version-specific regression, so it plausibly explains our stripped-build
+SIGSEGV too (an assert/exception deep in a release build with corrupted
+state upstream of the throw can surface as a raw segfault rather than a
+clean exception).
+
+Given the issue is open, not our code, and has a specific root cause already
+diagnosed by someone else, filing a new upstream report would be redundant —
+the useful next action, if this ever gets picked back up, is to add a comment
+to #28329 confirming reproduction on 1.28.0 with a link to this project's
+independent repro (registration succeeds, `Run()` crashes, classic EP is
+fine), or watch that issue for a fix landing. Until then, `SET
+anofox_tabfm_device = 'cuda'` should be expected to fail at `Run()` on ORT
+1.28's plugin-EP path.
 
 **vcpkg overlay port bumped to 1.28.0 too** — this was a real, separate
 blocker: the release/community-extension build compiles ORT from
