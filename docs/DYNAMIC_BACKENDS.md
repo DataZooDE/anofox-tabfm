@@ -174,6 +174,20 @@ ORT headers and built cleanly, but not executed. That needs a RunPod rental
 (cost, explicit go) to close out the way phase 1 was closed out on real
 `bigfox` hardware.
 
+**vcpkg overlay port bumped to 1.28.0 too** — this was a real, separate
+blocker: the release/community-extension build compiles ORT from
+`vcpkg_ports/onnxruntime`, still pinned to 1.23.2, so `RegisterExecutionProviderLibrary`
+et al wouldn't have existed there even with the code above merged. Two of the
+four 1.23.2-era patches were already fixed upstream and dropped; the other two
+lost one hunk each to the same effect and kept the rest, rebased. The actual
+blocker was one level down: ORT 1.28.0 needs onnx ≥ 1.22.0
+(`TensorProto_DataType_INT2`/`UINT2`, `OpSchema::SetNodeDeterminism`), but
+vcpkg's registry onnx port tops out at 1.19.0 — fixed with a second overlay
+port, `vcpkg_ports/onnx`, pinning 1.22.0. Verified for real: `make release`
+builds both from source, the resulting extension is confirmed statically
+linked (no `libonnxruntime.so` dependency), and the full suite passes against
+it (601 sqllogictest + 71,989 Catch2 assertions).
+
 ### Phase 4 — CoreML
 
 **Not a missing capability — a build-source choice.** The official ORT 1.28
