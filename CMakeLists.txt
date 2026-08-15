@@ -124,6 +124,30 @@ if(UNIX AND NOT APPLE)
     target_link_options(${LOADABLE_EXTENSION_NAME} PRIVATE -Wl,--allow-multiple-definition)
 endif()
 
+# --- MIGraphX backend plugin (docs/DYNAMIC_BACKENDS.md phase 1) ---
+#
+# A standalone shared library, built and shipped independently of the cpu/cuda
+# extension binary: the ROCm backend becomes something tabfm_download_runtime
+# fetches and the engine dlopens at runtime, not a compile-time flavor choice.
+# Optional and silent when absent — cpu/cuda CI machines carry no MIGraphX
+# install and must not fail configure over a plugin they cannot use.
+set(TABFM_MIGRAPHX_DIR "/opt/rocm" CACHE PATH "MIGraphX install prefix (include/ + lib/libmigraphx_c) for the plugin build")
+find_library(TABFM_MIGRAPHX_PLUGIN_LIB migraphx_c
+    PATHS "${TABFM_MIGRAPHX_DIR}/lib" "${TABFM_MIGRAPHX_DIR}/lib64" NO_DEFAULT_PATH)
+if(TABFM_MIGRAPHX_PLUGIN_LIB AND EXISTS "${TABFM_MIGRAPHX_DIR}/include/migraphx/migraphx.hpp")
+    message(STATUS "anofox_tabfm: building the migraphx backend plugin from ${TABFM_MIGRAPHX_DIR}")
+    add_library(anofox_tabfm_migraphx_plugin SHARED src/tabfm_migraphx_plugin.cpp)
+    target_include_directories(anofox_tabfm_migraphx_plugin PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+        "${TABFM_MIGRAPHX_DIR}/include")
+    target_link_libraries(anofox_tabfm_migraphx_plugin PRIVATE "${TABFM_MIGRAPHX_PLUGIN_LIB}")
+    target_compile_features(anofox_tabfm_migraphx_plugin PRIVATE cxx_std_17)
+    set_target_properties(anofox_tabfm_migraphx_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    set(TABFM_MIGRAPHX_PLUGIN_BUILT TRUE)
+else()
+    message(STATUS "anofox_tabfm: no MIGraphX install found at ${TABFM_MIGRAPHX_DIR}, skipping the migraphx backend plugin")
+endif()
+
 # --- C++ unit tests (Catch2, compiled into DuckDB's test/unittest binary) ---
 #
 # Registered through a deferred call because this CMakeLists is processed via
@@ -144,6 +168,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_bundled_resources.cpp
     test/cpp/test_tabfm_weights.cpp
     test/cpp/test_tabfm_plugin_backend.cpp
+    test/cpp/test_tabfm_migraphx_plugin.cpp
     test/cpp/test_tabfm_cpu_budget.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
@@ -168,6 +193,15 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
         TABFM_FAKE_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_fake_plugin>"
         TABFM_FAKE_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:anofox_tabfm_fake_plugin_bad_abi>")
+    if(TABFM_MIGRAPHX_PLUGIN_BUILT)
+        # Real GPU test: only on a machine that actually built the plugin
+        # (a MIGraphX install present). Skips itself (no device / no bundled
+        # migraphx graph) rather than failing on a machine with the library
+        # but no GPU.
+        add_dependencies(anofox_tabfm_unittest_tests anofox_tabfm_migraphx_plugin)
+        target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
+            TABFM_MIGRAPHX_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_migraphx_plugin>")
+    endif()
     target_compile_features(anofox_tabfm_unittest_tests PRIVATE cxx_std_17)
     target_include_directories(anofox_tabfm_unittest_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include

@@ -45,7 +45,7 @@ is the seam every later phase plugs into. No new capability; better errors, and
 the compile-time flags become one input among several rather than the whole
 answer.
 
-### Phase 1 — ROCm as a loadable plugin
+### Phase 1 — ROCm as a loadable plugin ✅ (loader + plugin verified end to end)
 
 Move `src/tabfm_migraphx.cpp` into its own shared object that links
 `libmigraphx_c` normally, and `dlopen` it from the extension behind a small
@@ -56,7 +56,43 @@ is the alternative and is worse: the wrapper reaches ~40 C entry points.
 Notable: the plugin needs **only** `libmigraphx_c`, not an ORT-with-MIGraphX
 build, so this also removes `TABFM_ORT_ROCM_DIR` from the equation.
 
-Testable end to end on `bigfox` (RX 9070 XT / gfx1201). No cloud spend.
+Tested end to end on `bigfox` (RX 9070 XT / gfx1201). No cloud spend.
+
+- `src/include/tabfm_plugin_abi.h` — the versioned C ABI (`abi_version` first,
+  checked before anything else in the table is read).
+- `src/tabfm_plugin_backend.cpp` — the loader. Tested against real shared
+  libraries (`test/cpp/plugin_fixture/fake_plugin.cpp`, built twice — correct
+  and deliberately-wrong ABI — so the ABI-mismatch refusal is exercised by a
+  genuinely mismatched library, not a mock). One real bug caught this way: the
+  loader read `api->abi_version` / `api->name()` *after* `dlclose`, a
+  use-after-unload that segfaulted under ASan; fixed by capturing both before
+  unloading.
+- `src/tabfm_migraphx_plugin.cpp` — the plugin itself, built as
+  `anofox_tabfm_migraphx_plugin` whenever `TABFM_MIGRAPHX_DIR` resolves a
+  MIGraphX install (optional, silent skip otherwise — cpu/cuda CI never sees
+  a MIGraphX header). Same inference logic as the old compile-time backend,
+  ported to plain C++ so it has zero duckdb dependency.
+- `test/cpp/test_tabfm_migraphx_plugin.cpp` — CPU (ORT) vs the dlopen'd plugin,
+  on the **same real weights**, real gfx1201 hardware. Skips itself when the
+  developer's model cache or the plugin `.so` is absent (CI has neither).
+  Result below.
+
+**A second real bug, caught only because this ran on actual hardware**:
+`migraphx::target("gpu")` has `libmigraphx_c` `dlopen("libmigraphx_gpu.so")`
+by bare name from inside itself — that's a runtime `dlopen` call, not a
+`DT_NEEDED` entry, so it does **not** inherit `libmigraphx_c`'s own `RUNPATH`
+and fails wherever that directory isn't already on `LD_LIBRARY_PATH` or in the
+loader cache. Every ROCm layout puts it at `<libmigraphx_c's dir>/migraphx/lib/`,
+so the plugin resolves `libmigraphx_c`'s own on-disk location via `dladdr` at
+create time and preloads the GPU library from a path relative to *that* —
+correct wherever the dependency was actually found, not just at the prefix the
+plugin happened to be built against.
+
+**Also learned**: this workload cannot run under the ASan-instrumented debug
+build — HIP's GPU-mapped host allocations don't survive ASan's `munmap`
+interceptor (`AddressSanitizer: CHECK failed ... unable to unmmap`), a known
+class of ASan/GPU-driver conflict, unrelated to plugin correctness. Real GPU
+runs need `DISABLE_SANITIZER=1 make debug` (or `make release`).
 
 ### Phase 2 — ORT ≥ 1.28 (in progress)
 
@@ -132,8 +168,8 @@ assumed:
 | CPU vs CPU, same ORT (pin/rewrite changes) | **bit-identical** | **0** across 5 graphs × 3 shapes, real checkpoints | same kernels, same order |
 | CPU, ORT 1.24.1 vs 1.28.0 | relative 1e-4 | **3.26e-05**, argmax agreement **1.0** (real TabICL) | versions change kernel and fusion choices |
 | CPU vs CUDA fp32 | relative ~1e-4 | not yet measured | different kernels and reduction order |
-| CPU vs ROCm fp32 | relative ~1e-4 | not yet measured | as above |
-| bf16/fp16 GPU paths | class agreement + ~1e-2 | not yet measured | precision is the point of the mode |
+| CPU vs ROCm (MIGraphX plugin) bf16 | class agreement + loose abs bound | **max abs diff 0.52**, argmax agreement **5/5** (real `google/tabfm`, gfx1201) | bf16 has ~3 significant digits; the classification decision is the contract, not the raw logit |
+| bf16/fp16 GPU paths (other backends) | class agreement + ~1e-2 | not yet measured | precision is the point of the mode |
 
 The second row is the one worth internalising: an **ORT upgrade is not
 bit-identical** on a real model, only within tolerance. The fixture golden test

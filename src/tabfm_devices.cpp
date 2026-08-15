@@ -9,6 +9,7 @@
 
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_registration.hpp"
+#include "tabfm_shape_bucket.hpp"
 #include "anofox_function_alias.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -551,28 +552,17 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 //===----------------------------------------------------------------------===//
 
 TabFMShapeBucket MIGraphXShapeBucket(int64_t rows_t, int64_t features_h) {
-	if (rows_t <= 0 || features_h <= 0) {
-		throw InvalidInputException("anofox_tabfm: shape bucket needs positive dimensions, got T=" +
-		                            std::to_string(rows_t) + " H=" + std::to_string(features_h));
+	// The padding table itself lives in tabfm_shape_bucket.hpp, a duckdb-free
+	// header the standalone MIGraphX plugin also includes — one source of
+	// truth so the extension and the plugin can never disagree on a bucket
+	// and silently miss each other's .mxr cache. This wraps it in the
+	// exception shape the rest of the extension expects.
+	try {
+		auto raw = PadToShapeBucket(rows_t, features_h);
+		return TabFMShapeBucket {raw.padded_t, raw.padded_h};
+	} catch (const std::invalid_argument &e) {
+		throw InvalidInputException(string("anofox_tabfm: ") + e.what());
 	}
-	static constexpr int64_t T_BUCKETS[] = {128, 512, 1024, 2048, 4096, 10000};
-	static constexpr int64_t H_BUCKETS[] = {16, 64, 128, 256, 512};
-
-	auto pad_up = [](int64_t value, const int64_t *buckets, size_t count) {
-		for (size_t i = 0; i < count; i++) {
-			if (value <= buckets[i]) {
-				return buckets[i];
-			}
-		}
-		// Above the largest bucket: return unchanged; callers guard via the
-		// anofox_tabfm_max_rows / anofox_tabfm_max_features settings.
-		return value;
-	};
-
-	TabFMShapeBucket bucket;
-	bucket.padded_t = pad_up(rows_t, T_BUCKETS, sizeof(T_BUCKETS) / sizeof(T_BUCKETS[0]));
-	bucket.padded_h = pad_up(features_h, H_BUCKETS, sizeof(H_BUCKETS) / sizeof(H_BUCKETS[0]));
-	return bucket;
 }
 
 //===----------------------------------------------------------------------===//
