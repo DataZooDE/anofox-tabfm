@@ -79,26 +79,49 @@ SET anofox_tabfm_device = 'cuda';
 
 Open questions, in the order they need answering:
 
-1. **Does the loader find them?** The extension links `libonnxruntime.so`
-   dynamically, and by the time SQL runs, `LOAD` has already resolved (or
-   failed to resolve) that. So the download cannot rescue the *link* — it can
-   only supply the provider libraries that ORT `dlopen`s later. Which implies
-   the shipped cuda flavor must link ORT **statically** (CPU core) and treat
-   CUDA purely as a downloaded provider. Whether ORT supports that split — a
-   static core that still loads `libonnxruntime_providers_cuda.so` — is the
-   first thing to establish, and it decides whether this option exists at all.
-2. **Version pinning.** The provider library must match the ORT core exactly.
-   The download manifest therefore pins an ORT version alongside a sha256, the
-   way model weights already are.
+1. ~~**Does the loader find them?**~~ **Answered — no, not on the ORT we ship.**
+   Measured on a rented GPU with ORT 1.23.2: registering
+   `libonnxruntime_providers_cuda.so` from an arbitrary directory via
+   `RegisterExecutionProviderLibrary` fails with
+
+   ```
+   Failed to get symbol CreateEpFactories with error:
+   .../libonnxruntime_providers_cuda.so: undefined symbol: CreateEpFactories
+   ```
+
+   That API requires the **plugin-EP ABI**. The 1.23.2 CUDA provider is a
+   *classic* provider: it exports `GetProvider` and nothing else (verified —
+   zero `CreateEpFactories`/`ReleaseEpFactory` symbols), and the only path that
+   loads it is `Env::GetRuntimePath() + filename` in
+   `provider_bridge_ort.cc`. `GetRuntimePath` is `dladdr`-based, so with ORT
+   linked statically it resolves next to **our `.duckdb_extension`** — DuckDB's
+   extension directory, not a cache we control. There is no bare-filename
+   fallback on that branch, so `LD_LIBRARY_PATH` does not help either.
+
+   The rest of the architecture is fine, which is why this was worth testing:
+   the provider needs **no ORT symbols at all** (0 of 335 undefined symbols are
+   ORT-namespace; it links only libc, libstdc++ and the CUDA libraries), and
+   the statically linked core we already publish contains the whole bridge —
+   `CudaProviderFactoryCreator::Create`, `TryGetProviderInfo_CUDA`,
+   `LoadDynamicLibraryFromProvider`, `RegisterExecutionProviderLibrary`. Only
+   the provider's ABI is wrong for the API that takes a path.
+
+   **This changes on newer ORT.** 1.28 can build CUDA *as a plugin EP*
+   (`cuda-plugin-ep` appears in `get_build_info()`, and the wheel ships
+   `_get_cuda_plugin_ep_library_path`), which is the plugin ABI and therefore
+   registrable by absolute path. So the option is not dead — it is gated on
+   moving to an ORT that offers the CUDA plugin EP, and on sourcing a
+   plugin-ABI build of the provider.
+
+2. **Version pinning.** The provider must match the ORT core exactly. The
+   download manifest therefore pins an ORT version alongside a sha256, the way
+   model weights already are.
 3. **Which platforms.** `cmake/ort.cmake` restricts cuda to `linux_amd64` and
    `windows_amd64`; the download would follow the same restriction.
 4. **Licence.** ORT is MIT, CUDA and cuDNN are NVIDIA-licensed and not
    redistributable by us — so the download must come from NVIDIA/ORT release
    URLs, not from `get.anofox.com`, and the CUDA/cuDNN prerequisite stays the
    user's.
-
-Question 1 is the gate. If a statically linked ORT core cannot load a
-dynamically shipped CUDA provider, Option B collapses into Option C.
 
 ## Option C — publish and document prerequisites
 
@@ -109,8 +132,11 @@ round-trip to establish which of the three libraries is wrong.
 
 ## Recommendation
 
-Stay on Option A until someone asks for a published GPU build, then answer
-question 1 before designing anything further. The only known GPU user today
+Stay on Option A. Option B is blocked on the ORT version rather than on
+anything about this project, so the trigger for revisiting it is an ORT upgrade
+to a release carrying the CUDA plugin EP — at which point the download
+machinery already exists and the design is a day's work rather than a
+question. The only known GPU user today
 builds from source and has done so successfully on an A40 and an RTX 3060.
 
 ## Testing a GPU build without a GPU
