@@ -45,7 +45,7 @@ is the seam every later phase plugs into. No new capability; better errors, and
 the compile-time flags become one input among several rather than the whole
 answer.
 
-### Phase 1 — ROCm as a loadable plugin ✅ (loader + plugin verified end to end)
+### Phase 1 — ROCm as a loadable plugin ✅ complete (loader, plugin, and engine wiring)
 
 Move `src/tabfm_migraphx.cpp` into its own shared object that links
 `libmigraphx_c` normally, and `dlopen` it from the extension behind a small
@@ -93,6 +93,15 @@ build — HIP's GPU-mapped host allocations don't survive ASan's `munmap`
 interceptor (`AddressSanitizer: CHECK failed ... unable to unmmap`), a known
 class of ASan/GPU-driver conflict, unrelated to plugin correctness. Real GPU
 runs need `DISABLE_SANITIZER=1 make debug` (or `make release`).
+
+**Engine wiring, closing out the phase**: `tabfm_engine.cpp`'s ROCm dispatch
+now calls `LoadPluginBackend` against `SET anofox_tabfm_ep_path` instead of
+the compile-time `MakeMIGraphXBackend` — `src/tabfm_migraphx.cpp` is deleted,
+and nothing in the main extension binary links `libmigraphx_c` on any flavor
+anymore. A resolved `rocm` device with no `ep_path` configured now throws
+rather than silently falling through to CPU (the tier-4 contract). The rocm
+flavor's ORT build is still required, but now only so device discovery's
+`OrtProviderAvailable` probe has an answer — not to run inference.
 
 ### Phase 2 — ORT ≥ 1.28 (in progress)
 
