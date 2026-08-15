@@ -28,7 +28,7 @@
 #include "tabfm_ckpt.hpp"
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_bundled_resources.hpp"
-#include "tabfm_migraphx.hpp"
+#include "tabfm_plugin_backend.hpp"
 #include "tabfm_state.hpp"
 
 #include "duckdb/common/file_system.hpp"
@@ -583,12 +583,18 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, 0);
 }
 
-// Direct AMD MIGraphX GPU backend. ORT's MIGraphX EP cannot run this model
-// (re-inlines weights -> 2 GB proto), so ROCm bypasses ORT: parse the
-// migraphx-ready graph (external-data + Shape-rewrite), compile per shape-bucket
-// (cached to .mxr), run. Engages only when the resolved device is a rocm GPU and
-// a bundled migraphx graph + matching weights exist; nullptr => fall back to the
-// CPU/ORT path.
+// AMD ROCm GPU backend. ORT's MIGraphX EP cannot run this model (re-inlines
+// weights -> 2 GB proto), so ROCm bypasses ORT entirely: a standalone plugin
+// (docs/DYNAMIC_BACKENDS.md phase 1, src/tabfm_migraphx_plugin.cpp) parses the
+// migraphx-ready graph (external-data + Shape-rewrite) directly and compiles
+// per shape-bucket (cached to .mxr). Engages only when the resolved device is
+// a rocm GPU and a bundled migraphx graph + matching weights exist; nullptr
+// => fall back to the CPU/ORT path (no migraphx graph shipped for this task).
+//
+// Past the point where a migraphx graph is confirmed to exist for a resolved
+// rocm device, this must succeed or throw: silently falling back to CPU here
+// would be exactly the "requested device quietly becomes CPU" failure mode
+// the equivalence suite's tier 4 exists to catch (DYNAMIC_BACKENDS.md).
 shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                            const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
@@ -607,8 +613,23 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 		return nullptr;
 	}
 	const auto mxr_dir = fs.JoinPath(ctx.cache_dir, "migraphx");
-	shared_ptr<TabFMBackend> backend = MakeMIGraphXBackend(graph_path, dir, mxr_dir, device.arch,
-	                                                       device.device_ordinal, ctx.gpu_precision, ctx.mxr_source);
+
+	if (ctx.ep_path.empty()) {
+		throw InvalidInputException(
+		    "anofox_tabfm: device 'rocm' was resolved but no backend plugin directory is configured. SET "
+		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_migraphx_plugin.so.");
+	}
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_migraphx_plugin.so");
+
+	TabFMPluginCreateParams params {};
+	params.graph_path = graph_path.c_str();
+	params.weights_dir = dir.c_str();
+	params.cache_dir = mxr_dir.c_str();
+	params.arch = device.arch.c_str();
+	params.precision = ctx.gpu_precision.c_str();
+	params.mxr_source = ctx.mxr_source.c_str();
+	params.device_ordinal = device.device_ordinal;
+	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0);
 }
 

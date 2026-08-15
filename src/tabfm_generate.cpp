@@ -945,6 +945,9 @@ void CaptureContext(ClientContext &context, GenerateBindData &bind) {
 	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
 		bind.context.mxr_source = setting.ToString();
 	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
+		bind.context.ep_path = ExpandUserHome(setting.ToString());
+	}
 }
 
 unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, AggregateFunction &function,

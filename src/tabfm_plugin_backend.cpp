@@ -133,7 +133,7 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 	auto library = OpenLibrary(library_path);
 	if (!library) {
 		throw IOException("anofox_tabfm: cannot load the backend plugin '%s': %s. Fetch it with CALL "
-		                  "tabfm_download_runtime(...), or point anofox_tabfm_plugin_dir at the directory holding it.",
+		                  "tabfm_download_runtime(...), or point anofox_tabfm_ep_path at the directory holding it.",
 		                  library_path, LibraryError());
 	}
 

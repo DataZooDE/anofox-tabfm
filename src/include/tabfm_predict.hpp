@@ -124,6 +124,12 @@ struct PredictContext {
 	//! (offline/CI/shared). A matching bucket artifact is staged into the cache
 	//! instead of compiling on-device (~27 min). '' → always compile. ROCm only.
 	string mxr_source;
+	//! SET anofox_tabfm_ep_path — directory holding backend-plugin shared
+	//! libraries (docs/DYNAMIC_BACKENDS.md phase 1), e.g.
+	//! libanofox_tabfm_migraphx_plugin.so. '' → the rocm device path throws
+	//! rather than silently running on CPU (tier 4: a requested device that
+	//! cannot actually be driven must error, never fall back quietly).
+	string ep_path;
 };
 
 struct PredictInput {

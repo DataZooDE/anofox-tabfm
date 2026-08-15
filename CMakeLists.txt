@@ -66,7 +66,6 @@ set(EXTENSION_SOURCES
         src/tabfm_generate.cpp
         src/tabfm_generate_macros.cpp
         src/tabfm_engine.cpp
-        src/tabfm_migraphx.cpp
         src/tabfm_plugin_backend.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
 )
