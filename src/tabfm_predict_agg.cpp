@@ -44,6 +44,9 @@ struct PredictBindData : public FunctionData {
 	TabFMPredictOptions options;
 	//! anofox_tabfm_max_rows snapshot (bind-time; enforced incrementally in update)
 	idx_t max_rows = 10000;
+	//! What the caller passed as `features := [...]`, unit-separated, as the
+	//! macro saw it. Empty when the caller named no features.
+	string requested_features;
 	//! settings + DB handle captured at bind (finalize has no ClientContext)
 	PredictContext context;
 
@@ -172,6 +175,10 @@ void ParseOneOption(const string &fname, PredictBindData &bind, const string &ke
 		opts.softmax_temperature = temp;
 	} else if (key == "model") {
 		opts.model = val;
+	} else if (key == "__features") {
+		// Internal: the macro forwards `features := [...]` verbatim so bind can
+		// tell a misspelled column from one the caller deliberately omitted.
+		bind.requested_features = val;
 	} else {
 		throw BinderException("%s: unknown option '%s'; valid options are task, n_estimators, seed, output_mode, "
 		                      "context_rows, softmax_temperature, model",
@@ -300,6 +307,46 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	if (arguments.size() > 2) {
 		ParseOptionsArgument(context, *arguments[2], *bind, fname);
 	}
+
+	// A name in `features := [...]` that matches no column is dropped by the
+	// macro's COLUMNS(lambda) filter, so without this the call SUCCEEDS having
+	// silently trained on fewer features than the caller asked for. Compare
+	// what was requested against what arrived; the filter keeps the target plus
+	// the requested columns, so anything missing here is a name that matched
+	// nothing.
+	if (!bind->requested_features.empty()) {
+		const char kSep = '\x1f';
+		size_t start = 0;
+		while (start <= bind->requested_features.size()) {
+			auto end = bind->requested_features.find(kSep, start);
+			if (end == string::npos) {
+				end = bind->requested_features.size();
+			}
+			auto wanted = bind->requested_features.substr(start, end - start);
+			start = end + 1;
+			if (wanted.empty()) {
+				continue;
+			}
+			bool found = false;
+			for (auto &field : fields) {
+				if (StringUtil::CIEquals(field.first, wanted)) {
+					found = true;
+					break;
+				}
+			}
+			if (!found) {
+				// Deliberately no list of "available" columns: by the time this
+				// runs the row struct has ALREADY been filtered to the requested
+				// names, so the one column a caller most needs to see — the one
+				// they misspelled — is precisely the one missing from it.
+				throw BinderException(
+				    "%s: features := [...] names '%s', which matched no column. Check it against the relation's "
+				    "columns (matching is case-insensitive); every other listed name was found.",
+				    fname, wanted);
+			}
+		}
+	}
+
 
 	// guardrails snapshot (FR-3.4): features checked here, rows incrementally
 	bind->max_rows = ReadSettingUBigint(context, "anofox_tabfm_max_rows", 10000);
