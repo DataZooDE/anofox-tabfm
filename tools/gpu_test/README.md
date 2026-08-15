@@ -45,6 +45,30 @@ python ort_repro.py --pinned   # bounds pinned as outputs: both providers ok
 Keep the URLs in it working: the upstream issue tells maintainers to `curl`
 this file from `main`.
 
+## `equivalence.py` — a device switch must not change the answer
+
+The contract behind `docs/DYNAMIC_BACKENDS.md`. Runs the same graph on several
+providers and compares each against the CPU result, which is the reference by
+definition — it is the one every user gets.
+
+```bash
+# CPU self-check, synthesized weights (this is what CI can run)
+tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --providers cpu
+
+# the stronger statement: the real checkpoint
+tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --providers cpu \
+    --weights ~/.cache/anofox-tabfm/jingang__TabICL@main/classification/model.safetensors \
+    --tensor-map resources/tensor_map_tabicl_classification.json
+
+# on a GPU box
+tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --providers cpu,cuda
+```
+
+Exit codes: `0` equivalent, `1` a backend failed, `2` answers diverged, `3` a
+requested provider was not available. **Unavailable is never silent** — a GPU
+comparison that quietly ran on CPU would pass while testing nothing, which is
+the failure mode this whole directory exists to prevent.
+
 ## `runpod_run.py` — rent a GPU, run, destroy
 
 ```bash

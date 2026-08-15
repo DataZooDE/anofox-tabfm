@@ -377,6 +377,36 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		REQUIRE_THROWS(ResolveDevice("rocm", devices, true, false));
 	}
 
+	SECTION("runtime present but no such device, vs device present but no runtime") {
+		// Phase 0 of docs/DYNAMIC_BACKENDS.md: resolution asks whether the
+		// RUNTIME is usable here, not whether this build was compiled as a
+		// particular flavor. The two failures are different and a user can only
+		// act on the difference: install a driver, or fetch a runtime.
+		vector<TabFMDeviceInfo> only_cpu {cpu};
+		try {
+			// runtime available, but the machine has no NVIDIA device
+			ResolveDevice("cuda", only_cpu, true, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("tabfm_devices()") != string::npos);
+			// must NOT claim the build lacks cuda -- it does not
+			REQUIRE(message.find("does not carry") == string::npos);
+		}
+
+		vector<TabFMDeviceInfo> with_gpu {cpu, cuda0};
+		try {
+			// the device is right there; what is missing is the runtime
+			ResolveDevice("cuda", with_gpu, false, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("cuda") != string::npos);
+			// naming the discovered hardware is what makes this actionable
+			REQUIRE(message.find("runtime") != string::npos);
+		}
+	}
+
 	SECTION("cuda flavor, device present but not usable") {
 		cuda0.usable = false;
 		vector<TabFMDeviceInfo> devices {cpu, cuda0};

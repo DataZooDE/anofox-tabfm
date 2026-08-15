@@ -476,6 +476,29 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 	if (setting == "cuda" || setting == "rocm" || setting == "coreml") {
 		const bool carried =
 		    setting == "cuda" ? flavor_has_cuda : (setting == "rocm" ? flavor_has_rocm : flavor_has_coreml);
+
+		// Phase 0 of docs/DYNAMIC_BACKENDS.md. "No such hardware" and "hardware
+		// is here but its runtime is not" are different problems with different
+		// fixes, and the caller can only act on the difference. Discovery has
+		// already looked: a device row exists whenever the vendor runtime
+		// enumerated something, whether or not this build can drive it.
+		bool device_discovered = false;
+		string discovered_name;
+		for (auto &device : devices) {
+			if (StringUtil::StartsWith(device.device_id, setting)) {
+				device_discovered = true;
+				discovered_name = device.name;
+				break;
+			}
+		}
+		if (!carried && device_discovered) {
+			throw InvalidInputException(
+			    "anofox_tabfm: '" + setting + "' hardware is present (" + discovered_name +
+			    ") but this build carries no '" + setting +
+			    "' runtime, so it cannot be driven. The GPU runtimes are not published yet — build from source "
+			    "with TABFM_FLAVOR=" +
+			    setting + " (see docs/rocm-build.md for the rocm toolchain), or SET anofox_tabfm_device='cpu'.");
+		}
 		if (!carried) {
 			// Mirrors ThrowFlavorMissingDeviceLocal in tabfm_ort_engine.cpp: the
 			// anofox repository serves the cpu flavor only, so a GPU user sent
