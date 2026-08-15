@@ -23,7 +23,8 @@
 
 set(TABFM_FLAVOR "cpu" CACHE STRING "anofox_tabfm flavor: cpu | cuda | rocm")
 # 1.23.2 matches the ROCm-flavor ORT build; the CPU prebuilt is used by default.
-set(TABFM_ORT_VERSION "1.23.2" CACHE STRING "ONNX Runtime version for prebuilt archives")
+set(TABFM_ORT_VERSION "1.28.0" CACHE STRING "ONNX Runtime version for prebuilt archives")
+set(TABFM_ORT_CUDA_MAJOR "12" CACHE STRING "CUDA major version for the ORT GPU archive (>= 1.28: 12 | 13)")
 set(TABFM_ORT_URL "" CACHE STRING "Override URL for the prebuilt ONNX Runtime archive (mirror support)")
 set(TABFM_ORT_ROCM_DIR "" CACHE PATH "Install tree of an ONNX Runtime build with --use_migraphx (rocm flavor)")
 
@@ -114,7 +115,15 @@ elseif(TABFM_FLAVOR STREQUAL "cuda")
         message(FATAL_ERROR "anofox_tabfm: cuda flavor is only available on linux_amd64/windows_amd64 (got ${_ort_platform})")
     endif()
     message(STATUS "anofox_tabfm: ONNX Runtime GPU (CUDA EP) from prebuilt archive v${TABFM_ORT_VERSION}")
-    _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}-gpu")
+    # ORT >= 1.28 renamed this archive and split it by CUDA major version:
+    #   1.23   onnxruntime-linux-x64-gpu-1.23.2.tgz
+    #   1.28   onnxruntime-linux-x64-gpu_cuda12-1.28.0.tgz  (and gpu_cuda13)
+    # TABFM_ORT_CUDA_MAJOR picks the variant; the old stem stays for < 1.28.
+    if(TABFM_ORT_VERSION VERSION_LESS "1.28.0")
+        _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}-gpu")
+    else()
+        _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}-gpu_cuda${TABFM_ORT_CUDA_MAJOR}")
+    endif()
     list(APPEND TABFM_ORT_PROVIDERS "TABFM_EP_CUDA=1")
 elseif(TABFM_FLAVOR STREQUAL "rocm")
     if(NOT TABFM_ORT_ROCM_DIR)

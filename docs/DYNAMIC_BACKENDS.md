@@ -58,7 +58,20 @@ build, so this also removes `TABFM_ORT_ROCM_DIR` from the equation.
 
 Testable end to end on `bigfox` (RX 9070 XT / gfx1201). No cloud spend.
 
-### Phase 2 — ORT ≥ 1.28
+### Phase 2 — ORT ≥ 1.28 (in progress)
+
+**The archive naming changed**, so this is not a version bump:
+
+```
+1.23   onnxruntime-linux-x64-gpu-1.23.2.tgz
+1.28   onnxruntime-linux-x64-gpu_cuda12-1.28.0.tgz   (404 MB)
+       onnxruntime-linux-x64-gpu_cuda13-1.28.0.tgz   (229 MB)
+```
+
+The GPU build is now split by CUDA major version, so `cmake/ort.cmake` gained
+`TABFM_ORT_CUDA_MAJOR` (12 | 13) and keeps the old stem for < 1.28. The CPU
+archive name is unchanged.
+
 
 Prerequisite for phase 3 and independently worth doing. Note that the
 "ORT 1.26 will not initialise" result from #21 was a *masked EP-load failure*,
@@ -68,6 +81,17 @@ knowing regardless (onnxruntime#32083 is still open).
 
 ### Phase 3 — CUDA as a plugin EP + `tabfm_download_runtime('cuda')`
 
+**Premise confirmed on 1.28.** The provider's exported plugin-ABI symbols
+(`CreateEpFactories` / `ReleaseEpFactory`):
+
+| ORT | symbols | consequence |
+|---|---|---|
+| 1.23.2 (shipped) | **0** | classic ABI — `RegisterExecutionProviderLibrary` rejects it |
+| 1.28.0 | **2** | registrable by absolute path, i.e. from our cache |
+
+So phase 3 is unblocked by phase 2 and by nothing else.
+
+
 Register the provider from the cache by absolute path. Reuses the existing
 download machinery — chunked reads, atomic `.part` publish, sha256 validation,
 licence gating — the same path `tabfm_download` uses for weights. The 351 MB
@@ -76,8 +100,15 @@ install: they are not ours to redistribute.
 
 ### Phase 4 — CoreML
 
-Needs ORT rebuilt with the EP compiled in; only then is it a runtime switch.
-Lowest priority: no Apple hardware in the loop to verify against.
+**Not a missing capability — a build-source choice.** The official ORT 1.28
+`onnxruntime-osx-arm64` dylib *does* carry CoreML (8 CoreML internals and the
+`OrtSessionOptionsAppendExecutionProvider_CoreML` entry point). What we publish
+for macOS is the **vcpkg static** ORT, which does not. So phase 4 is: either
+build the vcpkg port with CoreML enabled, or take macOS from the prebuilt
+archive — not "rebuild ORT ourselves".
+
+Still lowest priority: no Apple hardware in the loop to verify against, so the
+equivalence suite could not confirm the answers match.
 
 ## The equivalence suite
 
