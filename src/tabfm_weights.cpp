@@ -475,15 +475,26 @@ void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk
 // names the directory this populates; tabfm_ort_engine.cpp's
 // RegisterCudaProvider reads from it at predict time).
 //
-// The provider .so is not published standalone anywhere; it ships inside
-// Microsoft's onnxruntime-gpu PyPI wheel (a ZIP) alongside the small
-// providers_shared.so it links against. A GitHub release tarball also
-// carries it, but as a .tar.gz — this vendors miniz (already linked into
-// duckdb core) for ZIP reading and would otherwise need a TAR reader too, so
-// the wheel is the lighter path. Extraction is local-disk random-access
-// (mz_zip_reader_init_file + locate + extract_to_file): only the two needed
-// entries are decompressed, not the ~250 MB whole.
+// The provider .so is not published standalone anywhere; it ships inside an
+// onnxruntime-gpu wheel (a ZIP) alongside the small providers_shared.so it
+// links against. A GitHub release tarball also carries it, but as a .tar.gz —
+// this vendors miniz (already linked into duckdb core) for ZIP reading and
+// would otherwise need a TAR reader too, so the wheel is the lighter path.
+// Extraction is local-disk random-access (mz_zip_reader_init_file + locate +
+// extract_to_file): only the two needed entries are decompressed, not the
+// whole wheel.
 //
+// NOT the plain PyPI `onnxruntime-gpu` package: as of 1.28.0 that targets
+// CUDA 13 (needs libcublasLt.so.13 and friends) with no CUDA-12 variant on
+// PyPI proper — discovered by actually running this on a RunPod CUDA-12.4
+// image, where the plain-PyPI wheel's provider failed to dlopen. Microsoft
+// publishes a CUDA-12-targeted build on a separate Azure Artifacts feed
+// (linked from https://onnxruntime.ai/docs/install/, "onnxruntime-cuda-12"),
+// which is what CUDA_12_WHEEL_URL below points at — matches the CUDA major
+// this codebase otherwise defaults to (cmake/ort.cmake's TABFM_ORT_CUDA_MAJOR).
+// That feed's download links are pip-index redirects to a time-limited SAS
+// URL, not the final blob itself; FetchFile follows the redirect like any
+// other HTTP client.
 //===--------------------------------------------------------------------===//
 
 namespace {
@@ -499,16 +510,17 @@ struct RuntimeArtifact {
 };
 
 //! Currently the only published, verified source: onnxruntime-gpu 1.28.0's
-//! manylinux CUDA-12 wheel (cp312 tag — the C++ .so payload is identical
-//! across cp3xx tags; the tag only affects the Python bindings we discard).
-//! CUDA 13 / other ORT versions are not offered yet (no reason they couldn't
-//! be, just not measured — extend this map when they are).
+//! manylinux CUDA-12 wheel from Microsoft's onnxruntime-cuda-12 Azure
+//! Artifacts feed (cp312 tag — the C++ .so payload is identical across cp3xx
+//! tags; the tag only affects the Python bindings we discard). CUDA 13 /
+//! other ORT versions are not offered yet (no reason they couldn't be, just
+//! not measured — extend this map when they are).
 bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string &error) {
 	if (backend == "cuda") {
-		out.wheel_url = "https://files.pythonhosted.org/packages/f2/18/"
-		                "e4e906d564af3dd84c2816118ce8e0c087d351ef69a819727b940fb01b6b/"
+		out.wheel_url = "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/"
+		                "_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.28/"
 		                "onnxruntime_gpu-1.28.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl";
-		out.wheel_bytes = 249767362;
+		out.wheel_bytes = 432340836;
 		out.zip_entries = {"onnxruntime/capi/libonnxruntime_providers_cuda.so",
 		                   "onnxruntime/capi/libonnxruntime_providers_shared.so"};
 		return true;
