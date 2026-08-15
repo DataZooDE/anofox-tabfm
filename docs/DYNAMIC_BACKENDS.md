@@ -124,7 +124,7 @@ fixed by #22 — so the upgrade should be less fraught than that report implied.
 Re-runs the ScatterND pin checks against a newer runtime, which is worth
 knowing regardless (onnxruntime#32083 is still open).
 
-### Phase 3 — CUDA as a plugin EP + `tabfm_download_runtime('cuda')`
+### Phase 3 — CUDA as a plugin EP + `tabfm_download_runtime('cuda')` ✅ registration + download implemented (GPU-run unverified)
 
 **Premise confirmed on 1.28.** The provider's exported plugin-ABI symbols
 (`CreateEpFactories` / `ReleaseEpFactory`):
@@ -136,12 +136,43 @@ knowing regardless (onnxruntime#32083 is still open).
 
 So phase 3 is unblocked by phase 2 and by nothing else.
 
+**The registration sequence is not a drop-in for the old
+`AppendExecutionProvider_CUDA(OrtCUDAProviderOptions)` call.** It's
+`Env::RegisterExecutionProviderLibrary(name, path)` → `Env::GetEpDevices()` →
+filter to the devices the plugin actually contributed → `AppendExecutionProvider_V2`.
+There is no `device_id` shortcut analogous to the classic API's — device
+selection goes through filtering the `ConstEpDevice` list, done in
+`src/tabfm_ort_engine.cpp`'s `RegisterCudaProvider` by indexing into the
+matching devices with `config.device_ordinal`. Compiles unconditionally (no
+`TABFM_EP_CUDA` guard) — these are core ORT ≥ 1.22 APIs, present in the
+CPU-flavor build too, so a cpu-flavor binary can drive CUDA once the provider
+is registered at runtime.
 
-Register the provider from the cache by absolute path. Reuses the existing
-download machinery — chunked reads, atomic `.part` publish, sha256 validation,
-licence gating — the same path `tabfm_download` uses for weights. The 351 MB
-provider is cached like a model. CUDA 12 / cuDNN 9 remain the user's to
-install: they are not ours to redistribute.
+**`tabfm_download_runtime('cuda')`** (`src/tabfm_weights.cpp`) fetches the
+provider from the **onnxruntime-gpu PyPI wheel** (a ZIP), not the GitHub
+release tarball (a `.tar.gz`) — the vendored miniz already gives a ZIP reader
+for free, whereas a `.tar.gz` would need writing a TAR parser too. The
+vendored miniz is built `MINIZ_NO_STDIO` (no file-path zip API), so extraction
+reads the whole wheel into a heap buffer and uses
+`mz_zip_reader_extract_to_heap`, not `mz_zip_reader_extract_to_file`. Verified
+locally (no GPU needed for this part): downloads and extracts real, valid ELF
+shared objects (`libonnxruntime_providers_cuda.so`, 280 MB;
+`libonnxruntime_providers_shared.so`, 14 KB) into `SET anofox_tabfm_ep_path`,
+idempotent on re-run (reports `cached`), and the unlisted-backend path
+(`'rocm'`) errors naming the real fix rather than pretending to support it.
+
+**Corrected size**: the provider is **~280 MB** (wheel, stripped), not
+351 MB (that estimate was from the 1.23.2 GitHub archive) or the ~621 MB the
+1.28.0 GitHub archive's unstripped `.so` measures at — three different
+numbers for three different distribution shapes of the same code; the wheel
+is the smallest and the one this implementation actually uses.
+
+**Not yet done**: an actual GPU run through `RegisterCudaProvider` — this
+machine has no NVIDIA hardware, so `RegisterExecutionProviderLibrary` →
+`AppendExecutionProvider_V2` → real inference has been reviewed against the
+ORT headers and built cleanly, but not executed. That needs a RunPod rental
+(cost, explicit go) to close out the way phase 1 was closed out on real
+`bigfox` hardware.
 
 ### Phase 4 — CoreML
 
@@ -206,7 +237,7 @@ refuses to report CPU results as GPU.
 
 * **Silent divergence** is the one that matters. Mitigated by making the
   equivalence matrix the deliverable and by tier 4's refusal test.
-* **Cache size**: 351 MB (CUDA provider) and ~6.6 GB per `.mxr` shape bucket
+* **Cache size**: ~280 MB (CUDA provider, measured) and ~6.6 GB per `.mxr` shape bucket
   (ROCm, ~20 min first compile). Both belong in the weights cache with the
   messaging that already exists there.
 * **Binary size and CI matrix** grow by one plugin per GPU backend.

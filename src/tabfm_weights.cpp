@@ -17,6 +17,7 @@
 #include "duckdb/common/numeric_utils.hpp"
 
 #include "yyjson.hpp"
+#include "miniz.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -465,6 +466,213 @@ void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk
 	}
 	output.SetCardinality(out);
 }
+
+//===--------------------------------------------------------------------===//
+// tabfm_download_runtime(backend) — docs/DYNAMIC_BACKENDS.md phase 3
+//
+// Fetches an ONNX Runtime execution-provider plugin library so a device can
+// be driven without a compile-time flavor build (SET anofox_tabfm_ep_path
+// names the directory this populates; tabfm_ort_engine.cpp's
+// RegisterCudaProvider reads from it at predict time).
+//
+// The provider .so is not published standalone anywhere; it ships inside
+// Microsoft's onnxruntime-gpu PyPI wheel (a ZIP) alongside the small
+// providers_shared.so it links against. A GitHub release tarball also
+// carries it, but as a .tar.gz — this vendors miniz (already linked into
+// duckdb core) for ZIP reading and would otherwise need a TAR reader too, so
+// the wheel is the lighter path. Extraction is local-disk random-access
+// (mz_zip_reader_init_file + locate + extract_to_file): only the two needed
+// entries are decompressed, not the ~250 MB whole.
+//
+//===--------------------------------------------------------------------===//
+
+namespace {
+
+//! One backend -> the wheel that carries its provider .so(s),
+//! and which entries inside it to extract. Deliberately narrow: only what has
+//! been verified to exist in the wheel (see docs/DYNAMIC_BACKENDS.md phase 3
+//! measurements) is offered — an unlisted backend errors naming what is.
+struct RuntimeArtifact {
+	string wheel_url;
+	int64_t wheel_bytes;
+	vector<string> zip_entries; // paths inside the wheel to extract, verbatim basenames on disk
+};
+
+//! Currently the only published, verified source: onnxruntime-gpu 1.28.0's
+//! manylinux CUDA-12 wheel (cp312 tag — the C++ .so payload is identical
+//! across cp3xx tags; the tag only affects the Python bindings we discard).
+//! CUDA 13 / other ORT versions are not offered yet (no reason they couldn't
+//! be, just not measured — extend this map when they are).
+bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string &error) {
+	if (backend == "cuda") {
+		out.wheel_url = "https://files.pythonhosted.org/packages/f2/18/"
+		                "e4e906d564af3dd84c2816118ce8e0c087d351ef69a819727b940fb01b6b/"
+		                "onnxruntime_gpu-1.28.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl";
+		out.wheel_bytes = 249767362;
+		out.zip_entries = {"onnxruntime/capi/libonnxruntime_providers_cuda.so",
+		                   "onnxruntime/capi/libonnxruntime_providers_shared.so"};
+		return true;
+	}
+	error = "tabfm_download_runtime: 'rocm' has no published downloadable plugin yet — build "
+	       "src/tabfm_migraphx_plugin.cpp yourself (docs/DYNAMIC_BACKENDS.md phase 1) and point "
+	       "anofox_tabfm_ep_path at the result. Only 'cuda' is downloadable today.";
+	return false;
+}
+
+struct DownloadRuntimeBindData : public TableFunctionData {
+	string backend;
+	string ep_path;
+	string cache_dir;
+	RuntimeArtifact artifact;
+};
+
+struct DownloadRuntimeGlobalState : public GlobalTableFunctionState {
+	bool done = false;
+	idx_t MaxThreads() const override {
+		return 1;
+	}
+};
+
+unique_ptr<GlobalTableFunctionState> DownloadRuntimeInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<DownloadRuntimeGlobalState>();
+}
+
+unique_ptr<FunctionData> DownloadRuntimeBind(ClientContext &context, TableFunctionBindInput &input,
+                                             vector<LogicalType> &return_types, vector<string> &names) {
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_download_runtime");
+
+	if (input.inputs.empty() || input.inputs[0].IsNull()) {
+		throw InvalidInputException("tabfm_download_runtime: backend cannot be NULL — expected 'cuda' or 'rocm'");
+	}
+	auto result = make_uniq<DownloadRuntimeBindData>();
+	result->backend = StringUtil::Lower(StringValue::Get(input.inputs[0]));
+
+	string error;
+	if (!ResolveRuntimeArtifact(result->backend, result->artifact, error)) {
+		throw InvalidInputException(error);
+	}
+
+	result->cache_dir = GetCacheDir(context);
+	result->ep_path = result->cache_dir + "/runtime";
+	Value setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull() &&
+	    !setting.ToString().empty()) {
+		result->ep_path = ExpandHomeDirectory(setting.ToString());
+	}
+
+	names = {"file", "bytes", "status"};
+	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::VARCHAR};
+	return std::move(result);
+}
+
+void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	auto &bind = data.bind_data->Cast<DownloadRuntimeBindData>();
+	auto &state = data.global_state->Cast<DownloadRuntimeGlobalState>();
+	if (state.done) {
+		output.SetCardinality(0);
+		return;
+	}
+	state.done = true;
+
+	auto &fs = FileSystem::GetFileSystem(context);
+	fs.CreateDirectoriesRecursive(bind.ep_path);
+
+	// Which entries are already present at their target size — extraction is
+	// per-entry idempotent, so a partial prior run only re-fetches what it must.
+	vector<string> targets;
+	bool all_present = true;
+	for (auto &entry : bind.artifact.zip_entries) {
+		auto slash = entry.find_last_of('/');
+		string basename = slash == string::npos ? entry : entry.substr(slash + 1);
+		string target = bind.ep_path + "/" + basename;
+		targets.push_back(target);
+		if (!fs.FileExists(target)) {
+			all_present = false;
+		}
+	}
+
+	idx_t out = 0;
+	if (all_present) {
+		for (size_t i = 0; i < targets.size(); i++) {
+			auto handle = fs.OpenFile(targets[i], FileFlags::FILE_FLAGS_READ);
+			output.SetValue(0, out, Value(targets[i]));
+			output.SetValue(1, out, Value::BIGINT(NumericCast<int64_t>(fs.GetFileSize(*handle))));
+			output.SetValue(2, out, Value("cached"));
+			out++;
+		}
+		output.SetCardinality(out);
+		return;
+	}
+
+	// Whole-wheel download (FetchFile — same atomic .part-then-rename fetch
+	// tabfm_download uses), then in-memory ZIP extraction of just the needed
+	// entries: the vendored miniz is built with MINIZ_NO_STDIO (no file-based
+	// zip reader), so the archive is read into a heap buffer and extracted via
+	// mz_zip_reader_init_mem / extract_to_heap rather than the file-path API.
+	// The wheel itself is not kept — it is scratch, not a cache entry
+	// (re-downloaded on the next miss, same as a truncated .part would be).
+	const string wheel_path = bind.ep_path + "/.onnxruntime_gpu-1.28.0-cp312.whl";
+	DownloadItem wheel_item;
+	wheel_item.cache_path = wheel_path;
+	wheel_item.url = bind.artifact.wheel_url;
+	wheel_item.bytes = bind.artifact.wheel_bytes;
+	FetchFile(context, wheel_item);
+
+	auto wheel_handle = fs.OpenFile(wheel_path, FileFlags::FILE_FLAGS_READ);
+	const idx_t wheel_size = fs.GetFileSize(*wheel_handle);
+	auto wheel_bytes = make_unsafe_uniq_array<char>(wheel_size);
+	wheel_handle->Read(wheel_bytes.get(), wheel_size);
+	wheel_handle.reset();
+
+	duckdb_miniz::mz_zip_archive zip {};
+	if (!duckdb_miniz::mz_zip_reader_init_mem(&zip, wheel_bytes.get(), wheel_size, 0)) {
+		fs.TryRemoveFile(wheel_path);
+		throw IOException("tabfm_download_runtime: '%s' downloaded but is not a readable zip archive — the source "
+		                  "may have changed shape; please report this.",
+		                  SanitizeUrl(bind.artifact.wheel_url));
+	}
+	for (size_t i = 0; i < bind.artifact.zip_entries.size(); i++) {
+		const string &entry = bind.artifact.zip_entries[i];
+		int file_index = duckdb_miniz::mz_zip_reader_locate_file(&zip, entry.c_str(), nullptr, 0);
+		if (file_index < 0) {
+			duckdb_miniz::mz_zip_reader_end(&zip);
+			fs.TryRemoveFile(wheel_path);
+			throw IOException("tabfm_download_runtime: expected entry '%s' not found in the downloaded wheel — the "
+			                  "source may have changed shape; please report this.",
+			                  entry);
+		}
+		size_t extracted_size = 0;
+		void *extracted =
+		    duckdb_miniz::mz_zip_reader_extract_to_heap(&zip, static_cast<duckdb_miniz::mz_uint>(file_index),
+		                                                &extracted_size, 0);
+		if (!extracted) {
+			duckdb_miniz::mz_zip_reader_end(&zip);
+			fs.TryRemoveFile(wheel_path);
+			throw IOException("tabfm_download_runtime: failed to extract '%s' from the downloaded wheel.", entry);
+		}
+		const string tmp = targets[i] + ".part";
+		auto dst = fs.OpenFile(tmp, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		dst->Write(extracted, NumericCast<int64_t>(extracted_size));
+		dst->Sync();
+		dst.reset();
+		duckdb_miniz::mz_free(extracted);
+		fs.MoveFile(tmp, targets[i]); // atomic publish, same discipline as FetchFile
+	}
+	duckdb_miniz::mz_zip_reader_end(&zip);
+	wheel_bytes.reset();
+	fs.TryRemoveFile(wheel_path);
+
+	for (auto &target : targets) {
+		auto handle = fs.OpenFile(target, FileFlags::FILE_FLAGS_READ);
+		output.SetValue(0, out, Value(target));
+		output.SetValue(1, out, Value::BIGINT(NumericCast<int64_t>(fs.GetFileSize(*handle))));
+		output.SetValue(2, out, Value("downloaded"));
+		out++;
+	}
+	output.SetCardinality(out);
+}
+
+} // anonymous namespace
 
 //===--------------------------------------------------------------------===//
 // tabfm_models()
@@ -1162,6 +1370,16 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            "into the local cache. Requires SET anofox_tabfm_accept_hf_license = true. Returns one row per file "
 	            "(file, url, bytes, status).",
 	            "CALL tabfm_download('classification');", true);
+	// CALL tabfm_download_runtime(backend) — 'cuda' today; 'rocm' errors naming
+	// the (not yet published) build-your-own path.
+	RegisterSet(loader, "anofox_tabfm_download_runtime", "tabfm_download_runtime", {{LogicalType::VARCHAR}},
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, DownloadRuntimeBind), DownloadRuntimeInit,
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, DownloadRuntimeExecute),
+	            "Download an ONNX Runtime execution-provider plugin library ('cuda') into the directory named by SET "
+	            "anofox_tabfm_ep_path (default: the cache dir's 'runtime' subdirectory), so that device can be "
+	            "driven without a matching compile-time flavor build. Returns one row per extracted file (file, "
+	            "bytes, status).",
+	            "CALL tabfm_download_runtime('cuda');");
 	// SELECT * FROM tabfm_models();
 	RegisterSet(loader, "anofox_tabfm_models", "tabfm_models", {{}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ModelsBind), ModelsInit, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ModelsExecute),
 	            "List the TabFM models known to the local cache (model, task, revision, path, bytes, loaded, "

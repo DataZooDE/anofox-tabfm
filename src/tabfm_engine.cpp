@@ -575,6 +575,7 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 	config.device_id = device.device_id;
 	config.device_ordinal = device.device_ordinal;
 	config.model_tag = task_name;
+	config.ep_path = ctx.ep_path;
 	// No injected initializers: ORT loads them from the safetensors via the
 	// graph's external-data references.
 	auto session = CreateSessionFromPath(graph_path, {}, config);
@@ -767,6 +768,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	config.model_tag = TabFMTaskName(resolved.manifest.task);
 	config.contract_inputs = resolved.contract_inputs;
 	config.contract_outputs = resolved.contract_outputs;
+	config.ep_path = ctx.ep_path;
 
 	const idx_t weight_bytes = nbytes;
 	auto session = resolved.graph_bundle.data
