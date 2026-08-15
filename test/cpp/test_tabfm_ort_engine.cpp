@@ -1032,3 +1032,162 @@ TEST_CASE("tabfm_ort_engine: fixture-model parity vs golden.json (WS-A, rtol 1e-
 	INFO("fixture parity max relative delta over rows >= train_size: " << max_rel);
 	REQUIRE(max_rel <= 1e-4);
 }
+
+//===----------------------------------------------------------------------===//
+// CPU vs CUDA equivalence, real hardware (docs/DYNAMIC_BACKENDS.md phase 3)
+//
+// No NVIDIA hardware exists in this repo's dev environment, so this only runs
+// where TABFM_TEST_CUDA_EP_PATH names a directory holding a registered CUDA
+// provider (fetched via tabfm_download_runtime('cuda') — see
+// tools/gpu_test/README.md for the RunPod harness that sets this up and runs
+// the suite there). Everywhere else it skips itself rather than failing a
+// machine that was never going to have a GPU.
+//===----------------------------------------------------------------------===//
+
+TEST_CASE("tabfm_ort_engine: CPU and the CUDA plugin agree on the same fixture (WS-A)", "[tabfm][ort_engine][gpu]") {
+	const char *ep_path_env = std::getenv("TABFM_TEST_CUDA_EP_PATH");
+	if (!ep_path_env || !*ep_path_env) {
+		SUCCEED("TABFM_TEST_CUDA_EP_PATH not set, skipping (no CUDA hardware/provider on this machine)");
+		return;
+	}
+	const string ep_path = ep_path_env;
+
+	auto dir = RepoFixtureDir();
+	const string graph_path = dir + "/graph_fixture.onnx";
+	const string safetensors_path = dir + "/model.safetensors";
+	if (!FileExists(graph_path) || !FileExists(safetensors_path)) {
+		WARN("WS-A fixture model not present — skipping");
+		SUCCEED();
+		return;
+	}
+
+	auto safetensors_bytes = ReadFileBytes(safetensors_path);
+	vector<SafeTensorEntry> entries;
+	idx_t data_begin = 0;
+	if (!ParseSafetensors(safetensors_bytes, entries, data_begin) || entries.empty()) {
+		WARN("could not parse " + safetensors_path + " with the test-only reader — skipping");
+		SUCCEED();
+		return;
+	}
+	for (auto &entry : entries) {
+		if (entry.dtype != "F32") {
+			WARN("fixture safetensors contains non-F32 tensor '" + entry.key + "' — skipping");
+			SUCCEED();
+			return;
+		}
+	}
+
+	auto find_tensor_map = [&]() -> string {
+		for (auto *candidate : {"tensor_map_fixture.json", "tensor_map.json"}) {
+			if (FileExists(dir + "/" + candidate)) {
+				return dir + "/" + candidate;
+			}
+		}
+		return string();
+	};
+	std::unordered_map<string, string> key_to_name;
+	auto map_path = find_tensor_map();
+	if (!map_path.empty()) {
+		auto map_bytes = ReadFileBytes(map_path);
+		YyDoc map_doc(map_bytes);
+		auto *root = map_doc.Root();
+		std::unordered_map<string, bool> known_keys;
+		for (auto &entry : entries) {
+			known_keys[entry.key] = true;
+		}
+		if (root && yyjson_is_obj(root)) {
+			yyjson_obj_iter iter;
+			yyjson_obj_iter_init(root, &iter);
+			yyjson_val *key_value;
+			while ((key_value = yyjson_obj_iter_next(&iter))) {
+				auto *mapped = yyjson_obj_iter_get_val(key_value);
+				if (!yyjson_is_str(mapped)) {
+					continue;
+				}
+				string left = yyjson_get_str(key_value);
+				string right = yyjson_get_str(mapped);
+				if (known_keys.count(right)) {
+					key_to_name[right] = left;
+				} else if (known_keys.count(left)) {
+					key_to_name[left] = right;
+				}
+			}
+		}
+	}
+
+	vector<TabFMTensorRef> initializers;
+	for (auto &entry : entries) {
+		TabFMTensorRef ref;
+		auto mapped = key_to_name.find(entry.key);
+		ref.name = mapped != key_to_name.end() ? mapped->second : ("m." + entry.key);
+		ref.dtype = TabFMTensorDtype::F32;
+		ref.shape = entry.shape;
+		if (ref.shape.empty()) {
+			ref.shape.push_back(1);
+			if (entry.end - entry.begin != 4) {
+				ref.shape.clear();
+			}
+		}
+		ref.data = safetensors_bytes.data() + data_begin + entry.begin;
+		ref.size_bytes = entry.end - entry.begin;
+		initializers.push_back(std::move(ref));
+	}
+
+	// A small, arbitrary, deterministic problem — same shape convention as the
+	// migraphx plugin test (test_tabfm_migraphx_plugin.cpp): this checks
+	// routing and marshalling through the real CUDA registration path, not
+	// model accuracy (the golden-fixture CPU test above already covers that).
+	const int64_t t = 5, h = 8, train_size = 3, d = 8;
+	vector<float> x(static_cast<size_t>(t * h));
+	for (int64_t i = 0; i < t; i++) {
+		for (int64_t j = 0; j < h; j++) {
+			x[static_cast<size_t>(i * h + j)] = 0.1f * static_cast<float>(i + 1) - 0.05f * static_cast<float>(j);
+		}
+	}
+	vector<float> y {0.0f, 1.0f, 0.0f, -100.0f, -100.0f};
+	vector<uint8_t> cat_mask(static_cast<size_t>(h), 0);
+
+	TabFMRunInput run_input;
+	run_input.x = x.data();
+	run_input.y = y.data();
+	run_input.cat_mask = reinterpret_cast<const bool *>(cat_mask.data());
+	run_input.t = t;
+	run_input.h = h;
+	run_input.train_size = train_size;
+	run_input.d = d;
+
+	auto graph_bytes = ReadFileBytes(graph_path);
+
+	TabFMSessionConfig cpu_config;
+	cpu_config.intra_op_threads = 2;
+	cpu_config.device_id = "cpu";
+	cpu_config.model_tag = "fixture";
+	auto cpu_session = CreateSession(graph_bytes.data(), graph_bytes.size(), initializers, cpu_config);
+	auto cpu_output = Run(*cpu_session, run_input);
+
+	TabFMSessionConfig cuda_config;
+	cuda_config.intra_op_threads = 2;
+	cuda_config.device_id = "cuda";
+	cuda_config.device_ordinal = 0;
+	cuda_config.model_tag = "fixture";
+	cuda_config.ep_path = ep_path;
+	auto cuda_session = CreateSession(graph_bytes.data(), graph_bytes.size(), initializers, cuda_config);
+	auto cuda_output = Run(*cuda_session, run_input);
+
+	REQUIRE(cuda_output.shape.size() == 3);
+	REQUIRE(cpu_output.shape == cuda_output.shape);
+	REQUIRE(cpu_output.logits.size() == cuda_output.logits.size());
+
+	double max_rel = 0.0;
+	for (size_t i = 0; i < cpu_output.logits.size(); i++) {
+		const double expected = cpu_output.logits[i];
+		const double actual = cuda_output.logits[i];
+		const double abs_diff = std::fabs(actual - expected);
+		if (abs_diff <= 1e-6) {
+			continue;
+		}
+		max_rel = std::max(max_rel, abs_diff / std::max(std::fabs(expected), 1e-12));
+	}
+	INFO("CPU vs CUDA max relative delta: " << max_rel);
+	REQUIRE(max_rel <= 1e-3); // fp32 on different kernels/reduction order; see DYNAMIC_BACKENDS.md's tolerance table
+}
