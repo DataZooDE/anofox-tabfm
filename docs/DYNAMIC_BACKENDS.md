@@ -127,12 +127,20 @@ Inject the actual cached weights and compare each backend against the CPU
 result. `logits` must agree; the tolerance is per-backend and stated, not
 assumed:
 
-| comparison | tolerance | rationale |
-|---|---|---|
-| CPU vs CPU (pin/rewrite changes) | **bit-identical** | same kernels, same order |
-| CPU vs CUDA fp32 | relative ~1e-4 | different kernels and reduction order |
-| CPU vs ROCm fp32 | relative ~1e-4 | as above |
-| bf16/fp16 GPU paths | class agreement + ~1e-2 | precision is the point of the mode |
+| comparison | tolerance | measured | rationale |
+|---|---|---|---|
+| CPU vs CPU, same ORT (pin/rewrite changes) | **bit-identical** | **0** across 5 graphs × 3 shapes, real checkpoints | same kernels, same order |
+| CPU, ORT 1.24.1 vs 1.28.0 | relative 1e-4 | **3.26e-05**, argmax agreement **1.0** (real TabICL) | versions change kernel and fusion choices |
+| CPU vs CUDA fp32 | relative ~1e-4 | not yet measured | different kernels and reduction order |
+| CPU vs ROCm fp32 | relative ~1e-4 | not yet measured | as above |
+| bf16/fp16 GPU paths | class agreement + ~1e-2 | not yet measured | precision is the point of the mode |
+
+The second row is the one worth internalising: an **ORT upgrade is not
+bit-identical** on a real model, only within tolerance. The fixture golden test
+reports delta 0 because the fixture is small; the 27 M-parameter checkpoint
+drifts at 3e-5. Predictions are unchanged, which is the property that matters —
+but "the suite is green" and "the numbers are identical" are different claims,
+and only the first one holds across versions.
 
 **Tier 3 — SQL surface, end to end**
 The same query on each device must produce the same `yhat` for every row, and
