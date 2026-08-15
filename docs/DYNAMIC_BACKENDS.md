@@ -167,12 +167,45 @@ idempotent on re-run (reports `cached`), and the unlisted-backend path
 numbers for three different distribution shapes of the same code; the wheel
 is the smallest and the one this implementation actually uses.
 
-**Not yet done**: an actual GPU run through `RegisterCudaProvider` — this
-machine has no NVIDIA hardware, so `RegisterExecutionProviderLibrary` →
-`AppendExecutionProvider_V2` → real inference has been reviewed against the
-ORT headers and built cleanly, but not executed. That needs a RunPod rental
-(cost, explicit go) to close out the way phase 1 was closed out on real
-`bigfox` hardware.
+**RunPod-verified — registration works, kernel execution crashes.** Ran on a
+real NVIDIA GPU (RunPod, CUDA 12.8.1 image, RTX 3070). Findings, each only
+found by actually running it, not by reading the headers:
+
+1. The plain PyPI `onnxruntime-gpu` package for 1.28.0 targets **CUDA 13**
+   (`nvidia-cuda-nvrtc~=13.0`), not CUDA 12 — its provider failed to `dlopen`
+   with `libcublasLt.so.13: cannot open shared object file` on a CUDA-12.4
+   image. Fixed by switching `tabfm_download_runtime` to Microsoft's
+   `onnxruntime-cuda-12` Azure Artifacts feed instead (linked from
+   onnxruntime.ai's own install docs), which does publish a CUDA-12 build.
+2. Even the CUDA-12 provider then failed with `undefined symbol:
+   cudaLibraryGetKernel, version libcudart.so.12` on the CUDA-12.4.1 image —
+   that symbol needs a newer CUDA 12 minor version than the image shipped.
+   Resolved by using a CUDA-12.8.1 image instead; not a code issue, a
+   deployment-environment minimum-CUDA-version constraint worth documenting
+   for anyone using `tabfm_download_runtime('cuda')`.
+3. With both of those fixed, `RegisterExecutionProviderLibrary` →
+   `GetEpDevices` → `AppendExecutionProvider_V2` all **succeed** — the
+   provider loads, the env reports a real CUDA `ConstEpDevice`, and the
+   session is created without error. The crash is one step further in:
+   **`Ort::Session::Run()` segfaults inside ORT's own CUDA kernel dispatch**
+   (`libonnxruntime.so`, 10 frames deep, no symbols — a release build). A
+   `gdb -batch -ex run -ex "thread apply all bt full"` capture puts the crash
+   in `SessionImpl::Run` → internal ORT frames, not in this codebase's
+   registration code, and not in the provider's own `.so`. Whether this is an
+   ORT 1.28 plugin-EP-CUDA bug (a newer, less-exercised code path than the
+   classic API) or an `ep_options` gap this codebase needs to fill (passed
+   empty; `CUDAExecutionProviderInfo::FromProviderOptions` should default
+   sensibly on an empty map per ORT's own source, but that's unconfirmed) is
+   not yet root-caused.
+
+So: **registration is real and works**; **inference through it does not,
+yet**. Phase 3's download/registration code is correct and tested end to end
+up to the point of running a model — the remaining gap is either an upstream
+ORT bug report or a `RegisterCudaProvider` fix once root-caused, and needs
+more RunPod time (cost) to chase further with ORT debug symbols or by testing
+the classic `AppendExecutionProvider_CUDA` path on the same image as a
+control (isolating "CUDA plugin-EP is broken here" from "this GPU/driver
+combination can't run CUDA inference at all").
 
 **vcpkg overlay port bumped to 1.28.0 too** — this was a real, separate
 blocker: the release/community-extension build compiles ORT from
