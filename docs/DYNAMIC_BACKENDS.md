@@ -200,12 +200,27 @@ found by actually running it, not by reading the headers:
 
 So: **registration is real and works**; **inference through it does not,
 yet**. Phase 3's download/registration code is correct and tested end to end
-up to the point of running a model — the remaining gap is either an upstream
-ORT bug report or a `RegisterCudaProvider` fix once root-caused, and needs
-more RunPod time (cost) to chase further with ORT debug symbols or by testing
-the classic `AppendExecutionProvider_CUDA` path on the same image as a
-control (isolating "CUDA plugin-EP is broken here" from "this GPU/driver
-combination can't run CUDA inference at all").
+up to the point of running a model.
+
+**Control test run, isolating the cause.** Same GPU family (RunPod RTX 3070),
+same CUDA 12.8.1 environment, same `onnxruntime 1.28.0` build (the CUDA-12
+Azure feed wheel) — but through Python's classic `providers=["CUDAExecutionProvider"]`
+registration (`tools/gpu_test/ort_ep_check.py resources/graph_tabicl_classification.onnx
+--provider cuda`) instead of the plugin-EP sequence. Result: **`failures=0
+mismatches=0`, exit code 0.** The graph runs cleanly.
+
+That settles it: CUDA hardware, driver, and this exact ORT 1.28.0 build all
+work fine on this GPU. The crash is specific to the **plugin-EP registration
+path** (`RegisterExecutionProviderLibrary` → `GetEpDevices` →
+`AppendExecutionProvider_V2`) — very likely an ORT 1.28 bug in that newer,
+less-exercised code path, not something wrong in `tabfm_ort_engine.cpp`'s
+`RegisterCudaProvider`, not the fixture graph, not this environment. Worth an
+upstream report (same shape as issue #21 → onnxruntime#32083 earlier this
+project's history: a self-contained repro handed to ORT maintainers, not a
+bug this codebase can fix on its own). Until ORT fixes it (or a workaround —
+e.g. explicit `ep_options` — is found and verified), `SET anofox_tabfm_device
+= 'cuda'` should be expected to fail at `Run()` on ORT 1.28, despite
+registration succeeding.
 
 **vcpkg overlay port bumped to 1.28.0 too** — this was a real, separate
 blocker: the release/community-extension build compiles ORT from
