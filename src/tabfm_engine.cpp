@@ -575,20 +575,24 @@ struct SplitOrtBackend : public TabFMBackend {
 		}
 
 		if (!ContextMatches(input, s)) {
-			// Drop the old context before building the new one: at real scale the
-			// cached tensors are hundreds of MB and holding two costs a peak nobody
-			// asked for.
+			// Invalidate BEFORE building, and publish only once everything below has
+			// succeeded. Both passes can throw, and a half-built context that still
+			// looked valid would be reused by the next call — silently, against the
+			// wrong training data. Dropping the old one first also keeps the peak at
+			// one context rather than two, which at real scale is hundreds of MB.
 			context = TabFMPreparedContext();
 			context_x.clear();
 			context_y.clear();
-			context = RunPrepare(*prepare, input.x, input.y, s, input.h, context_inputs);
+			context_h = 0;
+
+			auto prepared = RunPrepare(*prepare, input.x, input.y, s, input.h, context_inputs);
 
 			// The context rows' own fitted values. Every row the engine returns needs
 			// one, including the labelled ones, and the combined graph produces them
 			// in the same pass. Here they are a query pass over the support rows —
 			// which is exact for a cache, because a query row's answer depends only
 			// on the context, never on which other rows shared its batch.
-			auto fitted = RunQuery(*query, input.x, s, input.h, input.y, s, context);
+			auto fitted = RunQuery(*query, input.x, s, input.h, input.y, s, prepared);
 			if (fitted.shape.size() != 3 || fitted.shape[1] != s) {
 				throw InvalidInputException(
 				    "anofox_tabfm: the query graph returned %llu values shaped [%s] for %lld context rows; expected "
@@ -596,11 +600,12 @@ struct SplitOrtBackend : public TabFMBackend {
 				    static_cast<unsigned long long>(fitted.logits.size()), ShapeString(fitted.shape),
 				    static_cast<long long>(s), static_cast<long long>(s));
 			}
-			context.context_classes = fitted.shape.back();
-			context.context_logits = std::move(fitted.logits);
-			context.bytes += context.context_logits.size() * sizeof(float);
+			prepared.context_classes = fitted.shape.back();
+			prepared.context_logits = std::move(fitted.logits);
+			prepared.bytes += prepared.context_logits.size() * sizeof(float);
 
 			const auto x_count = static_cast<size_t>(s) * static_cast<size_t>(input.h);
+			context = std::move(prepared);
 			context_x.assign(input.x, input.x + x_count);
 			context_y.assign(input.y, input.y + static_cast<size_t>(s));
 			context_h = input.h;
@@ -965,6 +970,14 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		// and ORT rejects an injected initializer the graph does not have
 		// ("Failed to find existing initializer"), so each half is built from its
 		// own map or not at all.
+		unordered_map<string, idx_t> by_key;
+		for (idx_t i = 0; i < initializer_keys.size(); i++) {
+			by_key[initializer_keys[i]] = i;
+		}
+		// Driven by the MAP, not by the checkpoint: the map's keys are exactly the
+		// initializers this graph declares, and two of them may name the same
+		// checkpoint tensor (tied weights), which a checkpoint-side walk would
+		// inject only once and leave the graph short.
 		auto for_half = [&](const string &map_path, const char *half) {
 			auto onnx_to_st = ParseTensorMapJson(ReadWholeFile(fs, map_path), map_path);
 			if (onnx_to_st.empty()) {
@@ -972,27 +985,19 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 				    "tabfm: the %s half's tensor map '%s' names no initializers, so its weights cannot be injected.",
 				    half, map_path);
 			}
-			unordered_map<string, string> st_to_graph;
-			for (auto &kv : onnx_to_st) {
-				st_to_graph[kv.second] = kv.first;
-			}
 			vector<TabFMTensorRef> subset;
 			subset.reserve(onnx_to_st.size());
-			for (idx_t i = 0; i < initializers.size(); i++) {
-				auto it = st_to_graph.find(initializer_keys[i]);
-				if (it == st_to_graph.end()) {
-					continue; // not an initializer of this half's graph
+			for (auto &kv : onnx_to_st) {
+				auto it = by_key.find(kv.second);
+				if (it == by_key.end()) {
+					throw InvalidInputException(
+					    "tabfm: the %s half's graph needs '%s' (checkpoint tensor '%s'), which '%s' does not contain — "
+					    "the split graphs and the weights come from different exports.",
+					    half, kv.first, kv.second, resolved.weights_path);
 				}
-				auto ref = initializers[i];
-				ref.name = it->second;
+				auto ref = initializers[it->second];
+				ref.name = kv.first;
 				subset.push_back(std::move(ref));
-			}
-			if (subset.size() != onnx_to_st.size()) {
-				throw InvalidInputException(
-				    "tabfm: the %s half needs %llu initializers but only %llu are present in '%s' — the split graphs "
-				    "and the weights come from different exports.",
-				    half, static_cast<unsigned long long>(onnx_to_st.size()),
-				    static_cast<unsigned long long>(subset.size()), resolved.weights_path);
 			}
 			return subset;
 		};
