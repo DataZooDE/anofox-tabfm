@@ -1,4 +1,5 @@
 #include "tabfm_predict.hpp"
+#include "tabfm_state.hpp"
 #include "tabfm_preprocess.hpp"
 #include "tabfm_registration.hpp"
 
@@ -13,17 +14,6 @@
 #include <cstdlib>
 
 #include <cmath>
-
-#if defined(__linux__)
-#include <cinttypes>
-#include <cstdio>
-#elif defined(_WIN32)
-#include <windows.h>
-
-#include <psapi.h>
-#elif defined(__APPLE__)
-#include <mach/mach.h>
-#endif
 
 namespace duckdb {
 namespace anofox {
@@ -262,45 +252,6 @@ idx_t ReadMaxMemoryBytes(ClientContext &context) {
 	return StringUtil::TryParseFormattedBytes(raw, bytes).empty() ? bytes : 0;
 }
 
-//! This process's resident memory, in bytes; 0 when it cannot be read (platform
-//! not covered below, or the read failed) — 0 also disables the
-//! anofox_tabfm_max_memory check, since there is nothing trustworthy to compare.
-idx_t CurrentProcessResidentBytes() {
-#if defined(__linux__)
-	FILE *f = fopen("/proc/self/status", "r");
-	if (!f) {
-		return 0;
-	}
-	uint64_t kb = 0;
-	bool found = false;
-	char line[256];
-	while (fgets(line, sizeof(line), f)) {
-		if (std::sscanf(line, "VmRSS: %" SCNu64 " kB", &kb) == 1) {
-			found = true;
-			break;
-		}
-	}
-	fclose(f);
-	return found ? static_cast<idx_t>(kb) * 1024 : 0;
-#elif defined(_WIN32)
-	PROCESS_MEMORY_COUNTERS counters;
-	if (K32GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) {
-		return static_cast<idx_t>(counters.WorkingSetSize);
-	}
-	return 0;
-#elif defined(__APPLE__)
-	mach_task_basic_info_data_t info;
-	mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
-	if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO, reinterpret_cast<task_info_t>(&info), &count) ==
-	    KERN_SUCCESS) {
-		return static_cast<idx_t>(info.resident_size);
-	}
-	return 0;
-#else
-	return 0;
-#endif
-}
-
 //! FR-3.4 / issue #2: refuse to start a predict call while the process is
 //! already at or above anofox_tabfm_max_memory, so the failure is a clear
 //! DuckDB exception instead of an unattributable cgroup OOM-kill. This is a
@@ -442,6 +393,9 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	// memory watchdog checked right before each engine call (finalize/window)
 	bind->max_rows = ReadSettingUBigint(context, "anofox_tabfm_max_rows", 10000);
 	bind->max_memory_bytes = ReadMaxMemoryBytes(context);
+	// The same snapshot travels into the engine, which is the only place that can
+	// see what a forward pass costs. Read once at bind so both checks agree.
+	bind->context.max_memory_bytes = bind->max_memory_bytes;
 	const auto max_features = ReadSettingUBigint(context, "anofox_tabfm_max_features", 500);
 	const auto feature_count = fields.size() - 1; // everything but the target
 	if (feature_count > max_features) {
