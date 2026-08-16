@@ -30,6 +30,11 @@ SELECT current_setting('anofox_tabfm_max_features')
 500
 
 query I
+SELECT current_setting('anofox_tabfm_max_memory')
+----
+(empty)
+
+query I
 SELECT current_setting('anofox_tabfm_trace_level')
 ----
 warn
@@ -60,6 +65,12 @@ SET anofox_tabfm_cache_dir = '/tmp/tabfm-cache'
 
 statement ok
 SET anofox_tabfm_max_rows = 500
+
+statement ok
+SET anofox_tabfm_max_memory = '16GB'
+
+statement ok
+SET anofox_tabfm_max_memory = ''
 
 statement ok
 SET anofox_tabfm_threads = 2
@@ -102,6 +113,11 @@ statement error
 SET anofox_tabfm_max_rows = -1
 ----
 <REGEX>:.*must be positive.*
+
+statement error
+SET anofox_tabfm_max_memory = 'not a size'
+----
+<REGEX>:.*anofox_tabfm_max_memory.*
 
 statement error
 SET anofox_tabfm_threads = 0
