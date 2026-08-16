@@ -17,6 +17,7 @@
 
 #include <array>
 #include <cstring>
+#include <dlfcn.h>
 #include <mutex>
 #include <unordered_map>
 
@@ -281,6 +282,25 @@ string ExtractTensorName(const string &message) {
 // library under a name, ask the env which OrtEpDevices it contributed, filter
 // to the ones actually named CUDA (a provider library can register more than
 // one EP), then append those specific devices to the session.
+// libonnxruntime_providers_cuda.so imports Provider_GetHost, which it expects
+// resolved against an already-loaded libonnxruntime_providers_shared.so.
+// When ORT itself is a shared library, its own internal provider-bridge code
+// dlopen(RTLD_GLOBAL)s that shared-providers library for us as a side effect
+// of loading the CUDA library. In this extension's release build ORT is
+// linked statically (no libonnxruntime.so to run that code inside of), so
+// RegisterExecutionProviderLibrary fails with "undefined symbol:
+// Provider_GetHost" unless we preload it ourselves first — same fix already
+// applied for MIGraphX's libmigraphx_gpu.so (PreloadMigraphxGpuLibrary).
+void PreloadCudaProvidersSharedLibrary(const string &ep_path) {
+	static bool attempted = false;
+	if (attempted) {
+		return;
+	}
+	attempted = true;
+	const string shared_lib = ep_path + "/libonnxruntime_providers_shared.so";
+	dlopen(shared_lib.c_str(), RTLD_NOW | RTLD_GLOBAL);
+}
+
 void RegisterCudaProvider(Ort::SessionOptions &options, const TabFMSessionConfig &config) {
 	if (config.ep_path.empty()) {
 		throw InvalidInputException(
@@ -288,6 +308,7 @@ void RegisterCudaProvider(Ort::SessionOptions &options, const TabFMSessionConfig
 		    "anofox_tabfm_ep_path to the directory holding libonnxruntime_providers_cuda.so (CALL "
 		    "tabfm_download_runtime('cuda') to fetch it).");
 	}
+	PreloadCudaProvidersSharedLibrary(config.ep_path);
 	auto &env = GetOrtEnv();
 	const string provider_path = config.ep_path + "/libonnxruntime_providers_cuda.so";
 	constexpr const char *kRegistrationName = "anofox_tabfm_cuda";

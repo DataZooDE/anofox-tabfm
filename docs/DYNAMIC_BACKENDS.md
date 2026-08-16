@@ -227,7 +227,46 @@ with explicit `OrtDeviceMemoryType_DEFAULT`/`HOST_ACCESSIBLE` enums, no raw
 that issue was filed (v1.25.1) and 1.28.0, so #28329 is very likely a
 different bug that happens to look the same from the outside.
 
-**Real static trace, current best hypothesis.** A full source read of
+**Root-caused by direct A/B testing on real hardware — the static hypothesis
+below turned out to be wrong, kept for the record.** Built ORT v1.28.0 from
+source (RelWithDebInfo, debug symbols, `onnxruntime_BUILD_CUDA_EP_AS_PLUGIN=ON`,
+single-arch `86-real` for build speed) on a RunPod RTX A5000, then ran a
+minimal standalone repro (register → `GetEpDevices` → `AppendExecutionProvider_V2`
+→ `Run()`, same fixture graph) against every combination of core + CUDA
+provider:
+
+| core `libonnxruntime.so` | CUDA provider `.so` | result |
+|---|---|---|
+| built from source here | built from source here | **runs clean**, logits byte-identical to CPU |
+| built from source here | official CUDA-12 Azure-feed wheel | **runs clean**, logits byte-identical to CPU |
+| **official GitHub-release prebuilt archive** (`onnxruntime-linux-x64-1.28.0.tgz`) | official CUDA-12 Azure-feed wheel | **SIGSEGV**, same crash signature as the original |
+
+Same v1.28.0 source, same GPU, same driver, same CUDA toolkit — the *only*
+variable that flips the outcome is which build of the **core** library is
+loaded. That rules out the shared-allocator hypothesis below outright: it's
+in `environment.cc`, compiled identically into both cores from the same
+source tag, so if it were the real mechanism both would crash equally. It
+doesn't rule out an ABI/build-flag mismatch specific to how Microsoft's
+official prebuilt archive was compiled (different compiler version, different
+optimization/ABI flags, or the archive silently carrying a patch not in the
+public `v1.28.0` git tag) — undeterminable further without Microsoft's own
+build logs, and not necessary to determine further given what this means
+practically (next paragraph).
+
+**This is good news for anofox-tabfm specifically.** The community-extension
+*release* build already compiles ORT from source via the `vcpkg_ports/onnxruntime`
+overlay port (`TABFM_ORT_VCPKG=1`, this repo's release default) — the same
+build shape that was proven clean above, not the prebuilt-archive shape that
+crashes. Only the local prebuilt-archive **dev** build (`make debug`, fast
+iteration) is suspected to hit this. Verification of the actual release
+build (vcpkg-sourced ORT, statically linked, cpu flavor) against the CUDA
+plugin-EP path is in progress as of this writing — see the phase-3 status
+line at the top of this section once that lands.
+
+<details>
+<summary>Original static-trace hypothesis (superseded by the A/B result above — kept for the record, not the diagnosis)</summary>
+
+A full source read of
 `onnxruntime/core/providers/cuda/cuda_provider_factory.cc` and
 `onnxruntime/core/session/environment.cc` (v1.28.0) turned up something
 specific and structural:
@@ -270,18 +309,75 @@ specific and structural:
   than the shared-allocator theory but a second concrete candidate, and cheap
   to rule out with a breakpoint.
 
-This is a hypothesis, not a confirmed root cause — it explains the symptom
-shape well and is falsifiable, but reading source isn't proof. **Confirming
-it needs an ORT build with debug symbols** (the current backtrace is 10
-unsymbolized frames in a stripped release `.so`) so a real gdb session can
-show which allocator instance actually backs the crashing tensor. That's the
-next step, tracked as a dedicated investigation (plan published as an
-Artifact during the investigating session) — not yet executed as of this
-writing.
+This read like a strong, falsifiable hypothesis — and turned out to be wrong,
+or at least not the differentiator, per the A/B result above. Left here
+because the reasoning about the provider-bridge architecture and the
+shared-allocator mechanism is still accurate as *description of the code*;
+it just isn't *why one build crashes and the other doesn't*, since both
+builds run the identical version of this code.
 
-Until this is confirmed and fixed (upstream, since it's ORT-internal, not
-`tabfm_ort_engine.cpp`), `SET anofox_tabfm_device = 'cuda'` should be
-expected to fail at `Run()` on ORT 1.28's plugin-EP path.
+</details>
+
+Practical upshot: `SET anofox_tabfm_device = 'cuda'` fails at `Run()` when
+built against the prebuilt-archive ORT (the local `make debug` dev path).
+**Verified on real NVIDIA hardware (RunPod, RTX A5000) that the
+release/vcpkg-sourced build does NOT sidestep the problem** — it hits a
+different, earlier crash instead, described below. This is currently an
+open, undiagnosed blocker for the CUDA plugin path in the statically-linked
+release build specifically.
+
+Two distinct issues were found running the real release build (ORT 1.28.0
+built from source via the vcpkg overlay port, statically linked into the
+extension/duckdb binary — the actual shape the community-extension ships):
+
+1. **Fixed**: `RegisterExecutionProviderLibrary` failed with `undefined
+   symbol: Provider_GetHost` when loading `libonnxruntime_providers_cuda.so`.
+   That classic-ABI provider `.so` imports `Provider_GetHost`, exported by
+   the small sibling library `libonnxruntime_providers_shared.so`. When ORT
+   itself is a shared library, its own provider-bridge code dlopens the
+   shared-providers library (`RTLD_GLOBAL`) as a side effect of loading any
+   provider, which is what resolves that symbol against the caller's global
+   scope. Statically linking ORT into the host binary removes that side
+   effect, so the symbol stays unresolved. Fixed the same way the MIGraphX
+   plugin already had to be fixed for the identical problem with
+   `libmigraphx_gpu.so`/`migraphx_target_create`: `RegisterCudaProvider` now
+   does its own one-time `dlopen(ep_path + "/libonnxruntime_providers_shared.so",
+   RTLD_NOW | RTLD_GLOBAL)` before calling `RegisterExecutionProviderLibrary`
+   (`PreloadCudaProvidersSharedLibrary` in `src/tabfm_ort_engine.cpp`).
+
+2. **Open, not fixed**: with (1) fixed, registration proceeds further but
+   then **SIGSEGVs inside glibc's dynamic linker itself** — the crash is in
+   `dl_open_worker`/`_dl_open` (confirmed via gdb backtrace with debug
+   symbols), while ORT's own `PosixEnv::LoadDynamicLibrary` is `dlopen()`ing
+   the 621MB `libonnxruntime_providers_cuda.so`. This reproduces even though
+   ORT core here is from-source (not the prebuilt archive implicated above)
+   — the new variable is that ORT is **statically linked** into a large host
+   binary (`test/unittest` release build: ~97MB text segment, only
+   `libstdc++`/`libm`/`libgcc_s`/`libc` linked dynamically) that then
+   `dlopen()`s a huge provider library at runtime, long after startup.
+   Working hypothesis was glibc static-TLS-surplus exhaustion, but a second
+   opinion (`codex exec`) pushed back on that: the textbook symptom of TLS
+   surplus exhaustion is a clean, catchable `cannot allocate memory in
+   static TLS block` error from `dlopen`, not a segfault inside the linker's
+   own code — `GLIBC_TUNABLES=glibc.rtld.optional_static_tls=4194304` (a
+   much larger surplus) made no difference either, weakening that theory
+   further. `LD_DEBUG=statistics` showed only the process-startup stats
+   block; no further loader trace appeared before the crash, consistent with
+   the process dying mid-`dlopen` before that library's stats could print.
+   No kernel dmesg/journal access in the RunPod container to get a
+   kernel-level fault address. `/proc/sys/vm/max_map_count` (65530) and
+   `ulimit` were unremarkable.
+
+   Codex's recommendation, which this investigation concurs with: without a
+   deterministic startup-order fix turning up from a further minimal repro
+   (tiny dynamically-linked binary doing the same two `dlopen()` calls, to
+   isolate whether the "huge static binary" packaging shape is the actual
+   trigger), treat the CUDA plugin-EP path as **unsupported in the
+   statically-linked release/community-extension build** and scope it to
+   builds where ORT is loaded as a shared `libonnxruntime.so` (e.g. the
+   vcpkg-shared or ORT-provided-shared-lib build shapes), pending further
+   investigation. This is a glibc/ELF-loader-level edge case, not a logic
+   bug in this extension's code or in ORT.
 
 **vcpkg overlay port bumped to 1.28.0 too** — this was a real, separate
 blocker: the release/community-extension build compiles ORT from
