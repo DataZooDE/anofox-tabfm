@@ -15,7 +15,7 @@ import pathlib
 import sys
 import time
 
-from export_tabicl import configs, export
+from export_tabicl import configs, export, split
 from export_tabicl.tabicl_patches import build_model
 
 
@@ -26,6 +26,10 @@ def main(argv=None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
+    ap.add_argument("--split-context", action="store_true",
+                    help="ALSO export the support/query split pair (graph_prepare_*.onnx, "
+                         "graph_query_*.onnx), which lets a caller encode the labelled context "
+                         "once and reuse it across query batches. See split.py.")
     args = ap.parse_args(argv)
 
     cfg = configs.get(args.config, task=args.task)
@@ -64,6 +68,39 @@ def main(argv=None) -> int:
         if not parity["ok"]:
             print("[export_tabicl] PARITY FAILED", file=sys.stderr)
             return 1
+
+    if args.split_context:
+        prep_path = out / f"graph_prepare_tabicl_{args.task}.onnx"
+        qry_path = out / f"graph_query_tabicl_{args.task}.onnx"
+        t0 = time.time()
+        split.export_split(model, prep_path, qry_path, dim_train=cfg.dim_train,
+                           dim_features=cfg.dim_features, example=cfg.example)
+        print(f"[export_tabicl] split export done ({time.time()-t0:.1f}s): "
+              f"{split.n_context_tensors(model)} context tensor(s) + support_reps", flush=True)
+        if not args.skip_parity:
+            t0 = time.time()
+            worst = split.check_split_parity(
+                prep_path, qry_path, model,
+                [(s_, max(2, t_ - s_), h_) for t_, h_, s_ in cfg.parity_shapes])
+            ok = worst < 1e-3
+            print(f"[export_tabicl] split parity ({time.time()-t0:.1f}s): worst {worst:.2e} "
+                  f"(budget 1e-03) -> {'OK' if ok else 'FAIL'}", flush=True)
+            if not ok:
+                print("[export_tabicl] SPLIT PARITY FAILED", file=sys.stderr)
+                return 1
+        # Same shipping treatment as the single graph: externalize the checkpoint initializers,
+        # write a tensor map per half, then drop the weights. Without this the pair would ship
+        # random weights, which is exactly what assert_weight_free exists to prevent.
+        for path, half in ((prep_path, "prepare"), (qry_path, "query")):
+            tmap = export.postprocess(path, dict(model.state_dict()))
+            export.write_tensor_map(out / f"tensor_map_tabicl_{args.task}_{half}.json", tmap,
+                                    task=args.task,
+                                    safetensors_rel=f"{args.task}/model.safetensors")
+            export.delete_weight_data(path)
+            export.assert_weight_free(path, tmap)
+            print(f"[export_tabicl] split {half}: {path.name} "
+                  f"({path.stat().st_size / 1e6:.2f} MB, weight-free, "
+                  f"{len(tmap['initializers'])} initializers mapped)", flush=True)
 
     export.delete_weight_data(graph_path)
     export.assert_weight_free(graph_path, tensor_map)
