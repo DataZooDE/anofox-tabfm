@@ -13,6 +13,56 @@ uv run make_tabicl_fixture ../../test/fixtures/tabicl          # CI fixture
 uv run pytest
 ```
 
+## Optional: `--split-context`, the support/query split
+
+`tabfm_classify` re-encodes the labelled context on every call, because the graph is one forward
+pass over support and query concatenated. Measured on `tabicl-v2` (CPU, idle 16-core box) that pass
+is **71-80% of a call** — 1.398 s fixed + 9.0 ms per query row at a 64-row context, 5.053 s + 9.7 ms
+at 375 — and the support set never changes between calls. Context: DataZooDE/anofox-tabfm#37.
+
+```bash
+uv run export_tabicl --task classification --config real --out ../../resources --split-context
+```
+
+emits two extra weight-free graphs and their tensor maps:
+
+| | inputs | outputs |
+|---|---|---|
+| `graph_prepare_tabicl_*.onnx` | `x[1,S,H]`, `y[1,S]` | `hidden_0..hidden_{K-1}`, `support_reps[1,S,R]` |
+| `graph_query_tabicl_*.onnx` | `x[1,Q,H]`, `y[1,S]`, `support_reps`, `hidden_*` | `logits[1,Q,C]` |
+
+`K` is `col_num_blocks` (3 on the v2 architecture). A caller runs `prepare` once per support set and
+`query` per batch; the support rows never pass through `multihead_attn2`, the row interactor or the
+ICL stage again.
+
+**Parity is the same as the single graph** — 1.27e-07 on the real config, 8.94e-08 on the fixture,
+against a 1e-3 budget, at shapes that differ from the export example. A PyTorch prototype of the
+same decomposition on **trained** `tabicl-classifier-v2` weights gives 100% argmax agreement and
+these speedups per query batch (CPU, 500 features per call):
+
+| support | query | speedup |
+|---|---|---|
+| 375 | 22 | **11.2x** |
+| 375 | 128 | 4.1x |
+| 375 | 375 | 2.3x |
+| 64 | 14 | 5.0x |
+
+Biggest where a small batch meets a large context, which is the escalation case in #37.
+
+### Why the split is exact
+
+`InducedSelfAttentionBlock.induced_attention` already separates:
+
+```python
+hidden = multihead_attn1(ind_vectors, src[..., :train_size, :], src[..., :train_size, :])
+out    = multihead_attn2(src, hidden, hidden)
+```
+
+`hidden` is derived from the support rows alone and every row's output is an independent attention
+against it; block *k*'s `hidden` comes from block *k-1*'s support outputs, so the recursion stays
+support-only. See `split.py` for the two traps (the `y_train.max()` path and the skip-mask's
+shape-changing boolean index).
+
 ## Result: FULL SUCCESS (export), with a changed I/O contract
 
 TabICL is the hard candidate (per-column set-transformer over a variable feature
