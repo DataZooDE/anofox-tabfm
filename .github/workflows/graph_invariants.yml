@@ -37,5 +37,13 @@ jobs:
       # results are unchanged, and no CI runner has an NVIDIA GPU to fail on.
       # The glob is the point — a NEW graph carrying the same construct fails
       # here until someone decides to pin it or exclude it deliberately.
+      # The fixtures too. They were outside this glob until now, and all five
+      # graphs carrying the construct had gone unpinned since #31 taught the
+      # exporters to apply the pins — which is exactly the drift the check is
+      # for, sitting in the one place it was not looking.
       - name: Every ScatterND slice bound is a graph output
-        run: python tools/pin_dynamic_slice_bounds.py --check resources/graph_*.onnx
+        run: |
+          python tools/pin_dynamic_slice_bounds.py --check \
+            resources/graph_*.onnx \
+            test/fixtures/graph_*.onnx \
+            test/fixtures/*/graph_*.onnx
