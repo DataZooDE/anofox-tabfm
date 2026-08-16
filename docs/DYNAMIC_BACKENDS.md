@@ -215,33 +215,73 @@ path** (`RegisterExecutionProviderLibrary` → `GetEpDevices` →
 `AppendExecutionProvider_V2`) — not something wrong in `tabfm_ort_engine.cpp`'s
 `RegisterCudaProvider`, not the fixture graph, not this environment.
 
-**Root cause: almost certainly [onnxruntime#28329](https://github.com/microsoft/onnxruntime/issues/28329)**,
-open upstream, not our bug to fix. Its description matches this crash beat
-for beat: "session creation succeeds but the first `session.Run()` crashes...
-The built-in CUDA EP works correctly with the same model and inputs... Model:
-Any ONNX model — crash occurs on first Run, not model-specific... No C# tests
-exist for the Plugin EP path... all CUDA C# tests use `AppendExecutionProvider_CUDA`."
-Root cause per that report: the plugin-EP's `cuda_ep_factory.cc` builds an
-`OrtMemoryInfo` for pinned memory using the legacy `OrtMemTypeCPU(-1)` value,
-and inference code reads that raw `-1` into an `OrtDevice` constructor that
-now asserts `memory_type == DEFAULT || memory_type == HOST_ACCESSIBLE` — the
-built-in EP maps this correctly (`GetOrtDeviceByMemType`), the plugin-EP
-factory does not. Filed 2026-05-03 against v1.25.1, still open, and the
-underlying `cuda_ep_factory.cc`/`ortdevice.h` code is unchanged by anything
-in 1.28.0's release notes — this is a shared code path, not a
-version-specific regression, so it plausibly explains our stripped-build
-SIGSEGV too (an assert/exception deep in a release build with corrupted
-state upstream of the throw can surface as a raw segfault rather than a
-clean exception).
+**[onnxruntime#28329](https://github.com/microsoft/onnxruntime/issues/28329)
+was our first guess, corrected on closer reading.** Its symptom description
+matches beat for beat ("session creation succeeds but the first `session.Run()`
+crashes... built-in CUDA EP works correctly with the same model and inputs")
+but its claimed root cause — a legacy `OrtMemTypeCPU(-1)` value misread in
+`cuda_ep_factory.cc` — does not exist in v1.28.0's actual source. That file's
+`CreateMemoryInfoForDevices` already uses the newer `CreateMemoryInfo_V2` API
+with explicit `OrtDeviceMemoryType_DEFAULT`/`HOST_ACCESSIBLE` enums, no raw
+`-1` anywhere. ORT's plugin-EP memory-info handling was reworked between when
+that issue was filed (v1.25.1) and 1.28.0, so #28329 is very likely a
+different bug that happens to look the same from the outside.
 
-Given the issue is open, not our code, and has a specific root cause already
-diagnosed by someone else, filing a new upstream report would be redundant —
-the useful next action, if this ever gets picked back up, is to add a comment
-to #28329 confirming reproduction on 1.28.0 with a link to this project's
-independent repro (registration succeeds, `Run()` crashes, classic EP is
-fine), or watch that issue for a fix landing. Until then, `SET
-anofox_tabfm_device = 'cuda'` should be expected to fail at `Run()` on ORT
-1.28's plugin-EP path.
+**Real static trace, current best hypothesis.** A full source read of
+`onnxruntime/core/providers/cuda/cuda_provider_factory.cc` and
+`onnxruntime/core/session/environment.cc` (v1.28.0) turned up something
+specific and structural:
+
+- CUDA is not a *true* plugin EP in 1.28.0 — `CudaEpFactory::CreateEpImpl`
+  unconditionally returns `ORT_INVALID_ARGUMENT`. It is a "provider bridge":
+  `RegisterExecutionProviderLibrary` loads the CUDA `.so`, sees it exports the
+  classic `GetProvider` symbol, and wraps it as an `EpLibraryProviderBridge`.
+  A session created via `AppendExecutionProvider_V2` therefore ends up
+  constructing the exact same in-tree `CUDAExecutionProvider` C++ class the
+  classic path uses — confirmed the `ep::adapter::*` bridge headers (where a
+  real, already-fixed bug lived — PR #29658, a null-allocator PrePack
+  crash) are provably unreachable for CUDA, since `CreateEpImpl` never runs.
+- But `Environment::RegisterExecutionProviderLibrary` (environment.cc:582-598)
+  does something the classic path never does: for every `OrtEpDevice` the
+  library reports, it unconditionally pre-creates and registers a
+  process-wide **shared allocator** (`CreateSharedAllocatorImpl`, a plain
+  non-arena `CudaOrtAllocator` wrapping bare `CUDAAllocator`/`CUDAPinnedAllocator`)
+  keyed by that device's `OrtMemoryInfo`, *before any session exists*. The
+  session's own `CUDAExecutionProvider` instance then separately constructs
+  **its own** arena allocator and CUDA stream, same as always. Two allocators
+  now exist for the same device/memory-info: one process-wide and streamless
+  (created at registration time), one session-owned with its own stream
+  (created at session-creation time) — and nothing in the traced code
+  guarantees which one backs a given tensor. If session/graph memory planning
+  ever resolves an allocator by `OrtMemoryInfo` and prefers (or accidentally
+  picks up) the registration-time shared one instead of the EP's own, that
+  tensor's lifetime and stream-ordering have no relationship to the stream the
+  `CUDAExecutionProvider` actually launches kernels on — a textbook
+  segfault/use-after-free shape, and one that is structurally *only possible*
+  via the `RegisterExecutionProviderLibrary` + `AppendExecutionProvider_V2`
+  path (the classic `AppendExecutionProvider_CUDA` API never populates
+  `Environment::shared_allocators_`).
+- `CreateSyncStreamForDeviceImpl` (cuda_provider_factory.cc:876-883) has an
+  explicit comment from ORT's own engineers: *"we're using the 'real' CUDA
+  IExecutionProvider implementation for the EP... For use within an inference
+  session in a completely plugin EP we'd need the session's CPU allocator to
+  be available"* — i.e. this path is known-unwired for in-session CUDA use and
+  passes a **null allocator** if anything does reach it. Lower-probability
+  than the shared-allocator theory but a second concrete candidate, and cheap
+  to rule out with a breakpoint.
+
+This is a hypothesis, not a confirmed root cause — it explains the symptom
+shape well and is falsifiable, but reading source isn't proof. **Confirming
+it needs an ORT build with debug symbols** (the current backtrace is 10
+unsymbolized frames in a stripped release `.so`) so a real gdb session can
+show which allocator instance actually backs the crashing tensor. That's the
+next step, tracked as a dedicated investigation (plan published as an
+Artifact during the investigating session) — not yet executed as of this
+writing.
+
+Until this is confirmed and fixed (upstream, since it's ORT-internal, not
+`tabfm_ort_engine.cpp`), `SET anofox_tabfm_device = 'cuda'` should be
+expected to fail at `Run()` on ORT 1.28's plugin-EP path.
 
 **vcpkg overlay port bumped to 1.28.0 too** — this was a real, separate
 blocker: the release/community-extension build compiles ORT from
