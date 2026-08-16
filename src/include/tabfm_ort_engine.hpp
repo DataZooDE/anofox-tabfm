@@ -244,6 +244,49 @@ struct TabFMRunOutput {
 
 TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input);
 
+//===----------------------------------------------------------------------===//
+// Split (prepare/query) models — the encoded context, reused across calls
+//===----------------------------------------------------------------------===//
+
+//! The support half of a split model: everything derivable from the labelled
+//! context, computed once and fed to every query batch that shares it.
+//!
+//! Tensors are held by NAME, never by position. The prepare graph's outputs and
+//! the query graph's inputs are named from one contract by the exporter
+//! (tools/export_tabicl/src/export_tabicl/split.py), and both graphs also carry
+//! extra outputs from the ScatterND slice-bound pinning (`val_*`,
+//! `sym_size_int_*`) that are NOT part of it — so the runtime asks the query
+//! graph what it needs and requests exactly that, rather than shovelling every
+//! prepare output across.
+struct TabFMPreparedContext {
+	vector<string> names;
+	vector<vector<int64_t>> shapes;
+	vector<vector<float>> data;
+	//! The context rows' own fitted values, [S, C] row-major: one query pass over
+	//! the support rows. They depend only on the context (query rows are
+	//! independent of each other given the support set), so they are computed
+	//! with the context and reused with it.
+	vector<float> context_logits;
+	int64_t context_rows = 0;
+	int64_t context_classes = 0;
+	//! Resident cost of everything above.
+	idx_t bytes = 0;
+};
+
+//! Run the support half: x [1,S,H] f32, y [1,S] f32 -> the named tensors in
+//! `wanted`, which are the query graph's non-(x,y) inputs.
+TabFMPreparedContext RunPrepare(TabFMSession &session, const float *x, const float *y, int64_t s, int64_t h,
+                                const vector<string> &wanted);
+
+//! Run the query half over `q` rows against a prepared context:
+//! x [1,Q,H], y [1,S] and the context tensors -> logits [1,Q,C].
+TabFMRunOutput RunQuery(TabFMSession &session, const float *x, int64_t q, int64_t h, const float *y, int64_t s,
+                        const TabFMPreparedContext &context);
+
+//! The query graph's inputs other than x/y — i.e. what the prepare graph has to
+//! supply. Used to drive RunPrepare and to reject a mismatched pair at load.
+vector<string> SplitContextInputs(const TabFMSession &query_session);
+
 //! A compiled, ready-to-run inference backend for one loaded (model, device).
 //! The engine holds one per LoadedModel and calls Run() per forward pass.
 //! Implementations: OrtBackend (CPU + CUDA execution provider, via ORT) and

@@ -647,6 +647,172 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 	}
 }
 
+//===----------------------------------------------------------------------===//
+// Split (prepare/query) models
+//===----------------------------------------------------------------------===//
+
+vector<string> SplitContextInputs(const TabFMSession &query_session) {
+	vector<string> wanted;
+	for (auto &name : query_session.input_names) {
+		if (name != "x" && name != "y") {
+			wanted.push_back(name);
+		}
+	}
+	return wanted;
+}
+
+TabFMPreparedContext RunPrepare(TabFMSession &session, const float *x, const float *y, int64_t s, int64_t h,
+                                const vector<string> &wanted) {
+	if (!x || !y) {
+		throw InternalException("anofox_tabfm: RunPrepare() called with null input buffers");
+	}
+	if (s <= 0 || h <= 0) {
+		throw InvalidInputException("anofox_tabfm: RunPrepare() needs a positive context size S and feature count H, "
+		                            "got S=" +
+		                            std::to_string(s) + " H=" + std::to_string(h));
+	}
+	if (wanted.empty()) {
+		throw InvalidInputException(
+		    "anofox_tabfm: the query graph takes no context tensors, so it is not the query half of a split pair.");
+	}
+
+	auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+	const std::array<int64_t, 3> x_shape {1, s, h};
+	const std::array<int64_t, 2> y_shape {1, s};
+
+	std::vector<const char *> feed_names;
+	std::vector<Ort::Value> feed_values;
+	for (auto &name : session.input_names) {
+		feed_names.push_back(name.c_str());
+		if (name == "x") {
+			feed_values.push_back(Ort::Value::CreateTensor<float>(memory_info, const_cast<float *>(x),
+			                                                      static_cast<size_t>(s * h), x_shape.data(),
+			                                                      x_shape.size()));
+		} else if (name == "y") {
+			feed_values.push_back(Ort::Value::CreateTensor<float>(memory_info, const_cast<float *>(y),
+			                                                      static_cast<size_t>(s), y_shape.data(),
+			                                                      y_shape.size()));
+		} else {
+			throw InvalidInputException(
+			    "anofox_tabfm: the prepare graph declares input '%s'; the split contract is prepare(x, y) -> the "
+			    "context tensors the query graph takes. This is not the prepare half of a split pair.",
+			    name);
+		}
+	}
+
+	// Request exactly the tensors the query half asks for. ORT fails here, by
+	// name, if the pair does not agree — which is the check that a prepare graph
+	// from a different export would otherwise fail much later and less legibly.
+	std::vector<const char *> out_names;
+	out_names.reserve(wanted.size());
+	for (auto &name : wanted) {
+		out_names.push_back(name.c_str());
+	}
+
+	try {
+		auto outputs = session.session.Run(Ort::RunOptions {nullptr}, feed_names.data(), feed_values.data(),
+		                                   feed_values.size(), out_names.data(), out_names.size());
+		TabFMPreparedContext context;
+		context.context_rows = s;
+		for (idx_t i = 0; i < outputs.size(); i++) {
+			auto info = outputs[i].GetTensorTypeAndShapeInfo();
+			if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+				throw InvalidInputException("anofox_tabfm: the prepare graph's context tensor '%s' is not float32; "
+				                            "the engine caches f32 context tensors only.",
+				                            wanted[i]);
+			}
+			auto shape = info.GetShape();
+			const auto count = info.GetElementCount();
+			const float *data = outputs[i].GetTensorData<float>();
+			context.names.push_back(wanted[i]);
+			context.shapes.emplace_back(shape.begin(), shape.end());
+			context.data.emplace_back(data, data + count);
+			context.bytes += count * sizeof(float);
+		}
+		return context;
+	} catch (const Ort::Exception &error) {
+		throw InvalidInputException("anofox_tabfm: encoding the labelled context failed (ORT error code " +
+		                            std::to_string(error.GetOrtErrorCode()) + "): " + string(error.what()));
+	}
+}
+
+TabFMRunOutput RunQuery(TabFMSession &session, const float *x, int64_t q, int64_t h, const float *y, int64_t s,
+                        const TabFMPreparedContext &context) {
+	if (!x || !y) {
+		throw InternalException("anofox_tabfm: RunQuery() called with null input buffers");
+	}
+	if (q <= 0 || h <= 0 || s <= 0) {
+		throw InvalidInputException("anofox_tabfm: RunQuery() needs positive Q, H and S, got Q=" + std::to_string(q) +
+		                            " H=" + std::to_string(h) + " S=" + std::to_string(s));
+	}
+
+	auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+	const std::array<int64_t, 3> x_shape {1, q, h};
+	const std::array<int64_t, 2> y_shape {1, s};
+
+	std::vector<const char *> feed_names;
+	std::vector<Ort::Value> feed_values;
+	for (auto &name : session.input_names) {
+		feed_names.push_back(name.c_str());
+		if (name == "x") {
+			feed_values.push_back(Ort::Value::CreateTensor<float>(memory_info, const_cast<float *>(x),
+			                                                      static_cast<size_t>(q * h), x_shape.data(),
+			                                                      x_shape.size()));
+		} else if (name == "y") {
+			feed_values.push_back(Ort::Value::CreateTensor<float>(memory_info, const_cast<float *>(y),
+			                                                      static_cast<size_t>(s), y_shape.data(),
+			                                                      y_shape.size()));
+		} else {
+			idx_t found = context.names.size();
+			for (idx_t i = 0; i < context.names.size(); i++) {
+				if (context.names[i] == name) {
+					found = i;
+					break;
+				}
+			}
+			if (found == context.names.size()) {
+				throw InternalException("anofox_tabfm: the query graph takes a context tensor '" + name +
+				                        "' that the prepared context does not carry");
+			}
+			auto &shape = context.shapes[found];
+			auto &data = context.data[found];
+			feed_values.push_back(Ort::Value::CreateTensor<float>(memory_info, const_cast<float *>(data.data()),
+			                                                      data.size(), shape.data(), shape.size()));
+		}
+	}
+
+	if (session.output_names.empty()) {
+		throw InvalidInputException("anofox_tabfm: the query graph declares no outputs; expected 'logits'.");
+	}
+	idx_t output_index = 0;
+	for (idx_t i = 0; i < session.output_names.size(); i++) {
+		if (session.output_names[i] == "logits") {
+			output_index = i;
+			break;
+		}
+	}
+	const char *output_name = session.output_names[output_index].c_str();
+
+	try {
+		auto outputs = session.session.Run(Ort::RunOptions {nullptr}, feed_names.data(), feed_values.data(),
+		                                   feed_values.size(), &output_name, 1);
+		auto info = outputs[0].GetTensorTypeAndShapeInfo();
+		if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+			throw InternalException("anofox_tabfm: the query graph's output '" + string(output_name) +
+			                        "' is not float32 — unexpected graph");
+		}
+		TabFMRunOutput result;
+		auto shape = info.GetShape();
+		result.shape = vector<int64_t>(shape.begin(), shape.end());
+		const float *data = outputs[0].GetTensorData<float>();
+		result.logits.assign(data, data + info.GetElementCount());
+		return result;
+	} catch (const Ort::Exception &error) {
+		throw InvalidInputException("anofox_tabfm: inference against the cached context failed (ORT error code " +
+		                            std::to_string(error.GetOrtErrorCode()) + "): " + string(error.what()));
+	}
+}
+
 void ValidateTabFMOutput(const TabFMRunOutput &out, idx_t expected_t, idx_t min_classes, const char *task_name) {
 	auto shape_str = [&]() {
 		string s = "[";

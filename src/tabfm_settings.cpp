@@ -131,6 +131,16 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	    LogicalType::VARCHAR, Value("bf16"), ValidateGpuPrecision);
 
 	config.AddExtensionOption(
+	    "anofox_tabfm_context_cache",
+	    "Encode the labelled context once and reuse it across calls, for models that ship a split graph pair "
+	    "(prepare/query). Off by default. It pays off when the same context is scored more than once -- chunked "
+	    "scoring, repeated queries against a fixed training table -- and costs extra on a single call, which pays "
+	    "for the context it will not reuse. Test-row predictions match the combined graph; the fitted values on "
+	    "CONTEXT rows differ, because the query half has no label path and so no longer sees a context row's own "
+	    "label. Inert for a model that ships no pair.",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(false));
+
+	config.AddExtensionOption(
 	    "anofox_tabfm_cpu_prepack",
 	    "Enable ONNX Runtime weight prepacking on the CPU EP: faster matmuls at ~+16% resident memory.",
 	    LogicalType::BOOLEAN, Value::BOOLEAN(true));

@@ -121,6 +121,10 @@ struct PredictContext {
 	//! engine as well as checked at bind: the bind-time check only sees memory
 	//! already held, and the forward pass is where a single call grows.
 	idx_t max_memory_bytes = 0;
+	//! SET anofox_tabfm_context_cache — reuse the encoded labelled context across
+	//! calls when the model ships a split (prepare/query) graph pair. Off by
+	//! default; inert for a model that ships no pair.
+	bool context_cache = false;
 	//! SET anofox_tabfm_cpu_prepack — ORT weight prepacking on the CPU EP: faster
 	//! matmuls at ~+16% RSS. On by default now that external-data keeps RSS low.
 	bool cpu_prepack = true;

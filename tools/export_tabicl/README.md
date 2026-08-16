@@ -35,6 +35,17 @@ emits two extra weight-free graphs and their tensor maps:
 `query` per batch; the support rows never pass through `multihead_attn2`, the row interactor or the
 ICL stage again.
 
+Each half also gets its own tensor map — `tensor_map_prepare_tabicl_*.json`,
+`tensor_map_query_tabicl_*.json`, named from its own graph by the rule the combined pair already
+follows. They are not interchangeable: the prepare half is a proper SUBSET of the checkpoint (no
+predictor head), and ORT rejects an injected initializer its graph does not declare.
+
+**The extension uses the pair when it is there.** `SET anofox_tabfm_context_cache = true` makes the
+engine look for these four files next to the model's combined graph and, finding them, encode the
+context once per support set instead of once per call. Nothing to declare in the manifest — a
+re-export that emits the pair is enough. See `docs/KV_CACHE_DESIGN.md` for what that path does and
+does not preserve.
+
 **Parity is the same as the single graph** — 1.27e-07 on the real config, 8.94e-08 on the fixture,
 against a 1e-3 budget, at shapes that differ from the export example. A PyTorch prototype of the
 same decomposition on **trained** `tabicl-classifier-v2` weights gives 100% argmax agreement and
