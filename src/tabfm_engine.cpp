@@ -470,47 +470,86 @@ struct OrtBackend : public TabFMBackend {
 // manifest has to change to gain the fast path — or to keep working without it.
 // Same shape as the bundled external-data lookup above, which also engages only
 // when every artifact it needs is actually present.
+// Either form of a half: bytes compiled into the binary, or a file next to the
+// combined graph. Which one a model uses is not a property of the split — it is
+// how that model already carries its combined graph, and the pair follows it.
+struct SplitHalf {
+	string graph_path;
+	string map_path;
+	BundledResource graph_bundle;
+	BundledResource map_bundle;
+
+	bool bundled() const {
+		return graph_bundle.data != nullptr;
+	}
+	bool Available() const {
+		return bundled() ? map_bundle.data != nullptr : !graph_path.empty();
+	}
+};
+
 struct SplitGraphs {
-	string prepare_graph;
-	string query_graph;
-	string prepare_map;
-	string query_map;
+	SplitHalf prepare;
+	SplitHalf query;
 
 	bool Available() const {
-		return !prepare_graph.empty();
+		return prepare.Available() && query.Available();
 	}
 };
 
 SplitGraphs FindSplitGraphs(FileSystem &fs, const ResolvedModel &resolved) {
 	SplitGraphs split;
-	// A bundled graph is compiled into the binary and has no siblings on disk.
-	if (resolved.graph_path.empty()) {
-		return split;
-	}
-	const auto base = BaseName(resolved.graph_path);
-	if (!StringUtil::StartsWith(base, "graph_") || !StringUtil::EndsWith(base, ".onnx")) {
-		return split;
-	}
-	const auto dir = DirName(resolved.graph_path);
-	const auto rest = base.substr(6, base.size() - 6 - 5); // between "graph_" and ".onnx"
-	auto graph_of = [&](const char *half) {
-		return JoinPath(fs, dir, "graph_" + string(half) + "_" + rest + ".onnx");
-	};
-	auto map_of = [&](const char *half) {
-		return JoinPath(fs, dir, "tensor_map_" + string(half) + "_" + rest + ".json");
-	};
-	// All four or none: a half-present pair is a broken export, and engaging on it
-	// would fail deep inside session creation instead of falling back cleanly.
-	const char *halves[] = {"prepare", "query"};
-	for (auto *half : halves) {
-		if (!fs.FileExists(graph_of(half)) || !fs.FileExists(map_of(half))) {
+	SplitHalf prepare, query;
+
+	if (resolved.graph_bundle.data) {
+		// Built-in: the combined graph is compiled in under an id like
+		// "graph_tabicl_classification", and a re-export that adds the pair to
+		// resources/ registers it under the ids the same rule produces. This is the
+		// path that matters for the shipped models — they carry no graph on disk,
+		// so a file-only lookup could never find their pair.
+		const auto &id = resolved.manifest.graph;
+		if (!StringUtil::StartsWith(id, "graph_")) {
 			return split;
 		}
+		const auto rest = id.substr(6);
+		auto half = [&](const char *which) {
+			SplitHalf h;
+			h.graph_bundle = GetBundledResource("graph_" + string(which) + "_" + rest);
+			h.map_bundle = GetBundledResource("tensor_map_" + string(which) + "_" + rest + ".json");
+			return h;
+		};
+		prepare = half("prepare");
+		query = half("query");
+	} else if (!resolved.graph_path.empty()) {
+		const auto base = BaseName(resolved.graph_path);
+		if (!StringUtil::StartsWith(base, "graph_") || !StringUtil::EndsWith(base, ".onnx")) {
+			return split;
+		}
+		const auto dir = DirName(resolved.graph_path);
+		const auto rest = base.substr(6, base.size() - 6 - 5); // between "graph_" and ".onnx"
+		auto half = [&](const char *which) {
+			SplitHalf h;
+			auto graph = JoinPath(fs, dir, "graph_" + string(which) + "_" + rest + ".onnx");
+			auto map = JoinPath(fs, dir, "tensor_map_" + string(which) + "_" + rest + ".json");
+			if (fs.FileExists(graph) && fs.FileExists(map)) {
+				h.graph_path = graph;
+				h.map_path = map;
+			}
+			return h;
+		};
+		prepare = half("prepare");
+		query = half("query");
+	} else {
+		return split;
 	}
-	split.prepare_graph = graph_of("prepare");
-	split.query_graph = graph_of("query");
-	split.prepare_map = map_of("prepare");
-	split.query_map = map_of("query");
+
+	// All four artifacts or none: a half-present pair is a broken export, and
+	// engaging on it would fail deep inside session creation instead of falling
+	// back cleanly to the combined graph.
+	if (!prepare.Available() || !query.Available()) {
+		return split;
+	}
+	split.prepare = std::move(prepare);
+	split.query = std::move(query);
 	return split;
 }
 
@@ -978,12 +1017,15 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		// initializers this graph declares, and two of them may name the same
 		// checkpoint tensor (tied weights), which a checkpoint-side walk would
 		// inject only once and leave the graph short.
-		auto for_half = [&](const string &map_path, const char *half) {
-			auto onnx_to_st = ParseTensorMapJson(ReadWholeFile(fs, map_path), map_path);
+		auto for_half = [&](const SplitHalf &side, const char *half) {
+			const string source = side.bundled() ? ("bundled tensor_map_" + string(half)) : side.map_path;
+			auto json = side.bundled() ? string(side.map_bundle.data, side.map_bundle.size)
+			                           : ReadWholeFile(fs, side.map_path);
+			auto onnx_to_st = ParseTensorMapJson(json, source);
 			if (onnx_to_st.empty()) {
 				throw InvalidInputException(
 				    "tabfm: the %s half's tensor map '%s' names no initializers, so its weights cannot be injected.",
-				    half, map_path);
+				    half, source);
 			}
 			vector<TabFMTensorRef> subset;
 			subset.reserve(onnx_to_st.size());
@@ -1008,18 +1050,24 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		config.contract_inputs.clear();
 		config.contract_outputs.clear();
 
+		auto session_for = [&](const SplitHalf &side, const char *half) {
+			auto inits = for_half(side, half);
+			return side.bundled() ? CreateSession(side.graph_bundle.data, side.graph_bundle.size, inits, config)
+			                      : CreateSessionFromPath(side.graph_path, inits, config);
+		};
+
 		auto backend = make_shared_ptr<SplitOrtBackend>();
 		const string task_name = TabFMTaskName(resolved.manifest.task);
 		config.model_tag = task_name + " (prepare)";
-		backend->prepare = CreateSessionFromPath(split.prepare_graph, for_half(split.prepare_map, "prepare"), config);
+		backend->prepare = session_for(split.prepare, "prepare");
 		config.model_tag = task_name + " (query)";
-		backend->query = CreateSessionFromPath(split.query_graph, for_half(split.query_map, "query"), config);
+		backend->query = session_for(split.query, "query");
 		backend->context_inputs = SplitContextInputs(*backend->query);
 		if (backend->context_inputs.empty()) {
 			throw InvalidInputException(
-			    "tabfm: '%s' takes only x and y, so it is not the query half of a split pair. Re-export the pair with "
+			    "tabfm: the query half of '%s' takes only x and y, so it is not a query graph. Re-export the pair with "
 			    "tools/export_tabicl --split-context, or unset anofox_tabfm_context_cache.",
-			    split.query_graph);
+			    resolved.manifest.model);
 		}
 		backend->weights = std::move(weights);
 		backend->mapping = std::move(mapping);
