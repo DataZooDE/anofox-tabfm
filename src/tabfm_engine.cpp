@@ -937,10 +937,13 @@ public:
 			// chunk, same T and H every time.
 			const auto ceiling = in.ctx.max_memory_bytes;
 			const auto model_key = model->model_key;
+			// The RESOLVED device, not in.ctx.device: that is the setting, and 'auto'
+			// would key the same physical device differently from an explicit 'cpu'.
+			const auto &cost_device = model->device_id;
 			idx_t before = 0;
 			if (ceiling > 0) {
 				before = CurrentProcessResidentBytes();
-				auto expected = state->ForwardCost(model_key, in.ctx.device, run_input.t, run_input.h);
+				auto expected = state->ForwardCost(model_key, cost_device, run_input.t, run_input.h);
 				if (before > 0 && expected > 0 && before + expected >= ceiling) {
 					throw InvalidInputException(
 					    "anofox_tabfm: a forward pass of this shape (%lld rows x %lld features, model "
@@ -964,7 +967,7 @@ public:
 			if (ceiling > 0 && before > 0) {
 				auto after = CurrentProcessResidentBytes();
 				if (after > before) {
-					state->RecordForwardCost(model_key, in.ctx.device, run_input.t, run_input.h,
+					state->RecordForwardCost(model_key, cost_device, run_input.t, run_input.h,
 					                         after - before);
 				}
 			}
