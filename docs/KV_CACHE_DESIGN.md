@@ -98,3 +98,51 @@ not an O(1) one — this changes the LRU sizing and the large-context trade-off.
 **Net:** #7 is feasible and the independence premise holds; the export must expose
 context K/V per ICL layer (+ column state), and the cache is context-sized. No
 blocker found — ready for its own implementation goal.
+
+## Implemented for TabICL — `anofox_tabfm_context_cache`
+
+The export half landed in #38 (`export_tabicl --split-context`) and the runtime
+half wires it into the engine. Against the plan above:
+
+| plan | built | note |
+|---|---|---|
+| two graphs, single graph kept as fallback | yes | discovered next to the combined graph; absent pair ⇒ combined path, unchanged |
+| cache in `TabFMState` alongside the model | in the **backend**, which lives in `TabFMState` | same lifetime and the same per-device lock, without a second thing to invalidate on unload |
+| key by a **hash** of the context | keeps the context rows and compares them | see below |
+| bound the cache (LRU) | one entry | see below |
+| transparent, no API change | opt-in setting | see below |
+| both backends | ORT only | MIGraphX (ROCm) runs bundled graphs, which have no split form |
+
+**Not a hash.** The plan's own risk note — "a stale/wrong-context hit returns
+silently wrong predictions" — argues against one. A hash mismatch is safe, but a
+hash *collision* does not fail: it answers a query against someone else's
+training data, silently, which is the one failure mode nobody would catch. The
+support rows are a few hundred kB and a memcmp of them costs nothing next to the
+forward pass it guards, so the cache compares what it claims to compare.
+
+**One entry, not an LRU.** The cache is context-sized, as the gate correction
+established: at real scale the prepare outputs are hundreds of MB. An LRU of
+those is a resident-memory decision the user did not make. One entry serves the
+case the whole feature is for — the same context scored repeatedly — and a
+second context evicts the first rather than adding to it.
+
+**Opt-in rather than transparent**, which is the one place this departs from the
+plan, and it is a property of the TabICL split rather than a preference. The
+query half has no label path at all — that is what makes it cheap — so a CONTEXT
+row scored through it is no longer scored knowing its own label, and its fitted
+value moves. Test-row predictions are unchanged (that is what #38's parity
+asserts); the labelled rows' fitted values are not. Silently changing them for
+anyone whose model ships a pair is not a thing to do by default. The plan's
+transparency holds for a split that cuts a graph without dropping an input; this
+one drops an input.
+
+The other cost worth stating: a single call against a fresh context is SLOWER
+than the combined graph, because it pays for a context it will not reuse. The
+setting earns its place on the second call and after.
+
+Validation, against the list above: cached-vs-fresh identity, cache-miss on a
+changed context, and a changed context width are asserted in
+`test/sql/tabfm_context_cache.test`; chained-vs-single-pass parity in
+`tools/export_tabicl/tests/test_split.py`; wall-time in the trained-weight
+prototype in `tools/export_tabicl/README.md` (11.2x at a 375-row context, 22
+query rows).

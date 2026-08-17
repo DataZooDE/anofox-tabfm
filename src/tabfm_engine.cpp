@@ -41,6 +41,7 @@
 #include <openssl/evp.h>
 
 #include <cmath>
+#include <cstring>
 #include <fstream>
 
 #ifndef _WIN32
@@ -62,6 +63,11 @@ namespace {
 string DirName(const string &path) {
 	auto slash = path.find_last_of("/\\");
 	return slash == string::npos ? string(".") : path.substr(0, slash);
+}
+
+string BaseName(const string &path) {
+	auto slash = path.find_last_of("/\\");
+	return slash == string::npos ? path : path.substr(slash + 1);
 }
 
 string JoinPath(FileSystem &fs, const string &dir, const string &name) {
@@ -112,6 +118,31 @@ struct ResolvedModel {
 	int64_t max_classes = -1;
 };
 
+// {onnx initializer name -> safetensors key} from a tensor-map document: the
+// "initializers" object, or a bare {name: key} map.
+unordered_map<string, string> ParseTensorMapJson(const string &json, const string &source) {
+	unordered_map<string, string> result;
+	using namespace duckdb_yyjson; // NOLINT
+	auto doc = yyjson_read(json.c_str(), json.size(), 0);
+	if (!doc) {
+		throw InvalidInputException("tabfm: cannot parse tensor map '%s'", source);
+	}
+	auto root = yyjson_doc_get_root(doc);
+	auto inits = yyjson_obj_get(root, "initializers");
+	auto obj = (inits && yyjson_is_obj(inits)) ? inits : root; // accept bare map too
+	if (obj && yyjson_is_obj(obj)) {
+		size_t idx, max;
+		yyjson_val *key, *val;
+		yyjson_obj_foreach(obj, idx, max, key, val) {
+			if (yyjson_is_str(val)) {
+				result[yyjson_get_str(key)] = yyjson_get_str(val);
+			}
+		}
+	}
+	yyjson_doc_free(doc);
+	return result;
+}
+
 // Load {onnx -> safetensors} from the manifest: inline map, or the
 // "initializers" object of the tensor-map JSON file, else identity.
 unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest &manifest, const string &dir,
@@ -136,25 +167,7 @@ unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest 
 		source = JoinPath(fs, dir, manifest.tensor_map_path);
 		json = ReadWholeFile(fs, source);
 	}
-	using namespace duckdb_yyjson; // NOLINT
-	auto doc = yyjson_read(json.c_str(), json.size(), 0);
-	if (!doc) {
-		throw InvalidInputException("tabfm: cannot parse tensor map '%s'", source);
-	}
-	auto root = yyjson_doc_get_root(doc);
-	auto inits = yyjson_obj_get(root, "initializers");
-	auto obj = (inits && yyjson_is_obj(inits)) ? inits : root; // accept bare map too
-	if (obj && yyjson_is_obj(obj)) {
-		size_t idx, max;
-		yyjson_val *key, *val;
-		yyjson_obj_foreach(obj, idx, max, key, val) {
-			if (yyjson_is_str(val)) {
-				result[yyjson_get_str(key)] = yyjson_get_str(val);
-			}
-		}
-	}
-	yyjson_doc_free(doc);
-	return result;
+	return ParseTensorMapJson(json, source);
 }
 
 string ResolveGraphPath(FileSystem &fs, const ModelManifest &manifest, const string &dir) {
@@ -444,17 +457,231 @@ struct OrtBackend : public TabFMBackend {
 	}
 };
 
+// The split pair, found next to the combined graph by the names the exporter
+// writes (tools/export_tabicl --split-context):
+//
+//   graph_<rest>.onnx  ->  graph_prepare_<rest>.onnx   graph_query_<rest>.onnx
+//
+// and each half's tensor map named from its own graph, by the rule the combined
+// graph and map already follow (graph_ -> tensor_map_, .onnx -> .json).
+//
+// Discovered rather than declared in the manifest: the pair is produced by a
+// single exporter flag, a deployment has both files or neither, and no existing
+// manifest has to change to gain the fast path — or to keep working without it.
+// Same shape as the bundled external-data lookup above, which also engages only
+// when every artifact it needs is actually present.
+// Either form of a half: bytes compiled into the binary, or a file next to the
+// combined graph. Which one a model uses is not a property of the split — it is
+// how that model already carries its combined graph, and the pair follows it.
+struct SplitHalf {
+	string graph_path;
+	string map_path;
+	BundledResource graph_bundle;
+	BundledResource map_bundle;
+
+	bool bundled() const {
+		return graph_bundle.data != nullptr;
+	}
+	bool Available() const {
+		return bundled() ? map_bundle.data != nullptr : !graph_path.empty();
+	}
+};
+
+struct SplitGraphs {
+	SplitHalf prepare;
+	SplitHalf query;
+
+	bool Available() const {
+		return prepare.Available() && query.Available();
+	}
+};
+
+SplitGraphs FindSplitGraphs(FileSystem &fs, const ResolvedModel &resolved) {
+	SplitGraphs split;
+	SplitHalf prepare, query;
+
+	if (resolved.graph_bundle.data) {
+		// Built-in: the combined graph is compiled in under an id like
+		// "graph_tabicl_classification", and a re-export that adds the pair to
+		// resources/ registers it under the ids the same rule produces. This is the
+		// path that matters for the shipped models — they carry no graph on disk,
+		// so a file-only lookup could never find their pair.
+		const auto &id = resolved.manifest.graph;
+		if (!StringUtil::StartsWith(id, "graph_")) {
+			return split;
+		}
+		const auto rest = id.substr(6);
+		auto half = [&](const char *which) {
+			SplitHalf h;
+			h.graph_bundle = GetBundledResource("graph_" + string(which) + "_" + rest);
+			h.map_bundle = GetBundledResource("tensor_map_" + string(which) + "_" + rest + ".json");
+			return h;
+		};
+		prepare = half("prepare");
+		query = half("query");
+	} else if (!resolved.graph_path.empty()) {
+		const auto base = BaseName(resolved.graph_path);
+		if (!StringUtil::StartsWith(base, "graph_") || !StringUtil::EndsWith(base, ".onnx")) {
+			return split;
+		}
+		const auto dir = DirName(resolved.graph_path);
+		const auto rest = base.substr(6, base.size() - 6 - 5); // between "graph_" and ".onnx"
+		auto half = [&](const char *which) {
+			SplitHalf h;
+			auto graph = JoinPath(fs, dir, "graph_" + string(which) + "_" + rest + ".onnx");
+			auto map = JoinPath(fs, dir, "tensor_map_" + string(which) + "_" + rest + ".json");
+			if (fs.FileExists(graph) && fs.FileExists(map)) {
+				h.graph_path = graph;
+				h.map_path = map;
+			}
+			return h;
+		};
+		prepare = half("prepare");
+		query = half("query");
+	} else {
+		return split;
+	}
+
+	// All four artifacts or none: a half-present pair is a broken export, and
+	// engaging on it would fail deep inside session creation instead of falling
+	// back cleanly to the combined graph.
+	if (!prepare.Available() || !query.Available()) {
+		return split;
+	}
+	split.prepare = std::move(prepare);
+	split.query = std::move(query);
+	return split;
+}
+
+// "1, 20, 3" — a graph's actual output shape, for an error that has to name it.
+string ShapeString(const vector<int64_t> &shape) {
+	string out;
+	for (idx_t i = 0; i < shape.size(); i++) {
+		out += (i ? ", " : "") + std::to_string(shape[i]);
+	}
+	return out;
+}
+
+// A model exported as a support/query PAIR (tools/export_tabicl --split-context):
+// the labelled context is encoded once by the prepare graph and reused by every
+// query batch that arrives with the same context. That encoding is what the
+// combined graph re-runs on every call — 71-80% of a tabicl-v2 forward pass at a
+// 64-375 row context (DataZooDE/anofox-tabfm#37).
+//
+// Declaration order is the destruction contract, exactly as OrtBackend: the
+// sessions are LAST so they are destroyed FIRST, before the weight buffers ORT
+// reads lazily during inference.
+struct SplitOrtBackend : public TabFMBackend {
+	string weights;
+	MappedFile mapping;
+	F32Arena arena;
+	//! The query graph's non-(x,y) inputs — what prepare has to supply.
+	vector<string> context_inputs;
+
+	// The one cached context. Guarded by the caller's per-device lock (HLD §6),
+	// which is held across the whole forward pass, so no locking is needed here.
+	//
+	// The support rows are kept and compared VERBATIM rather than hashed: a hash
+	// collision here would not fail, it would answer a query against someone
+	// else's training data. A memcmp of a few hundred kB costs nothing next to
+	// the forward pass it guards.
+	vector<float> context_x;
+	vector<float> context_y;
+	int64_t context_h = 0;
+	TabFMPreparedContext context;
+
+	TabFMSessionHandle prepare;
+	TabFMSessionHandle query;
+
+	bool ContextMatches(const TabFMRunInput &input, int64_t s) const {
+		if (context.context_rows != s || context_h != input.h) {
+			return false;
+		}
+		const auto x_count = static_cast<size_t>(s) * static_cast<size_t>(input.h);
+		if (context_x.size() != x_count || context_y.size() != static_cast<size_t>(s)) {
+			return false;
+		}
+		return std::memcmp(context_x.data(), input.x, x_count * sizeof(float)) == 0 &&
+		       std::memcmp(context_y.data(), input.y, static_cast<size_t>(s) * sizeof(float)) == 0;
+	}
+
+	TabFMRunOutput Run(const TabFMRunInput &input) override {
+		const int64_t s = input.train_size;
+		const int64_t q = input.t - s;
+		if (s <= 0 || q < 0) {
+			throw InternalException("anofox_tabfm: split model called with train_size=" + std::to_string(s) +
+			                        " of T=" + std::to_string(input.t));
+		}
+
+		if (!ContextMatches(input, s)) {
+			// Invalidate BEFORE building, and publish only once everything below has
+			// succeeded. Both passes can throw, and a half-built context that still
+			// looked valid would be reused by the next call — silently, against the
+			// wrong training data. Dropping the old one first also keeps the peak at
+			// one context rather than two, which at real scale is hundreds of MB.
+			context = TabFMPreparedContext();
+			context_x.clear();
+			context_y.clear();
+			context_h = 0;
+
+			auto prepared = RunPrepare(*prepare, input.x, input.y, s, input.h, context_inputs);
+
+			// The context rows' own fitted values. Every row the engine returns needs
+			// one, including the labelled ones, and the combined graph produces them
+			// in the same pass. Here they are a query pass over the support rows —
+			// which is exact for a cache, because a query row's answer depends only
+			// on the context, never on which other rows shared its batch.
+			auto fitted = RunQuery(*query, input.x, s, input.h, input.y, s, prepared);
+			if (fitted.shape.size() != 3 || fitted.shape[1] != s) {
+				throw InvalidInputException(
+				    "anofox_tabfm: the query graph returned %llu values shaped [%s] for %lld context rows; expected "
+				    "[1, %lld, C]. The prepare/query pair does not match this model.",
+				    static_cast<unsigned long long>(fitted.logits.size()), ShapeString(fitted.shape),
+				    static_cast<long long>(s), static_cast<long long>(s));
+			}
+			prepared.context_classes = fitted.shape.back();
+			prepared.context_logits = std::move(fitted.logits);
+			prepared.bytes += prepared.context_logits.size() * sizeof(float);
+
+			const auto x_count = static_cast<size_t>(s) * static_cast<size_t>(input.h);
+			context = std::move(prepared);
+			context_x.assign(input.x, input.x + x_count);
+			context_y.assign(input.y, input.y + static_cast<size_t>(s));
+			context_h = input.h;
+		}
+
+		const int64_t c = context.context_classes;
+		TabFMRunOutput out;
+		out.shape = {1, input.t, c};
+		out.logits.reserve(static_cast<size_t>(input.t) * static_cast<size_t>(c));
+		out.logits.insert(out.logits.end(), context.context_logits.begin(), context.context_logits.end());
+		if (q > 0) {
+			auto scored = RunQuery(*query, input.x + s * input.h, q, input.h, input.y, s, context);
+			if (scored.shape.size() != 3 || scored.shape[1] != q || scored.shape.back() != c) {
+				throw InvalidInputException(
+				    "anofox_tabfm: the query graph returned [%s] for %lld query rows; expected [1, %lld, %lld].",
+				    ShapeString(scored.shape), static_cast<long long>(q), static_cast<long long>(q),
+				    static_cast<long long>(c));
+			}
+			out.logits.insert(out.logits.end(), scored.logits.begin(), scored.logits.end());
+		}
+		return out;
+	}
+};
+
 // Register a freshly built backend in the DB-instance state and return the
 // LoadedModel snapshot. The void handle aliases the TabFMBackend base pointer so
 // the predict loop can recover it and dispatch Run() virtually.
 shared_ptr<LoadedModel> RegisterBackend(TabFMState &state, const string &cache_key,
-                                        shared_ptr<TabFMBackend> backend, const string &device_id, idx_t bytes) {
+                                        shared_ptr<TabFMBackend> backend, const string &device_id, idx_t bytes,
+                                        bool split_context = false) {
 	auto model = make_shared_ptr<LoadedModel>();
 	model->model_key = cache_key;
 	model->session = shared_ptr<void>(std::move(backend));
 	model->device_id = device_id;
 	model->dtype = "f32";
 	model->bytes = bytes;
+	model->split_context = split_context;
 	state.Register(cache_key, model);
 	return model;
 }
@@ -617,17 +844,37 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 // (CPU/CUDA, ORT reads weights from disk) -> read/mmap + in-memory injection.
 shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                          const PredictContext &ctx) {
+	// Does this model ship a split (prepare/query) pair, and did the user ask for
+	// it? Decided BEFORE the cache lookup, because a session already built the
+	// other way has to be rebuilt rather than reused (see below).
+	SplitGraphs split;
+	if (ctx.context_cache) {
+		split = FindSplitGraphs(fs, resolved);
+	}
+	const bool want_split = split.Available();
+
 	if (auto snapshot = state.Snapshot(resolved.cache_key)) {
-		return snapshot;
+		if (snapshot->split_context == want_split) {
+			return snapshot;
+		}
+		// anofox_tabfm_context_cache changed since this model was loaded. Fall
+		// through and rebuild under the SAME key, so tabfm_models() and
+		// tabfm_unload() keep seeing exactly one entry per model — a suffixed key
+		// would leave a session that a targeted unload could not reach.
 	}
 
-	// ROCm GPU: direct MIGraphX backend (bypasses ORT's unusable MIGraphX EP).
-	if (auto gpu = TryMIGraphXBackend(fs, state, resolved, ctx)) {
-		return gpu;
-	}
-	// Low-memory path (external-data graph; ORT reads weights from disk).
-	if (auto external = TryExternalDataSession(fs, state, resolved, ctx)) {
-		return external;
+	// Both alternative backends below are driven by graphs compiled into the
+	// binary, and neither has a split form, so a model that ships a pair takes
+	// the injection path below instead.
+	if (!want_split) {
+		// ROCm GPU: direct MIGraphX backend (bypasses ORT's unusable MIGraphX EP).
+		if (auto gpu = TryMIGraphXBackend(fs, state, resolved, ctx)) {
+			return gpu;
+		}
+		// Low-memory path (external-data graph; ORT reads weights from disk).
+		if (auto external = TryExternalDataSession(fs, state, resolved, ctx)) {
+			return external;
+		}
 	}
 
 	// Prefer an mmap of the (local) cache file: ORT reads the injected
@@ -655,6 +902,10 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	}
 	F32Arena arena; // owns bf16->f32 upcasts (safetensors path); empty for ckpt
 	vector<TabFMTensorRef> initializers;
+	// The checkpoint key each entry of `initializers` came from, same order. The
+	// split halves are injected from their OWN tensor maps (each names only the
+	// initializers its graph declares), and renaming needs the source key.
+	vector<string> initializer_keys;
 	if (IsTorchCkpt(bytes, nbytes)) {
 		// Native PyTorch checkpoint (.ckpt): recover the state_dict and inject each
 		// tensor by graph name. The bytes alias the mmap/read buffer (kept alive by
@@ -715,6 +966,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 			ref.data = t.data;
 			ref.size_bytes = t.nbytes;
 			initializers.push_back(std::move(ref));
+			initializer_keys.push_back(entry.first);
 		}
 	} else {
 		// safetensors: build one injected initializer per tensor, named by the
@@ -733,6 +985,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 			ref.data = m.data;
 			ref.size_bytes = m.nbytes;
 			initializers.push_back(std::move(ref));
+			initializer_keys.push_back(st_key);
 		}
 	}
 
@@ -748,6 +1001,80 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	config.contract_outputs = resolved.contract_outputs;
 
 	const idx_t weight_bytes = nbytes;
+
+	if (want_split) {
+		// One half's injection set: the initializers ITS graph declares, named as
+		// its own tensor map names them. Not a filter on the combined set — the
+		// prepare graph is a proper subset of the checkpoint (no predictor head),
+		// and ORT rejects an injected initializer the graph does not have
+		// ("Failed to find existing initializer"), so each half is built from its
+		// own map or not at all.
+		unordered_map<string, idx_t> by_key;
+		for (idx_t i = 0; i < initializer_keys.size(); i++) {
+			by_key[initializer_keys[i]] = i;
+		}
+		// Driven by the MAP, not by the checkpoint: the map's keys are exactly the
+		// initializers this graph declares, and two of them may name the same
+		// checkpoint tensor (tied weights), which a checkpoint-side walk would
+		// inject only once and leave the graph short.
+		auto for_half = [&](const SplitHalf &side, const char *half) {
+			const string source = side.bundled() ? ("bundled tensor_map_" + string(half)) : side.map_path;
+			auto json = side.bundled() ? string(side.map_bundle.data, side.map_bundle.size)
+			                           : ReadWholeFile(fs, side.map_path);
+			auto onnx_to_st = ParseTensorMapJson(json, source);
+			if (onnx_to_st.empty()) {
+				throw InvalidInputException(
+				    "tabfm: the %s half's tensor map '%s' names no initializers, so its weights cannot be injected.",
+				    half, source);
+			}
+			vector<TabFMTensorRef> subset;
+			subset.reserve(onnx_to_st.size());
+			for (auto &kv : onnx_to_st) {
+				auto it = by_key.find(kv.second);
+				if (it == by_key.end()) {
+					throw InvalidInputException(
+					    "tabfm: the %s half's graph needs '%s' (checkpoint tensor '%s'), which '%s' does not contain — "
+					    "the split graphs and the weights come from different exports.",
+					    half, kv.first, kv.second, resolved.weights_path);
+				}
+				auto ref = initializers[it->second];
+				ref.name = kv.first;
+				subset.push_back(std::move(ref));
+			}
+			return subset;
+		};
+
+		// The manifest's tensor_contract describes the COMBINED graph (x/y/logits).
+		// The query half legitimately takes more inputs than that, so validating it
+		// against the combined contract would reject a correct pair.
+		config.contract_inputs.clear();
+		config.contract_outputs.clear();
+
+		auto session_for = [&](const SplitHalf &side, const char *half) {
+			auto inits = for_half(side, half);
+			return side.bundled() ? CreateSession(side.graph_bundle.data, side.graph_bundle.size, inits, config)
+			                      : CreateSessionFromPath(side.graph_path, inits, config);
+		};
+
+		auto backend = make_shared_ptr<SplitOrtBackend>();
+		const string task_name = TabFMTaskName(resolved.manifest.task);
+		config.model_tag = task_name + " (prepare)";
+		backend->prepare = session_for(split.prepare, "prepare");
+		config.model_tag = task_name + " (query)";
+		backend->query = session_for(split.query, "query");
+		backend->context_inputs = SplitContextInputs(*backend->query);
+		if (backend->context_inputs.empty()) {
+			throw InvalidInputException(
+			    "tabfm: the query half of '%s' takes only x and y, so it is not a query graph. Re-export the pair with "
+			    "tools/export_tabicl --split-context, or unset anofox_tabfm_context_cache.",
+			    resolved.manifest.model);
+		}
+		backend->weights = std::move(weights);
+		backend->mapping = std::move(mapping);
+		backend->arena = std::move(arena);
+		return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, true);
+	}
+
 	auto session = resolved.graph_bundle.data
 	                   ? CreateSession(resolved.graph_bundle.data, resolved.graph_bundle.size, initializers, config)
 	                   : CreateSessionFromPath(resolved.graph_path, initializers, config);

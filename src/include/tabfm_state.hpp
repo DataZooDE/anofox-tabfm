@@ -49,6 +49,11 @@ struct LoadedModel {
 	string dtype;
 	//! Resident weight bytes (for tabfm_models() reporting)
 	idx_t bytes = 0;
+	//! Loaded as a split (prepare/query) pair with a cached labelled context,
+	//! rather than as the single combined graph. Recorded so that flipping
+	//! anofox_tabfm_context_cache rebuilds the session instead of silently
+	//! answering from whichever backend happened to be cached first.
+	bool split_context = false;
 	//! Set by Unload; snapshot holders may finish their forward, new
 	//! snapshots will not see this model anymore.
 	atomic<bool> evicted {false};

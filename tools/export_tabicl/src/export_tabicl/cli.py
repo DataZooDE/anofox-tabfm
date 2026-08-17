@@ -93,7 +93,10 @@ def main(argv=None) -> int:
         # random weights, which is exactly what assert_weight_free exists to prevent.
         for path, half in ((prep_path, "prepare"), (qry_path, "query")):
             tmap = export.postprocess(path, dict(model.state_dict()))
-            export.write_tensor_map(out / f"tensor_map_tabicl_{args.task}_{half}.json", tmap,
+            # Named from its own graph by the rule the combined pair already
+            # follows -- graph_ -> tensor_map_, .onnx -> .json -- so the runtime
+            # finds a half's map from the half's filename and nothing else.
+            export.write_tensor_map(out / f"tensor_map_{half}_tabicl_{args.task}.json", tmap,
                                     task=args.task,
                                     safetensors_rel=f"{args.task}/model.safetensors")
             export.delete_weight_data(path)
