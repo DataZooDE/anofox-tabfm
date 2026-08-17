@@ -345,39 +345,88 @@ extension/duckdb binary — the actual shape the community-extension ships):
    RTLD_NOW | RTLD_GLOBAL)` before calling `RegisterExecutionProviderLibrary`
    (`PreloadCudaProvidersSharedLibrary` in `src/tabfm_ort_engine.cpp`).
 
-2. **Open, not fixed**: with (1) fixed, registration proceeds further but
-   then **SIGSEGVs inside glibc's dynamic linker itself** — the crash is in
-   `dl_open_worker`/`_dl_open` (confirmed via gdb backtrace with debug
-   symbols), while ORT's own `PosixEnv::LoadDynamicLibrary` is `dlopen()`ing
-   the 621MB `libonnxruntime_providers_cuda.so`. This reproduces even though
-   ORT core here is from-source (not the prebuilt archive implicated above)
-   — the new variable is that ORT is **statically linked** into a large host
-   binary (`test/unittest` release build: ~97MB text segment, only
-   `libstdc++`/`libm`/`libgcc_s`/`libc` linked dynamically) that then
-   `dlopen()`s a huge provider library at runtime, long after startup.
-   Working hypothesis was glibc static-TLS-surplus exhaustion, but a second
-   opinion (`codex exec`) pushed back on that: the textbook symptom of TLS
-   surplus exhaustion is a clean, catchable `cannot allocate memory in
-   static TLS block` error from `dlopen`, not a segfault inside the linker's
-   own code — `GLIBC_TUNABLES=glibc.rtld.optional_static_tls=4194304` (a
-   much larger surplus) made no difference either, weakening that theory
-   further. `LD_DEBUG=statistics` showed only the process-startup stats
-   block; no further loader trace appeared before the crash, consistent with
-   the process dying mid-`dlopen` before that library's stats could print.
-   No kernel dmesg/journal access in the RunPod container to get a
-   kernel-level fault address. `/proc/sys/vm/max_map_count` (65530) and
-   `ulimit` were unremarkable.
+2. **Open, root-caused, NOT specific to this extension's build shape**: with
+   (1) fixed, registration proceeds further but then SIGSEGVs. Initial gdb
+   backtraces (release build, `dl_open_worker`/`_dl_open` frames) suggested a
+   static-linking/glibc-loader interaction, and a first `codex exec` second
+   opinion pushed back on the leading static-TLS-exhaustion theory for that
+   shape (see the ruled-out details below). Isolating further with a minimal
+   repro proved decisive:
 
-   Codex's recommendation, which this investigation concurs with: without a
-   deterministic startup-order fix turning up from a further minimal repro
-   (tiny dynamically-linked binary doing the same two `dlopen()` calls, to
-   isolate whether the "huge static binary" packaging shape is the actual
-   trigger), treat the CUDA plugin-EP path as **unsupported in the
-   statically-linked release/community-extension build** and scope it to
-   builds where ORT is loaded as a shared `libonnxruntime.so` (e.g. the
-   vcpkg-shared or ORT-provided-shared-lib build shapes), pending further
-   investigation. This is a glibc/ELF-loader-level edge case, not a logic
-   bug in this extension's code or in ORT.
+   ```c
+   // 20 lines, no ORT headers, no anofox-tabfm code at all:
+   dlopen("libonnxruntime_providers_shared.so", RTLD_NOW | RTLD_GLOBAL);
+   dlopen("libonnxruntime_providers_cuda.so", RTLD_NOW | RTLD_LOCAL); // <-- crashes here
+   ```
+
+   This tiny, ~15KB dynamically-linked binary (no static linking anywhere,
+   no anofox-tabfm/DuckDB code in the process at all) reproduces the exact
+   same SIGSEGV — which rules out static linking, TLS surplus, and this
+   extension's build shape entirely as the cause. Preloading a full ORT core
+   first (to test whether an already-loaded ORT core changes anything) made
+   no difference — tried both a mismatched ORT 1.20 CPU-wheel
+   `libonnxruntime.so` and, as a cleaner ABI-matched control (per a second
+   `codex exec` review round), the *exact* ORT 1.28.0 CPU-wheel core +
+   matching `libonnxruntime_providers_shared.so` from the same
+   `onnxruntime==1.28.0` PyPI wheel — still crashes identically on the same
+   `dlopen()` of `libonnxruntime_providers_cuda.so`.
+
+   gdb pinpointed the actual fault:
+   ```
+   Program received signal SIGSEGV.
+   0x... in ?? () from /workspace/ep/libonnxruntime_providers_cuda.so
+   #0  0x... in ?? () from .../libonnxruntime_providers_cuda.so
+   #1  call_init (...) at ./elf/dl-init.c:70
+   #2  call_init (...) at ./elf/dl-init.c:33
+   rdi = 0x0
+   => mov    (%rdi),%rax        # load vtable from a NULL `this`
+      call   *0x1948(%rax)      # virtual call through it -> SIGSEGV
+   ```
+
+   This is a **null-pointer virtual-method call inside one of
+   `libonnxruntime_providers_cuda.so`'s own global/static C++ constructors**
+   (running during `dlopen`'s `call_init` phase) — some global object in the
+   provider library calls a method on a sibling global object that has not
+   been constructed yet. This is a textbook C++ static-initialization-order
+   bug, and it lives entirely inside Microsoft's prebuilt
+   `libonnxruntime_providers_cuda.so` (from the `onnxruntime-cuda-12` /
+   `onnxruntime-gpu` wheel builds, ORT 1.28.0) — reproducible by merely
+   `dlopen()`-ing that one file, regardless of caller, regardless of what
+   else is loaded first, regardless of static vs. dynamic linking of the
+   host process. Confirmed on real hardware: RunPod RTX A5000, driver
+   580.159.04, CUDA 12.8.1 toolkit.
+
+   **Conclusion**: this is not fixable in anofox-tabfm's code — it is a bug
+   (or at minimum an unsupported-outside-ORT's-own-loader-sequence
+   assumption) in the vendor-built CUDA provider library itself. The CUDA
+   plugin-EP path (`SET anofox_tabfm_device = 'cuda'` after
+   `tabfm_download_runtime('cuda')`) should be treated as **broken upstream**
+   until Microsoft either fixes the static-init-order bug or documents a
+   required pre-registration handshake this extension isn't doing. Worth
+   filing upstream against microsoft/onnxruntime with the minimal repro
+   above — small enough to attach verbatim.
+
+   <details>
+   <summary>Ruled-out theory: static linking / glibc TLS surplus (kept for the record)</summary>
+
+   Before the minimal repro above, the leading theory was that ORT being
+   **statically linked** into a large host binary (`test/unittest` release
+   build: ~97MB text segment, only `libstdc++`/`libm`/`libgcc_s`/`libc`
+   linked dynamically) that then `dlopen()`s a huge (621MB) provider library
+   at runtime, long after startup, was blowing past glibc's static-TLS
+   surplus reservation. A first `codex exec` second opinion pushed back:
+   the textbook symptom of TLS surplus exhaustion is a clean, catchable
+   `cannot allocate memory in static TLS block` error from `dlopen`, not a
+   segfault inside the linker's own code —
+   `GLIBC_TUNABLES=glibc.rtld.optional_static_tls=4194304` (a much larger
+   surplus) made no difference either, weakening the theory further before
+   it was conclusively ruled out by the tiny dynamically-linked repro above
+   producing the identical crash. `LD_DEBUG=statistics`,
+   `/proc/sys/vm/max_map_count` (65530), and `ulimit` were all unremarkable
+   and added nothing; no kernel dmesg/journal access in the RunPod
+   container for a kernel-level fault address.
+
+   </details>
 
 **vcpkg overlay port bumped to 1.28.0 too** — this was a real, separate
 blocker: the release/community-extension build compiles ORT from
