@@ -925,7 +925,52 @@ public:
 			lock_guard<mutex> device_guard(state->DeviceMutex(in.ctx.device));
 			auto model = LoadOrGetSession(*fs, *state, resolved, in.ctx);
 			auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
+
+			// anofox_tabfm_max_memory, second half. The bind-time check refuses when
+			// memory ALREADY held is over the ceiling; it cannot see a call that is
+			// small at entry and enormous at exit, which is the one the OOM killer
+			// takes. Nothing here estimates that from the model -- the manifest
+			// carries no hidden size or layer count, and a guessed constant would
+			// refuse work that would have succeeded. Instead the cost of this exact
+			// shape is measured the first time it runs and remembered, which is
+			// enough because the calls that hit this repeat: one per group, one per
+			// chunk, same T and H every time.
+			const auto ceiling = in.ctx.max_memory_bytes;
+			const auto model_key = model->model_key;
+			// The RESOLVED device, not in.ctx.device: that is the setting, and 'auto'
+			// would key the same physical device differently from an explicit 'cpu'.
+			const auto &cost_device = model->device_id;
+			idx_t before = 0;
+			if (ceiling > 0) {
+				before = CurrentProcessResidentBytes();
+				auto expected = state->ForwardCost(model_key, cost_device, run_input.t, run_input.h);
+				if (before > 0 && expected > 0 && before + expected >= ceiling) {
+					throw InvalidInputException(
+					    "anofox_tabfm: a forward pass of this shape (%lld rows x %lld features, model "
+					    "'%s') was measured to add %llu bytes, and resident memory is already %llu -- "
+					    "together that is at or above anofox_tabfm_max_memory (%llu bytes), so this call "
+					    "is refused rather than risking an OOM kill. Send fewer rows per call, raise the "
+					    "ceiling with SET anofox_tabfm_max_memory = '<size>', unload unused models with "
+					    "tabfm_unload(...), or disable the check with SET anofox_tabfm_max_memory = ''",
+					    static_cast<long long>(run_input.t), static_cast<long long>(run_input.h),
+					    model_key.c_str(), static_cast<unsigned long long>(expected),
+					    static_cast<unsigned long long>(before), static_cast<unsigned long long>(ceiling));
+				}
+			}
+
 			out = backend->Run(run_input);
+
+			// Recorded only on the way out of a successful call, so a shape that has
+			// never completed never produces an estimate. The first call of a shape
+			// is therefore unguarded -- stated plainly because it is the limit of
+			// what measuring rather than modelling can do.
+			if (ceiling > 0 && before > 0) {
+				auto after = CurrentProcessResidentBytes();
+				if (after > before) {
+					state->RecordForwardCost(model_key, cost_device, run_input.t, run_input.h,
+					                         after - before);
+				}
+			}
 		}
 
 		// 4. decode logits[1,T,C] -> per-source-row predictions

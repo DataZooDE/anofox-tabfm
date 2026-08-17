@@ -117,6 +117,10 @@ struct PredictContext {
 	//! precision on the ROCm GPU (RDNA4 runs bf16/fp16 at ~2x fp32). bf16 keeps
 	//! fp32's exponent range → safest. Ignored by the CPU/CUDA ORT paths.
 	string gpu_precision = "bf16";
+	//! SET anofox_tabfm_max_memory in bytes, 0 = disabled. Carried into the
+	//! engine as well as checked at bind: the bind-time check only sees memory
+	//! already held, and the forward pass is where a single call grows.
+	idx_t max_memory_bytes = 0;
 	//! SET anofox_tabfm_cpu_prepack — ORT weight prepacking on the CPU EP: faster
 	//! matmuls at ~+16% RSS. On by default now that external-data keeps RSS low.
 	bool cpu_prepack = true;
