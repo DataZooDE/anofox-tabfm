@@ -581,6 +581,13 @@ struct SplitOrtBackend : public TabFMBackend {
 	// The one cached context. Guarded by the caller's per-device lock (HLD §6),
 	// which is held across the whole forward pass, so no locking is needed here.
 	//
+	// That is only true because the caller keys that lock on the RESOLVED device
+	// (`ResolvedDeviceCached`). It keyed on the raw `anofox_tabfm_device` setting
+	// until #42: a connection on 'auto' and one on 'cpu' resolve to the same
+	// backend but took different mutexes, so they did not exclude each other and
+	// could tear these vectors while one rebuilt them. Anything that re-keys that
+	// lock on the setting again reopens the hole, and nothing here would notice.
+	//
 	// The support rows are kept and compared VERBATIM rather than hashed: a hash
 	// collision here would not fail, it would answer a query against someone
 	// else's training data. A memcmp of a few hundred kB costs nothing next to
@@ -837,6 +844,46 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 	shared_ptr<TabFMBackend> backend = MakeMIGraphXBackend(graph_path, dir, mxr_dir, device.arch,
 	                                                       device.device_ordinal, ctx.gpu_precision, ctx.mxr_source);
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0);
+}
+
+// The device a setting resolves to, memoized per distinct setting string.
+//
+// `DeviceMutex` must be keyed on this rather than on the setting, or two
+// connections whose settings differ textually while resolving to the same
+// physical device -- 'auto' and 'cpu' being the everyday pair -- take DIFFERENT
+// mutexes while sharing one backend under `resolved.cache_key`, and stop
+// excluding each other. That was harmless when the only shared mutable state was
+// the forward-cost number; SplitOrtBackend added a labelled-context cache that is
+// cleared and rebuilt in place on a miss, so two racing connections with
+// different context tables could observe a half-rebuilt one -- UB on the vectors,
+// not merely a wrong answer.
+//
+// Memoized because the fix has to work on the hot path: `DiscoverDevices()`
+// dlopens NVML and calls nvmlInit on every invocation, which is fine once per
+// session load and not fine once per forward pass.
+//
+// Process-wide rather than per-database-instance on purpose: the device topology
+// belongs to the machine, not to a DuckDB instance, and two instances in one
+// process should agree about it. It is deliberately NOT used by `tabfm_devices()`,
+// so that diagnostic keeps probing live hardware.
+const string &ResolvedDeviceCached(const string &setting) {
+	static mutex memo_lock;
+	static map<string, string> memo;
+	{
+		lock_guard<mutex> guard(memo_lock);
+		auto entry = memo.find(setting);
+		if (entry != memo.end()) {
+			return entry->second;
+		}
+	}
+	// Discovery outside the memo lock: it reaches into the driver, and holding a
+	// lock across that would serialize unrelated first-time resolutions behind it.
+	// Two connections racing here compute the same answer, so the re-lookup on the
+	// way back in is a correctness no-op rather than a guard.
+	auto devices = DiscoverDevices();
+	auto resolved = ResolveDevice(setting, devices);
+	lock_guard<mutex> guard(memo_lock);
+	return memo.emplace(setting, resolved.device_id).first->second;
 }
 
 // Build (or reuse) the ORT session for `resolved` and return a snapshot of the
@@ -1249,7 +1296,7 @@ public:
 		auto state = TabFMState::Get(*in.ctx.db);
 		TabFMRunOutput out;
 		{
-			lock_guard<mutex> device_guard(state->DeviceMutex(in.ctx.device));
+			lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(in.ctx.device)));
 			auto model = LoadOrGetSession(*fs, *state, resolved, in.ctx);
 			auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
 
@@ -1377,7 +1424,7 @@ void TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows,
 	// Loads/caches the backend (registered in state) and warms the shape-bucket:
 	// on ROCm this is the expensive MIGraphX compile + .mxr cache; on CPU/CUDA the
 	// no-op default just leaves the freshly-built ORT session warm.
-	lock_guard<mutex> device_guard(state->DeviceMutex(ctx.device));
+	lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(ctx.device)));
 	auto model = LoadOrGetSession(*fs, *state, resolved, ctx);
 	auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
 	backend->Precompile(rows, features);

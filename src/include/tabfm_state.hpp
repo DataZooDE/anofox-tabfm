@@ -109,6 +109,15 @@ public:
 	vector<string> LoadedKeys() const;
 	//! Serialize finalize-time forward passes per device (HLD §6). The
 	//! returned mutex lives as long as this state object.
+	//!
+	//! **Pass a RESOLVED device id, never the raw setting string.** Two connections
+	//! whose `anofox_tabfm_device` settings differ textually but resolve to the same
+	//! physical device — 'auto' and 'cpu' being the everyday pair — share one backend
+	//! under `resolved.cache_key`, so keying this on the setting hands them different
+	//! mutexes and they stop excluding each other. `ResolvedDeviceCached()` in
+	//! tabfm_engine.cpp is what callers should pass; it is there rather than here
+	//! because resolving needs the ORT device probes and this layer deliberately does
+	//! not depend on ORT headers.
 	mutex &DeviceMutex(const string &device_id);
 
 	//! Models registered in SQL (CALL tabfm_register_model). They are merged into
