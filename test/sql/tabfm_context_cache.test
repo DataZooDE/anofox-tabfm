@@ -1,0 +1,200 @@
+# name: test/sql/tabfm_context_cache.test
+# description: anofox_tabfm_context_cache — encode the labelled context once and
+#              reuse it, for a model that ships the support/query pair
+#              (tools/export_tabicl --split-context). The committed TabICL fixture
+#              ships the pair for CLASSIFICATION only, so the same file covers
+#              both halves of the contract: a task WITH a pair takes the split
+#              path, and a task WITHOUT one keeps taking the combined graph with
+#              the setting on.
+#
+#              What this file can and cannot prove. The fixture is random-init and
+#              very nearly constant — a completely different context moves its
+#              logits by 2e-08 — so "combined and split agree" is NOT evidence
+#              here: it would hold for an implementation that ignored its inputs.
+#              The numeric claim is asserted where the model is real:
+#              tools/export_tabicl/tests/test_split.py (chained graphs vs one
+#              forward pass, 1e-3 budget) and the trained-weight prototype in
+#              tools/export_tabicl/README.md (100% argmax agreement, 11.2x).
+#              What IS asserted below is that the split path actually RAN — via
+#              the one difference it is documented to produce, on the context rows
+#              — and that everything else is unchanged.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'tabicl-fixture', base_dir := 'test/fixtures/tabicl',
+  classification_graph := 'graph_tabicl_classification.onnx',
+  regression_graph := 'graph_tabicl_regression.onnx',
+  classification_weights := 'model_classification.safetensors',
+  regression_weights := 'model_regression.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json',
+  license := 'bsd-3-clause', commercial := true,
+  weights_repo := 'local:test/fixtures/tabicl', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'tabicl_v2_raw',
+  max_rows := 4096, max_features := 64, max_classes := 3)
+
+# Off by default: nothing changes for anyone who does not ask for it, and no
+# published model ships a pair yet.
+query T
+SELECT current_setting('anofox_tabfm_context_cache')
+----
+false
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,0.1,'c0'),(1.5,0.2,0.3,'c1'),(2.5,-1.0,0.5,'c2'),
+  (0.2,0.8,0.7,'c0'),(1.1,0.4,0.2,'c1'),(3.0,-0.5,0.9,'c2'),
+  (0.9,1.2,0.6,'c0'),(2.1,0.1,0.4,'c1'),
+  (1.3,0.3,0.35,NULL),(2.4,-0.2,0.55,NULL))
+  v(f1,f2,f3,label);
+
+# The combined graph, as today.
+statement ok
+CREATE TABLE combined AS
+SELECT f1, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', model := 'tabicl-fixture');
+
+statement ok
+SET anofox_tabfm_context_cache = true
+
+# The split pair. The model was already loaded above under the combined graph, so
+# this also exercises the rebuild that flipping the setting has to trigger.
+statement ok
+CREATE TABLE split AS
+SELECT f1, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', model := 'tabicl-fixture');
+
+# Same shape of answer: one row per input row, every label valid, none NULL.
+query III
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2')),
+       count(*) FILTER (WHERE yhat IS NULL)
+FROM split
+----
+10	0	0
+
+# The split path RAN. The query half has no label path, so a context row is no
+# longer scored knowing its own label, and its fitted value moves — the one
+# documented behaviour difference, used here as the proof of engagement. The test
+# rows are untouched by this: they never had a label to see.
+query I
+SELECT count(*) > 0 FROM combined c JOIN split s USING (f1)
+WHERE c.is_training AND abs(c.yhat_score - s.yhat_score) > 1e-6
+----
+true
+
+query I
+SELECT count(*) FROM combined c JOIN split s USING (f1)
+WHERE NOT c.is_training AND c.yhat <> s.yhat
+----
+0
+
+# Scoring the same context twice must be transparent: the second call answers
+# from the cached context and has to give the identical answer.
+statement ok
+CREATE TABLE split_again AS
+SELECT f1, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', model := 'tabicl-fixture');
+
+query I
+SELECT count(*) FROM split s JOIN split_again a USING (f1)
+WHERE s.yhat <> a.yhat OR abs(s.yhat_score - a.yhat_score) > 1e-12
+----
+0
+
+# A different context, then the first one again. The cache is keyed on the
+# support rows themselves, so this must evict and rebuild rather than answer the
+# second table from the first table's context.
+statement ok
+CREATE TABLE u AS SELECT * FROM (VALUES
+  (7.5,3.0,-0.1,'c0'),(8.5,2.2,-0.3,'c1'),(9.5,-3.0,-0.5,'c2'),
+  (7.2,2.8,-0.7,'c0'),(8.1,2.4,-0.2,'c1'),(9.9,-2.5,-0.9,'c2'),
+  (6.4,0.7,-0.15,NULL))
+  v(f1,f2,f3,label);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2'))
+FROM tabfm_classify('u', 'label', model := 'tabicl-fixture')
+----
+7	0
+
+statement ok
+CREATE TABLE split_back AS
+SELECT f1, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', model := 'tabicl-fixture');
+
+query I
+SELECT count(*) FROM split s JOIN split_back b USING (f1)
+WHERE s.yhat <> b.yhat OR abs(s.yhat_score - b.yhat_score) > 1e-12
+----
+0
+
+# A context of a DIFFERENT WIDTH, which a cache that compared only row counts
+# would feed to a graph expecting the old one.
+statement ok
+CREATE TABLE narrow AS SELECT f1, f2, label FROM t;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2'))
+FROM tabfm_classify('narrow', 'label', model := 'tabicl-fixture')
+----
+10	0
+
+# The fixture ships NO pair for regression, so that task keeps taking the
+# combined graph with the setting on — discovery must not engage on half a pair,
+# and must not error when there is none.
+statement ok
+CREATE TABLE r AS SELECT * FROM (VALUES
+  (0.5,1.0,0.1,1.2),(1.5,0.2,0.3,2.4),(2.5,-1.0,0.5,3.1),
+  (0.2,0.8,0.7,0.9),(1.1,0.4,0.2,1.8),(3.0,-0.5,0.9,3.6),
+  (0.9,1.2,0.6,1.1),(2.1,0.1,0.4,2.7),
+  (1.3,0.3,0.35,NULL),(2.4,-0.2,0.55,NULL))
+  v(f1,f2,f3,target);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_regress('r', 'target', model := 'tabicl-fixture')
+----
+10	0
+
+# Turning it back off returns the combined graph's answers exactly, including the
+# context rows that the split path moved.
+statement ok
+SET anofox_tabfm_context_cache = false
+
+statement ok
+CREATE TABLE combined_again AS
+SELECT f1, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', model := 'tabicl-fixture');
+
+query I
+SELECT count(*) FROM combined c JOIN combined_again a USING (f1)
+WHERE c.yhat <> a.yhat OR abs(c.yhat_score - a.yhat_score) > 1e-12
+----
+0
+
+# Unload reaches the split sessions like any other model — they are registered
+# under the model's own key, not a variant of it — and the pair reloads from cold
+# to the same answers.
+statement ok
+SET anofox_tabfm_context_cache = true
+
+statement ok
+CALL tabfm_unload()
+
+statement ok
+CREATE TABLE split_cold AS
+SELECT f1, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', model := 'tabicl-fixture');
+
+query I
+SELECT count(*) FROM split s JOIN split_cold c USING (f1)
+WHERE s.yhat <> c.yhat OR abs(s.yhat_score - c.yhat_score) > 1e-12
+----
+0

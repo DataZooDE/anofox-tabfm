@@ -24,6 +24,7 @@ from safetensors.torch import save_file
 
 from export_tabicl import configs as x_configs
 from export_tabicl import export as x_export
+from export_tabicl import split as x_split
 from export_tabicl.tabicl_patches import ExportWrapper, apply, build_model
 
 SEED_WEIGHTS = 1337
@@ -31,8 +32,15 @@ SEED_GOLDEN_INPUTS = 7
 WEIGHT_SCALE = 0.05
 GOLDEN_SHAPE = dict(t=20, h=5, s=12)  # T rows, H features, S train_size
 PARITY_RTOL = 1e-4
+SPLIT_PARITY_TOL = 1e-3  # same budget the single-graph export is held to
 
 TASKS = ("classification", "regression")
+# Tasks that ALSO ship the support/query pair, so the engine's context-cache path
+# (anofox_tabfm_context_cache) has something to run offline. Classification only,
+# on purpose: the regression task then exercises the other half of the contract --
+# a model whose task ships no pair must keep taking the combined graph with the
+# setting on. Both halves of that are asserted in test/sql/tabfm_context_cache.test.
+SPLIT_TASKS = ("classification",)
 # Shared tensor map: injection is name-based (onnx init "m.<key>" <- safetensors
 # "<key>", with an "m."-prefix fallback in the engine), so one map serves both
 # graphs. We ship the classification map as the manifest's shared map.
@@ -40,6 +48,8 @@ SHARED_TENSOR_MAP = "tensor_map_tabicl_classification.json"
 FILES = [
     "graph_tabicl_classification.onnx", "model_classification.safetensors",
     "tensor_map_tabicl_classification.json", "golden_classification.json",
+    "graph_prepare_tabicl_classification.onnx", "tensor_map_prepare_tabicl_classification.json",
+    "graph_query_tabicl_classification.onnx", "tensor_map_query_tabicl_classification.json",
     "graph_tabicl_regression.onnx", "model_regression.safetensors",
     "tensor_map_tabicl_regression.json", "golden_regression.json",
     "manifest.json",
@@ -87,6 +97,32 @@ def sha256_file(p: pathlib.Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
+def _build_split(out: pathlib.Path, task: str, model, cfg) -> None:
+    """The support/query pair, from the SAME seeded model as the combined graph.
+
+    Both halves are weight-free and inject from the task's committed safetensors,
+    so the pair adds graphs, not weights. The prepare half is a proper SUBSET of
+    the checkpoint (no predictor head), which is why each half carries its own
+    tensor map rather than sharing the combined one -- ORT rejects an injected
+    initializer the graph does not declare.
+    """
+    prep = out / f"graph_prepare_tabicl_{task}.onnx"
+    qry = out / f"graph_query_tabicl_{task}.onnx"
+    x_split.export_split(model, prep, qry, dim_train=cfg.dim_train,
+                         dim_features=cfg.dim_features, example=cfg.example)
+
+    worst = x_split.check_split_parity(
+        prep, qry, model, [(s, max(2, t - s), h) for t, h, s in cfg.parity_shapes])
+    assert worst < SPLIT_PARITY_TOL, f"split parity {worst:.2e} over budget"
+
+    for path, half in ((prep, "prepare"), (qry, "query")):
+        tmap = x_export.postprocess(path, dict(model.state_dict()))
+        x_export.write_tensor_map(out / f"tensor_map_{half}_tabicl_{task}.json", tmap,
+                                  task=task, safetensors_rel=f"model_{task}.safetensors")
+        x_export.delete_weight_data(path)
+        x_export.assert_weight_free(path, tmap)
+
+
 def _build_task(out: pathlib.Path, task: str) -> str:
     """Build one task's graph + safetensors + golden. Returns safetensors sha256."""
     model = seeded_model(task)
@@ -117,6 +153,9 @@ def _build_task(out: pathlib.Path, task: str) -> str:
 
     x_export.delete_weight_data(graph_path)
     x_export.assert_weight_free(graph_path, tensor_map)
+
+    if task in SPLIT_TASKS:
+        _build_split(out, task, model, cfg)
 
     x, y = golden_inputs(task)
     with torch.no_grad():

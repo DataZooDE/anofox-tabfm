@@ -49,6 +49,11 @@ struct LoadedModel {
 	string dtype;
 	//! Resident weight bytes (for tabfm_models() reporting)
 	idx_t bytes = 0;
+	//! Loaded as a split (prepare/query) pair with a cached labelled context,
+	//! rather than as the single combined graph. Recorded so that flipping
+	//! anofox_tabfm_context_cache rebuilds the session instead of silently
+	//! answering from whichever backend happened to be cached first.
+	bool split_context = false;
 	//! Set by Unload; snapshot holders may finish their forward, new
 	//! snapshots will not see this model anymore.
 	atomic<bool> evicted {false};
@@ -59,6 +64,15 @@ struct LoadedModel {
 //! tabfm_unload, which report and free them) MUST agree on this format, so both
 //! build the key here. Format: "<model>:<task>@<revision>".
 string TabFMModelCacheKey(const string &model, const string &task_name, const string &revision);
+
+//! This process's resident memory, in bytes; 0 when it cannot be read (platform
+//! not covered, or the read failed). 0 also disables every check built on it,
+//! since there is nothing trustworthy to compare against.
+//!
+//! Lives here rather than beside one caller because two now need it: the
+//! bind-time watchdog in tabfm_predict_agg.cpp and the per-forward accounting in
+//! tabfm_engine.cpp.
+idx_t CurrentProcessResidentBytes();
 
 class TabFMState : public ObjectCacheEntry {
 public:
@@ -95,6 +109,15 @@ public:
 	vector<string> LoadedKeys() const;
 	//! Serialize finalize-time forward passes per device (HLD §6). The
 	//! returned mutex lives as long as this state object.
+	//!
+	//! **Pass a RESOLVED device id, never the raw setting string.** Two connections
+	//! whose `anofox_tabfm_device` settings differ textually but resolve to the same
+	//! physical device — 'auto' and 'cpu' being the everyday pair — share one backend
+	//! under `resolved.cache_key`, so keying this on the setting hands them different
+	//! mutexes and they stop excluding each other. `ResolvedDeviceCached()` in
+	//! tabfm_engine.cpp is what callers should pass; it is there rather than here
+	//! because resolving needs the ORT device probes and this layer deliberately does
+	//! not depend on ORT headers.
 	mutex &DeviceMutex(const string &device_id);
 
 	//! Models registered in SQL (CALL tabfm_register_model). They are merged into
@@ -106,11 +129,28 @@ public:
 	//! Snapshot of all SQL-registered specs (sorted by id).
 	vector<ModelSpec> RegisteredSpecs() const;
 
+	//! What one forward pass of this shape was last observed to add to resident
+	//! memory, in bytes. `anofox_tabfm_max_memory` on its own is a watchdog on
+	//! memory ALREADY held, so it cannot see a single call that is small at entry
+	//! and enormous at exit; that is the case that gets OOM-killed. Recording what
+	//! a shape actually cost lets the next call of the same shape be checked
+	//! before it runs, with no model internals and no hardcoded constant.
+	//!
+	//! Deliberately keyed on the exact shape rather than interpolated: a measured
+	//! cost for (model, device, T, H) is evidence, and anything else is a guess
+	//! that could refuse work that would have succeeded.
+	void RecordForwardCost(const string &model_key, const string &device_id, int64_t t, int64_t h,
+	                       idx_t bytes);
+	//! Bytes the last forward of this shape added, or 0 if none has been seen.
+	idx_t ForwardCost(const string &model_key, const string &device_id, int64_t t, int64_t h) const;
+
 private:
 	mutable mutex lock;
 	map<string, shared_ptr<LoadedModel>> models;
 	map<string, unique_ptr<mutex>> device_mutexes;
 	map<string, ModelSpec> registered_specs;
+	//! "<model_key>|<device>|<T>x<H>" -> observed resident-memory growth.
+	map<string, idx_t> forward_costs;
 };
 
 } // namespace anofox

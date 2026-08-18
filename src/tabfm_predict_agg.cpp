@@ -1,4 +1,5 @@
 #include "tabfm_predict.hpp"
+#include "tabfm_state.hpp"
 #include "tabfm_preprocess.hpp"
 #include "tabfm_registration.hpp"
 
@@ -47,6 +48,8 @@ struct PredictBindData : public FunctionData {
 	//! What the caller passed as `features := [...]`, unit-separated, as the
 	//! macro saw it. Empty when the caller named no features.
 	string requested_features;
+	//! anofox_tabfm_max_memory snapshot in bytes, 0 = disabled (FR-3.4 / issue #2)
+	idx_t max_memory_bytes = 0;
 	//! settings + DB handle captured at bind (finalize has no ClientContext)
 	PredictContext context;
 
@@ -60,7 +63,7 @@ struct PredictBindData : public FunctionData {
 		       options.task == other.options.task && options.detail == other.options.detail &&
 		       options.n_estimators == other.options.n_estimators && options.seed == other.options.seed &&
 		       options.context_rows == other.options.context_rows && options.model == other.options.model &&
-		       max_rows == other.max_rows;
+		       max_rows == other.max_rows && max_memory_bytes == other.max_memory_bytes;
 	}
 
 	bool EmitProba() const {
@@ -234,6 +237,45 @@ idx_t ReadSettingUBigint(ClientContext &context, const char *name, idx_t fallbac
 	return fallback;
 }
 
+//! anofox_tabfm_max_memory in bytes; 0 = disabled (unset, '', or unparseable —
+//! ValidateMaxMemory already rejects the unparseable case at SET time).
+idx_t ReadMaxMemoryBytes(ClientContext &context) {
+	Value value;
+	if (!context.TryGetCurrentSetting("anofox_tabfm_max_memory", value) || value.IsNull()) {
+		return 0;
+	}
+	auto raw = StringValue::Get(value.DefaultCastAs(LogicalType::VARCHAR));
+	if (raw.empty()) {
+		return 0;
+	}
+	idx_t bytes;
+	return StringUtil::TryParseFormattedBytes(raw, bytes).empty() ? bytes : 0;
+}
+
+//! FR-3.4 / issue #2: refuse to start a predict call while the process is
+//! already at or above anofox_tabfm_max_memory, so the failure is a clear
+//! DuckDB exception instead of an unattributable cgroup OOM-kill. This is a
+//! watchdog on CURRENT resident memory, not an estimate of what the call
+//! about to run will cost — it does not bound how far a single large call can
+//! grow memory on its own.
+void CheckMemoryCeiling(const PredictBindData &bind) {
+	if (bind.max_memory_bytes == 0) {
+		return;
+	}
+	auto resident = CurrentProcessResidentBytes();
+	if (resident == 0) {
+		return; // cannot be read on this platform -- nothing to enforce against
+	}
+	if (resident >= bind.max_memory_bytes) {
+		throw InvalidInputException(
+		    "%s: process resident memory (%llu bytes) is already at or above anofox_tabfm_max_memory (%llu "
+		    "bytes) before this call could start. Raise it with SET anofox_tabfm_max_memory = '<size>'; unload "
+		    "unused models with tabfm_unload(...); or disable the check with SET anofox_tabfm_max_memory = ''",
+		    bind.function_name, static_cast<unsigned long long>(resident),
+		    static_cast<unsigned long long>(bind.max_memory_bytes));
+	}
+}
+
 string ExpandUserHome(const string &path) {
 	if (path.empty() || path[0] != '~') {
 		return path;
@@ -347,9 +389,13 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 		}
 	}
 
-
-	// guardrails snapshot (FR-3.4): features checked here, rows incrementally
+	// guardrails snapshot (FR-3.4): features checked here, rows incrementally,
+	// memory watchdog checked right before each engine call (finalize/window)
 	bind->max_rows = ReadSettingUBigint(context, "anofox_tabfm_max_rows", 10000);
+	bind->max_memory_bytes = ReadMaxMemoryBytes(context);
+	// The same snapshot travels into the engine, which is the only place that can
+	// see what a forward pass costs. Read once at bind so both checks agree.
+	bind->context.max_memory_bytes = bind->max_memory_bytes;
 	const auto max_features = ReadSettingUBigint(context, "anofox_tabfm_max_features", 500);
 	const auto feature_count = fields.size() - 1; // everything but the target
 	if (feature_count > max_features) {
@@ -381,6 +427,9 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_cpu_prepack", setting) && !setting.IsNull()) {
 		bind->context.cpu_prepack = BooleanValue::Get(setting);
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_context_cache", setting) && !setting.IsNull()) {
+		bind->context.context_cache = BooleanValue::Get(setting);
 	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
 		bind->context.mxr_source = setting.ToString();
@@ -624,6 +673,8 @@ void PredictAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_dat
 			                            bind.target);
 		}
 
+		CheckMemoryCeiling(bind);
+
 		// ENGINE SEAM: one engine call per group (HLD §4.6)
 		PredictInput engine_input {rows,           bind.row_type, bind.target_idx, bind.target_type,
 		                           bind.target,     bind.options,  bind.context};
@@ -747,6 +798,8 @@ void PredictWinWindow(AggregateInputData &aggr_input_data, const WindowPartition
 	auto scored_children = RowChildren(state.reader->Read(partition, scored_row), bind.row_type);
 	scored_children[bind.target_idx] = Value(bind.target_type);
 	rows.push_back(std::move(scored_children));
+
+	CheckMemoryCeiling(bind);
 
 	PredictInput engine_input {rows,       bind.row_type, bind.target_idx, bind.target_type,
 	                           bind.target, bind.options,  bind.context};

@@ -68,6 +68,22 @@ void ValidateMaxFeatures(ClientContext &context, SetScope scope, Value &paramete
 	ValidatePositive("anofox_tabfm_max_features", context, scope, parameter);
 }
 
+void ValidateMaxMemory(ClientContext &context, SetScope scope, Value &parameter) {
+	if (parameter.IsNull()) {
+		throw InvalidInputException("anofox_tabfm_max_memory cannot be NULL");
+	}
+	auto value = StringValue::Get(parameter.DefaultCastAs(LogicalType::VARCHAR));
+	if (value.empty()) {
+		return; // '' = disabled
+	}
+	idx_t bytes;
+	auto error = StringUtil::TryParseFormattedBytes(value, bytes);
+	if (!error.empty()) {
+		throw InvalidInputException(
+		    "anofox_tabfm_max_memory: %s (got '%s'); use a size like '16GB', or '' to disable", error, value);
+	}
+}
+
 } // anonymous namespace
 
 void RegisterTabfmSettings(ExtensionLoader &loader) {
@@ -92,6 +108,14 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	config.AddExtensionOption("anofox_tabfm_max_features", "Maximum feature columns per predict call",
 	                          LogicalType::BIGINT, Value::BIGINT(500), ValidateMaxFeatures);
 
+	config.AddExtensionOption(
+	    "anofox_tabfm_max_memory",
+	    "Refuse a predict call when this process's resident memory is already at or above this size (e.g. '16GB') "
+	    "before the call starts, so the failure is a DuckDB exception instead of a cgroup OOM-kill. '' (default) "
+	    "disables the check. Checked against resident memory at call time, not an estimate of the call's own "
+	    "cost -- it does not bound how much a single large call can grow memory by itself.",
+	    LogicalType::VARCHAR, Value(""), ValidateMaxMemory);
+
 	config.AddExtensionOption("anofox_tabfm_default_model",
 	                          "Default model id for tabfm_classify/regress/download/... when model := is not given. "
 	                          "'' = resolve to the single-file manifest model, else the sole registered model.",
@@ -105,6 +129,16 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	    "MIGraphX compile precision on the ROCm GPU: bf16|fp16|fp32. bf16 (default) runs ~2x faster than fp32 on "
 	    "RDNA4 and halves VRAM/.mxr, keeping fp32's exponent range; fp32 is the accuracy reference.",
 	    LogicalType::VARCHAR, Value("bf16"), ValidateGpuPrecision);
+
+	config.AddExtensionOption(
+	    "anofox_tabfm_context_cache",
+	    "Encode the labelled context once and reuse it across calls, for models that ship a split graph pair "
+	    "(prepare/query). Off by default. It pays off when the same context is scored more than once -- chunked "
+	    "scoring, repeated queries against a fixed training table -- and costs extra on a single call, which pays "
+	    "for the context it will not reuse. Test-row predictions match the combined graph; the fitted values on "
+	    "CONTEXT rows differ, because the query half has no label path and so no longer sees a context row's own "
+	    "label. Inert for a model that ships no pair.",
+	    LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_cpu_prepack",
