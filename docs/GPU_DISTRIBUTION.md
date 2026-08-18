@@ -77,6 +77,16 @@ CALL tabfm_download_runtime('cuda');   -- fetches the ORT GPU libs into the cach
 SET anofox_tabfm_device = 'cuda';
 ```
 
+> **This shipped, though not by the route sketched below.** The user-facing
+> shape above is exactly what landed; what changed is the mechanism. Loading
+> ORT's CUDA provider into the extension's own ORT turned out to be impossible
+> in the build that ships (a statically linked ORT interposes the provider's
+> symbols and corrupts the heap), so CUDA runs in a standalone backend plugin
+> carrying its own shared ORT-GPU runtime instead. The open questions below are
+> kept as the record of how that was established — see
+> `docs/DYNAMIC_BACKENDS.md`, "Phase 3, resolved: CUDA is a plugin, exactly
+> like ROCm", for the design that exists.
+
 Open questions, in the order they need answering:
 
 1. ~~**Does the loader find them?**~~ **Answered — no, not on the ORT we ship.**

@@ -8,7 +8,10 @@ mutually exclusive build flavors chosen at compile time.
 A device switch is an optimisation, not a different model, so the test suite
 below is the deliverable — not an afterthought to it.
 
-Status: **phase 0 landed, phases 1–4 pending.** Each phase is independently
+Status: **phases 0, 1 and 3 landed; 2 and 4 pending.** Both GPU backends now
+run as dlopen'd plugins carrying their own runtimes — ROCm over MIGraphX
+directly (phase 1), CUDA over its own shared ORT-GPU distribution (phase 3),
+each verified against CPU on real hardware. Each phase is independently
 shippable and none silently changes results.
 
 ## Why this is possible (measured, not assumed)
@@ -99,9 +102,13 @@ now calls `LoadPluginBackend` against `SET anofox_tabfm_ep_path` instead of
 the compile-time `MakeMIGraphXBackend` — `src/tabfm_migraphx.cpp` is deleted,
 and nothing in the main extension binary links `libmigraphx_c` on any flavor
 anymore. A resolved `rocm` device with no `ep_path` configured now throws
-rather than silently falling through to CPU (the tier-4 contract). The rocm
-flavor's ORT build is still required, but now only so device discovery's
-`OrtProviderAvailable` probe has an answer — not to run inference.
+rather than silently falling through to CPU (the tier-4 contract).
+
+The rocm flavor's ORT build is no longer needed for device discovery either:
+`usable` is decided by a static gfx allowlist, since the plugin drives MIGraphX
+directly and never touches ORT's EP. What still uses that build is the fallback
+for tasks shipping no bundled migraphx graph, where `TryMIGraphXBackend`
+declines and the ORT session path appends the MIGraphX EP instead.
 
 ### Phase 2 — ORT ≥ 1.28 (in progress)
 
@@ -124,7 +131,16 @@ fixed by #22 — so the upgrade should be less fraught than that report implied.
 Re-runs the ScatterND pin checks against a newer runtime, which is worth
 knowing regardless (onnxruntime#32083 is still open).
 
-### Phase 3 — CUDA as a plugin EP + `tabfm_download_runtime('cuda')` ✅ registration + download implemented (GPU-run unverified)
+### Phase 3 — CUDA as a backend plugin + `tabfm_download_runtime('cuda')` ✅ implemented and verified on hardware
+
+> **Superseded approach below.** This section records the plugin-EP route
+> (registering ORT's CUDA provider into this binary's ORT) as it was designed
+> and attempted, because the investigation that killed it is the reason the
+> final design looks the way it does. It does **not** describe what ships.
+> CUDA is a standalone backend plugin with its own shared ORT-GPU runtime —
+> jump to "Phase 3, resolved: CUDA is a plugin, exactly like ROCm" below for
+> the design that is actually implemented, and to the crash post-mortem above
+> it for why the plugin-EP route cannot work in the build that ships.
 
 **Premise confirmed on 1.28.** The provider's exported plugin-ABI symbols
 (`CreateEpFactories` / `ReleaseEpFactory`):
