@@ -83,6 +83,13 @@ tools/gpu_test/equivalence.py resources/graph_ext_classification.onnx \
     --providers cpu,cuda-plugin --plugin-dir ~/.cache/anofox-tabfm/ep
 ```
 
+Verified on real hardware: `cpu` vs `rocm-plugin` on gfx1201 with the
+classification graph and synthesized weights gives `max relative 1.034e-05`
+(tolerance `1e-04`) with argmax agreement `1.0000`. Expect the first run of a
+new shape bucket to take tens of minutes — MIGraphX compiles per bucket, and a
+synthesized-weights run deliberately cannot reuse a cached `.mxr` (see
+`plugin_cache_dir`).
+
 The plugins only speak the 5-input tabfm signature (`x, y, cat_mask,
 train_size, d`), so pair them with a `graph_ext_*` / `graph_migraphx_*` graph —
 the `(x, y)` graphs are ORT-provider only. The signature is detected from the
