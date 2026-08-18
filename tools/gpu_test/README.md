@@ -60,14 +60,55 @@ tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --provi
     --weights ~/.cache/anofox-tabfm/jingang__TabICL@main/classification/model.safetensors \
     --tensor-map resources/tensor_map_tabicl_classification.json
 
-# on a GPU box
+# on a GPU box: ONNX Runtime's own CUDA execution provider
 tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --providers cpu,cuda
 ```
+
+### Measuring what ships, not what ONNX Runtime does
+
+A backend suffixed `-plugin` is driven through the **real backend plugin**
+(`tabfm_plugin_abi.h`, `dlopen`'d from `--plugin-dir`) instead of through ORT's
+execution provider. On GPU that distinction is the whole point: since
+`docs/DYNAMIC_BACKENDS.md` phases 1 and 3, neither ROCm nor CUDA reaches the
+accelerator through this process's ORT, so `--providers cpu,cuda` measures
+ONNX Runtime while `--providers cpu,cuda-plugin` measures the shipped path.
+
+```bash
+# ROCm, against a locally built plugin
+tools/gpu_test/equivalence.py resources/graph_migraphx_classification.onnx \
+    --providers cpu,rocm-plugin --plugin-dir build/debug/extension/anofox_tabfm
+
+# CUDA, against what tabfm_download_runtime('cuda') fetched
+tools/gpu_test/equivalence.py resources/graph_ext_classification.onnx \
+    --providers cpu,cuda-plugin --plugin-dir ~/.cache/anofox-tabfm/ep
+```
+
+The plugins only speak the 5-input tabfm signature (`x, y, cat_mask,
+train_size, d`), so pair them with a `graph_ext_*` / `graph_migraphx_*` graph —
+the `(x, y)` graphs are ORT-provider only. The signature is detected from the
+graph rather than assumed, and both sides are fed the same initializer values
+(materialized to an external-data file for the plugin, which has no way to
+receive them in memory).
 
 Exit codes: `0` equivalent, `1` a backend failed, `2` answers diverged, `3` a
 requested provider was not available. **Unavailable is never silent** — a GPU
 comparison that quietly ran on CPU would pass while testing nothing, which is
 the failure mode this whole directory exists to prevent.
+
+## `cuda_plugin_verify.sh` — the CUDA plugin on rented hardware
+
+Builds `src/tabfm_cuda_plugin.cpp` against a real ORT-GPU distribution, loads
+it through the plugin ABI, compares CPU vs CUDA on the committed fixture, and
+checks the artifacts `tabfm_download_runtime('cuda')` declares against the real
+wheel (byte count, entry names, SONAME).
+
+```bash
+tools/gpu_test/runpod_run.py --upload tools/gpu_test/cuda_plugin_verify.sh \
+    tools/gpu_test/cuda_plugin_verify_host.cpp src/tabfm_cuda_plugin.cpp \
+    src/include/tabfm_plugin_abi.h test/fixtures/graph_fixture.onnx \
+    test/fixtures/model.safetensors \
+    --command 'bash /workspace/cuda_plugin_verify.sh'
+```
 
 ## `runpod_run.py` — rent a GPU, run, destroy
 
