@@ -318,17 +318,18 @@ builds run the identical version of this code.
 
 </details>
 
-Practical upshot: `SET anofox_tabfm_device = 'cuda'` fails at `Run()` when
-built against the prebuilt-archive ORT (the local `make debug` dev path).
-**Verified on real NVIDIA hardware (RunPod, RTX A5000) that the
-release/vcpkg-sourced build does NOT sidestep the problem** — it hits a
-different, earlier crash instead, described below. This is currently an
-open, undiagnosed blocker for the CUDA plugin path in the statically-linked
-release build specifically.
+Practical upshot: **`SET anofox_tabfm_device = 'cuda'` cannot work while ORT
+is statically linked.** Verified on real NVIDIA hardware (RunPod, RTX A5000,
+driver 580.159.04, CUDA 12.8.1). The release/vcpkg-sourced build does not
+sidestep the problem; it fails in two stages, and the second one is fatal to
+the current design. The fix is to ship ORT as a shared `libonnxruntime.so`
+for GPU-capable builds, replicating the layout of Microsoft's own wheel
+(which is confirmed working with the identical provider `.so` on the same
+box).
 
-Two distinct issues were found running the real release build (ORT 1.28.0
-built from source via the vcpkg overlay port, statically linked into the
-extension/duckdb binary — the actual shape the community-extension ships):
+Three issues were found running the real release build (ORT 1.28.0 built
+from source via the vcpkg overlay port, statically linked into the
+extension/duckdb binary — the shape the community-extension ships):
 
 1. **Fixed**: `RegisterExecutionProviderLibrary` failed with `undefined
    symbol: Provider_GetHost` when loading `libonnxruntime_providers_cuda.so`.
@@ -383,28 +384,89 @@ extension/duckdb binary — the actual shape the community-extension ships):
       call   *0x1948(%rax)      # virtual call through it -> SIGSEGV
    ```
 
-   This is a **null-pointer virtual-method call inside one of
-   `libonnxruntime_providers_cuda.so`'s own global/static C++ constructors**
-   (running during `dlopen`'s `call_init` phase) — some global object in the
-   provider library calls a method on a sibling global object that has not
-   been constructed yet. This is a textbook C++ static-initialization-order
-   bug, and it lives entirely inside Microsoft's prebuilt
-   `libonnxruntime_providers_cuda.so` (from the `onnxruntime-cuda-12` /
-   `onnxruntime-gpu` wheel builds, ORT 1.28.0) — reproducible by merely
-   `dlopen()`-ing that one file, regardless of caller, regardless of what
-   else is loaded first, regardless of static vs. dynamic linking of the
-   host process. Confirmed on real hardware: RunPod RTX A5000, driver
-   580.159.04, CUDA 12.8.1 toolkit.
+   Symbolising that frame identified it exactly. The faulting instruction is
+   at offset `0x1c0118`, inside `.init_array` entry #2 (function at
+   `0x1bff10`), and the call immediately before it resolves through the PLT
+   to `Provider_GetHost@Base`:
 
-   **Conclusion**: this is not fixable in anofox-tabfm's code — it is a bug
-   (or at minimum an unsupported-outside-ORT's-own-loader-sequence
-   assumption) in the vendor-built CUDA provider library itself. The CUDA
-   plugin-EP path (`SET anofox_tabfm_device = 'cuda'` after
-   `tabfm_download_runtime('cuda')`) should be treated as **broken upstream**
-   until Microsoft either fixes the static-init-order bug or documents a
-   required pre-registration handshake this extension isn't doing. Worth
-   filing upstream against microsoft/onnxruntime with the minimal repro
-   above — small enough to attach verbatim.
+   ```asm
+   call   Provider_GetHost@plt   ; returns NULL
+   mov    %rax,%rdi
+   mov    %rdi,(%rax_global)     ; cache it  -> g_host
+   mov    (%rdi),%rax            ; load vtable from NULL  <-- SIGSEGV
+   call   *0x1948(%rax)          ; virtual call -> GetProviderHostCPU()
+   ```
+
+   That is a 1:1 match for this ORT source, compiled into every
+   provider-bridge library:
+
+   ```cpp
+   // onnxruntime/core/providers/shared_library/provider_bridge_provider.cc:91-92
+   ProviderHost* g_host = Provider_GetHost();
+   ProviderHostCPU& g_host_cpu = g_host->GetProviderHostCPU();  // no null check
+   ```
+
+   `g_host` is only non-null once the ORT **core** has called
+   `Provider_SetHost`, which happens inside
+   `ProviderSharedLibrary::Initialize()` — and that resolves
+   `libonnxruntime_providers_shared.so` relative to
+   `Env::Default().GetRuntimePath()`, i.e. *the directory of the binary that
+   contains ORT*. So the crash is a **load-ordering / library-layout
+   problem**, not an unconditional defect in the provider library.
+
+   Two things confirm that reading:
+
+   - **Microsoft's own wheel works on the same hardware with the same
+     621MB `.so`.** `pip install onnxruntime-gpu==1.28.0` (cuda-12 feed) runs
+     CUDA inference fine, *and* `ort.register_execution_provider_library()`
+     — the same plugin-EP entry point this extension uses — registers the
+     CUDA EP without crashing. In the wheel, `libonnxruntime.so.1.28.0` and
+     `libonnxruntime_providers_shared.so` sit in the same directory as the
+     provider, so `GetRuntimePath()` finds it and the host gets set.
+   - **Placing `libonnxruntime_providers_shared.so` next to our executable
+     makes the SIGSEGV disappear**, and execution then reaches `Run()`.
+
+   ORT's own `LoadPluginOrProviderBridge` (`core/session/utils.cc`) makes
+   this a hard crash rather than a diagnosable error, because it discards the
+   status and then `dlopen`s the library anyway:
+
+   ```cpp
+   bool is_provider_bridge = provider_library->Load() == Status::OK();  // error dropped
+   ...
+   ORT_RETURN_IF_ERROR(ep_library_plugin->Load());  // dlopen -> ctor deref of NULL g_host
+   ```
+
+   (ORT's Python entry point sidesteps this by calling
+   `InitProvidersSharedLibrary()` explicitly up front; the C API path does
+   not.) That is a legitimate upstream robustness bug worth reporting, but it
+   only converts this crash into a clear error message — it is **not** what
+   blocks this extension.
+
+3. **The actual blocker: statically-linked ORT is incompatible with the
+   prebuilt provider libraries.** With the load order fixed (issue 2), the
+   CUDA path gets all the way into `Run()` and then aborts:
+
+   ```
+   free(): invalid pointer
+   #9  onnxruntime::ConstantOfShape::~ConstantOfShape()   <- statically-linked core
+   #10 ?? from libonnxruntime_providers_cuda.so           <- the provider's own copy
+   #13 onnxruntime::ExecuteKernel(...)
+   ```
+
+   `ConstantOfShape` (and many peers) are compiled into **both** the ORT core
+   and the provider `.so`. When the core is statically linked into the host
+   executable, the executable's symbols take precedence in the global
+   resolution scope, so the provider's internal calls bind to *our* copies —
+   an ODR/symbol-interposition mismatch that corrupts the heap. This is
+   inherent to static linking, not an ORT bug, and cannot be fixed upstream.
+
+   **Conclusion**: GPU backends require ORT to be shipped as a **shared
+   `libonnxruntime.so`**, with `libonnxruntime_providers_shared.so` and the
+   downloaded provider libraries living in that same directory — i.e.
+   replicating the layout of Microsoft's own wheel, which is verified working
+   on real hardware. The current `anofox_tabfm_ep_path` design (provider libs
+   in an arbitrary user-chosen directory, ORT statically linked) cannot work
+   and needs to be reworked accordingly.
 
    <details>
    <summary>Ruled-out theory: static linking / glibc TLS surplus (kept for the record)</summary>
