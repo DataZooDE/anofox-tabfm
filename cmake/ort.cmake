@@ -139,9 +139,13 @@ elseif(TABFM_FLAVOR STREQUAL "rocm")
     # No MIGraphX linkage here: inference no longer goes through the main
     # extension binary at all (docs/DYNAMIC_BACKENDS.md phase 1) — it runs
     # through the standalone anofox_tabfm_migraphx_plugin target below, which
-    # links libmigraphx_c on its own and is dlopen'd at runtime. This ORT
-    # build is only needed for OrtProviderAvailable("MIGraphXExecutionProvider")
-    # in device discovery's `usable` probe.
+    # links libmigraphx_c on its own and is dlopen'd at runtime.
+    #
+    # Device discovery no longer needs this build either: `usable` is decided
+    # by a static gfx allowlist, because the plugin drives MIGraphX directly
+    # and never touches ORT's EP. What still uses it is the fallback for tasks
+    # that ship no bundled migraphx graph, where TryMIGraphXBackend declines
+    # and the ORT session path appends the MIGraphX EP instead.
 else()
     message(FATAL_ERROR "anofox_tabfm: unknown TABFM_FLAVOR '${TABFM_FLAVOR}' (expected cpu | cuda | rocm)")
 endif()

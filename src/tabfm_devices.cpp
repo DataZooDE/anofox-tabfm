@@ -164,8 +164,6 @@ void NvmlClose(NvmlHandle lib) {
 #endif
 
 void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
-	const bool ep_available = OrtProviderAvailable("CUDAExecutionProvider");
-
 	NvmlHandle nvml = nullptr;
 	for (auto *candidate : kNvmlLibraries) {
 		nvml = NvmlOpen(candidate);
@@ -234,13 +232,12 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 			// CUDA inference runs in a dlopen'd plugin carrying its OWN shared
 			// ORT-GPU runtime (a statically-linked ORT cannot host ORT's provider
 			// libraries at all — see docs/DYNAMIC_BACKENDS.md), so a discovered
-			// card is usable whenever the driver is present. Gating on
-			// ep_available here would make every card unusable in exactly the
-			// build that ships. If the plugin turns out not to be configured,
+			// card is usable whenever the driver is present. Gating on the
+			// in-binary EP would mark every card unusable in exactly the build
+			// that ships. If the plugin turns out not to be configured,
 			// TryCudaBackend throws a message naming the fix rather than
 			// quietly running on CPU.
 			device.usable = true;
-			(void)ep_available;
 			devices.push_back(std::move(device));
 		}
 	}
@@ -262,9 +259,16 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 //   (0 or missing => CPU node, skipped)
 //   mem_banks/*/properties: heap_type 1|2 (FB public|private) sizes summed
 //   -> vram_total; vram_free stays NULL (needs the ROCm SMI library).
-// `usable` = MIGraphX EP registered in this ORT build AND MIGraphX claims the
-// gfx arch (HLD §9 support-matrix honesty: unsupported consumer cards fail
-// explicitly, not mysteriously).
+// `usable` = MIGraphX claims the gfx arch (HLD §9 support-matrix honesty:
+// unsupported consumer cards fail explicitly, not mysteriously). It used to
+// also require the MIGraphX EP to be registered in THIS ORT build, which is
+// the wrong question since docs/DYNAMIC_BACKENDS.md phase 1: ROCm inference
+// runs in a dlopen'd plugin that drives MIGraphX directly and never touches
+// ORT's EP at all, so gating on the EP marked cards unusable in exactly the
+// builds where the plugin would have driven them. (The ORT MIGraphX EP is
+// still a live fallback for tasks with no bundled migraphx graph — when that
+// path is taken and the EP is absent, ORT says so itself.) The arch allowlist
+// needs no ROCm libraries, so this probe works in any flavor.
 //===----------------------------------------------------------------------===//
 
 #ifdef TABFM_EP_MIGRAPHX
@@ -345,7 +349,6 @@ void ProbeRocmDevices(vector<TabFMDeviceInfo> &devices) {
 	if (stat("/dev/kfd", &kfd_stat) != 0) {
 		return; // no KFD -> no ROCm rows
 	}
-	const bool ep_available = OrtProviderAvailable("MIGraphXExecutionProvider");
 	const string driver = AmdgpuDriverVersion();
 
 	const string nodes_path = "/sys/class/kfd/kfd/topology/nodes";
@@ -392,7 +395,7 @@ void ProbeRocmDevices(vector<TabFMDeviceInfo> &devices) {
 		device.vram_total = SumVramBanks(node_path);
 		device.vram_free = -1; // needs rocm_smi; NULL is honest
 		device.driver = driver;
-		device.usable = ep_available && MIGraphXClaimsArch(device.arch);
+		device.usable = MIGraphXClaimsArch(device.arch);
 		devices.push_back(std::move(device));
 	}
 }
