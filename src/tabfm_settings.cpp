@@ -117,7 +117,9 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	                          LogicalType::VARCHAR, Value("auto"), ValidateDevice);
 
 	config.AddExtensionOption("anofox_tabfm_ep_path",
-	                          "Directory with ONNX Runtime provider / plugin-EP shared libraries",
+	                          "Directory holding the GPU backend plugins (libanofox_tabfm_cuda_plugin.so, "
+	                          "libanofox_tabfm_migraphx_plugin.so) and the runtime libraries they load alongside "
+	                          "themselves. CALL tabfm_download_runtime('cuda') populates it.",
 	                          LogicalType::VARCHAR, Value(""));
 
 	config.AddExtensionOption(
