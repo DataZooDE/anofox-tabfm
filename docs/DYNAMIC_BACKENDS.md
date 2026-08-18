@@ -497,12 +497,31 @@ lands the core under its SONAME (`libonnxruntime.so.1`) so the plugin's
 `DT_NEEDED` resolves. The plugin is linked with `INSTALL_RPATH=$ORIGIN`, so
 it finds all of it wherever `anofox_tabfm_ep_path` points.
 
-**Design validated on real hardware before it was built** (RTX A5000, driver
-580.159.04, CUDA 12.8.1, ORT 1.28.0): a C++ host linking the ORT-GPU archive
-as a shared library ran the committed fixture graph on CUDA and agreed with
-CPU to **7.9e-07** — the spike is `tools/gpu_test/` territory and the
-equivalence test that locks it in is `test/cpp/test_tabfm_cuda_plugin.cpp`
-(skips itself without a GPU and a real model cache).
+**Verified on real hardware** (RTX A5000, driver 580.159.04, CUDA 12.8.1, ORT
+1.28.0), in two passes:
+
+1. *Design spike, before any of it was built*: a C++ host linking the ORT-GPU
+   archive as a shared library ran the committed fixture graph on CUDA and
+   agreed with CPU to **7.9e-07**.
+2. *The plugin itself, as written*: built against a real ORT-GPU distribution,
+   staged next to the core so `$ORIGIN` resolves it, loaded through the actual
+   plugin ABI (`TabFMGetPluginApi` → `abi_version` → `create`/`run`/
+   `precompile`/`free_output`/`destroy`) and compared against a CPU ORT run of
+   the same graph — `name=cuda`, `abi_version=1`, max relative difference
+   **7.9427e-07**.
+
+The artifacts `tabfm_download_runtime('cuda')` declares were checked against
+the real wheel in the same run: byte count `432340836` exact, all three
+entries present, and the core's SONAME is `libonnxruntime.so.1` — the name the
+extractor writes it under and the plugin's `DT_NEEDED` asks for.
+
+The committed fixture graph references `graph_fixture.onnx.data`, which is not
+in the repo (the engine normally injects initializers by name instead), so the
+verification rebuilds that file from the committed random-init
+`model.safetensors` — no real weights involved, per CLAUDE.md's license wall.
+The in-tree equivalence test that locks this in is
+`test/cpp/test_tabfm_cuda_plugin.cpp` (skips itself without a GPU and a real
+model cache).
 
    <details>
    <summary>Ruled-out theory: static linking / glibc TLS surplus (kept for the record)</summary>
