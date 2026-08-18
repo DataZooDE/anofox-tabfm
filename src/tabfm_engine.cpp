@@ -634,9 +634,66 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0);
 }
 
+// NVIDIA CUDA GPU backend. Structurally identical to the ROCm path above, and
+// for a related reason: GPU inference cannot run inside this binary's ORT.
+// The release build links ORT statically, and a static core cannot load ORT's
+// prebuilt provider libraries — their classes collide with the core's own and
+// the executable's copies win symbol resolution, corrupting the heap mid-Run().
+// So CUDA also runs through a standalone plugin (src/tabfm_cuda_plugin.cpp)
+// that links its own shared ORT-GPU distribution, where core and providers
+// match by construction. See the CUDA section of docs/DYNAMIC_BACKENDS.md.
+//
+// Reuses the same external-data graph the CPU low-memory path stages, since
+// ORT resolves the weights itself. Engages only when the resolved device is a
+// cuda GPU and that graph + matching weights exist; nullptr => fall back.
+//
+// As with ROCm, past the point where the graph is confirmed to exist for a
+// resolved cuda device this must succeed or throw — quietly running on CPU
+// after the user asked for a GPU is the tier-4 failure the equivalence suite
+// exists to catch.
+shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
+                                       const PredictContext &ctx) {
+	auto devices = DiscoverDevices();
+	auto device = ResolveDevice(ctx.device, devices);
+	if (!StringUtil::StartsWith(device.device_id, "cuda")) {
+		return nullptr; // not the CUDA path (cpu handled by the ORT backend, rocm above)
+	}
+	const string task_name = TabFMTaskName(resolved.manifest.task);
+	auto graph = GetBundledResource("graph_ext_" + task_name);
+	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task)) {
+		return nullptr;
+	}
+	const auto dir = DirName(resolved.weights_path);
+	const auto graph_path = fs.JoinPath(dir, "graph_ext_" + task_name + ".onnx");
+	if (!StageBundledGraph(fs, graph, graph_path)) {
+		return nullptr;
+	}
+
+	if (ctx.ep_path.empty()) {
+		throw InvalidInputException(
+		    "anofox_tabfm: device 'cuda' was resolved but no backend plugin directory is configured. SET "
+		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_cuda_plugin.so (CALL "
+		    "tabfm_download_runtime('cuda') to fetch it).");
+	}
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_cuda_plugin.so");
+
+	TabFMPluginCreateParams params {};
+	params.graph_path = graph_path.c_str();
+	params.weights_dir = dir.c_str();
+	params.cache_dir = ctx.cache_dir.c_str();
+	params.arch = device.arch.c_str();
+	params.precision = ctx.gpu_precision.c_str();
+	params.mxr_source = "";
+	params.device_ordinal = device.device_ordinal;
+	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0);
+}
+
 // Build (or reuse) the ORT session for `resolved` and return a snapshot of the
-// LoadedModel. Order: direct MIGraphX (ROCm GPU) -> low-memory external-data
-// (CPU/CUDA, ORT reads weights from disk) -> read/mmap + in-memory injection.
+// LoadedModel. Order: MIGraphX plugin (ROCm GPU) -> CUDA plugin (NVIDIA GPU)
+// -> low-memory external-data (CPU, ORT reads weights from disk) -> read/mmap
+// + in-memory injection. Both GPU backends run in dlopen'd plugins with their
+// own runtimes rather than through this binary's ORT (DYNAMIC_BACKENDS.md).
 shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                          const PredictContext &ctx) {
 	if (auto snapshot = state.Snapshot(resolved.cache_key)) {
@@ -645,6 +702,10 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 
 	// ROCm GPU: direct MIGraphX backend (bypasses ORT's unusable MIGraphX EP).
 	if (auto gpu = TryMIGraphXBackend(fs, state, resolved, ctx)) {
+		return gpu;
+	}
+	// NVIDIA GPU: CUDA backend plugin (its own shared ORT-GPU runtime).
+	if (auto gpu = TryCudaBackend(fs, state, resolved, ctx)) {
 		return gpu;
 	}
 	// Low-memory path (external-data graph; ORT reads weights from disk).

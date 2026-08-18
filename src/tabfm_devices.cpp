@@ -229,9 +229,18 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 				device.vram_free = static_cast<int64_t>(memory.free);
 			}
 			device.driver = driver_version;
-			// usable == the CUDA EP is actually registered in this ORT build;
-			// a discovered card without the EP (or vice versa) stays diagnosable.
-			device.usable = ep_available;
+			// usable == the card can actually be driven, which since phase 3 no
+			// longer means "the CUDA EP is compiled into this binary's ORT".
+			// CUDA inference runs in a dlopen'd plugin carrying its OWN shared
+			// ORT-GPU runtime (a statically-linked ORT cannot host ORT's provider
+			// libraries at all — see docs/DYNAMIC_BACKENDS.md), so a discovered
+			// card is usable whenever the driver is present. Gating on
+			// ep_available here would make every card unusable in exactly the
+			// build that ships. If the plugin turns out not to be configured,
+			// TryCudaBackend throws a message naming the fix rather than
+			// quietly running on CPU.
+			device.usable = true;
+			(void)ep_available;
 			devices.push_back(std::move(device));
 		}
 	}
@@ -475,8 +484,16 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 		return MakeCpuDevice();
 	}
 	if (setting == "cuda" || setting == "rocm" || setting == "coreml") {
-		const bool carried =
-		    setting == "cuda" ? flavor_has_cuda : (setting == "rocm" ? flavor_has_rocm : flavor_has_coreml);
+		// 'cuda' is always carried since docs/DYNAMIC_BACKENDS.md phase 3: it is
+		// no longer a compile-time flavor but a downloadable plugin with its own
+		// shared ORT-GPU runtime (a statically linked ORT, which is what the
+		// release build ships, cannot host ORT's provider libraries at all). An
+		// unfetched or misconfigured plugin is reported by TryCudaBackend, which
+		// names the fix. Note this deliberately does NOT extend to 'auto':
+		// auto-selecting a GPU that needs a separate download would turn a
+		// working CPU install into a failing one the moment an NVIDIA card is
+		// present, so the GPU lane stays an explicit opt-in.
+		const bool carried = setting == "cuda" ? true : (setting == "rocm" ? flavor_has_rocm : flavor_has_coreml);
 
 		// Phase 0 of docs/DYNAMIC_BACKENDS.md. "No such hardware" and "hardware
 		// is here but its runtime is not" are different problems with different

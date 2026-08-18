@@ -350,22 +350,33 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		vector<TabFMDeviceInfo> devices {cpu};
 		REQUIRE(ResolveDevice("cpu", devices, false, false).device_id == "cpu");
 		REQUIRE(ResolveDevice("auto", devices, false, false).device_id == "cpu");
-		// requesting a GPU lane on the cpu flavor: actionable flavor error
+		// Requesting cuda on a cpu-flavor build is NOT a flavor error any more
+		// (docs/DYNAMIC_BACKENDS.md phase 3): CUDA is a downloadable plugin with
+		// its own ORT-GPU runtime, so every build can drive an NVIDIA card. What
+		// is wrong here is that this machine has no such card, and the message
+		// must say so rather than blaming the build.
 		try {
 			ResolveDevice("cuda", devices, false, false);
 			FAIL("expected an exception");
 		} catch (std::exception &error) {
 			string message = error.what();
-			REQUIRE(message.find("does not carry 'cuda'") != string::npos);
-			// The route must be one that exists: the repository serves the cpu
-			// flavor only, so the message names the from-source build instead,
-			// and must never point at the dead ext.anofox.com host (issue #25).
-			REQUIRE(message.find("TABFM_FLAVOR=cuda") != string::npos);
+			REQUIRE(message.find("no usable 'cuda' device") != string::npos);
+			REQUIRE(message.find("tabfm_devices()") != string::npos);
+			REQUIRE(message.find("does not carry") == string::npos);
+		}
+		// rocm IS still a compile-time flavor, so it still reports as one — and
+		// must never point at the dead ext.anofox.com host (issue #25).
+		try {
+			ResolveDevice("rocm", devices, false, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("does not carry 'rocm'") != string::npos);
+			REQUIRE(message.find("TABFM_FLAVOR=rocm") != string::npos);
 			REQUIRE(message.find("ext.anofox.com") == string::npos);
 			REQUIRE(message.find("get.anofox.com") != string::npos);
 			REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
 		}
-		REQUIRE_THROWS(ResolveDevice("rocm", devices, false, false));
 	}
 
 	SECTION("cuda flavor with a usable device") {
@@ -394,14 +405,23 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 			REQUIRE(message.find("does not carry") == string::npos);
 		}
 
+		// The mirror case used to be "device present but this build carries no
+		// cuda runtime". Since phase 3 there is no such state for CUDA: the
+		// runtime travels with the plugin, so a cpu-flavor build resolves a
+		// discovered, usable NVIDIA card successfully. (If the plugin has not
+		// been fetched, TryCudaBackend is what says so — resolution is not the
+		// place that knows.)
 		vector<TabFMDeviceInfo> with_gpu {cpu, cuda0};
+		REQUIRE(ResolveDevice("cuda", with_gpu, false, false).device_id == "cuda:0");
+
+		// rocm still has the distinction, and still reports it.
+		vector<TabFMDeviceInfo> with_rocm {cpu, rocm0};
 		try {
-			// the device is right there; what is missing is the runtime
-			ResolveDevice("cuda", with_gpu, false, false);
+			ResolveDevice("rocm", with_rocm, false, false);
 			FAIL("expected an exception");
 		} catch (std::exception &error) {
 			string message = error.what();
-			REQUIRE(message.find("cuda") != string::npos);
+			REQUIRE(message.find("rocm") != string::npos);
 			// naming the discovered hardware is what makes this actionable
 			REQUIRE(message.find("runtime") != string::npos);
 		}
@@ -461,7 +481,9 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		REQUIRE(ResolveDevice("coreml", devices, false, false, true).device_id == "coreml:0");
 		REQUIRE(ResolveDevice("auto", devices, false, false, true).device_id == "coreml:0");
 		REQUIRE(ResolveDevice("cpu", devices, false, false, true).device_id == "cpu");
-		// carried coreml flavor but a GPU vendor requested: not carried -> throws
+		// A GPU vendor requested on the coreml flavor. rocm is not carried;
+		// cuda is always carried now but there is no NVIDIA card in this list,
+		// so both still throw — for different, and correct, reasons.
 		REQUIRE_THROWS(ResolveDevice("cuda", devices, false, false, true));
 		REQUIRE_THROWS(ResolveDevice("rocm", devices, false, false, true));
 	}

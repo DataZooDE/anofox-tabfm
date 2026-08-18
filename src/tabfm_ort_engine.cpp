@@ -17,7 +17,6 @@
 
 #include <array>
 #include <cstring>
-#include <dlfcn.h>
 #include <mutex>
 #include <unordered_map>
 
@@ -270,104 +269,30 @@ string ExtractTensorName(const string &message) {
 	                            "custom_extension_repository = 'https://get.anofox.com'");
 }
 
-// CUDA as a runtime-registered plugin EP (docs/DYNAMIC_BACKENDS.md phase 3):
-// libonnxruntime_providers_cuda.so exports the ORT >= 1.22 plugin-EP ABI
-// (CreateEpFactories/ReleaseEpFactory), so it is registrable by absolute path
-// against the SAME libonnxruntime this build already links — no cuda-flavor
-// build required. Downloaded like a model via CALL tabfm_download_runtime
-// ('cuda') into the directory named by SET anofox_tabfm_ep_path.
+// CUDA deliberately has no in-process provider registration.
 //
-// The sequence is not a drop-in replacement for the old
-// AppendExecutionProvider_CUDA(OrtCUDAProviderOptions) call: register the
-// library under a name, ask the env which OrtEpDevices it contributed, filter
-// to the ones actually named CUDA (a provider library can register more than
-// one EP), then append those specific devices to the session.
-// libonnxruntime_providers_cuda.so imports Provider_GetHost, which it expects
-// resolved against an already-loaded libonnxruntime_providers_shared.so.
-// When ORT itself is a shared library, its own internal provider-bridge code
-// dlopen(RTLD_GLOBAL)s that shared-providers library for us as a side effect
-// of loading the CUDA library. In this extension's release build ORT is
-// linked statically (no libonnxruntime.so to run that code inside of), so
-// RegisterExecutionProviderLibrary fails with "undefined symbol:
-// Provider_GetHost" unless we preload it ourselves first — same fix already
-// applied for MIGraphX's libmigraphx_gpu.so (PreloadMigraphxGpuLibrary).
-void PreloadCudaProvidersSharedLibrary(const string &ep_path) {
-	static bool attempted = false;
-	if (attempted) {
-		return;
-	}
-	attempted = true;
-	const string shared_lib = ep_path + "/libonnxruntime_providers_shared.so";
-	dlopen(shared_lib.c_str(), RTLD_NOW | RTLD_GLOBAL);
-}
-
-void RegisterCudaProvider(Ort::SessionOptions &options, const TabFMSessionConfig &config) {
-	if (config.ep_path.empty()) {
-		throw InvalidInputException(
-		    "anofox_tabfm: device 'cuda' was resolved but no backend plugin directory is configured. SET "
-		    "anofox_tabfm_ep_path to the directory holding libonnxruntime_providers_cuda.so (CALL "
-		    "tabfm_download_runtime('cuda') to fetch it).");
-	}
-	PreloadCudaProvidersSharedLibrary(config.ep_path);
-	auto &env = GetOrtEnv();
-	const string provider_path = config.ep_path + "/libonnxruntime_providers_cuda.so";
-	constexpr const char *kRegistrationName = "anofox_tabfm_cuda";
-
-	// Registration is process-wide and has no documented idempotent re-register
-	// (ORT's own guidance is: unregister first, and only once no session still
-	// uses it). Sessions are cached for the process lifetime (TabFMState), so
-	// register at most once per process; a later call with a DIFFERENT ep_path
-	// would silently keep using the first one, which is confusing enough to
-	// reject outright rather than let it pass quietly.
-	static std::mutex registration_mutex;
-	static string registered_path; // "" = not yet registered
-	{
-		std::lock_guard<std::mutex> guard(registration_mutex);
-		if (registered_path.empty()) {
-			try {
-				env.RegisterExecutionProviderLibrary(kRegistrationName, provider_path);
-			} catch (const Ort::Exception &error) {
-				throw IOException("anofox_tabfm: could not register the CUDA provider at '" + provider_path +
-				                  "': " + error.what() +
-				                  ". Re-fetch it with CALL tabfm_download_runtime('cuda');, or point "
-				                  "anofox_tabfm_ep_path at a directory holding a matching "
-				                  "libonnxruntime_providers_cuda.so.");
-			}
-			registered_path = provider_path;
-		} else if (registered_path != provider_path) {
-			throw InvalidInputException(
-			    "anofox_tabfm: the CUDA provider was already registered this session from '" + registered_path +
-			    "'; anofox_tabfm_ep_path now points at '" + config.ep_path +
-			    "' instead. ORT does not support re-registering a different library under the same name while "
-			    "sessions may still be using it — restart to pick up the new path.");
-		}
-	}
-
-	vector<Ort::ConstEpDevice> matching;
-	for (auto &device : env.GetEpDevices()) {
-		const string ep_name = device.EpName();
-		if (ep_name.find("CUDA") != string::npos) {
-			matching.push_back(device);
-		}
-	}
-	if (matching.empty()) {
-		throw InvalidInputException("anofox_tabfm: the CUDA provider at '" + provider_path +
-		                            "' loaded but registered no CUDA device — check that the CUDA/cuDNN runtime "
-		                            "libraries it depends on are installed and discoverable (LD_LIBRARY_PATH).");
-	}
-	// Select the one card ResolveDevice picked (device_ordinal), the way
-	// OrtCUDAProviderOptions.device_id used to — AppendExecutionProvider_V2
-	// takes an explicit device list rather than an index, so on a multi-GPU
-	// host passing every matching device would run on whichever ORT defaults
-	// to, silently ignoring the requested ordinal.
-	if (config.device_ordinal < 0 || static_cast<size_t>(config.device_ordinal) >= matching.size()) {
-		throw InvalidInputException("anofox_tabfm: CUDA device ordinal " + std::to_string(config.device_ordinal) +
-		                            " is out of range — the provider reported " + std::to_string(matching.size()) +
-		                            " CUDA device(s).");
-	}
-	vector<Ort::ConstEpDevice> selected {matching[static_cast<size_t>(config.device_ordinal)]};
-	options.AppendExecutionProvider_V2(env, selected, std::unordered_map<std::string, std::string> {});
-}
+// It used to: docs/DYNAMIC_BACKENDS.md phase 3 registered
+// libonnxruntime_providers_cuda.so against this binary's ORT via
+// RegisterExecutionProviderLibrary + AppendExecutionProvider_V2. Verified on
+// real hardware, that cannot work in the shipped build, for two independent
+// reasons:
+//
+//   - The release/community-extension build links ORT STATICALLY. ORT's
+//     prebuilt provider libraries define classes (ConstantOfShape and many
+//     peers) that also exist in the core; with a static core in the host
+//     executable, the executable's copies win symbol resolution and the
+//     provider binds to them -> ODR/interposition mismatch -> heap corruption
+//     (`free(): invalid pointer`) partway through Run().
+//   - The provider libraries must sit in ORT's own Env::GetRuntimePath() so
+//     the core calls Provider_SetHost before their static initializers
+//     dereference it; a provider dropped in an arbitrary directory segfaults
+//     in its own global constructor instead.
+//
+// CUDA therefore runs in a standalone plugin with its own shared ORT-GPU
+// runtime (src/tabfm_cuda_plugin.cpp), dispatched from TryCudaBackend in
+// tabfm_engine.cpp before the session path is ever reached. Reaching the
+// branch below means that dispatch did not happen, so it names the fix rather
+// than silently falling back to CPU.
 
 void AppendExecutionProviders(Ort::SessionOptions &options, const TabFMSessionConfig &config) {
 	// BEFORE any AppendExecutionProvider_*: appending a GPU EP dlopen's its
@@ -382,8 +307,11 @@ void AppendExecutionProviders(Ort::SessionOptions &options, const TabFMSessionCo
 		return; // CPU EP is implicit
 	}
 	if (StringUtil::StartsWith(device, "cuda")) {
-		RegisterCudaProvider(options, config);
-		return;
+		throw InvalidInputException(
+		    "anofox_tabfm: device 'cuda' reached the in-process ORT session path, which cannot host the CUDA "
+		    "provider (see docs/DYNAMIC_BACKENDS.md). CUDA runs through a backend plugin: SET anofox_tabfm_ep_path "
+		    "to the directory holding libanofox_tabfm_cuda_plugin.so (CALL tabfm_download_runtime('cuda') to fetch "
+		    "it).");
 	}
 	if (StringUtil::StartsWith(device, "rocm") || StringUtil::StartsWith(device, "migraphx")) {
 #ifdef TABFM_EP_MIGRAPHX

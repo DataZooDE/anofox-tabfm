@@ -468,6 +468,42 @@ extension/duckdb binary — the shape the community-extension ships):
    in an arbitrary user-chosen directory, ORT statically linked) cannot work
    and needs to be reworked accordingly.
 
+### Phase 3, resolved: CUDA is a plugin, exactly like ROCm
+
+The three constraints above (shared core, providers beside it, core and
+providers from one distribution) are all satisfied by *not* putting GPU
+inference in the extension binary at all — which is the shape phase 1 already
+gave ROCm. CUDA now works the same way:
+
+| | ROCm | CUDA |
+|---|---|---|
+| plugin | `src/tabfm_migraphx_plugin.cpp` | `src/tabfm_cuda_plugin.cpp` |
+| links | its own `libmigraphx_c` | its own **shared ORT-GPU** `libonnxruntime.so` |
+| dispatched by | `TryMIGraphXBackend` | `TryCudaBackend` |
+| reached via | `tabfm_plugin_abi.h`, `dlopen` | same |
+
+The extension binary keeps its static CPU ORT and its community-extension
+eligibility; nothing GPU-shaped is linked into it. Because the ORT-GPU
+distribution has the CUDA EP compiled in, the plugin reaches CUDA through the
+ordinary `AppendExecutionProvider_CUDA` call — there is no runtime provider
+registration anywhere in the design any more, and
+`RegisterExecutionProviderLibrary` is gone from `tabfm_ort_engine.cpp`
+(the CUDA branch there now throws a message naming the plugin, since reaching
+it means dispatch failed rather than that a fallback is wanted).
+
+`tabfm_download_runtime('cuda')` fetches the ORT core alongside the two
+provider libraries — from the same wheel, so they match by construction — and
+lands the core under its SONAME (`libonnxruntime.so.1`) so the plugin's
+`DT_NEEDED` resolves. The plugin is linked with `INSTALL_RPATH=$ORIGIN`, so
+it finds all of it wherever `anofox_tabfm_ep_path` points.
+
+**Design validated on real hardware before it was built** (RTX A5000, driver
+580.159.04, CUDA 12.8.1, ORT 1.28.0): a C++ host linking the ORT-GPU archive
+as a shared library ran the committed fixture graph on CUDA and agreed with
+CPU to **7.9e-07** — the spike is `tools/gpu_test/` territory and the
+equivalence test that locks it in is `test/cpp/test_tabfm_cuda_plugin.cpp`
+(skips itself without a GPU and a real model cache).
+
    <details>
    <summary>Ruled-out theory: static linking / glibc TLS surplus (kept for the record)</summary>
 

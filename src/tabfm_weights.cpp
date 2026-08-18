@@ -503,10 +503,18 @@ namespace {
 //! and which entries inside it to extract. Deliberately narrow: only what has
 //! been verified to exist in the wheel (see docs/DYNAMIC_BACKENDS.md phase 3
 //! measurements) is offered — an unlisted backend errors naming what is.
+//! One file to lift out of the wheel. `dest_name` exists because the ORT core
+//! must land under its SONAME (libonnxruntime.so.1) rather than the wheel's
+//! versioned basename, or the plugin's DT_NEEDED will not resolve against it.
+struct RuntimeEntry {
+	string zip_path;
+	string dest_name;
+};
+
 struct RuntimeArtifact {
 	string wheel_url;
 	int64_t wheel_bytes;
-	vector<string> zip_entries; // paths inside the wheel to extract, verbatim basenames on disk
+	vector<RuntimeEntry> zip_entries;
 };
 
 //! Currently the only published, verified source: onnxruntime-gpu 1.28.0's
@@ -521,8 +529,15 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 		                "_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.28/"
 		                "onnxruntime_gpu-1.28.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl";
 		out.wheel_bytes = 432340836;
-		out.zip_entries = {"onnxruntime/capi/libonnxruntime_providers_cuda.so",
-		                   "onnxruntime/capi/libonnxruntime_providers_shared.so"};
+		// The ORT *core* comes along too, not just the providers: the CUDA
+		// backend is a standalone plugin with its own shared runtime, because a
+		// statically-linked ORT cannot host these provider libraries at all (see
+		// src/tabfm_cuda_plugin.cpp). Core and providers must come from one
+		// distribution — pairing a CPU-flavor core with a GPU provider crashes.
+		out.zip_entries = {{"onnxruntime/capi/libonnxruntime.so.1.28.0", "libonnxruntime.so.1"},
+		                   {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so"},
+		                   {"onnxruntime/capi/libonnxruntime_providers_shared.so",
+		                    "libonnxruntime_providers_shared.so"}};
 		return true;
 	}
 	error = "tabfm_download_runtime: 'rocm' has no published downloadable plugin yet — build "
@@ -594,9 +609,7 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 	vector<string> targets;
 	bool all_present = true;
 	for (auto &entry : bind.artifact.zip_entries) {
-		auto slash = entry.find_last_of('/');
-		string basename = slash == string::npos ? entry : entry.substr(slash + 1);
-		string target = bind.ep_path + "/" + basename;
+		string target = bind.ep_path + "/" + entry.dest_name;
 		targets.push_back(target);
 		if (!fs.FileExists(target)) {
 			all_present = false;
@@ -644,7 +657,7 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 		                  SanitizeUrl(bind.artifact.wheel_url));
 	}
 	for (size_t i = 0; i < bind.artifact.zip_entries.size(); i++) {
-		const string &entry = bind.artifact.zip_entries[i];
+		const string &entry = bind.artifact.zip_entries[i].zip_path;
 		int file_index = duckdb_miniz::mz_zip_reader_locate_file(&zip, entry.c_str(), nullptr, 0);
 		if (file_index < 0) {
 			duckdb_miniz::mz_zip_reader_end(&zip);
