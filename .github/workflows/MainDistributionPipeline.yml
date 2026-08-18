@@ -42,6 +42,18 @@ jobs:
   duckdb-v1_5_5-deploy:
     name: Deploy extension binaries (v1.5.5)
     needs: [duckdb-v1_5_5-build, duckdb-v1_5_5-smoke-test]
+    # Deploy only ever uploads on main or a v* tag (deploy_latest/deploy_versioned
+    # below) -- everything else, including every PR, is a dry run that still pays
+    # for "Configure AWS Credentials" and fails there for a fork PR (no repo
+    # secrets/OIDC for fork-triggered pull_request runs -- a GitHub Actions
+    # security boundary, not something fixable from workflow config). Skipping
+    # the whole job outside that condition turns that into a grey "skipped"
+    # instead of a red, permanently-failing, ignorable check on every PR.
+    #
+    # success() is explicit: a job-level `if:` replaces the implicit success()
+    # check GitHub applies to `needs` by default, so without it deploy could run
+    # on main/a tag even if build or smoke-test failed.
+    if: success() && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
