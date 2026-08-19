@@ -751,6 +751,55 @@ shared_ptr<LoadedModel> MakeFakeModel(bool &freed_flag, const string &device = "
 
 } // anonymous namespace
 
+TEST_CASE("tabfm_state: a cached session is not reused for a different device", "[tabfm][ort_engine][state]") {
+	// Regression test for the bug where SET anofox_tabfm_device was ignored
+	// after the first predict of a session: LoadOrGetSession returned any
+	// cached session whose key matched, so
+	//
+	//     SET anofox_tabfm_device='cpu';   SELECT ... tabfm_classify(...);
+	//     SET anofox_tabfm_device='rocm';  SELECT ... tabfm_classify(...);  -- still cpu
+	//
+	// ran the second query on the CPU with no error and no indication. It was
+	// caught only after tabfm_models() gained a device column; before that it
+	// even made this repo's own GPU equivalence run a cpu-vs-cpu comparison
+	// that reported a perfect score.
+	//
+	// The device switch itself cannot be exercised here (CI has no GPU), so
+	// this asserts the predicate the engine now consults, which is where the
+	// omission lived.
+	LoadedModel cached;
+	cached.model_key = "classification";
+	cached.device_id = "cpu";
+	cached.split_context = false;
+
+	SECTION("same device and shape: reuse") {
+		REQUIRE(CanReuseSession(cached, false, "cpu"));
+	}
+	SECTION("different device: rebuild, whatever the shape") {
+		REQUIRE_FALSE(CanReuseSession(cached, false, "rocm:0"));
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cuda:0"));
+	}
+	SECTION("a second card of the same vendor is still a different device") {
+		cached.device_id = "cuda:0";
+		REQUIRE(CanReuseSession(cached, false, "cuda:0"));
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cuda:1"));
+	}
+	SECTION("different split shape: rebuild, as before") {
+		REQUIRE_FALSE(CanReuseSession(cached, true, "cpu"));
+	}
+	SECTION("both differ: rebuild") {
+		REQUIRE_FALSE(CanReuseSession(cached, true, "rocm:0"));
+	}
+	SECTION("a GPU session is not reused for a cpu request either") {
+		// The direction that matters least in practice and most in principle:
+		// falling back to cpu must also rebuild, or a user who switches away
+		// from the GPU keeps paying for it.
+		cached.device_id = "rocm:0";
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cpu"));
+		REQUIRE(CanReuseSession(cached, false, "rocm:0"));
+	}
+}
+
 TEST_CASE("tabfm_state: load / snapshot / unload-while-in-use / refcount release", "[tabfm][ort_engine][state]") {
 	auto state = make_shared_ptr<TabFMState>();
 	bool freed = false;

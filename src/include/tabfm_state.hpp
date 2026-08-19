@@ -52,12 +52,32 @@ struct LoadedModel {
 	//! Loaded as a split (prepare/query) pair with a cached labelled context,
 	//! rather than as the single combined graph. Recorded so that flipping
 	//! anofox_tabfm_context_cache rebuilds the session instead of silently
-	//! answering from whichever backend happened to be cached first.
+	//! answering from whichever backend happened to be cached first. The same
+	//! argument applies to device_id above, which is why CanReuseSession below
+	//! checks both — it used to check only this one.
 	bool split_context = false;
 	//! Set by Unload; snapshot holders may finish their forward, new
 	//! snapshots will not see this model anymore.
 	atomic<bool> evicted {false};
 };
+
+//! Whether a cached session can serve a request, or must be rebuilt.
+//!
+//! Both conditions exist for the same reason: a session is built FOR a
+//! particular device and a particular split/combined shape, so reusing it
+//! whenever the cache key matches silently answers from whichever
+//! configuration happened to be loaded first. The device half of that was a
+//! real bug — a connection that ran anything on the cpu and then
+//! SET anofox_tabfm_device='cuda' kept getting the cpu session, with no error
+//! and no GPU, which is the "requested device quietly becomes CPU" outcome the
+//! tier-4 contract in docs/DYNAMIC_BACKENDS.md exists to rule out.
+//!
+//! Pulled out of LoadOrGetSession as a pure function so it is testable without
+//! a GPU: CI cannot run the cpu->cuda switch that exposed the bug, but it can
+//! assert this predicate, which is where the mistake actually lived.
+inline bool CanReuseSession(const LoadedModel &cached, bool want_split, const string &wanted_device) {
+	return cached.split_context == want_split && cached.device_id == wanted_device;
+}
 
 //! Canonical loaded-model key for a (model, task, revision). The engine (which
 //! registers sessions during predict) and the lifecycle SQL (tabfm_models /

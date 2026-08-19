@@ -990,7 +990,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	const string &wanted_device = ResolvedDeviceCached(ctx.device);
 
 	if (auto snapshot = state.Snapshot(resolved.cache_key)) {
-		if (snapshot->split_context == want_split && snapshot->device_id == wanted_device) {
+		if (CanReuseSession(*snapshot, want_split, wanted_device)) {
 			return snapshot;
 		}
 		// anofox_tabfm_context_cache or anofox_tabfm_device changed since this
