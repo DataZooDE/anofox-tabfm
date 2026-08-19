@@ -115,19 +115,47 @@ predicted labels row for row.
   cat tools/gpu_test/usecase_equivalence.sql; } | ./build/debug/duckdb
 ```
 
-Result on gfx1201 with the real TabFM v1 classification weights: 100 rows,
-30 predicted, **0 disagreements**, and the same non-degenerate class spread on
-both backends (churn 33 / stay 32 / upgrade 35).
+Results on gfx1201 with the real TabFM v1 classification weights:
+
+| scenario | served by | rows | disagreements | agreement |
+|---|---|---|---|---|
+| 100 rows, `fp32` | `rocm:0` | 100 | 0 | 100% |
+| 100 rows, `bf16` (default) | `rocm:0` | 100 | 2 | 98.0% |
+| 2500 rows, `bf16` — crosses DuckDB's 2048-row vector boundary, T4096 bucket | `rocm:0` | 2500 | 42 | 98.32% |
+
+(Disagreements and agreement are over every returned row, which is what the
+script prints. Only 30 of the 100 rows in the small case are unlabelled
+predictions, so 2 flips there is 2 of 30 actual predictions.)
+
+fp32 agrees with CPU exactly; the bf16 differences are the precision tradeoff
+`anofox_tabfm_gpu_precision` documents, not a correctness problem. The class
+spread stays non-degenerate at scale (cpu a824/b837/c839 vs gpu a827/b832/c841),
+which is what rules out "the GPU returned one class and got lucky".
+
+**Read `*_served_by` before believing any of those numbers.** An earlier version
+of this file reported 100 rows / 0 disagreements at bf16, which was wrong: the
+engine reused the cached CPU session across a device switch, so the comparison
+was cpu-vs-cpu. Fixed in 70a6800, and the script now prints which backend
+actually served each side — anything other than `rocm:N` on the GPU side means
+the comparison is meaningless however green it looks.
 
 Sized to stay inside the already-compiled T128/H16 shape bucket (<=128 rows,
 <=16 features) so it needs no MIGraphX recompile. Going outside that bucket is
 a fine thing to test, but budget ~27 min for the first run of each new bucket.
 
 Needs a GPU and a real model cache, so it is a manual check rather than a CI
-one — and it is the check that found two bugs no unit test could: the GPU
-probes were compiled out of non-GPU flavors, so a cpu build could not see a
-card at all, and `rocm` was refused on such a build even with its plugin
-installed.
+one — and it is the check that found every GPU bug on this branch, none of
+which any unit test could reach (they build device lists by hand and never
+touch discovery or the SQL path):
+
+- the GPU probes were compiled out of non-GPU flavors, so a cpu build could not
+  see a card at all (0c6af12);
+- `rocm` was refused on such a build even with its plugin installed (0c6af12);
+- a device switch mid-session kept serving the previous device, silently, so
+  asking for a GPU after any CPU query got CPU results (70a6800) — the one that
+  made this script's own first result a cpu-vs-cpu comparison;
+- nothing reported which backend served a query, which is why that went
+  unnoticed; `tabfm_models().device` exists now because of it (ab5c6e3).
 
 ## `cuda_plugin_verify.sh` — the CUDA plugin on rented hardware
 
