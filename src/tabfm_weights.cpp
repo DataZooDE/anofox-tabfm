@@ -711,6 +711,12 @@ struct ModelsRow {
 	int64_t bytes = 0;
 	bool loaded = false;
 	string license;
+	//! Which backend actually serves this model right now: "cpu", "cuda:0",
+	//! "rocm:0"... Empty while unloaded. Without this there is no way to tell a
+	//! GPU run from a CPU one short of deliberately breaking the plugin path and
+	//! checking that it complains -- which is how the ROCm run in
+	//! tools/gpu_test/usecase_equivalence.sql had to be validated.
+	string device;
 };
 
 struct ModelsBindData : public TableFunctionData {};
@@ -726,9 +732,9 @@ struct ModelsGlobalState : public GlobalTableFunctionState {
 unique_ptr<FunctionData> ModelsBind(ClientContext &context, TableFunctionBindInput &input,
                                     vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_models");
-	names = {"model", "task", "revision", "path", "bytes", "loaded", "license"};
+	names = {"model", "task", "revision", "path", "bytes", "loaded", "license", "device"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
-	                LogicalType::BIGINT,  LogicalType::BOOLEAN, LogicalType::VARCHAR};
+	                LogicalType::BIGINT,  LogicalType::BOOLEAN, LogicalType::VARCHAR, LogicalType::VARCHAR};
 	return make_uniq<ModelsBindData>();
 }
 
@@ -760,8 +766,9 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 			// 'loaded' reflects the real DB-instance TabFMState: a model is loaded
 			// once a predict (or lifecycle load) has warmed its session. The key
 			// format is shared with the engine via TabFMModelCacheKey.
-			row.loaded =
-			    tabfm_state->Snapshot(TabFMModelCacheKey(manifest.model, manifest.task, revision)) != nullptr;
+			auto snapshot = tabfm_state->Snapshot(TabFMModelCacheKey(manifest.model, manifest.task, revision));
+			row.loaded = snapshot != nullptr;
+			row.device = snapshot ? snapshot->device_id : "";
 			bool complete = true;
 			for (idx_t i = 0; i < manifest.files.size(); i++) {
 				auto path = base_dir + "/" + manifest.files[i].path;
@@ -795,6 +802,7 @@ void ModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 		output.SetValue(4, out, Value::BIGINT(row.bytes));
 		output.SetValue(5, out, Value::BOOLEAN(row.loaded));
 		output.SetValue(6, out, Value(row.license));
+		output.SetValue(7, out, Value(row.device));
 		out++;
 	}
 	output.SetCardinality(out);

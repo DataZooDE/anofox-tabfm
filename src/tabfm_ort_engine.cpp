@@ -256,17 +256,29 @@ string ExtractTensorName(const string &message) {
 }
 
 [[noreturn]] void ThrowFlavorMissingDeviceLocal(const string &requested) {
-	// The anofox repository (https://get.anofox.com) currently serves the cpu
-	// flavor only, so pointing a GPU user at it would loop them back to this
-	// same error. Name the build-from-source route instead, which is the one
-	// that works today (issue #25).
-	throw InvalidInputException("anofox_tabfm: this build is the '" + string(TabFMFlavorName()) +
-	                            "' flavor and does not carry '" + requested +
-	                            "'; the GPU flavors are not published yet, so build one from source with "
-	                            "TABFM_FLAVOR=" + requested +
-	                            " (see docs/rocm-build.md for the rocm toolchain), or SET "
-	                            "anofox_tabfm_device='cpu'. Released cpu builds: SET "
-	                            "custom_extension_repository = 'https://get.anofox.com'");
+	// Reaching here means the GPU BACKEND PLUGIN declined this model and the
+	// request fell through to the in-process ORT session path, whose ORT has no
+	// EP for the requested device. Saying "this build does not carry <device>"
+	// is what it used to say, and it now contradicts device resolution, which
+	// accepts rocm/cuda on every build precisely because a plugin can serve
+	// them. It also misdirects: the plugin declines when the MODEL has no
+	// bundled GPU graph (or its weights header does not match the bundled one),
+	// which no rebuild and no plugin download can change.
+	//
+	// The anofox repository (https://get.anofox.com) serves the cpu flavor
+	// only, so pointing a GPU user at it would loop them back here; the
+	// build-from-source route is the one that works today (issue #25).
+	throw InvalidInputException(
+	    "anofox_tabfm: device '" + requested +
+	    "' was requested, but no GPU backend could serve this model, so it fell back to this build's ORT, which "
+	    "carries no '" + requested +
+	    "' execution provider. Usually this means the model ships no GPU graph for its task — only models with a "
+	    "bundled GPU graph whose weights match can run on a GPU; check that the requested model is one of them. "
+	    "If it is, and the backend plugin is simply missing, SET anofox_tabfm_ep_path to the directory holding it. "
+	    "To run this model through ORT's own '" +
+	    requested + "' provider instead, build from source with TABFM_FLAVOR=" + requested +
+	    " (see docs/rocm-build.md for the rocm toolchain). Otherwise SET anofox_tabfm_device='cpu'. Released cpu "
+	    "builds: SET custom_extension_repository = 'https://get.anofox.com'");
 }
 
 // CUDA deliberately has no in-process provider registration.

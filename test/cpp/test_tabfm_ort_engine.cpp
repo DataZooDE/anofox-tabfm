@@ -614,8 +614,16 @@ TEST_CASE("tabfm_ort_engine: coreml device on a non-coreml flavor gives the acti
 		FAIL("expected an exception");
 	} catch (std::exception &error) {
 		string message = error.what();
-		REQUIRE(message.find("does not carry 'coreml'") != string::npos);
+		// The message describes the situation that actually obtains — no GPU
+		// backend could serve this model, so it fell back to an ORT without that
+		// provider — rather than the old "this build does not carry coreml",
+		// which contradicted device resolution now that a plugin can carry a
+		// device the build was not compiled for.
+		REQUIRE(message.find("carries no 'coreml' execution provider") != string::npos);
+		REQUIRE(message.find("no GPU backend could serve this model") != string::npos);
+		// The routes offered must still be ones that exist (issue #25).
 		REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
+		REQUIRE(message.find("anofox_tabfm_ep_path") != string::npos);
 		REQUIRE(message.find("ext.anofox.com") == string::npos);
 		REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
 	}
