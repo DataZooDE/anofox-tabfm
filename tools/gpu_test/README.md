@@ -102,6 +102,33 @@ requested provider was not available. **Unavailable is never silent** — a GPU
 comparison that quietly ran on CPU would pass while testing nothing, which is
 the failure mode this whole directory exists to prevent.
 
+## `usecase_equivalence.sql` — the same query on CPU and on a GPU
+
+The other checks here drive a plugin from a C++ host with a handful of
+hand-built rows. This one goes through the surface a user actually touches:
+`SET anofox_tabfm_device` -> backend dispatch -> `ep_path` -> the plugin ->
+the aggregate's chunking, against the real cached weights, comparing the
+predicted labels row for row.
+
+```bash
+{ echo "SET anofox_tabfm_ep_path='$PWD/build/debug/extension/anofox_tabfm';"; \
+  cat tools/gpu_test/usecase_equivalence.sql; } | ./build/debug/duckdb
+```
+
+Result on gfx1201 with the real TabFM v1 classification weights: 100 rows,
+30 predicted, **0 disagreements**, and the same non-degenerate class spread on
+both backends (churn 33 / stay 32 / upgrade 35).
+
+Sized to stay inside the already-compiled T128/H16 shape bucket (<=128 rows,
+<=16 features) so it needs no MIGraphX recompile. Going outside that bucket is
+a fine thing to test, but budget ~27 min for the first run of each new bucket.
+
+Needs a GPU and a real model cache, so it is a manual check rather than a CI
+one — and it is the check that found two bugs no unit test could: the GPU
+probes were compiled out of non-GPU flavors, so a cpu build could not see a
+card at all, and `rocm` was refused on such a build even with its plugin
+installed.
+
 ## `cuda_plugin_verify.sh` — the CUDA plugin on rented hardware
 
 Builds `src/tabfm_cuda_plugin.cpp` against a real ORT-GPU distribution, loads

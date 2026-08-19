@@ -2,9 +2,14 @@
 // tabfm_devices.cpp — device discovery, tabfm_devices(), device resolution,
 // MIGraphX shape buckets (WS-C, HLD §9, SQL-API §3/§4)
 //
-// The cpu row always exists. GPU probes are compiled only into their flavor
-// (TABFM_EP_CUDA / TABFM_EP_MIGRAPHX) so the cpu flavor carries zero GPU code
-// paths (community-extension eligibility, HLD D9).
+// The cpu row always exists. The GPU probes are compiled into EVERY flavor,
+// because since docs/DYNAMIC_BACKENDS.md phases 1 and 3 a plain cpu build can
+// drive a GPU through a dlopen'd backend plugin — a build that cannot even see
+// the card would make "one artifact, backends resolved at runtime" impossible.
+// This costs no GPU dependency: NVML is dlopen'd by name and ROCm is read out
+// of the KFD sysfs topology, so neither probe needs a CUDA or ROCm SDK header
+// and the extension still links nothing vendor-specific (community-extension
+// eligibility, HLD D9, is about what is LINKED, which is unchanged).
 //===----------------------------------------------------------------------===//
 
 #include "tabfm_ort_engine.hpp"
@@ -23,11 +28,8 @@
 #include <fstream>
 #include "anofox_tabfm_banner.hpp"
 
-#if defined(TABFM_EP_CUDA) || defined(TABFM_EP_MIGRAPHX) || defined(TABFM_EP_COREML)
 #include <onnxruntime_cxx_api.h>
-#endif
 
-#ifdef TABFM_EP_CUDA
 #ifdef _WIN32
 // NOMINMAX and WIN32_LEAN_AND_MEAN before <windows.h>: without them it defines
 // min/max as macros (which collide with std::min/std::max and DuckDB's
@@ -43,10 +45,8 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
-#endif
-#endif
-
-#ifdef TABFM_EP_MIGRAPHX
+// KFD topology lives under /sys and there is no Windows equivalent, so the rocm
+// probe is POSIX-only rather than flavor-only.
 #include <dirent.h>
 #include <sys/stat.h>
 #endif
@@ -100,7 +100,6 @@ TabFMDeviceInfo MakeCpuDevice() {
 	return device;
 }
 
-#if defined(TABFM_EP_CUDA) || defined(TABFM_EP_MIGRAPHX) || defined(TABFM_EP_COREML)
 bool OrtProviderAvailable(const char *provider_name) {
 	for (auto &provider : Ort::GetAvailableProviders()) {
 		if (provider == provider_name) {
@@ -109,10 +108,9 @@ bool OrtProviderAvailable(const char *provider_name) {
 	}
 	return false;
 }
-#endif
 
 //===----------------------------------------------------------------------===//
-// CUDA discovery (cuda flavor only)
+// CUDA discovery (compiled into every flavor — see the file header)
 //
 // Design: EP presence comes from Ort::GetAvailableProviders(); device
 // enumeration goes through NVML, loaded at runtime — NVML ships with every
@@ -125,8 +123,6 @@ bool OrtProviderAvailable(const char *provider_name) {
 // itself was never guarded, but with no device discovered ResolveDevice refused
 // 'cuda' and there was nothing to run on. Only the loader differs.
 //===----------------------------------------------------------------------===//
-
-#ifdef TABFM_EP_CUDA
 
 struct NvmlMemory {
 	unsigned long long total;
@@ -247,7 +243,6 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 	NvmlClose(nvml);
 }
 
-#endif // TABFM_EP_CUDA
 
 //===----------------------------------------------------------------------===//
 // ROCm / MIGraphX discovery (rocm flavor only)
@@ -271,7 +266,7 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 // needs no ROCm libraries, so this probe works in any flavor.
 //===----------------------------------------------------------------------===//
 
-#ifdef TABFM_EP_MIGRAPHX
+#ifndef _WIN32
 
 bool ReadKfdProperty(const string &properties_path, const string &key, uint64_t &value) {
 	std::ifstream file(properties_path);
@@ -400,7 +395,7 @@ void ProbeRocmDevices(vector<TabFMDeviceInfo> &devices) {
 	}
 }
 
-#endif // TABFM_EP_MIGRAPHX
+#endif // !_WIN32
 
 //===----------------------------------------------------------------------===//
 // CoreML discovery (coreml flavor only)
@@ -446,10 +441,8 @@ vector<TabFMDeviceInfo> DiscoverDevices() {
 
 	vector<TabFMDeviceInfo> devices;
 	devices.push_back(MakeCpuDevice());
-#ifdef TABFM_EP_CUDA
 	ProbeCudaDevices(devices);
-#endif
-#ifdef TABFM_EP_MIGRAPHX
+#ifndef _WIN32
 	ProbeRocmDevices(devices);
 #endif
 #ifdef TABFM_EP_COREML
@@ -487,16 +480,25 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 		return MakeCpuDevice();
 	}
 	if (setting == "cuda" || setting == "rocm" || setting == "coreml") {
-		// 'cuda' is always carried since docs/DYNAMIC_BACKENDS.md phase 3: it is
-		// no longer a compile-time flavor but a downloadable plugin with its own
-		// shared ORT-GPU runtime (a statically linked ORT, which is what the
-		// release build ships, cannot host ORT's provider libraries at all). An
-		// unfetched or misconfigured plugin is reported by TryCudaBackend, which
-		// names the fix. Note this deliberately does NOT extend to 'auto':
-		// auto-selecting a GPU that needs a separate download would turn a
-		// working CPU install into a failing one the moment an NVIDIA card is
-		// present, so the GPU lane stays an explicit opt-in.
-		const bool carried = setting == "cuda" ? true : (setting == "rocm" ? flavor_has_rocm : flavor_has_coreml);
+		// Both GPU lanes are carried by every build. Since
+		// docs/DYNAMIC_BACKENDS.md phases 1 and 3 neither is a compile-time
+		// flavor: each runs in a dlopen'd plugin with its own runtime, and the
+		// plugins are built and shipped independently of TABFM_FLAVOR. Refusing
+		// 'rocm' here because this is not a rocm-flavor build told users to
+		// rebuild with TABFM_FLAVOR=rocm when the plugin was already sitting at
+		// their anofox_tabfm_ep_path -- advice that could not fix anything.
+		// A missing or misconfigured plugin is reported by TryCudaBackend /
+		// TryMIGraphXBackend, which name the actual fix.
+		//
+		// CoreML is different and stays flavor-gated: it is an ordinary ORT
+		// execution provider running in this process, so a build whose ORT lacks
+		// it genuinely cannot drive it.
+		//
+		// None of this extends to 'auto': auto-selecting a GPU that needs a
+		// separately fetched plugin would turn a working CPU install into a
+		// failing one the moment a card appears, so the GPU lane stays an
+		// explicit opt-in.
+		const bool carried = setting == "coreml" ? flavor_has_coreml : true;
 
 		// Phase 0 of docs/DYNAMIC_BACKENDS.md. "No such hardware" and "hardware
 		// is here but its runtime is not" are different problems with different

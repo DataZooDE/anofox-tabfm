@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <cstring>
 #include <fstream>
 #include <unordered_map>
@@ -322,10 +323,28 @@ TEST_CASE("tabfm_devices: discovery always yields the usable cpu row", "[tabfm][
 	REQUIRE(cpu.vram_total == -1);
 	REQUIRE(cpu.vram_free == -1);
 	REQUIRE(cpu.usable);
-#if !defined(TABFM_EP_CUDA) && !defined(TABFM_EP_MIGRAPHX)
-	// cpu flavor: exactly the one row
-	REQUIRE(devices.size() == 1);
-#endif
+
+	// There is deliberately NO "cpu flavor sees exactly one row" assertion any
+	// more. It used to be here, and it encoded the bug: the GPU probes were
+	// compiled only into their own flavor, so the shipped cpu artifact could not
+	// see a card even with a working backend plugin installed — which defeats
+	// the point of docs/DYNAMIC_BACKENDS.md. Every flavor probes now, so the row
+	// count is a property of the MACHINE and cannot be asserted here.
+	//
+	// What must hold regardless of hardware: cpu is first, ids are unique, and
+	// every discovered row is self-describing enough to act on.
+	std::set<string> ids;
+	for (auto &device : devices) {
+		INFO("device " << device.device_id);
+		REQUIRE(!device.device_id.empty());
+		REQUIRE(!device.ep.empty());
+		REQUIRE(ids.insert(device.device_id).second); // no duplicates
+		if (device.device_id != "cpu") {
+			// A GPU row exists because a driver enumerated it, so it must carry
+			// the ordinal the backends address it by.
+			REQUIRE(device.device_ordinal >= 0);
+		}
+	}
 }
 
 TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices]") {
@@ -364,15 +383,27 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 			REQUIRE(message.find("tabfm_devices()") != string::npos);
 			REQUIRE(message.find("does not carry") == string::npos);
 		}
-		// rocm IS still a compile-time flavor, so it still reports as one — and
-		// must never point at the dead ext.anofox.com host (issue #25).
+		// rocm is carried by every build too (its plugin is built independently
+		// of TABFM_FLAVOR), so with no AMD card present this is a hardware
+		// message, not a flavor one.
 		try {
 			ResolveDevice("rocm", devices, false, false);
 			FAIL("expected an exception");
 		} catch (std::exception &error) {
 			string message = error.what();
-			REQUIRE(message.find("does not carry 'rocm'") != string::npos);
-			REQUIRE(message.find("TABFM_FLAVOR=rocm") != string::npos);
+			REQUIRE(message.find("no usable 'rocm' device") != string::npos);
+			REQUIRE(message.find("does not carry") == string::npos);
+		}
+		// CoreML IS still a compile-time flavor — it is an ordinary ORT EP in
+		// this process — so it still reports as one, and must never point at the
+		// dead ext.anofox.com host (issue #25).
+		try {
+			ResolveDevice("coreml", devices, false, false, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("does not carry 'coreml'") != string::npos);
+			REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
 			REQUIRE(message.find("ext.anofox.com") == string::npos);
 			REQUIRE(message.find("get.anofox.com") != string::npos);
 			REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
@@ -414,14 +445,26 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		vector<TabFMDeviceInfo> with_gpu {cpu, cuda0};
 		REQUIRE(ResolveDevice("cuda", with_gpu, false, false).device_id == "cuda:0");
 
-		// rocm still has the distinction, and still reports it.
+		// Same for rocm, and for the same reason: a cpu-flavor build with the
+		// MIGraphX plugin present drives a discovered AMD card. Refusing here
+		// used to tell users to rebuild with TABFM_FLAVOR=rocm while the plugin
+		// was already at their ep_path — advice that could not fix anything.
 		vector<TabFMDeviceInfo> with_rocm {cpu, rocm0};
+		REQUIRE(ResolveDevice("rocm", with_rocm, false, false).device_id == "rocm:0");
+
+		// CoreML keeps the distinction, being an in-process ORT EP.
+		TabFMDeviceInfo apple;
+		apple.device_id = "coreml:0";
+		apple.ep = "CoreMLExecutionProvider";
+		apple.name = "Apple M3";
+		apple.usable = true;
+		vector<TabFMDeviceInfo> with_coreml {cpu, apple};
 		try {
-			ResolveDevice("rocm", with_rocm, false, false);
+			ResolveDevice("coreml", with_coreml, false, false, false);
 			FAIL("expected an exception");
 		} catch (std::exception &error) {
 			string message = error.what();
-			REQUIRE(message.find("rocm") != string::npos);
+			REQUIRE(message.find("coreml") != string::npos);
 			// naming the discovered hardware is what makes this actionable
 			REQUIRE(message.find("runtime") != string::npos);
 		}
