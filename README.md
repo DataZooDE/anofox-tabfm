@@ -303,12 +303,17 @@ iris, `mitra` / `tabpfn-v2` / `tabicl-v2` all reach **0.962** vs `tabfm-v1`'s
 SELECT * FROM tabfm_models();     -- what's cached / loaded
 ```
 ```
-┌───────────┬────────────────┬──────────┬──────────────┬────────────┬─────────┬──────────────────────────┐
-│   model   │      task      │ revision │     path     │   bytes    │ loaded  │         license          │
-├───────────┼────────────────┼──────────┼──────────────┼────────────┼─────────┼──────────────────────────┤
-│ tabfm-v1  │ classification │ main     │ …/model.saf… │ 6557888408 │ true    │ tabfm-non-commercial-v1.0│
-└───────────┴────────────────┴──────────┴──────────────┴────────────┴─────────┴──────────────────────────┘
+┌───────────┬────────────────┬──────────┬──────────────┬────────────┬─────────┬───────────────────────────┬─────────┐
+│   model   │      task      │ revision │     path     │   bytes    │ loaded  │          license          │ device  │
+├───────────┼────────────────┼──────────┼──────────────┼────────────┼─────────┼───────────────────────────┼─────────┤
+│ tabfm-v1  │ classification │ main     │ …/model.saf… │ 6557888408 │ true    │ tabfm-non-commercial-v1.0 │ rocm:0  │
+└───────────┴────────────────┴──────────┴──────────────┴────────────┴─────────┴───────────────────────────┴─────────┘
 ```
+
+`device` is which backend is serving the model right now — `cpu`, `cuda:0`,
+`rocm:0` — and is empty until a predict warms a session. It is the way to check
+that a GPU is actually being used: a device that silently fell back to the CPU
+produces the same answers, only slower, so agreement alone will not tell you.
 
 ```sql
 CALL tabfm_load('classification');    -- warm the model (else lazy on first predict)
@@ -340,7 +345,7 @@ CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_…', SCOPE 'https://huggingface.c
 | `anofox_tabfm_gpu_precision` | `bf16` | GPU dtype: `bf16` / `fp16` / `fp32` |
 | `anofox_tabfm_default_model` | `''` | session-wide model when `model :=` is not given |
 | `anofox_tabfm_mxr_source` | `''` | directory of precompiled ROCm `.mxr` programs to stage from |
-| `anofox_tabfm_ep_path` | `''` | extra search path for execution-provider shared libraries |
+| `anofox_tabfm_ep_path` | `''` | directory holding the GPU backend plugin (and the runtime libraries beside it) |
 | `anofox_tabfm_trace_level` | `warn` | log verbosity: `error` / `warn` / `info` / `debug` / `trace` |
 
 Options (the trailing `opts` MAP, all values VARCHAR): `task`, `n_estimators`
@@ -383,9 +388,34 @@ link no vendor runtime — CUDA/cuDNN or ROCm resolve from your system, and
 warms a shape bucket ahead of the first predict (builds/caches the ROCm `.mxr`).
 Released cpu builds are served from the anofox extension repository
 (`SET custom_extension_repository = 'https://get.anofox.com'`) as well as from
-the DuckDB community repository. The GPU flavors are **not published yet** —
-build one from source with `TABFM_FLAVOR=cuda|rocm` (see
-[`docs/rocm-build.md`](docs/rocm-build.md) for the ROCm toolchain).
+the DuckDB community repository.
+
+**Using a GPU.** A GPU backend is a plugin the extension `dlopen`s at runtime,
+not a separate build of the extension: point `anofox_tabfm_ep_path` at the
+directory holding it and select the device.
+
+```sql
+CALL tabfm_download_runtime('cuda');    -- fetch the ORT GPU runtime into that directory
+SET anofox_tabfm_ep_path = '/path/to/plugin/dir';
+SET anofox_tabfm_device  = 'cuda';      -- or 'rocm'
+-- confirm it is really being used, rather than trusting the answers:
+SELECT model, device FROM tabfm_models() WHERE loaded;
+```
+
+The plugins themselves are **not published yet**, so today you build the one
+you need from source (`src/tabfm_cuda_plugin.cpp`,
+`src/tabfm_migraphx_plugin.cpp`; see [`docs/rocm-build.md`](docs/rocm-build.md)
+for the ROCm toolchain and [`docs/DYNAMIC_BACKENDS.md`](docs/DYNAMIC_BACKENDS.md)
+for how the two fit together). `tabfm_download_runtime('cuda')` fetches the
+ONNX Runtime GPU libraries the CUDA plugin needs, not the plugin itself.
+
+One caveat for CUDA: a host build that itself loads a *shared*
+`libonnxruntime.so` shadows the plugin's own copy of ONNX Runtime — same
+SONAME, and the first one loaded wins — after which the plugin runs against
+that CPU-only runtime and reports that it cannot load its provider. This is
+observed with the local `make debug` build; use the release build, whose ONNX
+Runtime is linked statically and so leaves nothing for the plugin to collide
+with.
 
 ## Feedback
 

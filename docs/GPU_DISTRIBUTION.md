@@ -58,6 +58,11 @@ flavors are not published yet, so build one from source with TABFM_FLAVOR=cuda
 Released cpu builds: SET custom_extension_repository = 'https://get.anofox.com'
 ```
 
+> That wording is historical. Device resolution now accepts `cuda` and
+> `rocm` on every build, because a plugin can serve them; the message you
+> get today names the model or the missing plugin instead. See
+> `docs/DYNAMIC_BACKENDS.md`.
+
 Costs nothing and misleads nobody. Its weakness is that "build from source"
 means building ONNX Runtime's dependencies too, which is a real afternoon.
 
