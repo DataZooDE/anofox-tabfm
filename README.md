@@ -409,13 +409,17 @@ for the ROCm toolchain and [`docs/DYNAMIC_BACKENDS.md`](docs/DYNAMIC_BACKENDS.md
 for how the two fit together). `tabfm_download_runtime('cuda')` fetches the
 ONNX Runtime GPU libraries the CUDA plugin needs, not the plugin itself.
 
-One caveat for CUDA: a host build that itself loads a *shared*
+**CUDA needs the release build.** A host build that itself loads a *shared*
 `libonnxruntime.so` shadows the plugin's own copy of ONNX Runtime — same
 SONAME, and the first one loaded wins — after which the plugin runs against
-that CPU-only runtime and reports that it cannot load its provider. This is
-observed with the local `make debug` build; use the release build, whose ONNX
-Runtime is linked statically and so leaves nothing for the plugin to collide
-with.
+that CPU-only runtime and reports that it cannot load its provider. The release
+build links ONNX Runtime statically, leaving nothing to collide with. Both
+halves were confirmed on an RTX A5000: the debug build fails exactly that way,
+and the release build runs the query above with predictions identical to the
+CPU's.
+
+Note that `anofox_tabfm_gpu_precision` currently affects ROCm only — MIGraphX
+quantizes per the setting, while the CUDA plugin always runs fp32.
 
 ## Feedback
 

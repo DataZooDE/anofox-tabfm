@@ -18,7 +18,7 @@ What is verified, and how far:
 | | plugin, on hardware | via SQL, real weights | at scale |
 |---|---|---|---|
 | **ROCm** (gfx1201) | ✅ `1.03e-05` vs CPU | ✅ 100 rows, fp32 exact / bf16 2 flips | ✅ 2500 rows past DuckDB's vector boundary, T4096 bucket, plus H64 features, the regression task, and 4-way concurrency |
-| **CUDA** (RTX A5000/3090) | ✅ `7.94e-07` vs CPU | ⏳ blocked on SONAME shadowing in debug builds; release-build run in progress | ❌ |
+| **CUDA** (RTX A5000/3090) | ✅ `7.94e-07` vs CPU | ✅ 100 rows, **0 disagreements**, release build (see the SONAME note below) | ❌ |
 
 The ROCm column is what "verified" should mean here; the CUDA column is honest
 about stopping short. Anything not in this table has not been run — notably no
@@ -623,6 +623,7 @@ assumed:
 | CPU vs ROCm (MIGraphX plugin) bf16 | class agreement + loose abs bound | **max abs diff 0.52**, argmax agreement **5/5** (real `google/tabfm`, gfx1201) | bf16 has ~3 significant digits; the classification decision is the contract, not the raw logit |
 | CPU vs ROCm plugin, fp32, via SQL | exact label agreement | **0 disagreements / 30 predictions** (real weights, gfx1201) | fp32 removes the precision variable entirely |
 | CPU vs ROCm plugin, bf16, via SQL | class agreement | **2/100**, and **42/2500** at scale | the default mode; near-tie argmaxes flip |
+| CPU vs CUDA plugin, via SQL | exact label agreement | **0 disagreements / 100 rows** (real weights, RTX A5000, release build) | the CUDA plugin never quantizes — see below |
 | bf16/fp16 GPU paths (other backends) | class agreement + ~1e-2 | not yet measured | precision is the point of the mode |
 
 Read the fp32 and bf16 rows together: at fp32 the GPU and the CPU agree
@@ -688,8 +689,18 @@ refuses to report CPU results as GPU.
 * **SONAME shadowing (CUDA)**: the plugin carries its own
   `libonnxruntime.so.1`. A host build that loads a *shared* ORT with the same
   SONAME wins — the plugin then runs against the host's CPU-only runtime and
-  fails looking for its provider. Observed on the local `make debug` build; the
-  release build links ORT statically, leaving nothing to collide with.
+  fails looking for its provider. Confirmed in both directions on real
+  hardware: the local `make debug` build (shared ORT) fails exactly that way,
+  and the release build (ORT static, nothing to collide with) runs the full SQL
+  path with 0 disagreements. **So CUDA requires a build whose ORT is linked
+  statically.** `RTLD_DEEPBIND` on the plugin `dlopen` would lift that
+  restriction and was deliberately not taken: it changes symbol identity across
+  the boundary for a case the shipped build does not have.
+* **`anofox_tabfm_gpu_precision` is ROCm-only in effect.** MIGraphX quantizes
+  per the setting (bf16 by default, which is why ROCm shows a few label flips
+  and CUDA shows none). The CUDA plugin accepts the parameter and ignores it —
+  it always runs fp32. That is why the CUDA row above is exact while the ROCm
+  bf16 rows are not; it is not evidence that CUDA is more accurate.
 * **Binary size and CI matrix** grow by one plugin per GPU backend.
 * **ABI drift** between the extension and our own ROCm plugin — versioned
   explicitly, refused on mismatch.
