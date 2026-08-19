@@ -979,14 +979,25 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	}
 	const bool want_split = split.Available();
 
+	// The device the caller is asking for right now. A cached session belongs to
+	// the device it was BUILT for, so reusing it whenever the key matches
+	// silently ignores anofox_tabfm_device: a connection that ran anything on
+	// the cpu and then SET anofox_tabfm_device='cuda' kept getting the cpu
+	// session and never touched the GPU. That is precisely the "requested device
+	// quietly becomes CPU" outcome the tier-4 contract in
+	// docs/DYNAMIC_BACKENDS.md exists to rule out, and it is invisible without
+	// looking at tabfm_models().device.
+	const string &wanted_device = ResolvedDeviceCached(ctx.device);
+
 	if (auto snapshot = state.Snapshot(resolved.cache_key)) {
-		if (snapshot->split_context == want_split) {
+		if (snapshot->split_context == want_split && snapshot->device_id == wanted_device) {
 			return snapshot;
 		}
-		// anofox_tabfm_context_cache changed since this model was loaded. Fall
-		// through and rebuild under the SAME key, so tabfm_models() and
-		// tabfm_unload() keep seeing exactly one entry per model — a suffixed key
-		// would leave a session that a targeted unload could not reach.
+		// anofox_tabfm_context_cache or anofox_tabfm_device changed since this
+		// model was loaded. Fall through and rebuild under the SAME key, so
+		// tabfm_models() and tabfm_unload() keep seeing exactly one entry per
+		// model — a suffixed key would leave a session that a targeted unload
+		// could not reach.
 	}
 
 	// The alternative backends below are driven by graphs compiled into the

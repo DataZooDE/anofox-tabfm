@@ -40,15 +40,22 @@ UNION ALL SELECT 'to_predict', count(*) FROM churn WHERE segment IS NULL;
 
 -- CPU reference
 SET anofox_tabfm_device = 'cpu';
+-- (device is asserted after each run below: a cached session used to be reused
+-- across a device switch, which made this whole comparison cpu-vs-cpu while
+-- reporting a perfect score.)
 CREATE TABLE pred_cpu AS
 SELECT id, yhat FROM tabfm_classify('churn', 'segment') ORDER BY id;
-SELECT 'cpu_done' AS k, count(*) AS v FROM pred_cpu;
+SELECT 'cpu_done' AS k, count(*)::VARCHAR AS v FROM pred_cpu
+UNION ALL SELECT 'cpu_served_by', coalesce(max(device), 'NONE') FROM tabfm_models() WHERE loaded;
 
 -- ROCm through the plugin
 SET anofox_tabfm_device = 'rocm';
 CREATE TABLE pred_rocm AS
 SELECT id, yhat FROM tabfm_classify('churn', 'segment') ORDER BY id;
-SELECT 'rocm_done' AS k, count(*) AS v FROM pred_rocm;
+-- THE check. Anything but rocm:N here means the GPU never ran and every number
+-- below is cpu-vs-cpu, however green it looks.
+SELECT 'rocm_done' AS k, count(*)::VARCHAR AS v FROM pred_rocm
+UNION ALL SELECT 'rocm_served_by', coalesce(max(device), 'NONE') FROM tabfm_models() WHERE loaded;
 
 -- The thing that matters: does switching device change the answer?
 SELECT 'total_rows'    AS k, count(*)::VARCHAR AS v FROM pred_cpu
