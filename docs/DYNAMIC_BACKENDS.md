@@ -10,9 +10,20 @@ below is the deliverable — not an afterthought to it.
 
 Status: **phases 0, 1 and 3 landed; 2 and 4 pending.** Both GPU backends now
 run as dlopen'd plugins carrying their own runtimes — ROCm over MIGraphX
-directly (phase 1), CUDA over its own shared ORT-GPU distribution (phase 3),
-each verified against CPU on real hardware. Each phase is independently
-shippable and none silently changes results.
+directly (phase 1), CUDA over its own shared ORT-GPU distribution (phase 3).
+Each phase is independently shippable and none silently changes results.
+
+What is verified, and how far:
+
+| | plugin, on hardware | via SQL, real weights | at scale |
+|---|---|---|---|
+| **ROCm** (gfx1201) | ✅ `1.03e-05` vs CPU | ✅ 100 rows, fp32 exact / bf16 2 flips | ✅ 2500 rows past DuckDB's vector boundary, T4096 bucket, plus H64 features, the regression task, and 4-way concurrency |
+| **CUDA** (RTX A5000/3090) | ✅ `7.94e-07` vs CPU | ⏳ blocked on SONAME shadowing in debug builds; release-build run in progress | ❌ |
+
+The ROCm column is what "verified" should mean here; the CUDA column is honest
+about stopping short. Anything not in this table has not been run — notably no
+model other than `tabfm-v1` has touched a GPU, and `tabfm_impute` /
+`tabfm_generate` never have either.
 
 ## Why this is possible (measured, not assumed)
 
@@ -608,9 +619,18 @@ assumed:
 |---|---|---|---|
 | CPU vs CPU, same ORT (pin/rewrite changes) | **bit-identical** | **0** across 5 graphs × 3 shapes, real checkpoints | same kernels, same order |
 | CPU, ORT 1.24.1 vs 1.28.0 | relative 1e-4 | **3.26e-05**, argmax agreement **1.0** (real TabICL) | versions change kernel and fusion choices |
-| CPU vs CUDA fp32 | relative ~1e-4 | not yet measured | different kernels and reduction order |
+| CPU vs CUDA fp32 (plugin, standalone host) | relative ~1e-4 | **7.94e-07** (committed fixture, RTX A5000) | different kernels and reduction order |
 | CPU vs ROCm (MIGraphX plugin) bf16 | class agreement + loose abs bound | **max abs diff 0.52**, argmax agreement **5/5** (real `google/tabfm`, gfx1201) | bf16 has ~3 significant digits; the classification decision is the contract, not the raw logit |
+| CPU vs ROCm plugin, fp32, via SQL | exact label agreement | **0 disagreements / 30 predictions** (real weights, gfx1201) | fp32 removes the precision variable entirely |
+| CPU vs ROCm plugin, bf16, via SQL | class agreement | **2/100**, and **42/2500** at scale | the default mode; near-tie argmaxes flip |
 | bf16/fp16 GPU paths (other backends) | class agreement + ~1e-2 | not yet measured | precision is the point of the mode |
+
+Read the fp32 and bf16 rows together: at fp32 the GPU and the CPU agree
+*exactly*, so the bf16 differences are the precision tradeoff
+`anofox_tabfm_gpu_precision` documents and not a correctness problem. Real-shaped
+data flips fewer than synthetic — the CSV workflow in
+`tools/gpu_test/scenarios/` disagrees on **0** rows where a synthetic table of
+the same size disagrees on 7.
 
 The second row is the one worth internalising: an **ORT upgrade is not
 bit-identical** on a real model, only within tolerance. The fixture golden test
@@ -630,6 +650,29 @@ and never a silent fallback to CPU. This is the failure mode the harness itself
 had (three runs silently measured CPU, see `tools/gpu_test/README.md`), so the
 suite asserts the refusal, not just the success.
 
+Tier 4 turned out to be the tier that mattered, and the extension failed it in
+five distinct ways — every one found by running the SQL surface on real
+hardware, and none reachable from the C++ suite, which builds device lists by
+hand and never touches discovery, the session cache or the aggregate:
+
+| # | failure | fix |
+|---|---|---|
+| 1 | the GPU probes were compiled only into their own flavor, so the shipped cpu build could not **see** a card at all | `0c6af12` |
+| 2 | `rocm` was refused on a cpu build even with its plugin installed, and the error advised a rebuild that could not have helped | `0c6af12` |
+| 3 | **a device switch mid-session was ignored** — after any cpu query, `SET anofox_tabfm_device='cuda'` silently kept serving cpu | `70a6800` |
+| 4 | nothing reported which backend served a query, so (3) was invisible | `ab5c6e3` |
+| 5 | the decline message contradicted device resolution and misdescribed the cause | `ab5c6e3` |
+
+(3) is the one to remember. It made this repo's own first GPU equivalence run a
+**cpu-vs-cpu comparison that reported a perfect score** — the exact outcome
+tier 4 exists to prevent, produced by the harness meant to enforce it. Two
+things came out of that: `tabfm_models().device` reports the serving backend so
+the question is answerable in SQL, and every scenario in
+`tools/gpu_test/scenarios/` prints `*_SERVED_BY` and says to read it before
+believing any agreement number. The reuse predicate itself is now
+`CanReuseSession`, unit-tested without a GPU and verified by mutation — putting
+the old logic back fails exactly the three device assertions.
+
 CI runs tiers 1–4 on CPU. GPU tiers are opt-in — they need hardware CI does not
 have — and are run by hand via `tools/gpu_test/`, which is why that harness
 refuses to report CPU results as GPU.
@@ -638,9 +681,15 @@ refuses to report CPU results as GPU.
 
 * **Silent divergence** is the one that matters. Mitigated by making the
   equivalence matrix the deliverable and by tier 4's refusal test.
-* **Cache size**: ~280 MB (CUDA provider, measured) and ~6.6 GB per `.mxr` shape bucket
-  (ROCm, ~20 min first compile). Both belong in the weights cache with the
-  messaging that already exists there.
+* **Cache size**: 621 MB (CUDA provider, measured against the shipped wheel)
+  plus a 24 MB ORT core, and a `.mxr` per ROCm shape bucket. First compile of a
+  bucket measured at ~27 min for both T4096 and H64 on gfx1201, so a query that
+  lands in a new bucket appears to hang; `tabfm_gpu_precompile` exists for that.
+* **SONAME shadowing (CUDA)**: the plugin carries its own
+  `libonnxruntime.so.1`. A host build that loads a *shared* ORT with the same
+  SONAME wins — the plugin then runs against the host's CPU-only runtime and
+  fails looking for its provider. Observed on the local `make debug` build; the
+  release build links ORT statically, leaving nothing to collide with.
 * **Binary size and CI matrix** grow by one plugin per GPU backend.
 * **ABI drift** between the extension and our own ROCm plugin — versioned
   explicitly, refused on mismatch.

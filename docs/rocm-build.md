@@ -1,5 +1,18 @@
 # Building ONNX Runtime with the MIGraphX EP (rocm flavor)
 
+> **You probably do not need this any more.** Since
+> `docs/DYNAMIC_BACKENDS.md` phase 1, ROCm inference runs through
+> `src/tabfm_migraphx_plugin.cpp`, which drives MIGraphX directly and needs
+> only `libmigraphx_c` — not an ORT built with the MIGraphX EP. A plain cpu
+> build plus that plugin, with `SET anofox_tabfm_ep_path` pointing at it, is
+> the supported route and is what the GPU results in `tools/gpu_test/` were
+> produced on.
+>
+> This build is still required for one narrower case: a model that ships **no
+> bundled MIGraphX graph** for its task. The plugin declines there, the request
+> falls back to the in-process ORT session path, and only an ORT carrying the
+> MIGraphX EP can serve it.
+
 The `rocm` flavor of anofox_tabfm links an ONNX Runtime that carries the
 MIGraphX execution provider (AMD's inference path; the upstream ROCm EP was
 removed in ORT 1.23). Microsoft publishes **no prebuilt** ORT-MIGraphX

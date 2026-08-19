@@ -54,9 +54,28 @@ TABFM_FLAVOR=rocm make release TABFM_ORT_ROCM_DIR=...       # rocm flavor
 - `test/fixtures/` — committed fixture model (graph, safetensors, golden.json,
   manifest.json); CI verifies the pinned sha256, never regenerates
 
-## Flavors (HLD D9)
+## Flavors and backend plugins (HLD D9, docs/DYNAMIC_BACKENDS.md)
 
-One codebase; `TABFM_FLAVOR=cpu|cuda|rocm` picks the ORT build in
-`cmake/ort.cmake`. GPU code paths must never be required for the cpu build
-(community-extension eligibility). Device selection at runtime:
-`SET anofox_tabfm_device`, discovery via `tabfm_devices()`.
+One codebase; `TABFM_FLAVOR=cpu|cuda|rocm|coreml` still picks the ORT build in
+`cmake/ort.cmake`, but **a GPU is no longer a flavor**. Both GPU backends are
+standalone plugins the extension `dlopen`s at runtime through
+`src/include/tabfm_plugin_abi.h`:
+
+- `src/tabfm_migraphx_plugin.cpp` — drives MIGraphX directly, no ORT involved
+- `src/tabfm_cuda_plugin.cpp` — links its own shared ORT-GPU distribution
+
+So every build discovers GPUs (`tabfm_devices()` probes NVML and the KFD sysfs
+topology in all flavors — neither needs a vendor SDK) and every build accepts
+`SET anofox_tabfm_device='cuda'|'rocm'`; `SET anofox_tabfm_ep_path` says where
+the plugin lives. CoreML is the exception and stays flavor-gated, being an
+in-process ORT EP. GPU code paths must never be *required* for the cpu build —
+that constraint is about what is LINKED, which is unchanged.
+
+When touching any of this, two rules earned the hard way:
+
+1. **A device switch must rebuild the session.** `CanReuseSession` in
+   `tabfm_state.hpp` checks the device, not just the cache key. Ignoring it
+   silently serves the previous device — no error, no GPU.
+2. **Never trust "cpu and gpu agree".** That is also what a silent CPU
+   fallback prints. Check `SELECT device FROM tabfm_models()`; the scenarios in
+   `tools/gpu_test/scenarios/` all print `*_SERVED_BY` for this reason.
