@@ -131,6 +131,6 @@ const TabFMPluginApi kApi = {
 
 } // namespace
 
-extern "C" const TabFMPluginApi *TabFMGetPluginApi(void) {
+extern "C" TABFM_PLUGIN_EXPORT const TabFMPluginApi *TabFMGetPluginApi(void) {
 	return &kApi;
 }

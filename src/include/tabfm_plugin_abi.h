@@ -41,6 +41,16 @@ extern "C" {
 /*! The symbol every plugin must export. */
 #define TABFM_PLUGIN_ENTRY_SYMBOL "TabFMGetPluginApi"
 
+/*! Marks the entry point as exported from the plugin's shared library. On
+ *  Windows a DLL exports nothing by default, so extern "C" alone leaves
+ *  TabFMGetPluginApi invisible to GetProcAddress; ELF exports by default but
+ *  the attribute keeps that true under -fvisibility=hidden. */
+#if defined(_WIN32)
+#define TABFM_PLUGIN_EXPORT __declspec(dllexport)
+#else
+#define TABFM_PLUGIN_EXPORT __attribute__((visibility("default")))
+#endif
+
 /*! Status codes. Anything non-zero leaves *err populated. */
 typedef enum {
 	TABFM_PLUGIN_OK = 0,
