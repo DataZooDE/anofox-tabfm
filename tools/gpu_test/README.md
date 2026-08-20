@@ -8,6 +8,21 @@ execution provider and reports what happened.
 **Not wired into CI.** It spends money and needs a key CI does not have. Run it
 by hand when a change touches a GPU path.
 
+For repeated CUDA iterations, attach a persistent network volume so uploads,
+toolchains and build trees survive across pods (S7 of
+`docs/GPU_HARDENING_PLAN.md` — proven with a marker written by one pod and
+read by a fresh one):
+
+```bash
+tools/gpu_test/runpod_run.py --create-volume 40 --volume-dc EUR-IS-1  # RECURRING cost until deleted
+tools/gpu_test/runpod_run.py --volume-id <id> --gpu "NVIDIA GeForce RTX 4090" --command ...
+tools/gpu_test/runpod_run.py --delete-volume <id>                     # ends the cost
+```
+
+Volumes exist only in specific datacenters (a wrong `--volume-dc` errors with
+the valid list) and pin the pod to their datacenter, where GPU stock may be
+scarce — pass an explicit `--gpu` for a type that datacenter actually stocks.
+
 ## `ort_ep_check.py` — run a graph on a provider
 
 Synthesizes deterministic random initializers for the weight-free graphs in
