@@ -127,10 +127,12 @@ Results on gfx1201 with the real TabFM v1 classification weights:
 script prints. Only 30 of the 100 rows in the small case are unlabelled
 predictions, so 2 flips there is 2 of 30 actual predictions.)
 
-fp32 agrees with CPU exactly; the bf16 differences are the precision tradeoff
-`anofox_tabfm_gpu_precision` documents, not a correctness problem — and fp32
-is the default since Track A of `docs/GPU_HARDENING_PLAN.md`; the bf16 rows
-are what the opt-in costs. The class
+fp32 agrees with CPU exactly. The bf16 differences are the documented
+opt-in tradeoff, and S3's margin analysis says what they are with precision:
+rare (1.7% here) but NOT confined to near-ties — flipped rows' fp32 margins
+reached 0.805, so bf16 can overturn confident predictions on hard data. fp32
+is the default since Track A of `docs/GPU_HARDENING_PLAN.md`; validate bf16
+against fp32 on your own data before adopting it. The class
 spread stays non-degenerate at scale (cpu a824/b837/c839 vs gpu a827/b832/c841),
 which is what rules out "the GPU returned one class and got lucky".
 

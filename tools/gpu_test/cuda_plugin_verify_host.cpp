@@ -14,6 +14,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
@@ -163,7 +164,7 @@ int main(int argc, char **argv) {
 			const double denom = fmax(1e-6, fabs(double(cpu_logits[i])));
 			max_rel = fmax(max_rel, fabs(double(cpu_logits[i]) - double(output.logits[i])) / denom);
 		}
-		printf("max relative difference CPU vs CUDA plugin: %g\n", max_rel);
+		printf("MODE_AGREEMENT: precision=%s max_rel=%g\n", precision, max_rel);
 		if (max_rel > 1e-3) {
 			fprintf(stderr, "FAIL: logits diverge beyond 1e-3\n");
 			rc = 2;
@@ -171,6 +172,31 @@ int main(int argc, char **argv) {
 	}
 
 	api->free_output(&output);
+
+	// S1's cost numbers: steady-state latency of this precision mode. 20 runs
+	// after one warmup; the mean is what the plan's cost table wants.
+	if (rc == 0) {
+		TabFMPluginRunOutput timing_output {};
+		struct timespec t0, t1;
+		double total_ms = 0.0;
+		int timed_runs = 20;
+		for (int i = 0; i < timed_runs; i++) {
+			clock_gettime(CLOCK_MONOTONIC, &t0);
+			if (api->run(handle, &input, &timing_output, err, sizeof(err)) != TABFM_PLUGIN_OK) {
+				fprintf(stderr, "FAIL: timed run %d: %s\n", i, err);
+				rc = 1;
+				break;
+			}
+			clock_gettime(CLOCK_MONOTONIC, &t1);
+			total_ms += (t1.tv_sec - t0.tv_sec) * 1000.0 + (t1.tv_nsec - t0.tv_nsec) / 1e6;
+			api->free_output(&timing_output);
+		}
+		if (rc == 0) {
+			printf("MODE_TIMING: precision=%s mean_ms=%.3f over %d runs\n", precision, total_ms / timed_runs,
+			       timed_runs);
+		}
+	}
+
 	api->destroy(handle);
 	dlclose(lib);
 

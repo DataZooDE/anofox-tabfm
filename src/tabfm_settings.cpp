@@ -141,8 +141,9 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	    "GPU numeric mode: fp32|tf32|bf16|fp16. fp32 (default) is strict — a device switch does not change answers, "
 	    "measured exact on both GPUs; on CUDA it disables TF32 tensor-core rounding. tf32 re-enables that rounding "
 	    "(CUDA only; fp32 storage, faster matmuls). bf16/fp16 quantize the MIGraphX program on ROCm (~2x faster on "
-	    "RDNA4, half the VRAM/.mxr, a few near-tie labels may flip) and are rejected on CUDA rather than silently "
-	    "running fp32.",
+	    "RDNA4, half the VRAM/.mxr; label flips vs fp32 are rare (~2%% measured) but NOT confined to near-ties — "
+	    "measured flips include high-confidence rows, so validate bf16 on your own data) and are rejected on CUDA "
+	    "rather than silently running fp32.",
 	    LogicalType::VARCHAR, Value("fp32"), ValidateGpuPrecision);
 
 	config.AddExtensionOption(
