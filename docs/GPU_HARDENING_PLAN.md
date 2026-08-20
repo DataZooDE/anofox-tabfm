@@ -185,14 +185,14 @@ a bet.
 | S1 | `use_tf32=0` gives strict CPU parity on CUDA at acceptable speed; the TF32 speedup is worth exposing as its own mode | fixture graph + real weights on one pod session: run TF32-off vs TF32-on, record max-rel + wall time | 1 pod session (fast once P6.1 exists) | P1/P2 defaults + whether `tf32` earns its keep |
 | S2 | equal-length SONAME patch is safe (nothing else references the string); static-link-into-plugin resolves providers via dladdr next to the plugin | local: patch bytes, `ldd`/`readelf` verify, load both shapes in a two-ORT process; pod for the CUDA run | half a day, mostly local | P4 fix choice (a) vs (b) |
 | S3 | bf16 label flips are near-ties only | dump logits for the 42 flipped rows of the 2500-row run on ROCm; measure margin distribution | <1 h local | whether bf16 stays offered as-is, or gets a margin warning |
-| S4 | a registered model carrying its own ext-format graph runs on the CUDA plugin unmodified, and the fixture can be made such a model | prototype the spec field + dispatch change behind a setting; run fixture on pod without weights | 1–2 days | P3 design; unlocks P6.2 |
+| S4 | ✅ **done** — a registered model carrying its own GPU graph runs on the plugin unmodified. Proven on gfx1201: `REGISTERED_SERVED_BY=rocm:0`, predictions identical to the bundled path (`PATHS_DISAGREE=0`, same weights). Two sub-findings: **U1** — MIGraphX cannot run a plain ext-format graph (fixture fails at eval), so `ext_graph` and `migraphx_graph` are separate spec fields with no cross-fallback; and a sixth realistic-testing bug — `tabfm_models()` was blind to registered models whose weights live outside the cache, so the `device` proof column could not see the very model class this enables (fixed). CUDA/fixture-weightless confirmation still pending a pod run | implemented as Track C v1 (`SelectGpuGraph` + spec fields + dispatch), tests in `test_tabfm_model_spec.cpp` / `tabfm_gpu_graphs.test`, scenario `tools/gpu_test/scenarios/registered_model_gpu.sql` | done | P3 design settled; P6.2 unlocked pending a migraphx-compatible fixture export |
 | S5 | ORT ≥1.28.1 / official CUDA Plugin EP v0.1.0 works against a statically linked core (true plugin ABI, not provider bridge); our filed bugs may already be fixed | standalone C host, one pod session; re-run the 20-line dlopen repros against 1.29 | 1 pod session | long-term CUDA strategy; P8 filing text |
 | S6 | session rebuild on device switch is too slow to "accept and document" | measure rebuild wall time for tabfm-v1 on bigfox (mmap path) — alternate devices 10× | <1 h local | P5 design |
 | S7 | a RunPod network volume + ccache gets CUDA iteration under 10 min | set up once, measure second iteration | half a day + ~$5 | P6.1; every later pod spike inherits it |
 
-Order: **S7 and S6 and S3 first** (cheap, local or one-time setup, and S7
-makes every other spike cheaper), then S2 + S4 in parallel (independent),
-then S1 and S5 on the fast pod loop.
+Order (revised after the user's "hardest, most critical first" call — S4 was
+pulled to the front and is done): **S7, S6, S3 next** (cheap; S7 makes every
+later pod spike faster), then S2, then S1 and S5 on the fast pod loop.
 
 ## 3. Implementation tracks (gated on spikes)
 

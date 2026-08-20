@@ -103,6 +103,11 @@ struct ResolvedModel {
 	// (custom/scenario/fixture manifests that point at an .onnx file).
 	string graph_path;
 	BundledResource graph_bundle;
+	// Model-provided GPU graphs, resolved to on-disk paths ("" = not declared).
+	// Their external-data files must sit beside them; the dispatch hands the
+	// containing directory to the plugin as weights_dir.
+	string ext_graph_path;
+	string migraphx_graph_path;
 	string weights_path;
 	unordered_map<string, string> tensor_map; // onnx initializer name -> st key
 	string cache_key;
@@ -268,6 +273,8 @@ ModelManifest SpecTaskToManifest(const ModelSpec &spec, TabFMTask task) {
 	m.revision = art.revision;
 	m.files = art.files;
 	m.graph = art.graph;
+	m.ext_graph = art.ext_graph;
+	m.migraphx_graph = art.migraphx_graph;
 	m.tensor_map_path = art.tensor_map_path;
 	m.tensor_map = art.tensor_map;
 	m.preprocessing_profile = art.preprocessing_profile;
@@ -328,6 +335,24 @@ void ResolveModelArtifacts(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	} else {
 		resolved.graph_path = ResolveGraphPath(fs, resolved.manifest, resolved.manifest_dir);
 	}
+	// Model-provided GPU graphs resolve like the plain graph — against the
+	// manifest dir — but must exist NOW if declared: a bad path failing at
+	// declaration time beats a GPU dispatch that silently falls back later.
+	auto resolve_gpu_graph = [&](const string &declared, const char *what) -> string {
+		if (declared.empty()) {
+			return "";
+		}
+		auto candidate = JoinPath(fs, resolved.manifest_dir, declared);
+		if (!fs.FileExists(candidate)) {
+			throw InvalidInputException(
+			    "tabfm: model '%s' declares %s '%s' for task '%s' but the file does not exist at '%s'. Its "
+			    "external-data files must sit beside it.",
+			    resolved.manifest.model, what, declared, task_name, candidate);
+		}
+		return candidate;
+	};
+	resolved.ext_graph_path = resolve_gpu_graph(resolved.manifest.ext_graph, "ext_graph");
+	resolved.migraphx_graph_path = resolve_gpu_graph(resolved.manifest.migraphx_graph, "migraphx_graph");
 	resolved.tensor_map = LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin);
 	resolved.cache_key = TabFMModelCacheKey(resolved.manifest.model, task_name, resolved.manifest.revision);
 }
@@ -838,13 +863,27 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 		return nullptr; // not the GPU path (cpu / cuda handled by the ORT backend)
 	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
+	// Graph source (docs/GPU_HARDENING_PLAN.md P3): a model-provided
+	// migraphx_graph wins; the bundled tabfm-v1 graph needs its header match.
 	auto graph = GetBundledResource("graph_migraphx_" + task_name);
-	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task)) {
-		return nullptr;
+	const bool bundled_matches =
+	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task);
+	string graph_path;
+	string weights_dir;
+	switch (SelectGpuGraph(!resolved.migraphx_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
+	case GpuGraphSource::MODEL_PROVIDED:
+		graph_path = resolved.migraphx_graph_path;
+		weights_dir = DirName(graph_path); // external data sits beside the graph
+		break;
+	case GpuGraphSource::BUNDLED: {
+		weights_dir = DirName(resolved.weights_path);
+		graph_path = fs.JoinPath(weights_dir, "graph_migraphx_" + task_name + ".onnx");
+		if (!StageBundledGraph(fs, graph, graph_path)) {
+			return nullptr;
+		}
+		break;
 	}
-	const auto dir = DirName(resolved.weights_path);
-	const auto graph_path = fs.JoinPath(dir, "graph_migraphx_" + task_name + ".onnx");
-	if (!StageBundledGraph(fs, graph, graph_path)) {
+	case GpuGraphSource::NONE:
 		return nullptr;
 	}
 	const auto mxr_dir = fs.JoinPath(ctx.cache_dir, "migraphx");
@@ -858,7 +897,7 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 
 	TabFMPluginCreateParams params {};
 	params.graph_path = graph_path.c_str();
-	params.weights_dir = dir.c_str();
+	params.weights_dir = weights_dir.c_str();
 	params.cache_dir = mxr_dir.c_str();
 	params.arch = device.arch.c_str();
 	params.precision = ctx.gpu_precision.c_str();
@@ -893,13 +932,27 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 		return nullptr; // not the CUDA path (cpu handled by the ORT backend, rocm above)
 	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
+	// Graph source (docs/GPU_HARDENING_PLAN.md P3): a model-provided ext_graph
+	// wins; the bundled tabfm-v1 graph needs its header match.
 	auto graph = GetBundledResource("graph_ext_" + task_name);
-	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task)) {
-		return nullptr;
+	const bool bundled_matches =
+	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task);
+	string graph_path;
+	string weights_dir;
+	switch (SelectGpuGraph(!resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
+	case GpuGraphSource::MODEL_PROVIDED:
+		graph_path = resolved.ext_graph_path;
+		weights_dir = DirName(graph_path); // external data sits beside the graph
+		break;
+	case GpuGraphSource::BUNDLED: {
+		weights_dir = DirName(resolved.weights_path);
+		graph_path = fs.JoinPath(weights_dir, "graph_ext_" + task_name + ".onnx");
+		if (!StageBundledGraph(fs, graph, graph_path)) {
+			return nullptr;
+		}
+		break;
 	}
-	const auto dir = DirName(resolved.weights_path);
-	const auto graph_path = fs.JoinPath(dir, "graph_ext_" + task_name + ".onnx");
-	if (!StageBundledGraph(fs, graph, graph_path)) {
+	case GpuGraphSource::NONE:
 		return nullptr;
 	}
 
@@ -913,7 +966,7 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 
 	TabFMPluginCreateParams params {};
 	params.graph_path = graph_path.c_str();
-	params.weights_dir = dir.c_str();
+	params.weights_dir = weights_dir.c_str();
 	params.cache_dir = ctx.cache_dir.c_str();
 	params.arch = device.arch.c_str();
 	params.precision = ctx.gpu_precision.c_str();

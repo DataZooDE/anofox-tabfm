@@ -51,6 +51,20 @@ struct ModelTaskArtifacts {
 	vector<ManifestFile> files;
 	//! Bundled graph id or an on-disk .onnx path (resolved relative to manifest).
 	string graph;
+	//! Optional GPU-format graphs (docs/GPU_HARDENING_PLAN.md P3). Two fields,
+	//! not one, and deliberately no cross-fallback: spike U1 showed MIGraphX
+	//! cannot run a plain external-data ONNX (the fixture graph fails at eval),
+	//! so pointing ROCm at an ext_graph would trade a clear "no GPU graph for
+	//! this model" for a runtime MIGraphX error. A model whose single export
+	//! happens to satisfy both simply names the same file twice.
+	//!
+	//! ext_graph: external-data ONNX for the ORT-based CUDA plugin; its data
+	//! file(s) sit beside it, and its offsets match the model's own weights by
+	//! construction, so no header check applies.
+	string ext_graph;
+	//! migraphx_graph: the MIGraphX-compatible variant (Shape-rewritten,
+	//! external-data) for the ROCm plugin.
+	string migraphx_graph;
 	//! Exactly one of the two tensor-map forms is populated (or neither).
 	string tensor_map_path;
 	unordered_map<string, string> tensor_map;
@@ -116,6 +130,30 @@ struct ModelSpec {
 	//! The capability string the task maps to ("classification"→"classify").
 	static string TaskCapability(TabFMTask task);
 };
+
+//! Which graph a GPU backend should run, if any (docs/GPU_HARDENING_PLAN.md
+//! P3). Pure so CI can pin the gate without hardware — the same treatment
+//! CanReuseSession got after the device-switch bug, and for the same reason:
+//! this exact gate is what silently locked every model but tabfm-v1 out of
+//! the GPUs.
+//!
+//! A model-provided graph wins unconditionally: its external-data offsets
+//! match its own weights by construction, so the bundled-graph header check
+//! does not apply to it. The bundled graph (tabfm-v1's) is only usable when
+//! it exists AND the downloaded weights match the header its offsets were
+//! baked against.
+enum class GpuGraphSource : uint8_t { NONE, MODEL_PROVIDED, BUNDLED };
+
+inline GpuGraphSource SelectGpuGraph(bool model_provides_graph, bool bundled_graph_exists,
+                                     bool bundled_header_matches) {
+	if (model_provides_graph) {
+		return GpuGraphSource::MODEL_PROVIDED;
+	}
+	if (bundled_graph_exists && bundled_header_matches) {
+		return GpuGraphSource::BUNDLED;
+	}
+	return GpuGraphSource::NONE;
+}
 
 //! Parse + strictly validate a v1 or v2 manifest into a ModelSpec.
 ModelSpec ParseModelSpec(const string &json, const string &manifest_path = "(inline manifest)");

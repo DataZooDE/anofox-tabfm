@@ -111,6 +111,9 @@ struct WeightsManifest {
 	string license;  // license id; "" or "none" = ungated
 	vector<WeightsFileEntry> files;
 	bool builtin = false;
+	//! Registered/user models resolve their files here instead of the cache
+	//! ("" for built-ins). Without it tabfm_models() cannot see them at all.
+	string source_dir;
 
 	bool IsGated() const {
 		return !license.empty() && license != "none";
@@ -161,6 +164,7 @@ WeightsManifest WeightsFromSpec(const ModelSpec &spec, TabFMTask task) {
 	// Gated iff the license declares a gate_setting (e.g. accept_hf_license).
 	result.license = spec.license.gate_setting.empty() ? "none" : spec.license.id;
 	result.builtin = spec.source_dir.empty(); // built-ins carry no source dir
+	result.source_dir = spec.source_dir;
 	for (auto &f : art.files) {
 		WeightsFileEntry entry;
 		entry.path = f.path;
@@ -747,25 +751,16 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 		return std::move(state);
 	}
 	for (auto &manifest : ResolveManifests(context)) {
-		// one cache entry per downloaded revision: <slug-base>@<revision>
-		auto slug_base = manifest.CacheSlug("");
-		vector<string> revisions;
-		fs.ListFiles(cache_dir, [&](const string &name, bool is_dir) {
-			if (is_dir && StringUtil::StartsWith(name, slug_base)) {
-				revisions.push_back(name.substr(slug_base.size()));
-			}
-		});
-		std::sort(revisions.begin(), revisions.end());
-		for (auto &revision : revisions) {
-			auto base_dir = cache_dir + "/" + manifest.CacheSlug(revision);
+		// Emit one row when every declared file exists under base_dir. 'loaded'
+		// and 'device' reflect the real DB-instance TabFMState: a model is
+		// loaded once a predict (or lifecycle load) has warmed its session; the
+		// key format is shared with the engine via TabFMModelCacheKey.
+		auto emit_row = [&](const string &base_dir, const string &revision) {
 			ModelsRow row;
 			row.model = manifest.model;
 			row.task = manifest.task;
 			row.revision = revision;
 			row.license = manifest.license;
-			// 'loaded' reflects the real DB-instance TabFMState: a model is loaded
-			// once a predict (or lifecycle load) has warmed its session. The key
-			// format is shared with the engine via TabFMModelCacheKey.
 			auto snapshot = tabfm_state->Snapshot(TabFMModelCacheKey(manifest.model, manifest.task, revision));
 			row.loaded = snapshot != nullptr;
 			row.device = snapshot ? snapshot->device_id : "";
@@ -785,6 +780,27 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 			if (complete) {
 				state->rows.push_back(std::move(row));
 			}
+		};
+		// one cache entry per downloaded revision: <slug-base>@<revision>
+		auto slug_base = manifest.CacheSlug("");
+		vector<string> revisions;
+		fs.ListFiles(cache_dir, [&](const string &name, bool is_dir) {
+			if (is_dir && StringUtil::StartsWith(name, slug_base)) {
+				revisions.push_back(name.substr(slug_base.size()));
+			}
+		});
+		std::sort(revisions.begin(), revisions.end());
+		for (auto &revision : revisions) {
+			emit_row(cache_dir + "/" + manifest.CacheSlug(revision), revision);
+		}
+		// Registered/user models keep their weights next to the model
+		// (source_dir), not in the download cache — the cache walk above cannot
+		// see them, which left tabfm_models() (and its device column, the one
+		// way to verify a GPU actually served a query) blind for exactly the
+		// models tabfm_register_model adds. Found when the first registered
+		// model ran on a GPU and could not prove it.
+		if (!manifest.builtin && !manifest.source_dir.empty() && revisions.empty()) {
+			emit_row(manifest.source_dir, manifest.revision);
 		}
 	}
 	return std::move(state);
@@ -1188,6 +1204,13 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	}
 	auto clf_graph = NamedStr(input, "classification_graph");
 	auto reg_graph = NamedStr(input, "regression_graph");
+	// Model-provided GPU graphs (docs/GPU_HARDENING_PLAN.md P3): ext for the
+	// CUDA plugin, migraphx for the ROCm plugin; no cross-fallback (see
+	// ModelTaskArtifacts). External-data files must sit beside each graph.
+	auto clf_ext = NamedStr(input, "classification_ext_graph");
+	auto reg_ext = NamedStr(input, "regression_ext_graph");
+	auto clf_mgx = NamedStr(input, "classification_migraphx_graph");
+	auto reg_mgx = NamedStr(input, "regression_migraphx_graph");
 
 	ModelSpec spec;
 	spec.schema_version = 2;
@@ -1246,7 +1269,8 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	};
 	// Register a task if it has a graph OR weights: a graph-less task is
 	// download-only (predict errors clearly, but download/list work).
-	auto add_task = [&](TabFMTask task, const string &graph, vector<ManifestFile> files, const string &tmap) {
+	auto add_task = [&](TabFMTask task, const string &graph, vector<ManifestFile> files, const string &tmap,
+	                    const string &ext_graph, const string &migraphx_graph) {
 		if (graph.empty() && files.empty()) {
 			return;
 		}
@@ -1257,6 +1281,8 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 		}
 		ModelTaskArtifacts art;
 		art.graph = graph;
+		art.ext_graph = ext_graph;
+		art.migraphx_graph = migraphx_graph;
 		art.preprocessing_profile = spec.preprocessing_profile;
 		art.repo = weights_repo;
 		art.revision = weights_revision;
@@ -1271,12 +1297,12 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	         build_files("classification_files", "classification_file_urls", "classification_file_bytes",
 	                     NamedStr(input, "classification_weights"), NamedStr(input, "classification_weights_url"),
 	                     NamedInt(input, "classification_weights_bytes", -1)),
-	         NamedStr(input, "classification_tensor_map", shared_tmap));
+	         NamedStr(input, "classification_tensor_map", shared_tmap), clf_ext, clf_mgx);
 	add_task(TabFMTask::REGRESSION, reg_graph,
 	         build_files("regression_files", "regression_file_urls", "regression_file_bytes",
 	                     NamedStr(input, "regression_weights"), NamedStr(input, "regression_weights_url"),
 	                     NamedInt(input, "regression_weights_bytes", -1)),
-	         NamedStr(input, "regression_tensor_map", shared_tmap));
+	         NamedStr(input, "regression_tensor_map", shared_tmap), reg_ext, reg_mgx);
 	if (spec.tasks.empty()) {
 		throw InvalidInputException("tabfm_register_model: provide a graph and/or weights for at least one task "
 		                            "(classification_graph / regression_graph / classification_weights / ...).");
@@ -1455,6 +1481,8 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	{
 		TableFunction f("anofox_tabfm_register_model", {}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, RegisterModelExecute), DATAZOO_GUARD(ANOFOX_TABFM_BANNER, RegisterModelBind), OneRowInit);
 		for (auto *k : {"id", "display_name", "family", "classification_graph", "regression_graph",
+		                "classification_ext_graph", "regression_ext_graph", "classification_migraphx_graph",
+		                "regression_migraphx_graph",
 		                "classification_weights", "regression_weights", "classification_weights_url",
 		                "regression_weights_url", "weights_revision", "tensor_map", "classification_tensor_map",
 		                "regression_tensor_map", "weights_repo", "license", "gate_setting", "preprocessing_profile",

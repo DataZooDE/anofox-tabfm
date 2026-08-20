@@ -70,6 +70,39 @@ const char *kV2 = R"json({
 	"compute": {"cpu": "f32", "gpu_precision_default": "bf16"}
 })json";
 
+// kV2 plus a model-provided GPU graph for one task (docs/GPU_HARDENING_PLAN.md
+// P3): "ext_graph" mirrors "graph"'s task keying and is optional per task.
+const char *kV2ExtGraph = R"json({
+	"schema_version": 2,
+	"id": "mitra",
+	"display_name": "Mitra (AWS AutoGluon)",
+	"family": "icl-transformer",
+	"license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null},
+	"weights": {
+		"classification": {
+			"repo": "autogluon/mitra-classifier", "revision": "main",
+			"files": [{"path": "model.safetensors", "bytes": 317000000}]
+		},
+		"regression": {
+			"repo": "autogluon/mitra-regressor",
+			"files": [{"path": "model.safetensors", "bytes": 0}]
+		}
+	},
+	"graph": {
+		"classification": "resources/mitra/mitra_clf.onnx",
+		"regression": "resources/mitra/mitra_reg.onnx"
+	},
+	"ext_graph": {
+		"classification": "resources/mitra/mitra_clf_ext.onnx"
+	},
+	"migraphx_graph": {
+		"classification": "resources/mitra/mitra_clf_migraphx.onnx"
+	},
+	"preprocessing_profile": "tabpfn-minimal-v1",
+	"capabilities": ["classify", "regress"],
+	"compute": {"cpu": "f32"}
+})json";
+
 } // anonymous namespace
 
 TEST_CASE("model_spec: v1 manifest parses to a single-task spec", "[tabfm][model_spec]") {
@@ -149,4 +182,42 @@ TEST_CASE("model_spec: unknown model id / missing fields error clearly", "[tabfm
 	    ParseModelSpec(R"({"schema_version":2,"id":"m","license":{"id":"x"},"preprocessing_profile":"p","weights":{}})",
 	                   "x.json"),
 	    Contains("weights"));
+}
+
+TEST_CASE("model_spec: v2 ext_graph is optional and carried per task", "[tabfm][model_spec]") {
+	// The model-provided GPU graph (docs/GPU_HARDENING_PLAN.md P3). Declared for
+	// classification only, so regression must stay empty — and a manifest that
+	// never mentions ext_graph must parse exactly as before (back-compat).
+	auto spec = ParseModelSpec(kV2ExtGraph, "mitra_ext.json");
+	REQUIRE(spec.tasks.at(TabFMTask::CLASSIFICATION).ext_graph == "resources/mitra/mitra_clf_ext.onnx");
+	REQUIRE(spec.tasks.at(TabFMTask::REGRESSION).ext_graph.empty());
+	// migraphx_graph is its own field, not a fallback of ext_graph: U1 measured
+	// that MIGraphX cannot run a plain external-data ONNX, so conflating them
+	// would trade a clear "no GPU graph" for a runtime MIGraphX error.
+	REQUIRE(spec.tasks.at(TabFMTask::CLASSIFICATION).migraphx_graph == "resources/mitra/mitra_clf_migraphx.onnx");
+	REQUIRE(spec.tasks.at(TabFMTask::REGRESSION).migraphx_graph.empty());
+
+	auto plain = ParseModelSpec(kV2, "mitra.json");
+	REQUIRE(plain.tasks.at(TabFMTask::CLASSIFICATION).ext_graph.empty());
+	REQUIRE(plain.tasks.at(TabFMTask::REGRESSION).ext_graph.empty());
+}
+
+TEST_CASE("model_spec: SelectGpuGraph — model-provided wins, bundled needs its header match", "[tabfm][model_spec]") {
+	// The pure gate behind GPU dispatch (docs/GPU_HARDENING_PLAN.md P3). This
+	// exact gate — in its old, implicit form — is what locked every model but
+	// tabfm-v1 out of the GPUs, so it gets the CanReuseSession treatment:
+	// exhaustive, hardware-free, and mutation-honest (each case pins one rule).
+	using G = GpuGraphSource;
+	// A model-provided graph wins unconditionally: its offsets match its own
+	// weights by construction, so the bundled header check is irrelevant to it.
+	REQUIRE(SelectGpuGraph(true, false, false) == G::MODEL_PROVIDED);
+	REQUIRE(SelectGpuGraph(true, true, false) == G::MODEL_PROVIDED);
+	REQUIRE(SelectGpuGraph(true, true, true) == G::MODEL_PROVIDED);
+	REQUIRE(SelectGpuGraph(true, false, true) == G::MODEL_PROVIDED);
+	// The bundled tabfm-v1 graph needs BOTH: present and header-matched.
+	REQUIRE(SelectGpuGraph(false, true, true) == G::BUNDLED);
+	REQUIRE(SelectGpuGraph(false, true, false) == G::NONE);
+	// A header match without a bundled graph is meaningless.
+	REQUIRE(SelectGpuGraph(false, false, true) == G::NONE);
+	REQUIRE(SelectGpuGraph(false, false, false) == G::NONE);
 }
