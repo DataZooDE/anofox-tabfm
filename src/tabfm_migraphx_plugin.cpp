@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <map>
 #include <mutex>
 #include <string>
@@ -207,12 +208,23 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 	}
 	PreloadMigraphxGpuLibrary();
 	try {
-		auto *backend = new MigraphxPluginBackend();
+		// unique_ptr until the very end: the rejection branch and any exception
+		// below must not leak the backend (this leaked before, on any throw).
+		auto backend = std::unique_ptr<MigraphxPluginBackend>(new MigraphxPluginBackend());
 		backend->graph_path = params->graph_path;
 		backend->weights_dir = params->weights_dir;
 		backend->cache_dir = params->cache_dir;
 		backend->arch = params->arch;
-		backend->precision = params->precision ? params->precision : "bf16";
+		backend->precision = params->precision ? params->precision : "fp32";
+		// 'tf32' is CUDA's mode and anything unknown must not silently run as
+		// fp32 — a requested mode either happens or errors (the same
+		// no-silent-substitution rule the device setting follows).
+		if (backend->precision != "fp32" && backend->precision != "bf16" && backend->precision != "fp16") {
+			SetError(err, err_len,
+			         "precision '" + backend->precision + "' is not supported on the MIGraphX backend (fp32, bf16 "
+			         "or fp16); 'tf32' is a CUDA-only mode");
+			return nullptr;
+		}
 		backend->mxr_source = params->mxr_source ? params->mxr_source : "";
 		backend->device_ordinal = params->device_ordinal;
 
@@ -221,7 +233,7 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		backend->model_tag = backend->graph_path.substr(
 		    slash == std::string::npos ? 0 : slash + 1,
 		    (dot == std::string::npos ? backend->graph_path.size() : dot) - (slash == std::string::npos ? 0 : slash + 1));
-		return backend;
+		return backend.release();
 	} catch (const std::exception &e) {
 		SetError(err, err_len, std::string("could not initialise the migraphx backend: ") + e.what());
 		return nullptr;

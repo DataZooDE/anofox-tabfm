@@ -342,7 +342,7 @@ CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_…', SCOPE 'https://huggingface.c
 | `anofox_tabfm_max_rows` | `10000` | guardrail per predict / group |
 | `anofox_tabfm_max_features` | `500` | guardrail |
 | `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `coreml` (`migraphx` alias for `rocm`) |
-| `anofox_tabfm_gpu_precision` | `bf16` | GPU dtype: `bf16` / `fp16` / `fp32` |
+| `anofox_tabfm_gpu_precision` | `fp32` | GPU numeric mode: `fp32` (strict — same answers as CPU, measured exact on both GPUs) / `tf32` (CUDA tensor-core rounding) / `bf16` / `fp16` (ROCm quantize; a few near-tie labels may flip) |
 | `anofox_tabfm_default_model` | `''` | session-wide model when `model :=` is not given |
 | `anofox_tabfm_mxr_source` | `''` | directory of precompiled ROCm `.mxr` programs to stage from |
 | `anofox_tabfm_ep_path` | `''` | directory holding the GPU backend plugin (and the runtime libraries beside it) |
@@ -418,8 +418,13 @@ halves were confirmed on an RTX A5000: the debug build fails exactly that way,
 and the release build runs the query above with predictions identical to the
 CPU's.
 
-Note that `anofox_tabfm_gpu_precision` currently affects ROCm only — MIGraphX
-quantizes per the setting, while the CUDA plugin always runs fp32.
+`anofox_tabfm_gpu_precision` now means something on both GPUs, with fp32 the
+default everywhere: strict fp32 (on CUDA that disables the TF32 tensor-core
+rounding ORT would otherwise apply to fp32 matmuls) so a device switch does
+not change answers. `tf32` re-enables that rounding (CUDA only); `bf16`/`fp16`
+quantize the MIGraphX program (ROCm only) for ~2x speed at the cost of a few
+near-tie label flips. A mode a backend cannot honour is an error, never a
+silent fp32 run.
 
 ## Feedback
 

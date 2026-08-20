@@ -45,6 +45,10 @@ struct LoadedModel {
 	shared_ptr<void> session;
 	//! Resolved device the session runs on ("cpu", "cuda:0", ...)
 	string device_id;
+	//! Effective GPU numeric mode this session was built with ("fp32"/"tf32"/
+	//! "bf16"/"fp16"), and "" for CPU sessions — anofox_tabfm_gpu_precision
+	//! does not shape those, so flipping it must not rebuild them.
+	string precision;
 	//! Weight dtype loaded into the session ("f32", "f16", "bf16")
 	string dtype;
 	//! Resident weight bytes (for tabfm_models() reporting)
@@ -75,8 +79,17 @@ struct LoadedModel {
 //! Pulled out of LoadOrGetSession as a pure function so it is testable without
 //! a GPU: CI cannot run the cpu->cuda switch that exposed the bug, but it can
 //! assert this predicate, which is where the mistake actually lived.
-inline bool CanReuseSession(const LoadedModel &cached, bool want_split, const string &wanted_device) {
-	return cached.split_context == want_split && cached.device_id == wanted_device;
+//!
+//! `wanted_precision` joined in Track A (docs/GPU_HARDENING_PLAN.md P1/P2),
+//! because the device story repeats one setting over: once gpu_precision
+//! shapes the session (fp32 vs tf32 vs bf16 build different programs),
+//! ignoring it here silently serves the old mode after a SET — the exact
+//! failure shape 70a6800 fixed for the device. Callers pass "" for CPU
+//! sessions, which the setting does not shape.
+inline bool CanReuseSession(const LoadedModel &cached, bool want_split, const string &wanted_device,
+                            const string &wanted_precision) {
+	return cached.split_context == want_split && cached.device_id == wanted_device &&
+	       cached.precision == wanted_precision;
 }
 
 //! Canonical loaded-model key for a (model, task, revision). The engine (which

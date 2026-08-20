@@ -46,6 +46,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -81,7 +82,9 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		return nullptr;
 	}
 	try {
-		auto *backend = new CudaPluginBackend();
+		// unique_ptr until the very end: every early return and every exception
+		// below (ORT option/session construction) must not leak the backend.
+		auto backend = std::unique_ptr<CudaPluginBackend>(new CudaPluginBackend());
 		backend->device_ordinal = params->device_ordinal;
 
 		Ort::SessionOptions options;
@@ -91,12 +94,40 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		// model's own location.
 		options.AddConfigEntry("session.model_external_initializers_file_folder_path", params->weights_dir);
 
-		OrtCUDAProviderOptions cuda_options {};
-		cuda_options.device_id = params->device_ordinal;
-		options.AppendExecutionProvider_CUDA(cuda_options);
+		// Precision contract (docs/GPU_HARDENING_PLAN.md P1/P2). ORT's CUDA EP
+		// runs TF32 tensor-core rounding for fp32 matmuls BY DEFAULT on Ampere+,
+		// so "fp32" must explicitly disable it to mean what it says — strict,
+		// device-switch-does-not-change-answers fp32. "tf32" opts that rounding
+		// back in. bf16/fp16 are MIGraphX quantize modes with no CUDA
+		// counterpart here (that needs a real graph conversion), and a requested
+		// mode either happens or errors — never a silent fp32 run.
+		const std::string precision = params->precision ? params->precision : "fp32";
+		if (precision != "fp32" && precision != "tf32") {
+			SetError(err, err_len, "precision '" + precision +
+			                           "' is not supported on the CUDA backend (fp32 or tf32); bf16/fp16 are "
+			                           "MIGraphX modes on ROCm");
+			return nullptr;
+		}
+		OrtCUDAProviderOptionsV2 *cuda_options = nullptr;
+		Ort::ThrowOnError(Ort::GetApi().CreateCUDAProviderOptions(&cuda_options));
+		const std::string device_ordinal = std::to_string(params->device_ordinal);
+		const char *option_keys[] = {"device_id", "use_tf32"};
+		const char *option_values[] = {device_ordinal.c_str(), precision == "tf32" ? "1" : "0"};
+		auto update_status = Ort::GetApi().UpdateCUDAProviderOptions(cuda_options, option_keys, option_values, 2);
+		if (update_status) {
+			Ort::GetApi().ReleaseCUDAProviderOptions(cuda_options);
+			Ort::ThrowOnError(update_status);
+		}
+		try {
+			options.AppendExecutionProvider_CUDA_V2(*cuda_options);
+		} catch (...) {
+			Ort::GetApi().ReleaseCUDAProviderOptions(cuda_options);
+			throw;
+		}
+		Ort::GetApi().ReleaseCUDAProviderOptions(cuda_options);
 
 		backend->session = Ort::Session(backend->env, params->graph_path, options);
-		return backend;
+		return backend.release();
 	} catch (const std::exception &e) {
 		SetError(err, err_len, std::string("could not initialise the CUDA backend on device ") +
 		                           std::to_string(params->device_ordinal) + ": " + e.what());

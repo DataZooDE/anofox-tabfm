@@ -628,7 +628,11 @@ assumed:
 
 Read the fp32 and bf16 rows together: at fp32 the GPU and the CPU agree
 *exactly*, so the bf16 differences are the precision tradeoff
-`anofox_tabfm_gpu_precision` documents and not a correctness problem. Real-shaped
+`anofox_tabfm_gpu_precision` documents and not a correctness problem. Since
+Track A of `docs/GPU_HARDENING_PLAN.md`, **fp32 is the default** — the
+contract holds out of the box, bf16 is the explicit opt-in these numbers
+price out, and a mode a backend cannot honour errors instead of silently
+running fp32. Real-shaped
 data flips fewer than synthetic — the CSV workflow in
 `tools/gpu_test/scenarios/` disagrees on **0** rows where a synthetic table of
 the same size disagrees on 7.

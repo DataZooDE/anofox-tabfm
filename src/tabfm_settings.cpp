@@ -40,8 +40,9 @@ void ValidateGpuPrecision(ClientContext &context, SetScope scope, Value &paramet
 		throw InvalidInputException("anofox_tabfm_gpu_precision cannot be NULL");
 	}
 	auto value = StringUtil::Lower(StringValue::Get(parameter));
-	if (value != "fp32" && value != "bf16" && value != "fp16") {
-		throw InvalidInputException("anofox_tabfm_gpu_precision must be 'bf16', 'fp16' or 'fp32', got '%s'", value);
+	if (value != "fp32" && value != "tf32" && value != "bf16" && value != "fp16") {
+		throw InvalidInputException("anofox_tabfm_gpu_precision must be 'fp32', 'tf32', 'bf16' or 'fp16', got '%s'",
+		                            value);
 	}
 	parameter = Value(value);
 }
@@ -126,9 +127,12 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_gpu_precision",
-	    "MIGraphX compile precision on the ROCm GPU: bf16|fp16|fp32. bf16 (default) runs ~2x faster than fp32 on "
-	    "RDNA4 and halves VRAM/.mxr, keeping fp32's exponent range; fp32 is the accuracy reference.",
-	    LogicalType::VARCHAR, Value("bf16"), ValidateGpuPrecision);
+	    "GPU numeric mode: fp32|tf32|bf16|fp16. fp32 (default) is strict — a device switch does not change answers, "
+	    "measured exact on both GPUs; on CUDA it disables TF32 tensor-core rounding. tf32 re-enables that rounding "
+	    "(CUDA only; fp32 storage, faster matmuls). bf16/fp16 quantize the MIGraphX program on ROCm (~2x faster on "
+	    "RDNA4, half the VRAM/.mxr, a few near-tie labels may flip) and are rejected on CUDA rather than silently "
+	    "running fp32.",
+	    LogicalType::VARCHAR, Value("fp32"), ValidateGpuPrecision);
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_context_cache",

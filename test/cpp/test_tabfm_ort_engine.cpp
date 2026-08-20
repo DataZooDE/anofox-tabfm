@@ -771,32 +771,52 @@ TEST_CASE("tabfm_state: a cached session is not reused for a different device", 
 	cached.model_key = "classification";
 	cached.device_id = "cpu";
 	cached.split_context = false;
+	// CPU sessions carry "" — anofox_tabfm_gpu_precision does not shape them.
 
 	SECTION("same device and shape: reuse") {
-		REQUIRE(CanReuseSession(cached, false, "cpu"));
+		REQUIRE(CanReuseSession(cached, false, "cpu", ""));
 	}
 	SECTION("different device: rebuild, whatever the shape") {
-		REQUIRE_FALSE(CanReuseSession(cached, false, "rocm:0"));
-		REQUIRE_FALSE(CanReuseSession(cached, false, "cuda:0"));
+		REQUIRE_FALSE(CanReuseSession(cached, false, "rocm:0", "fp32"));
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cuda:0", "fp32"));
 	}
 	SECTION("a second card of the same vendor is still a different device") {
 		cached.device_id = "cuda:0";
-		REQUIRE(CanReuseSession(cached, false, "cuda:0"));
-		REQUIRE_FALSE(CanReuseSession(cached, false, "cuda:1"));
+		cached.precision = "fp32";
+		REQUIRE(CanReuseSession(cached, false, "cuda:0", "fp32"));
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cuda:1", "fp32"));
 	}
 	SECTION("different split shape: rebuild, as before") {
-		REQUIRE_FALSE(CanReuseSession(cached, true, "cpu"));
+		REQUIRE_FALSE(CanReuseSession(cached, true, "cpu", ""));
 	}
 	SECTION("both differ: rebuild") {
-		REQUIRE_FALSE(CanReuseSession(cached, true, "rocm:0"));
+		REQUIRE_FALSE(CanReuseSession(cached, true, "rocm:0", "fp32"));
 	}
 	SECTION("a GPU session is not reused for a cpu request either") {
 		// The direction that matters least in practice and most in principle:
 		// falling back to cpu must also rebuild, or a user who switches away
 		// from the GPU keeps paying for it.
 		cached.device_id = "rocm:0";
-		REQUIRE_FALSE(CanReuseSession(cached, false, "cpu"));
-		REQUIRE(CanReuseSession(cached, false, "rocm:0"));
+		cached.precision = "fp32";
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cpu", ""));
+		REQUIRE(CanReuseSession(cached, false, "rocm:0", "fp32"));
+	}
+	SECTION("a precision switch rebuilds a GPU session — the device bug, one setting over") {
+		// Once gpu_precision shapes the session (fp32 vs tf32 vs bf16 build
+		// different programs), reusing across a SET would silently serve the
+		// old mode: the exact failure 70a6800 fixed for the device, so it gets
+		// the same predicate treatment and the same mutation-honest pinning.
+		cached.device_id = "rocm:0";
+		cached.precision = "fp32";
+		REQUIRE(CanReuseSession(cached, false, "rocm:0", "fp32"));
+		REQUIRE_FALSE(CanReuseSession(cached, false, "rocm:0", "bf16"));
+		cached.device_id = "cuda:0";
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cuda:0", "tf32"));
+	}
+	SECTION("flipping the setting does not rebuild a CPU session") {
+		// The caller maps cpu -> "" on both sides, so the predicate sees no
+		// change; encoded here so the mapping's intent survives refactors.
+		REQUIRE(CanReuseSession(cached, false, "cpu", ""));
 	}
 }
 

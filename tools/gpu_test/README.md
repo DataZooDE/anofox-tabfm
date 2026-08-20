@@ -128,7 +128,9 @@ script prints. Only 30 of the 100 rows in the small case are unlabelled
 predictions, so 2 flips there is 2 of 30 actual predictions.)
 
 fp32 agrees with CPU exactly; the bf16 differences are the precision tradeoff
-`anofox_tabfm_gpu_precision` documents, not a correctness problem. The class
+`anofox_tabfm_gpu_precision` documents, not a correctness problem — and fp32
+is the default since Track A of `docs/GPU_HARDENING_PLAN.md`; the bf16 rows
+are what the opt-in costs. The class
 spread stays non-degenerate at scale (cpu a824/b837/c839 vs gpu a827/b832/c841),
 which is what rules out "the GPU returned one class and got lucky".
 

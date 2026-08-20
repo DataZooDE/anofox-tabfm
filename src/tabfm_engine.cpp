@@ -706,11 +706,12 @@ struct SplitOrtBackend : public TabFMBackend {
 // the predict loop can recover it and dispatch Run() virtually.
 shared_ptr<LoadedModel> RegisterBackend(TabFMState &state, const string &cache_key,
                                         shared_ptr<TabFMBackend> backend, const string &device_id, idx_t bytes,
-                                        bool split_context = false) {
+                                        bool split_context = false, const string &precision = "") {
 	auto model = make_shared_ptr<LoadedModel>();
 	model->model_key = cache_key;
 	model->session = shared_ptr<void>(std::move(backend));
 	model->device_id = device_id;
+	model->precision = precision;
 	model->dtype = "f32";
 	model->bytes = bytes;
 	model->split_context = split_context;
@@ -904,7 +905,8 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 	params.mxr_source = ctx.mxr_source.c_str();
 	params.device_ordinal = device.device_ordinal;
 	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
-	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0, false,
+	                       ctx.gpu_precision);
 }
 
 // NVIDIA CUDA GPU backend. Structurally identical to the ROCm path above, and
@@ -973,7 +975,8 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 	params.mxr_source = "";
 	params.device_ordinal = device.device_ordinal;
 	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
-	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0, false,
+	                       ctx.gpu_precision);
 }
 
 // The device a setting resolves to, memoized per distinct setting string.
@@ -1041,9 +1044,14 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	// docs/DYNAMIC_BACKENDS.md exists to rule out, and it is invisible without
 	// looking at tabfm_models().device.
 	const string &wanted_device = ResolvedDeviceCached(ctx.device);
+	// gpu_precision only shapes GPU sessions; for CPU it is "" so flipping the
+	// setting does not rebuild a session it never influenced.
+	const bool wanted_is_gpu =
+	    StringUtil::StartsWith(wanted_device, "rocm") || StringUtil::StartsWith(wanted_device, "cuda");
+	const string wanted_precision = wanted_is_gpu ? ctx.gpu_precision : "";
 
 	if (auto snapshot = state.Snapshot(resolved.cache_key)) {
-		if (CanReuseSession(*snapshot, want_split, wanted_device)) {
+		if (CanReuseSession(*snapshot, want_split, wanted_device, wanted_precision)) {
 			return snapshot;
 		}
 		// anofox_tabfm_context_cache or anofox_tabfm_device changed since this

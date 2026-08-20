@@ -31,9 +31,11 @@ Notes worth keeping:
   infers as BOOLEAN — so predictions come back `true`/`false`. Comparing
   against `'yes'` only works because DuckDB casts it. That is the kind of thing
   a synthetic `range()` table never shows you.
-- bf16 (the default) flips a small number of near-tie argmaxes; the same
-  comparisons at fp32 agree with CPU exactly. Real-shaped data flips fewer than
-  synthetic — 0 here versus 7/100 on `c_wide`.
+- bf16 flips a small number of near-tie argmaxes; the same comparisons at
+  fp32 agree with CPU exactly. fp32 is the default since Track A of
+  `docs/GPU_HARDENING_PLAN.md` (these scenarios SET bf16 explicitly, and now
+  measure the opt-in rather than the default). Real-shaped data flips fewer
+  than synthetic — 0 here versus 7/100 on `c_wide`.
 - The first run of any new shape bucket costs a MIGraphX compile (~27 min
   measured for both T4096 and H64). Budget for it, or stay inside a bucket that
   is already cached.

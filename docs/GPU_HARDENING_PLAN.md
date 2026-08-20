@@ -196,10 +196,19 @@ later pod spike faster), then S2, then S1 and S5 on the fast pod loop.
 
 ## 3. Implementation tracks (gated on spikes)
 
-- **Track A — precision policy** (after S1, S3): flip default to fp32; CUDA
-  honours the setting via `use_tf32`; docs state measured costs; equivalence
-  scenarios assert *exact* agreement at default settings on every backend —
-  the contract becomes CI-checkable wording.
+- **Track A — precision policy**: ✅ **implemented, ROCm-verified**. Default is
+  fp32; the validator accepts `tf32`; the MIGraphX plugin rejects `tf32`
+  ("CUDA-only mode") and the CUDA plugin rejects `bf16`/`fp16` ("MIGraphX
+  modes on ROCm") — a mode either happens or errors, never a silent fp32 run.
+  CUDA maps fp32→`use_tf32=0`, tf32→`use_tf32=1` via the V2 provider options.
+  Implementing it surfaced that precision had become session-shaping, i.e. the
+  device-switch bug one setting over: `CanReuseSession` now keys on precision
+  too ("" for CPU sessions, which the setting does not shape), pinned by the
+  same exhaustive predicate tests. Verified on gfx1201 at DEFAULT settings:
+  `GPU_SERVED_BY=rocm:0`, `DEFAULT_DISAGREEMENTS=0`, and `tf32` on ROCm errors
+  naming the platform. **Pending**: the CUDA half on hardware (S1 measures
+  use_tf32=0 parity + the tf32 delta on a pod); until then the CUDA mapping is
+  code-reviewed but not machine-verified.
 - **Track B — iteration infrastructure** (after S7, S4): persistent pod
   volume; fixture-as-GPU-model; `make gpu_check` running the scenario matrix
   on whatever hardware is present and printing the tier table.
