@@ -53,6 +53,20 @@ SELECT model, loaded, device FROM tabfm_models() WHERE model = 'gpu-fixture'
 ----
 gpu-fixture	true	cpu
 
+# The row must survive a missing download cache: registered models keep their
+# weights in source_dir, so an absent cache dir (a fresh machine, or CI) must
+# not blank tabfm_models(). This is the exact condition CI runs under.
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/no_such_cache'
+
+query III
+SELECT model, loaded, device FROM tabfm_models() WHERE model = 'gpu-fixture'
+----
+gpu-fixture	true	cpu
+
+statement ok
+RESET anofox_tabfm_cache_dir
+
 # --- a declared GPU graph that does not exist fails at resolution ------------
 # Deliberately on the CPU path too: a model declaring a file that is not there
 # is a broken declaration, same as a missing plain graph — failing the first

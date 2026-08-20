@@ -822,9 +822,11 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 	auto tabfm_state = TabFMState::Get(context); // the live loaded-model map
 	auto &fs = FileSystem::GetFileSystem(context);
 	auto cache_dir = GetCacheDir(context);
-	if (!fs.DirectoryExists(cache_dir)) {
-		return std::move(state);
-	}
+	// A missing cache dir means no *downloaded* revisions — registered models
+	// keep their weights in source_dir and must still be listed (a fresh
+	// machine, or CI, has no cache dir at all; found when CI showed zero rows
+	// for a just-registered model that listed fine on a warmed-up laptop).
+	const bool cache_dir_exists = fs.DirectoryExists(cache_dir);
 	for (auto &manifest : ResolveManifests(context)) {
 		// Emit one row when every declared file exists under base_dir. 'loaded'
 		// and 'device' reflect the real DB-instance TabFMState: a model is
@@ -870,11 +872,13 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 		// one cache entry per downloaded revision: <slug-base>@<revision>
 		auto slug_base = manifest.CacheSlug("");
 		vector<string> revisions;
-		fs.ListFiles(cache_dir, [&](const string &name, bool is_dir) {
-			if (is_dir && StringUtil::StartsWith(name, slug_base)) {
-				revisions.push_back(name.substr(slug_base.size()));
-			}
-		});
+		if (cache_dir_exists) {
+			fs.ListFiles(cache_dir, [&](const string &name, bool is_dir) {
+				if (is_dir && StringUtil::StartsWith(name, slug_base)) {
+					revisions.push_back(name.substr(slug_base.size()));
+				}
+			});
+		}
 		std::sort(revisions.begin(), revisions.end());
 		for (auto &revision : revisions) {
 			emit_row(cache_dir + "/" + manifest.CacheSlug(revision), revision);
