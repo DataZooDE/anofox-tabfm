@@ -693,9 +693,13 @@ refuses to report CPU results as GPU.
   hardware: the local `make debug` build (shared ORT) fails exactly that way,
   and the release build (ORT static, nothing to collide with) runs the full SQL
   path with 0 disagreements. **So CUDA requires a build whose ORT is linked
-  statically.** `RTLD_DEEPBIND` on the plugin `dlopen` would lift that
-  restriction and was deliberately not taken: it changes symbol identity across
-  the boundary for a case the shipped build does not have.
+  statically.** An earlier revision here claimed `RTLD_DEEPBIND` could lift the
+  restriction — wrong, per glibc's actual semantics: the loader dedups
+  dependencies by SONAME *before* symbol scope matters, reusing the
+  already-loaded library without examining the plugin's copy, so DEEPBIND
+  changes nothing. The real options (rename the plugin ORT's SONAME, or
+  statically link ORT into the plugin) are weighed in
+  `docs/GPU_HARDENING_PLAN.md` (P4/S2).
 * **`anofox_tabfm_gpu_precision` is ROCm-only in effect.** MIGraphX quantizes
   per the setting (bf16 by default, which is why ROCm shows a few label flips
   and CUDA shows none). The CUDA plugin accepts the parameter and ignores it —
