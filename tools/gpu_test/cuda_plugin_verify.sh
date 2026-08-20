@@ -88,15 +88,22 @@ echo "  ldd:"
 ldd libanofox_tabfm_cuda_plugin.so | grep -i onnxruntime | sed 's/^/    /'
 
 echo
-echo "=== 4. load through the plugin ABI and compare CPU vs CUDA ==="
-g++ -O2 -std=c++17 -o verify_host verify_host.cpp \
+echo "=== 4. load through the plugin ABI and compare CPU vs CUDA, per precision mode ==="
+g++ -O2 -std=c++17 -o verify_host cuda_plugin_verify_host.cpp \
     -I/workspace -I"${ORT_DIR}/include" \
     -L"${ORT_DIR}/lib" -lonnxruntime -ldl \
     -Wl,-rpath,"${ORT_DIR}/lib" || { echo "HOST BUILD FAILED"; exit 1; }
-./verify_host
-RC=$?
-[ $RC -ne 0 ] && FAILED=1
-echo "  verify_host exit=${RC}"
+# Track A: fp32 must be strict (use_tf32=0) and agree with CPU; tf32 opts the
+# tensor-core rounding back in (agreement may loosen slightly, both printed for
+# the plan's cost table); bf16 must be REJECTED at create with the CUDA
+# message. A silent fp32 run for bf16 is the failure this exists to catch.
+for MODE in fp32 tf32 bf16; do
+  echo "  --- precision=$MODE ---"
+  ./verify_host "$MODE"
+  RC=$?
+  [ $RC -ne 0 ] && FAILED=1
+  echo "  verify_host($MODE) exit=${RC}"
+done
 
 echo
 echo "=== 5. verify what tabfm_download_runtime('cuda') fetches ==="

@@ -26,7 +26,7 @@ static const char *kGraph = "/workspace/fixture/graph_fixture.onnx";
 static const char *kWeightsDir = "/workspace/fixture";
 static const char *kPlugin = "/workspace/libanofox_tabfm_cuda_plugin.so";
 
-int main() {
+int main(int argc, char **argv) {
 	// The same small deterministic problem the C++ equivalence tests use.
 	const int64_t t = 5, h = 8, train_size = 3, d = 8;
 	vector<float> x(static_cast<size_t>(t * h));
@@ -99,15 +99,34 @@ int main() {
 	params.weights_dir = kWeightsDir;
 	params.cache_dir = "";
 	params.arch = "";
-	params.precision = "fp32";
+	// Track A (docs/GPU_HARDENING_PLAN.md P1/P2): the mode under test comes
+	// from argv. fp32 = strict (use_tf32=0), tf32 = tensor-core rounding, and
+	// bf16/fp16 MUST make create fail with the CUDA-unsupported message — a
+	// mode either happens or errors, never a silent fp32 run.
+	const char *precision = argc > 1 ? argv[1] : "fp32";
+	params.precision = precision;
 	params.mxr_source = "";
 	params.device_ordinal = 0;
 	void *handle = api->create(&params, err, sizeof(err));
+	if (std::string(precision) == "bf16" || std::string(precision) == "fp16") {
+		if (handle) {
+			fprintf(stderr, "FAIL: create accepted '%s' on CUDA — it must be rejected\n", precision);
+			api->destroy(handle);
+			return 1;
+		}
+		if (std::string(err).find("not supported on the CUDA backend") == std::string::npos) {
+			fprintf(stderr, "FAIL: '%s' was rejected but with the wrong message: %s\n", precision, err);
+			return 1;
+		}
+		printf("REJECTED_AS_EXPECTED: %s -> %s\n", precision, err);
+		printf("PLUGIN VERIFY PASSED\n");
+		return 0;
+	}
 	if (!handle) {
-		fprintf(stderr, "FAIL: create: %s\n", err);
+		fprintf(stderr, "FAIL: create(%s): %s\n", precision, err);
 		return 1;
 	}
-	printf("[plugin] created (CUDA session up)\n");
+	printf("[plugin] created (CUDA session up, precision=%s)\n", precision);
 
 	TabFMPluginRunInput input {};
 	input.x = x.data();

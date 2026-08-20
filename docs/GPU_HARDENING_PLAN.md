@@ -206,9 +206,14 @@ later pod spike faster), then S2, then S1 and S5 on the fast pod loop.
   too ("" for CPU sessions, which the setting does not shape), pinned by the
   same exhaustive predicate tests. Verified on gfx1201 at DEFAULT settings:
   `GPU_SERVED_BY=rocm:0`, `DEFAULT_DISAGREEMENTS=0`, and `tf32` on ROCm errors
-  naming the platform. **Pending**: the CUDA half on hardware (S1 measures
-  use_tf32=0 parity + the tf32 delta on a pod); until then the CUDA mapping is
-  code-reviewed but not machine-verified.
+  naming the platform. **CUDA half now machine-verified** (RTX-class pod,
+  plugin-only harness, no DuckDB build): fp32 (use_tf32=0) and tf32 both
+  create, run, and agree with CPU within the harness's 1e-3 assertion, and
+  bf16 is rejected at create with the exact "MIGraphX modes on ROCm" message.
+  Caveat kept honest: the per-mode agreement deltas were truncated out of the
+  captured log (a tail cut), so the record is behavioural (exit codes + the
+  aggregate PASSED gate), not numeric; S1's cost/parity numbers remain worth
+  taking when a pod is next warm.
 - **Track B — iteration infrastructure** (after S7, S4): persistent pod
   volume; fixture-as-GPU-model; `make gpu_check` running the scenario matrix
   on whatever hardware is present and printing the tier table.
