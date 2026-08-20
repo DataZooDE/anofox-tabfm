@@ -697,13 +697,19 @@ refuses to report CPU results as GPU.
   hardware: the local `make debug` build (shared ORT) fails exactly that way,
   and the release build (ORT static, nothing to collide with) runs the full SQL
   path with 0 disagreements. **So CUDA requires a build whose ORT is linked
-  statically.** An earlier revision here claimed `RTLD_DEEPBIND` could lift the
-  restriction — wrong, per glibc's actual semantics: the loader dedups
-  dependencies by SONAME *before* symbol scope matters, reusing the
-  already-loaded library without examining the plugin's copy, so DEEPBIND
-  changes nothing. The real options (rename the plugin ORT's SONAME, or
-  statically link ORT into the plugin) are weighed in
-  `docs/GPU_HARDENING_PLAN.md` (P4/S2).
+  statically.** This paragraph has been corrected twice, each time by a
+  harder look, and the strata are kept because the middle one is a trap others
+  will also fall into. (1) An early revision claimed `RTLD_DEEPBIND` alone
+  could lift the restriction — wrong: the loader dedups dependencies by SONAME
+  before symbol scope matters. (2) The first correction concluded DEEPBIND
+  "changes nothing" — also wrong as a verdict: renaming the SONAME defeats
+  dedup but the plugin then *still* binds to the host's globally-visible ORT
+  symbols (interposition). (3) Measured, all four quadrants of a
+  (SONAME × DEEPBIND) matrix in a two-ORT process: dedup and interposition are
+  independent layers, and only **rename + DEEPBIND together** give the plugin
+  its own runtime. The loader now passes DEEPBIND; the renamed core
+  (`libanofoxort_gpu.so`) ships with the runtime download. Full record:
+  `docs/GPU_HARDENING_PLAN.md` S2.
 * **`anofox_tabfm_gpu_precision` is ROCm-only in effect.** MIGraphX quantizes
   per the setting (bf16 by default, which is why ROCm shows a few label flips
   and CUDA shows none). The CUDA plugin accepts the parameter and ignores it —

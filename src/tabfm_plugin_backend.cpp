@@ -40,7 +40,16 @@ namespace {
 #ifndef _WIN32
 using LibraryHandle = void *;
 LibraryHandle OpenLibrary(const string &path) {
-	return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+	// RTLD_DEEPBIND: the plugin prefers its OWN dependencies over symbols the
+	// host process already exports. Measured necessity (GPU_HARDENING_PLAN S2,
+	// all four quadrants of a SONAME x DEEPBIND matrix): when the host has a
+	// shared ORT loaded, a plugin whose ORT core merely has a different SONAME
+	// still BINDS to the host's — dedup and interposition are independent
+	// failure layers, and isolating the plugin's runtime takes both the rename
+	// (ships with the runtime, P7) and this flag. Safe for this ABI: no
+	// allocation crosses the boundary (outputs are plugin-malloc'd and
+	// plugin-freed via free_output), which is the classic DEEPBIND hazard.
+	return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
 }
 void *LibrarySymbol(LibraryHandle lib, const char *symbol) {
 	return dlsym(lib, symbol);
