@@ -827,7 +827,7 @@ TEST_CASE("tabfm_state: load / snapshot / unload-while-in-use / refcount release
 	state->Register("classification", MakeFakeModel(freed));
 	REQUIRE(state->LoadedKeys() == vector<string> {"classification"});
 
-	auto snapshot = state->Snapshot("classification");
+	auto snapshot = state->Snapshot("classification", "cpu", "");
 	REQUIRE(snapshot);
 	REQUIRE(snapshot->model_key == "classification");
 	REQUIRE(!snapshot->evicted);
@@ -838,7 +838,7 @@ TEST_CASE("tabfm_state: load / snapshot / unload-while-in-use / refcount release
 	REQUIRE(state->Unload("classification"));
 	REQUIRE(snapshot->evicted);
 	REQUIRE(!freed);
-	REQUIRE(state->Snapshot("classification") == nullptr);
+	REQUIRE(state->Snapshot("classification", "cpu", "") == nullptr);
 	REQUIRE(state->LoadedKeys().empty());
 	REQUIRE(!state->Unload("classification")); // second unload: not found
 
@@ -856,12 +856,12 @@ TEST_CASE("tabfm_state: re-register replaces and evicts the old model", "[tabfm]
 	auto state = make_shared_ptr<TabFMState>();
 
 	state->Register("regression", MakeFakeModel(freed_old));
-	auto old_snapshot = state->Snapshot("regression");
+	auto old_snapshot = state->Snapshot("regression", "cpu", "");
 
 	state->Register("regression", MakeFakeModel(freed_new));
 	REQUIRE(old_snapshot->evicted);
 	REQUIRE(!freed_old); // still held
-	auto new_snapshot = state->Snapshot("regression");
+	auto new_snapshot = state->Snapshot("regression", "cpu", "");
 	REQUIRE(new_snapshot.get() != old_snapshot.get());
 	REQUIRE(!new_snapshot->evicted);
 
@@ -883,6 +883,70 @@ TEST_CASE("tabfm_state: UnloadAll evicts everything", "[tabfm][ort_engine][state
 	REQUIRE(freed_b);
 }
 
+TEST_CASE("tabfm_state: one model caches sessions per device, unload frees them all", "[tabfm][ort_engine][state]") {
+	// P5 of docs/GPU_HARDENING_PLAN.md. S6 measured 18-27 s of pure rebuild per
+	// device alternation under one-slot-per-key caching, so cpu and GPU
+	// sessions of a model now coexist — and tabfm_unload must still reach every
+	// one of them by the model's single name.
+	bool freed_cpu = false, freed_gpu = false, freed_third = false;
+	auto state = make_shared_ptr<TabFMState>();
+
+	state->Register("classification", MakeFakeModel(freed_cpu, "cpu"));
+	state->Register("classification", MakeFakeModel(freed_gpu, "rocm:0"));
+
+	// Both configurations live at once; registering the GPU entry did NOT
+	// evict the cpu one (that eviction was the 18-27 s thrash).
+	auto cpu_snapshot = state->Snapshot("classification", "cpu", "");
+	auto gpu_snapshot = state->Snapshot("classification", "rocm:0", "");
+	REQUIRE(cpu_snapshot);
+	REQUIRE(gpu_snapshot);
+	REQUIRE(!cpu_snapshot->evicted);
+	REQUIRE(cpu_snapshot.get() != gpu_snapshot.get());
+	// One key listed once, not once per configuration.
+	REQUIRE(state->LoadedKeys() == vector<string> {"classification"});
+	// tabfm_models() sees every configuration, deterministically ordered.
+	REQUIRE(state->SnapshotsFor("classification").size() == 2);
+
+	// A different precision on the same device is its own entry too — the
+	// device-switch bug one setting over, kept out by construction here.
+	state->Register("classification", MakeFakeModel(freed_third, "rocm:0"));
+	// same (device, precision): THIS one replaces.
+	REQUIRE(gpu_snapshot->evicted);
+	REQUIRE(state->SnapshotsFor("classification").size() == 2);
+
+	// One name frees everything.
+	REQUIRE(state->Unload("classification"));
+	REQUIRE(cpu_snapshot->evicted);
+	REQUIRE(state->SnapshotsFor("classification").empty());
+	cpu_snapshot.reset();
+	gpu_snapshot.reset();
+	REQUIRE(freed_cpu);
+	REQUIRE(freed_gpu);
+}
+
+TEST_CASE("tabfm_state: the session cap evicts oldest-first and spares the newcomer", "[tabfm][ort_engine][state]") {
+	// Multi-GB sessions must not accumulate behind the user's back now that
+	// (models x devices x precisions) is unbounded. Cap = 2: registering a
+	// third evicts the OLDEST, never the entry just registered.
+	bool freed_a = false, freed_b = false, freed_c = false;
+	auto state = make_shared_ptr<TabFMState>();
+
+	state->Register("model_a", MakeFakeModel(freed_a, "cpu"), 2);
+	state->Register("model_b", MakeFakeModel(freed_b, "cpu"), 2);
+	state->Register("model_a", MakeFakeModel(freed_c, "rocm:0"), 2);
+
+	// model_a/cpu was oldest: evicted and its outer key survives via rocm:0.
+	REQUIRE(state->Snapshot("model_a", "cpu", "") == nullptr);
+	REQUIRE(state->Snapshot("model_a", "rocm:0", ""));
+	REQUIRE(state->Snapshot("model_b", "cpu", ""));
+	REQUIRE(freed_a);
+	REQUIRE(!freed_b);
+	REQUIRE(!freed_c);
+	// Uncapped (0) never evicts.
+	state->Register("model_c", MakeFakeModel(freed_a, "cpu"), 0);
+	REQUIRE(state->SnapshotsFor("model_b").size() == 1);
+}
+
 TEST_CASE("tabfm_state: shared across connections via the ObjectCache", "[tabfm][ort_engine][state]") {
 	DuckDB db(nullptr);
 	Connection connection_a(db);
@@ -895,7 +959,7 @@ TEST_CASE("tabfm_state: shared across connections via the ObjectCache", "[tabfm]
 
 	bool freed = false;
 	state_a->Register("classification", MakeFakeModel(freed));
-	auto snapshot = state_b->Snapshot("classification"); // visible cross-connection
+	auto snapshot = state_b->Snapshot("classification", "cpu", ""); // visible cross-connection
 	REQUIRE(snapshot);
 	REQUIRE(snapshot->device_id == "cpu");
 

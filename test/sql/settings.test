@@ -126,6 +126,21 @@ SET anofox_tabfm_threads = 0
 
 # --- performance settings (gpu precision, cpu prepack) -----------------------
 
+# Session cap (GPU_HARDENING_PLAN P5): sessions cache per (model, device,
+# precision), so the total is bounded — default 4, oldest evicted beyond it.
+query T
+SELECT current_setting('anofox_tabfm_max_sessions')
+----
+4
+
+statement ok
+SET anofox_tabfm_max_sessions = 2
+
+statement error
+SET anofox_tabfm_max_sessions = 0
+----
+<REGEX>:.*must be positive.*
+
 # fp32 is the default since the precision-contract fix (GPU_HARDENING_PLAN
 # P1/P2): the same-answers contract holds at default settings on every
 # backend; the faster reduced-precision modes are explicit opt-ins.

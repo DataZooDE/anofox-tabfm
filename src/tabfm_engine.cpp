@@ -706,7 +706,8 @@ struct SplitOrtBackend : public TabFMBackend {
 // the predict loop can recover it and dispatch Run() virtually.
 shared_ptr<LoadedModel> RegisterBackend(TabFMState &state, const string &cache_key,
                                         shared_ptr<TabFMBackend> backend, const string &device_id, idx_t bytes,
-                                        bool split_context = false, const string &precision = "") {
+                                        bool split_context = false, const string &precision = "",
+                                        idx_t max_sessions = 0) {
 	auto model = make_shared_ptr<LoadedModel>();
 	model->model_key = cache_key;
 	model->session = shared_ptr<void>(std::move(backend));
@@ -715,7 +716,7 @@ shared_ptr<LoadedModel> RegisterBackend(TabFMState &state, const string &cache_k
 	model->dtype = "f32";
 	model->bytes = bytes;
 	model->split_context = split_context;
-	state.Register(cache_key, model);
+	state.Register(cache_key, model, max_sessions);
 	return model;
 }
 
@@ -841,7 +842,8 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 	auto session = CreateSessionFromPath(graph_path, {}, config);
 	auto backend = make_shared_ptr<OrtBackend>();
 	backend->session = std::move(session);
-	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, 0);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, 0, false, "",
+	                       NumericCast<idx_t>(ctx.max_sessions));
 }
 
 // AMD ROCm GPU backend. ORT's MIGraphX EP cannot run this model (re-inlines
@@ -906,7 +908,7 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 	params.device_ordinal = device.device_ordinal;
 	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0, false,
-	                       ctx.gpu_precision);
+	                       ctx.gpu_precision, NumericCast<idx_t>(ctx.max_sessions));
 }
 
 // NVIDIA CUDA GPU backend. Structurally identical to the ROCm path above, and
@@ -976,7 +978,7 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 	params.device_ordinal = device.device_ordinal;
 	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0, false,
-	                       ctx.gpu_precision);
+	                       ctx.gpu_precision, NumericCast<idx_t>(ctx.max_sessions));
 }
 
 // The device a setting resolves to, memoized per distinct setting string.
@@ -1050,14 +1052,19 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	    StringUtil::StartsWith(wanted_device, "rocm") || StringUtil::StartsWith(wanted_device, "cuda");
 	const string wanted_precision = wanted_is_gpu ? ctx.gpu_precision : "";
 
-	if (auto snapshot = state.Snapshot(resolved.cache_key)) {
+	// Sessions cache per (model, device, precision) since P5 of
+	// docs/GPU_HARDENING_PLAN.md: S6 measured 18–27 s of pure rebuild per
+	// device alternation under the old one-slot-per-key design. The lookup is
+	// exact, so a device or precision switch is a cache MISS that builds a new
+	// entry beside the old one — not a replacement — and tabfm_unload(key)
+	// still frees every entry by one name (the two-level map guarantees it).
+	if (auto snapshot = state.Snapshot(resolved.cache_key, wanted_device, wanted_precision)) {
 		if (CanReuseSession(*snapshot, want_split, wanted_device, wanted_precision)) {
 			return snapshot;
 		}
-		// anofox_tabfm_context_cache or anofox_tabfm_device changed since this
-		// model was loaded. Fall through and rebuild under the SAME key, so
-		// tabfm_models() and tabfm_unload() keep seeing exactly one entry per
-		// model — a suffixed key would leave a session that a targeted unload
+		// anofox_tabfm_context_cache changed since this configuration was
+		// loaded. Fall through and rebuild the SAME (device, precision) entry —
+		// split and combined sessions of one configuration must not coexist,
 		// could not reach.
 	}
 
@@ -1278,7 +1285,8 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		backend->weights = std::move(weights);
 		backend->mapping = std::move(mapping);
 		backend->arena = std::move(arena);
-		return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, true);
+		return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, true, "",
+		                       NumericCast<idx_t>(ctx.max_sessions));
 	}
 
 	auto session = resolved.graph_bundle.data
@@ -1292,7 +1300,8 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	backend->mapping = std::move(mapping);
 	backend->arena = std::move(arena);
 	backend->session = std::move(session);
-	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, false, "",
+	                       NumericCast<idx_t>(ctx.max_sessions));
 }
 
 //===--------------------------------------------------------------------===//

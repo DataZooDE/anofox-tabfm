@@ -63,6 +63,8 @@ struct LoadedModel {
 	//! Set by Unload; snapshot holders may finish their forward, new
 	//! snapshots will not see this model anymore.
 	atomic<bool> evicted {false};
+	//! Monotone registration order, for the session-cap eviction (oldest goes).
+	idx_t sequence = 0;
 };
 
 //! Whether a cached session can serve a request, or must be rebuilt.
@@ -127,14 +129,27 @@ public:
 	static shared_ptr<TabFMState> Get(DatabaseInstance &db);
 	static shared_ptr<TabFMState> Get(ClientContext &context);
 
-	//! Register a freshly created model under `key` (tabfm_load). Replacing
-	//! an existing entry marks the old one evicted first.
-	void Register(const string &key, shared_ptr<LoadedModel> model);
-	//! Snapshot for a predict: shared ownership, nullptr if not loaded.
-	shared_ptr<LoadedModel> Snapshot(const string &key) const;
-	//! Unload one model: marks evicted + drops from the map. Returns false if
-	//! the key was not loaded. The session is freed when the last snapshot
-	//! holder releases.
+	//! Register a freshly created model under `key` (tabfm_load / predict).
+	//! Sessions are cached per (key, device, precision) — S6 measured 18–27 s
+	//! of pure rebuild per device alternation under the old one-slot-per-key
+	//! design, so cpu and GPU sessions of one model now coexist. Replacing an
+	//! existing entry with the SAME (device, precision) marks the old one
+	//! evicted first. `max_sessions` caps the total across all models
+	//! (0 = uncapped); when exceeded, the oldest-registered other entry is
+	//! evicted — multi-GB sessions must never accumulate behind the user's
+	//! back.
+	void Register(const string &key, shared_ptr<LoadedModel> model, idx_t max_sessions = 0);
+	//! Snapshot for a predict: the entry built for exactly this device and
+	//! precision ("" = a CPU session; the gpu_precision setting does not shape
+	//! those). nullptr if not loaded in that configuration.
+	shared_ptr<LoadedModel> Snapshot(const string &key, const string &device_id, const string &precision) const;
+	//! Every loaded configuration of `key`, sorted by (device, precision) —
+	//! tabfm_models() reports one row per entry.
+	vector<shared_ptr<LoadedModel>> SnapshotsFor(const string &key) const;
+	//! Unload one model: marks EVERY device/precision entry evicted + drops
+	//! them. One name reaches everything — a per-device unload would leave
+	//! sessions a targeted tabfm_unload could not free. Returns false if the
+	//! key was not loaded at all.
 	bool Unload(const string &key);
 	//! Unload everything; returns the number of models dropped.
 	idx_t UnloadAll();
@@ -179,7 +194,10 @@ public:
 
 private:
 	mutable mutex lock;
-	map<string, shared_ptr<LoadedModel>> models;
+	//! cache_key -> (device_id + '\x1f' + precision) -> session. Two levels so
+	//! Unload(key) frees every configuration by construction.
+	map<string, map<string, shared_ptr<LoadedModel>>> models;
+	idx_t next_sequence = 0;
 	map<string, unique_ptr<mutex>> device_mutexes;
 	map<string, ModelSpec> registered_specs;
 	//! "<model_key>|<device>|<T>x<H>" -> observed resident-memory growth.

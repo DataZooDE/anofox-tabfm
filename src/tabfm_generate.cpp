@@ -948,6 +948,9 @@ void CaptureContext(ClientContext &context, GenerateBindData &bind) {
 	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
 		bind.context.ep_path = ExpandUserHome(setting.ToString());
 	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_max_sessions", setting) && !setting.IsNull()) {
+		bind.context.max_sessions = BigIntValue::Get(setting.DefaultCastAs(LogicalType::BIGINT));
+	}
 }
 
 unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, AggregateFunction &function,

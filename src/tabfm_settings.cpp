@@ -69,6 +69,10 @@ void ValidateMaxFeatures(ClientContext &context, SetScope scope, Value &paramete
 	ValidatePositive("anofox_tabfm_max_features", context, scope, parameter);
 }
 
+void ValidateMaxSessions(ClientContext &context, SetScope scope, Value &parameter) {
+	ValidatePositive("anofox_tabfm_max_sessions", context, scope, parameter);
+}
+
 void ValidateMaxMemory(ClientContext &context, SetScope scope, Value &parameter) {
 	if (parameter.IsNull()) {
 		throw InvalidInputException("anofox_tabfm_max_memory cannot be NULL");
@@ -108,6 +112,13 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 
 	config.AddExtensionOption("anofox_tabfm_max_features", "Maximum feature columns per predict call",
 	                          LogicalType::BIGINT, Value::BIGINT(500), ValidateMaxFeatures);
+
+	config.AddExtensionOption(
+	    "anofox_tabfm_max_sessions",
+	    "Cap on cached model sessions across all models, devices and precisions (default 4); beyond it the "
+	    "oldest-loaded session is evicted. Sessions are cached per (model, device, precision) so switching devices "
+	    "does not rebuild multi-GB sessions, and this cap keeps that from accumulating unbounded memory.",
+	    LogicalType::BIGINT, Value::BIGINT(4), ValidateMaxSessions);
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_max_memory",

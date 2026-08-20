@@ -187,7 +187,7 @@ a bet.
 | S3 | bf16 label flips are near-ties only | dump logits for the 42 flipped rows of the 2500-row run on ROCm; measure margin distribution | <1 h local | whether bf16 stays offered as-is, or gets a margin warning |
 | S4 | ✅ **done** — a registered model carrying its own GPU graph runs on the plugin unmodified. Proven on gfx1201: `REGISTERED_SERVED_BY=rocm:0`, predictions identical to the bundled path (`PATHS_DISAGREE=0`, same weights). Two sub-findings: **U1** — MIGraphX cannot run a plain ext-format graph (fixture fails at eval), so `ext_graph` and `migraphx_graph` are separate spec fields with no cross-fallback; and a sixth realistic-testing bug — `tabfm_models()` was blind to registered models whose weights live outside the cache, so the `device` proof column could not see the very model class this enables (fixed). CUDA/fixture-weightless confirmation still pending a pod run | implemented as Track C v1 (`SelectGpuGraph` + spec fields + dispatch), tests in `test_tabfm_model_spec.cpp` / `tabfm_gpu_graphs.test`, scenario `tools/gpu_test/scenarios/registered_model_gpu.sql` | done | P3 design settled; P6.2 unlocked pending a migraphx-compatible fixture export |
 | S5 | ORT ≥1.28.1 / official CUDA Plugin EP v0.1.0 works against a statically linked core (true plugin ABI, not provider bridge); our filed bugs may already be fixed | standalone C host, one pod session; re-run the 20-line dlopen repros against 1.29 | 1 pod session | long-term CUDA strategy; P8 filing text |
-| S6 | session rebuild on device switch is too slow to "accept and document" | measure rebuild wall time for tabfm-v1 on bigfox (mmap path) — alternate devices 10× | <1 h local | P5 design |
+| S6 | ✅ **done** — measured 18–27 s of pure rebuild per device alternation (cpu 26.8 s / rocm 24.0 s / cpu 18.1 s on bigfox, real weights), killing "accept and document". P5 implemented on those numbers: sessions cache per (model, device, precision); after the fix the same alternations cost 1.47 s / 0.25 s / 1.46 s (inference, not rebuild) and `tabfm_models()` shows one model loaded on cpu and rocm:0 at once. `tabfm_unload` frees every configuration by one name (two-level map, by construction), and `anofox_tabfm_max_sessions` (default 4, oldest-evicted) bounds total resident sessions — codex's budget requirement | before/after via `s6_rebuild_cost` alternation, state-level tests pin coexistence, replacement, all-config unload and cap eviction | done | P5 shipped |
 | S7 | a RunPod network volume + ccache gets CUDA iteration under 10 min | set up once, measure second iteration | half a day + ~$5 | P6.1; every later pod spike inherits it |
 
 Order (revised after the user's "hardest, most critical first" call — S4 was
@@ -230,8 +230,9 @@ later pod spike faster), then S2, then S1 and S5 on the fast pod loop.
 - **Track D — distribution + dev builds** (after S2): CI builds and publishes
   both plugins; `tabfm_download_runtime` fetches them; SONAME fix lands so
   debug builds work too.
-- **Track E — cache policy** (after S6): per-(model, device) entries with
-  all-device unload, or documented acceptance — whichever S6's numbers say.
+- **Track E — cache policy**: ✅ **shipped with S6's numbers** (see the S6 row;
+  18–27 s alternation rebuilds became 0.25–1.5 s cache hits, verified on
+  gfx1201 with real weights).
 - **Track F — upstream** (after S5): file the three ORT issues with repros;
   re-evaluate the official CUDA Plugin EP as a replacement backend.
 

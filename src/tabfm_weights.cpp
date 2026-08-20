@@ -761,9 +761,6 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 			row.task = manifest.task;
 			row.revision = revision;
 			row.license = manifest.license;
-			auto snapshot = tabfm_state->Snapshot(TabFMModelCacheKey(manifest.model, manifest.task, revision));
-			row.loaded = snapshot != nullptr;
-			row.device = snapshot ? snapshot->device_id : "";
 			bool complete = true;
 			for (idx_t i = 0; i < manifest.files.size(); i++) {
 				auto path = base_dir + "/" + manifest.files[i].path;
@@ -777,8 +774,22 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 					row.path = path; // primary artifact (the model file) per SQL-API §3
 				}
 			}
-			if (complete) {
+			if (!complete) {
+				return;
+			}
+			// Sessions cache per (device, precision) since GPU_HARDENING_PLAN P5,
+			// so a model can be loaded on several backends at once: one row per
+			// loaded configuration, or a single unloaded row when none is.
+			auto snapshots = tabfm_state->SnapshotsFor(TabFMModelCacheKey(manifest.model, manifest.task, revision));
+			if (snapshots.empty()) {
 				state->rows.push_back(std::move(row));
+				return;
+			}
+			for (auto &snapshot : snapshots) {
+				ModelsRow loaded_row = row;
+				loaded_row.loaded = true;
+				loaded_row.device = snapshot->device_id;
+				state->rows.push_back(std::move(loaded_row));
 			}
 		};
 		// one cache entry per downloaded revision: <slug-base>@<revision>
