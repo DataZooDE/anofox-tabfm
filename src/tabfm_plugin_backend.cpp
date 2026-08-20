@@ -49,7 +49,13 @@ LibraryHandle OpenLibrary(const string &path) {
 	// (ships with the runtime, P7) and this flag. Safe for this ABI: no
 	// allocation crosses the boundary (outputs are plugin-malloc'd and
 	// plugin-freed via free_output), which is the classic DEEPBIND hazard.
-	return dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
+	// glibc-only: macOS has no RTLD_DEEPBIND (and needs none — Mach-O
+	// two-level namespaces bind each image to the library it linked against).
+	int flags = RTLD_NOW | RTLD_LOCAL;
+#ifdef RTLD_DEEPBIND
+	flags |= RTLD_DEEPBIND;
+#endif
+	return dlopen(path.c_str(), flags);
 }
 void *LibrarySymbol(LibraryHandle lib, const char *symbol) {
 	return dlsym(lib, symbol);
