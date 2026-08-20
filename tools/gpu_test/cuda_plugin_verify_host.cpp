@@ -72,7 +72,10 @@ int main(int argc, char **argv) {
 	}
 
 	// ---- The plugin, loaded exactly as tabfm_plugin_backend.cpp loads it ----
-	void *lib = dlopen(kPlugin, RTLD_NOW | RTLD_LOCAL);
+	// RTLD_DEEPBIND mirrors src/tabfm_plugin_backend.cpp — the harness must
+	// load the plugin the way the extension does or it verifies a different
+	// program.
+	void *lib = dlopen(kPlugin, RTLD_NOW | RTLD_LOCAL | RTLD_DEEPBIND);
 	if (!lib) {
 		fprintf(stderr, "FAIL: dlopen(%s): %s\n", kPlugin, dlerror());
 		return 1;
@@ -105,6 +108,18 @@ int main(int argc, char **argv) {
 	// bf16/fp16 MUST make create fail with the CUDA-unsupported message — a
 	// mode either happens or errors, never a silent fp32 run.
 	const char *precision = argc > 1 ? argv[1] : "fp32";
+	// argv[2] = path to an UPSTREAM-SONAME ORT core to preload RTLD_GLOBAL
+	// first — simulating the debug-build host whose own shared ORT used to
+	// shadow the plugin's runtime (GPU_HARDENING_PLAN S2). With the S2 fix
+	// (renamed core + the loader's DEEPBIND, mirrored below) the plugin must
+	// keep working with that foreign ORT in the global scope.
+	if (argc > 2 && argv[2][0] != '\0') {
+		if (!dlopen(argv[2], RTLD_NOW | RTLD_GLOBAL)) {
+			fprintf(stderr, "FAIL: could not preload the shadow ORT '%s': %s\n", argv[2], dlerror());
+			return 1;
+		}
+		printf("[shadow] foreign ORT preloaded RTLD_GLOBAL: %s\n", argv[2]);
+	}
 	params.precision = precision;
 	params.mxr_source = "";
 	params.device_ordinal = 0;

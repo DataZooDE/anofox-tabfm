@@ -171,3 +171,40 @@ TEST_CASE("plugin_backend: an ABI mismatch is refused before anything is read", 
 }
 
 #endif // TABFM_FAKE_PLUGIN_BAD_ABI_PATH
+
+#include "tabfm_soname_patch.hpp"
+
+TEST_CASE("soname_patch: exactly the NUL-terminated SONAME is rewritten", "[tabfm][plugin]") {
+	// Half of the SONAME-shadowing fix (GPU_HARDENING_PLAN S2). The dangerous
+	// mistakes are (a) rewriting a longer string the SONAME merely prefixes and
+	// (b) missing an occurrence and shipping a half-renamed core — both pinned.
+	using namespace duckdb::anofox;
+
+	SECTION("the plain case: one .dynstr-style entry") {
+		char buffer[] = "xx\0libonnxruntime.so.1\0yy";
+		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer)) == 1);
+		REQUIRE(std::memcmp(buffer + 3, ORT_RENAMED_SONAME, 19) == 0);
+		REQUIRE(buffer[3 + 19] == '\0'); // terminator untouched
+		REQUIRE(buffer[sizeof(buffer) - 3] == 'y');
+	}
+	SECTION("a longer string it prefixes is NOT touched") {
+		char buffer[] = "libonnxruntime.so.1.28.0\0";
+		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer)) == 0);
+		REQUIRE(std::memcmp(buffer, "libonnxruntime.so.1.28.0", 24) == 0);
+	}
+	SECTION("every occurrence is counted, so the caller can refuse a drifted wheel") {
+		char buffer[] = "libonnxruntime.so.1\0mid\0libonnxruntime.so.1\0";
+		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer)) == 2);
+	}
+	SECTION("absent, empty, and too-small inputs are zero, never a crash") {
+		char buffer[] = "nothing to see";
+		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer)) == 0);
+		REQUIRE(PatchOrtSonameInPlace(nullptr, 0) == 0);
+		char tiny[] = "lib";
+		REQUIRE(PatchOrtSonameInPlace(tiny, sizeof(tiny)) == 0);
+	}
+	SECTION("a match at the very end of the buffer is found") {
+		char buffer[] = "pad\0libonnxruntime.so.1\0";
+		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer) - 0) == 1);
+	}
+}

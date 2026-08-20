@@ -227,9 +227,24 @@ later pod spike faster), then S2, then S1 and S5 on the fast pod loop.
   `device=cuda:0` implies otherwise; (2) SQL-registered graph/weights paths
   must be validated against the model's base_dir — registration must not
   become an arbitrary-filesystem-read primitive.
-- **Track D — distribution + dev builds** (after S2): CI builds and publishes
-  both plugins; `tabfm_download_runtime` fetches them; SONAME fix lands so
-  debug builds work too.
+- **Track D — distribution + dev builds**: ✅ **built, verified where hardware
+  can reach**. The SONAME rename ships at every end: `tabfm_soname_patch.hpp`
+  (exhaustively unit-tested byte patch, NUL-terminated match, exactly-one
+  gate), applied by `tabfm_download_runtime('cuda')` to the wheel core it
+  extracts, by the `anofox_tabfm_cuda_plugin` CMake target, and by the new
+  `gpu_plugins.yml` workflow — which builds BOTH plugins on plain runners (no
+  GPU needed to build), sanity-checks the ABI symbol and that the CUDA
+  plugin's `DT_NEEDED` names only the renamed core, uploads artifacts on every
+  push, and attaches release assets on version tags. `tabfm_download_runtime`
+  fetches the plugin from the pinned release tag (`TABFM_PLUGIN_RELEASE_TAG`,
+  deliberately "" until the first plugin-carrying release exists, so errors
+  say "not published yet" with both from-source routes instead of 404-ing);
+  'rocm' becomes a real backend of the call the moment the tag is pinned. The
+  full recipe is hardware-verified including the hostile shadow case (foreign
+  upstream-SONAME ORT preloaded RTLD_GLOBAL — the debug-host failure mode —
+  with the plugin unaffected), which retires the "CUDA needs the release
+  build" limitation. Remaining, release-time: cut a plugin-carrying tag, pin
+  the constant, and run the harness against the published assets.
 - **Track E — cache policy**: ✅ **shipped with S6's numbers** (see the S6 row;
   18–27 s alternation rebuilds became 0.25–1.5 s cache hits, verified on
   gfx1201 with real weights).

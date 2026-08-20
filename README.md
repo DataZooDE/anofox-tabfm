@@ -409,14 +409,15 @@ for the ROCm toolchain and [`docs/DYNAMIC_BACKENDS.md`](docs/DYNAMIC_BACKENDS.md
 for how the two fit together). `tabfm_download_runtime('cuda')` fetches the
 ONNX Runtime GPU libraries the CUDA plugin needs, not the plugin itself.
 
-**CUDA needs the release build.** A host build that itself loads a *shared*
-`libonnxruntime.so` shadows the plugin's own copy of ONNX Runtime — same
-SONAME, and the first one loaded wins — after which the plugin runs against
-that CPU-only runtime and reports that it cannot load its provider. The release
-build links ONNX Runtime statically, leaving nothing to collide with. Both
-halves were confirmed on an RTX A5000: the debug build fails exactly that way,
-and the release build runs the query above with predictions identical to the
-CPU's.
+**Any build can host the CUDA plugin now.** Earlier, a host that loaded a
+*shared* `libonnxruntime.so` (the local `make debug` build) shadowed the
+plugin's own ONNX Runtime — same SONAME, first one loaded wins — so CUDA
+required the statically-linked release build. Fixed at both ends
+(`docs/GPU_HARDENING_PLAN.md` S2): the plugin's core ships under a private
+SONAME (`libanofoxort_gpu.so`, applied by `tabfm_download_runtime` and by the
+plugin build itself), and the plugin loader binds with `RTLD_DEEPBIND`.
+Verified on hardware including the hostile case — a foreign upstream-SONAME
+ORT preloaded into the global scope — which the plugin no longer notices.
 
 `anofox_tabfm_gpu_precision` now means something on both GPUs, with fp32 the
 default everywhere: strict fp32 (on CUDA that disables the TF32 tensor-core

@@ -1,4 +1,5 @@
 #include "tabfm_registration.hpp"
+#include "tabfm_soname_patch.hpp"
 #include "anofox_function_alias.hpp"
 #include "tabfm_predict.hpp"
 #include "tabfm_registry.hpp"
@@ -508,18 +509,42 @@ namespace {
 //! been verified to exist in the wheel (see docs/DYNAMIC_BACKENDS.md phase 3
 //! measurements) is offered — an unlisted backend errors naming what is.
 //! One file to lift out of the wheel. `dest_name` exists because the ORT core
-//! must land under its SONAME (libonnxruntime.so.1) rather than the wheel's
-//! versioned basename, or the plugin's DT_NEEDED will not resolve against it.
+//! must land under the exact name the plugin's DT_NEEDED asks for.
+//! `patch_soname` renames the core in flight (upstream SONAME →
+//! libanofoxort_gpu.so, equal length, docs/GPU_HARDENING_PLAN.md S2): a core
+//! keeping upstream's SONAME gets shadowed by any host-loaded ORT, so the
+//! shipped runtime carries a private name and the plugin links against it.
 struct RuntimeEntry {
 	string zip_path;
 	string dest_name;
+	bool patch_soname = false;
 };
 
 struct RuntimeArtifact {
 	string wheel_url;
-	int64_t wheel_bytes;
+	int64_t wheel_bytes = 0;
 	vector<RuntimeEntry> zip_entries;
+	//! The backend plugin itself, fetched from this repo's GitHub release
+	//! assets (built by .github/workflows/gpu_plugins.yml — neither plugin
+	//! needs a GPU to build). Empty url = no plugin-carrying release is pinned
+	//! in this build yet.
+	string plugin_name;
+	string plugin_url;
 };
+
+//! The release tag whose assets carry the built plugins. "" until the first
+//! plugin-carrying release is cut; bumped per release thereafter. Kept empty
+//! rather than guessed so download errors say "not published yet" instead of
+//! 404-ing at a URL that never existed.
+constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "";
+
+string PluginReleaseUrl(const string &asset) {
+	if (string(TABFM_PLUGIN_RELEASE_TAG).empty()) {
+		return "";
+	}
+	return string("https://github.com/DataZooDE/anofox-tabfm/releases/download/") + TABFM_PLUGIN_RELEASE_TAG + "/" +
+	       asset;
+}
 
 //! Currently the only published, verified source: onnxruntime-gpu 1.28.0's
 //! manylinux CUDA-12 wheel from Microsoft's onnxruntime-cuda-12 Azure
@@ -538,15 +563,27 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 		// statically-linked ORT cannot host these provider libraries at all (see
 		// src/tabfm_cuda_plugin.cpp). Core and providers must come from one
 		// distribution — pairing a CPU-flavor core with a GPU provider crashes.
-		out.zip_entries = {{"onnxruntime/capi/libonnxruntime.so.1.28.0", "libonnxruntime.so.1"},
+		out.zip_entries = {{"onnxruntime/capi/libonnxruntime.so.1.28.0", ORT_RENAMED_SONAME, /*patch_soname=*/true},
 		                   {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so"},
 		                   {"onnxruntime/capi/libonnxruntime_providers_shared.so",
 		                    "libonnxruntime_providers_shared.so"}};
+		out.plugin_name = "libanofox_tabfm_cuda_plugin.so";
+		out.plugin_url = PluginReleaseUrl(out.plugin_name);
 		return true;
 	}
-	error = "tabfm_download_runtime: 'rocm' has no published downloadable plugin yet — build "
-	       "src/tabfm_migraphx_plugin.cpp yourself (docs/DYNAMIC_BACKENDS.md phase 1) and point "
-	       "anofox_tabfm_ep_path at the result. Only 'cuda' is downloadable today.";
+	if (backend == "rocm") {
+		out.plugin_name = "libanofox_tabfm_migraphx_plugin.so";
+		out.plugin_url = PluginReleaseUrl(out.plugin_name);
+		if (out.plugin_url.empty()) {
+			error = "tabfm_download_runtime: no plugin-carrying release is pinned in this build yet. The MIGraphX "
+			        "plugin is built by CI (workflow 'GPU backend plugins', artifact "
+			        "anofox-tabfm-migraphx-plugin) and by the anofox_tabfm_migraphx_plugin CMake target — place "
+			        "libanofox_tabfm_migraphx_plugin.so in the anofox_tabfm_ep_path directory.";
+			return false;
+		}
+		return true;
+	}
+	error = "tabfm_download_runtime: unknown backend '" + backend + "' — expected 'cuda' or 'rocm'.";
 	return false;
 }
 
@@ -608,14 +645,23 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 	auto &fs = FileSystem::GetFileSystem(context);
 	fs.CreateDirectoriesRecursive(bind.ep_path);
 
-	// Which entries are already present at their target size — extraction is
-	// per-entry idempotent, so a partial prior run only re-fetches what it must.
+	// Which artifacts are already present — fetching is per-file idempotent, so
+	// a partial prior run only re-fetches what it must. The plugin (when a
+	// release carries one) is one more target alongside the wheel entries.
 	vector<string> targets;
 	bool all_present = true;
 	for (auto &entry : bind.artifact.zip_entries) {
 		string target = bind.ep_path + "/" + entry.dest_name;
 		targets.push_back(target);
 		if (!fs.FileExists(target)) {
+			all_present = false;
+		}
+	}
+	const string plugin_target =
+	    bind.artifact.plugin_url.empty() ? "" : bind.ep_path + "/" + bind.artifact.plugin_name;
+	if (!plugin_target.empty()) {
+		targets.push_back(plugin_target);
+		if (!fs.FileExists(plugin_target)) {
 			all_present = false;
 		}
 	}
@@ -640,56 +686,85 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 	// mz_zip_reader_init_mem / extract_to_heap rather than the file-path API.
 	// The wheel itself is not kept — it is scratch, not a cache entry
 	// (re-downloaded on the next miss, same as a truncated .part would be).
-	const string wheel_path = bind.ep_path + "/.onnxruntime_gpu-1.28.0-cp312.whl";
-	DownloadItem wheel_item;
-	wheel_item.cache_path = wheel_path;
-	wheel_item.url = bind.artifact.wheel_url;
-	wheel_item.bytes = bind.artifact.wheel_bytes;
-	FetchFile(context, wheel_item);
+	// Skipped entirely for a backend with no wheel (rocm ships only a plugin).
+	if (!bind.artifact.wheel_url.empty()) {
+		const string wheel_path = bind.ep_path + "/.onnxruntime_gpu-1.28.0-cp312.whl";
+		DownloadItem wheel_item;
+		wheel_item.cache_path = wheel_path;
+		wheel_item.url = bind.artifact.wheel_url;
+		wheel_item.bytes = bind.artifact.wheel_bytes;
+		FetchFile(context, wheel_item);
 
-	auto wheel_handle = fs.OpenFile(wheel_path, FileFlags::FILE_FLAGS_READ);
-	const idx_t wheel_size = fs.GetFileSize(*wheel_handle);
-	auto wheel_bytes = make_unsafe_uniq_array<char>(wheel_size);
-	wheel_handle->Read(wheel_bytes.get(), wheel_size);
-	wheel_handle.reset();
+		auto wheel_handle = fs.OpenFile(wheel_path, FileFlags::FILE_FLAGS_READ);
+		const idx_t wheel_size = fs.GetFileSize(*wheel_handle);
+		auto wheel_bytes = make_unsafe_uniq_array<char>(wheel_size);
+		wheel_handle->Read(wheel_bytes.get(), wheel_size);
+		wheel_handle.reset();
 
-	duckdb_miniz::mz_zip_archive zip {};
-	if (!duckdb_miniz::mz_zip_reader_init_mem(&zip, wheel_bytes.get(), wheel_size, 0)) {
+		duckdb_miniz::mz_zip_archive zip {};
+		if (!duckdb_miniz::mz_zip_reader_init_mem(&zip, wheel_bytes.get(), wheel_size, 0)) {
+			fs.TryRemoveFile(wheel_path);
+			throw IOException("tabfm_download_runtime: '%s' downloaded but is not a readable zip archive — the source "
+			                  "may have changed shape; please report this.",
+			                  SanitizeUrl(bind.artifact.wheel_url));
+		}
+		for (size_t i = 0; i < bind.artifact.zip_entries.size(); i++) {
+			const string &entry = bind.artifact.zip_entries[i].zip_path;
+			int file_index = duckdb_miniz::mz_zip_reader_locate_file(&zip, entry.c_str(), nullptr, 0);
+			if (file_index < 0) {
+				duckdb_miniz::mz_zip_reader_end(&zip);
+				fs.TryRemoveFile(wheel_path);
+				throw IOException("tabfm_download_runtime: expected entry '%s' not found in the downloaded wheel — the "
+				                  "source may have changed shape; please report this.",
+				                  entry);
+			}
+			size_t extracted_size = 0;
+			void *extracted =
+			    duckdb_miniz::mz_zip_reader_extract_to_heap(&zip, static_cast<duckdb_miniz::mz_uint>(file_index),
+			                                                &extracted_size, 0);
+			if (!extracted) {
+				duckdb_miniz::mz_zip_reader_end(&zip);
+				fs.TryRemoveFile(wheel_path);
+				throw IOException("tabfm_download_runtime: failed to extract '%s' from the downloaded wheel.", entry);
+			}
+			if (bind.artifact.zip_entries[i].patch_soname) {
+				// Exactly one occurrence or refuse: zero means the wheel changed
+				// shape, several means the only-the-.dynstr-entry assumption broke.
+				// Either way a half-renamed core must fail HERE, at download time,
+				// not later as a plugin that quietly binds to the host's ORT.
+				auto replaced = PatchOrtSonameInPlace(static_cast<char *>(extracted), extracted_size);
+				if (replaced != 1) {
+					duckdb_miniz::mz_free(extracted);
+					duckdb_miniz::mz_zip_reader_end(&zip);
+					fs.TryRemoveFile(wheel_path);
+					throw IOException("tabfm_download_runtime: expected exactly one SONAME string in '%s' but found %llu "
+					                  "— the wheel changed shape; please report this.",
+					                  entry, static_cast<unsigned long long>(replaced));
+				}
+			}
+			const string tmp = targets[i] + ".part";
+			auto dst = fs.OpenFile(tmp, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+			dst->Write(extracted, NumericCast<int64_t>(extracted_size));
+			dst->Sync();
+			dst.reset();
+			duckdb_miniz::mz_free(extracted);
+			fs.MoveFile(tmp, targets[i]); // atomic publish, same discipline as FetchFile
+		}
+		duckdb_miniz::mz_zip_reader_end(&zip);
+		wheel_bytes.reset();
 		fs.TryRemoveFile(wheel_path);
-		throw IOException("tabfm_download_runtime: '%s' downloaded but is not a readable zip archive — the source "
-		                  "may have changed shape; please report this.",
-		                  SanitizeUrl(bind.artifact.wheel_url));
 	}
-	for (size_t i = 0; i < bind.artifact.zip_entries.size(); i++) {
-		const string &entry = bind.artifact.zip_entries[i].zip_path;
-		int file_index = duckdb_miniz::mz_zip_reader_locate_file(&zip, entry.c_str(), nullptr, 0);
-		if (file_index < 0) {
-			duckdb_miniz::mz_zip_reader_end(&zip);
-			fs.TryRemoveFile(wheel_path);
-			throw IOException("tabfm_download_runtime: expected entry '%s' not found in the downloaded wheel — the "
-			                  "source may have changed shape; please report this.",
-			                  entry);
-		}
-		size_t extracted_size = 0;
-		void *extracted =
-		    duckdb_miniz::mz_zip_reader_extract_to_heap(&zip, static_cast<duckdb_miniz::mz_uint>(file_index),
-		                                                &extracted_size, 0);
-		if (!extracted) {
-			duckdb_miniz::mz_zip_reader_end(&zip);
-			fs.TryRemoveFile(wheel_path);
-			throw IOException("tabfm_download_runtime: failed to extract '%s' from the downloaded wheel.", entry);
-		}
-		const string tmp = targets[i] + ".part";
-		auto dst = fs.OpenFile(tmp, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
-		dst->Write(extracted, NumericCast<int64_t>(extracted_size));
-		dst->Sync();
-		dst.reset();
-		duckdb_miniz::mz_free(extracted);
-		fs.MoveFile(tmp, targets[i]); // atomic publish, same discipline as FetchFile
+
+	// The backend plugin, from this repo's release assets (built by the
+	// gpu_plugins workflow): same atomic FetchFile, idempotent via the
+	// existence check above, reported as one more output row below.
+	if (!plugin_target.empty() && !fs.FileExists(plugin_target)) {
+		DownloadItem plugin_item;
+		plugin_item.cache_path = plugin_target;
+		plugin_item.url = bind.artifact.plugin_url;
+		plugin_item.bytes = -1; // release assets carry sha256 sidecars, not pinned sizes
+		FetchFile(context, plugin_item);
 	}
-	duckdb_miniz::mz_zip_reader_end(&zip);
-	wheel_bytes.reset();
-	fs.TryRemoveFile(wheel_path);
 
 	for (auto &target : targets) {
 		auto handle = fs.OpenFile(target, FileFlags::FILE_FLAGS_READ);

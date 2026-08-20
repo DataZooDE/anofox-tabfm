@@ -74,16 +74,27 @@ PY
 
 echo
 echo "=== 3. build the plugin against the ORT-GPU distribution ==="
+# The S2 recipe, exactly as CMake/CI build it: the plugin links a RENAMED
+# copy of the core (equal-length SONAME byte patch), so no host-loaded
+# libonnxruntime.so.1 can shadow it.
+python3 -c "import sys; d = open(sys.argv[1], 'rb').read(); old = b'libonnxruntime.so.1\x00'; new = b'libanofoxort_gpu.so\x00'; n = d.count(old); assert n == 1, f'expected one SONAME string, found {n}'; open('/workspace/libanofoxort_gpu.so', 'wb').write(d.replace(old, new)); print('renamed core written')" "${ORT_DIR}/lib/libonnxruntime.so.${ORT_VER}"
 g++ -O2 -std=c++17 -shared -fPIC -o libanofox_tabfm_cuda_plugin.so \
     tabfm_cuda_plugin.cpp \
     -I/workspace -I"${ORT_DIR}/include" \
-    -L"${ORT_DIR}/lib" -lonnxruntime \
+    -L/workspace -l:libanofoxort_gpu.so \
     -Wl,-rpath,'$ORIGIN' || { echo "PLUGIN BUILD FAILED"; exit 1; }
 echo "  built. DT_NEEDED / RPATH:"
 readelf -d libanofox_tabfm_cuda_plugin.so | grep -E "NEEDED.*onnxruntime|RUNPATH|RPATH" | sed 's/^/    /'
 # $ORIGIN must resolve the core: stage it next to the plugin, as
 # tabfm_download_runtime('cuda') does.
-cp -P "${ORT_DIR}/lib/"libonnxruntime.so* /workspace/
+# Stage the PROVIDERS beside the renamed core — the core's dladdr-based
+# GetRuntimePath resolves next to itself and loads them from there, exactly
+# the layout tabfm_download_runtime('cuda') produces. What must NOT be staged
+# is the upstream-SONAME core: a stray libonnxruntime.so.1 here would mask
+# exactly the failure mode 4b exists to provoke. (First run of this harness
+# staged neither and failed with a clear "providers_shared: No such file" —
+# which at least proves the renamed core resolves its runtime path correctly.)
+cp "${ORT_DIR}/lib/libonnxruntime_providers_shared.so" "${ORT_DIR}/lib/libonnxruntime_providers_cuda.so" /workspace/
 echo "  ldd:"
 ldd libanofox_tabfm_cuda_plugin.so | grep -i onnxruntime | sed 's/^/    /'
 
@@ -104,6 +115,16 @@ for MODE in fp32 tf32 bf16; do
   [ $RC -ne 0 ] && FAILED=1
   echo "  verify_host($MODE) exit=${RC}"
 done
+
+echo "=== 4b. S2 shadow test: a foreign upstream-SONAME ORT in the global scope ==="
+# The debug-build failure mode, reproduced deliberately: preload the archive's
+# ORIGINAL core (SONAME libonnxruntime.so.1) RTLD_GLOBAL, then run the plugin.
+# Before the S2 fix the plugin bound to that CPU-only core and died looking
+# for its provider; with the renamed core + DEEPBIND it must not notice.
+./verify_host fp32 "${ORT_DIR}/lib/libonnxruntime.so.${ORT_VER}"
+RC=$?
+[ $RC -ne 0 ] && FAILED=1
+echo "  verify_host(fp32, shadowed) exit=${RC}"
 
 echo
 echo "=== 5. verify what tabfm_download_runtime('cuda') fetches ==="

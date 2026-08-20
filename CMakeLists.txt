@@ -167,18 +167,38 @@ if(TABFM_ORT_GPU_DIR AND EXISTS "${TABFM_ORT_GPU_DIR}/include/onnxruntime_cxx_ap
 endif()
 if(TABFM_ORT_GPU_LIB)
     message(STATUS "anofox_tabfm: building the cuda backend plugin from ${TABFM_ORT_GPU_DIR}")
+    # The plugin links a RENAMED copy of the ORT-GPU core (SONAME + basename
+    # libanofoxort_gpu.so, an equal-length byte patch — GPU_HARDENING_PLAN S2):
+    # keeping upstream's SONAME would let any host-loaded libonnxruntime.so.1
+    # shadow the plugin's runtime. tabfm_download_runtime('cuda') performs the
+    # same rename on the wheel core it extracts, so DT_NEEDED matches at both
+    # ends. The python one-liner mirrors PatchOrtSonameInPlace
+    # (tabfm_soname_patch.hpp): NUL-terminated match, exactly one occurrence.
+    set(TABFM_ORT_GPU_RENAMED_DIR "${CMAKE_CURRENT_BINARY_DIR}/anofox_ort_gpu")
+    set(TABFM_ORT_GPU_RENAMED_LIB "${TABFM_ORT_GPU_RENAMED_DIR}/libanofoxort_gpu.so")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_custom_command(
+        OUTPUT "${TABFM_ORT_GPU_RENAMED_LIB}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${TABFM_ORT_GPU_RENAMED_DIR}"
+        COMMAND ${Python3_EXECUTABLE} -c "import sys; d = open(sys.argv[1], 'rb').read(); old = b'libonnxruntime.so.1\x00'; new = b'libanofoxort_gpu.so\x00'; n = d.count(old); assert n == 1, f'expected exactly one SONAME string, found {n}'; open(sys.argv[2], 'wb').write(d.replace(old, new))" "${TABFM_ORT_GPU_LIB}" "${TABFM_ORT_GPU_RENAMED_LIB}"
+        DEPENDS "${TABFM_ORT_GPU_LIB}"
+        COMMENT "anofox_tabfm: renaming the ORT-GPU core SONAME (S2 shadowing fix)"
+        VERBATIM)
+    add_custom_target(anofox_ort_gpu_renamed DEPENDS "${TABFM_ORT_GPU_RENAMED_LIB}")
     add_library(anofox_tabfm_cuda_plugin SHARED src/tabfm_cuda_plugin.cpp)
+    add_dependencies(anofox_tabfm_cuda_plugin anofox_ort_gpu_renamed)
     target_include_directories(anofox_tabfm_cuda_plugin PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
         "${TABFM_ORT_GPU_DIR}/include")
-    target_link_libraries(anofox_tabfm_cuda_plugin PRIVATE "${TABFM_ORT_GPU_LIB}")
+    target_link_directories(anofox_tabfm_cuda_plugin PRIVATE "${TABFM_ORT_GPU_RENAMED_DIR}")
+    target_link_libraries(anofox_tabfm_cuda_plugin PRIVATE "-l:libanofoxort_gpu.so")
     target_compile_features(anofox_tabfm_cuda_plugin PRIVATE cxx_std_17)
     set_target_properties(anofox_tabfm_cuda_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    # $ORIGIN so the shipped plugin finds the libonnxruntime.so + provider
-    # libraries that tabfm_download_runtime('cuda') unpacks alongside it,
-    # wherever the user pointed anofox_tabfm_ep_path.
+    # $ORIGIN so the shipped plugin finds the renamed core + provider libraries
+    # that tabfm_download_runtime('cuda') unpacks alongside it, wherever the
+    # user pointed anofox_tabfm_ep_path.
     set_target_properties(anofox_tabfm_cuda_plugin PROPERTIES
-        BUILD_RPATH "${TABFM_ORT_GPU_DIR}/lib"
+        BUILD_RPATH "${TABFM_ORT_GPU_RENAMED_DIR}"
         INSTALL_RPATH "$ORIGIN")
     set(TABFM_CUDA_PLUGIN_BUILT TRUE)
 else()
