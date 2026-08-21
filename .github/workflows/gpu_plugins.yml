@@ -77,6 +77,15 @@ jobs:
           fi
           sha256sum libanofox_tabfm_cuda_plugin.so libanofoxort_gpu.so | tee cuda_plugin.sha256
 
+      # nm proves the symbol is in the file; only dlopen proves the artifact
+      # resolves (DT_NEEDED, rpath, SONAME). The runner has no GPU — that is
+      # the point: loading must work and create() must refuse cleanly, which
+      # is exactly what a user's GPU-less machine does at SET ep_path.
+      - name: Load check - dlopen answers and create fails gracefully without a GPU
+        run: |
+          gcc -O2 -o plugin_load_check tools/gpu_test/plugin_load_check.c -ldl
+          ./plugin_load_check ./libanofox_tabfm_cuda_plugin.so
+
       - uses: actions/upload-artifact@v4
         with:
           name: anofox-tabfm-cuda-plugin
@@ -115,6 +124,13 @@ jobs:
           nm -D libanofox_tabfm_migraphx_plugin.so | grep -q "TabFMGetPluginApi" || { echo "ABI symbol missing"; exit 1; }
           readelf -d libanofox_tabfm_migraphx_plugin.so | grep NEEDED
           sha256sum libanofox_tabfm_migraphx_plugin.so | tee migraphx_plugin.sha256
+
+      # Same contract as the CUDA job: resolve on a GPU-less machine, refuse
+      # cleanly at create. libmigraphx_c lives outside the default search path.
+      - name: Load check - dlopen answers and create fails gracefully without a GPU
+        run: |
+          gcc -O2 -o plugin_load_check tools/gpu_test/plugin_load_check.c -ldl
+          LD_LIBRARY_PATH=/opt/rocm/lib ./plugin_load_check ./libanofox_tabfm_migraphx_plugin.so
 
       - uses: actions/upload-artifact@v4
         with:
