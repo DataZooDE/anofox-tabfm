@@ -12,6 +12,9 @@
 --        CALL tabfm_download('classification');
 
 LOAD anofox_tabfm;
+-- With several models registered, one must be chosen explicitly
+-- (generate_breast_cancer.sql does the same):
+SET anofox_tabfm_default_model = 'mitra';
 
 -- 1. A small source table with real structure worth reproducing: tenure and
 --    monthly_spend rise together, and `plan` tracks both.

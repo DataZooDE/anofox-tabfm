@@ -10,6 +10,9 @@
 -- Needs: CALL tabfm_download('classification');
 
 LOAD anofox_tabfm;
+-- With several models registered, one must be chosen explicitly
+-- (generate_breast_cancer.sql does the same):
+SET anofox_tabfm_default_model = 'mitra';
 
 -- A source table with deliberate structure: x and y strongly correlated, and
 -- `grp` unevenly distributed. Both should survive into the synthetic sample.

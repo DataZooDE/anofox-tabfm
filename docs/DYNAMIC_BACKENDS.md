@@ -710,11 +710,13 @@ refuses to report CPU results as GPU.
   its own runtime. The loader now passes DEEPBIND; the renamed core
   (`libanofoxort_gpu.so`) ships with the runtime download. Full record:
   `docs/GPU_HARDENING_PLAN.md` S2.
-* **`anofox_tabfm_gpu_precision` is ROCm-only in effect.** MIGraphX quantizes
-  per the setting (bf16 by default, which is why ROCm shows a few label flips
-  and CUDA shows none). The CUDA plugin accepts the parameter and ignores it —
-  it always runs fp32. That is why the CUDA row above is exact while the ROCm
-  bf16 rows are not; it is not evidence that CUDA is more accurate.
+* **`anofox_tabfm_gpu_precision` means different modes per backend.** The
+  default is `fp32` everywhere (Track A: strict CPU parity unless the user
+  opts out). MIGraphX quantizes per the setting and accepts `bf16`/`fp16`;
+  the CUDA plugin accepts `fp32`/`tf32` and **errors** on `bf16`/`fp16`
+  rather than silently running fp32 — an unsupported mode is a refusal, not
+  a fallback. ROCm's historical label flips in the tables above are the
+  bf16 opt-in, not evidence that CUDA is more accurate.
 * **Binary size and CI matrix** grow by one plugin per GPU backend.
 * **ABI drift** between the extension and our own ROCm plugin — versioned
   explicitly, refused on mismatch.

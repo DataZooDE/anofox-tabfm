@@ -135,7 +135,7 @@ Results on gfx1201 with the real TabFM v1 classification weights:
 | scenario | served by | rows | disagreements | agreement |
 |---|---|---|---|---|
 | 100 rows, `fp32` | `rocm:0` | 100 | 0 | 100% |
-| 100 rows, `bf16` (default) | `rocm:0` | 100 | 2 | 98.0% |
+| 100 rows, `bf16` (opt-in; was the default before Track A) | `rocm:0` | 100 | 2 | 98.0% |
 | 2500 rows, `bf16` — crosses DuckDB's 2048-row vector boundary, T4096 bucket | `rocm:0` | 2500 | 42 | 98.32% |
 
 (Disagreements and agreement are over every returned row, which is what the
