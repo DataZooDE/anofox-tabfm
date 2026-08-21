@@ -682,6 +682,44 @@ CI runs tiers 1–4 on CPU. GPU tiers are opt-in — they need hardware CI does 
 have — and are run by hand via `tools/gpu_test/`, which is why that harness
 refuses to report CPU results as GPU.
 
+## Backend performance (measured 2026-08-21)
+
+Real `tabfm-v1` classification weights, 10 numeric features, one
+`tabfm_classify` per measurement; times are `.timer on` wall clock. "Warm"
+means the session (and, for MIGraphX, the compiled program) already exists —
+the steady-state per-predict cost. Two context sizes; each backend on its own
+hardware, so compare down a column, not across machines:
+
+| backend (hardware) | warm, 100-row context | warm, 2500-row context | cold start |
+|---|---|---|---|
+| cpu (Ryzen 9 3950X) | 1.5 s | 35 s | ~30 s (model load) |
+| cpu (pod EPYC 7282) | 1.6–1.7 s | 37–41 s¹ | 30–70 s |
+| rocm fp32 (RX 9070 XT) | 0.32–0.46 s | 1.8 s | **~25 min** MIGraphX compile² |
+| rocm bf16 (RX 9070 XT) | 0.13 s | 0.59–0.68 s | ~25 min compile² |
+| cuda fp32 (RTX 4090) | 0.04–0.06 s | 0.46–0.69 s | 21–48 s (no long compile) |
+| cuda tf32 (RTX 4090) | 0.03–0.05 s | 0.47–0.71 s | 21–48 s |
+
+¹ A second pod host of the same GPU class measured 191–195 s — pod CPU
+allocations vary wildly; the GPU numbers were stable across hosts.
+² Once per (arch, precision, shape bucket); the `.mxr` cache then brings cold
+start to ~21 s. This is what `tabfm_gpu_precompile` and
+`anofox_tabfm_mxr_source` exist for — at T4096 the fp32 compile is the price
+of the exactness default, so precompile or staged `.mxr` programs matter most
+exactly where the GPU pays off most.
+
+What the numbers say:
+
+* The GPU payoff grows with context: ~10–30× at 100 rows, **~20–80× at 2500**
+  — and CPU keeps degrading with T while the GPUs barely move.
+* CUDA fp32 pays no penalty vs tf32 at either size (S1 predicted this at
+  fixture scale; it holds on the real model) — the exactness default is free.
+* On MIGraphX, fp32 costs ~3× bf16 at T4096 (1.8 s vs 0.6 s): the ROCm
+  exactness default is *not* free at scale — bf16 is a genuine speed opt-in
+  with the documented flip caveat.
+* Every row was served-by-verified (`tabfm_models().device`); the CUDA legs
+  ran the shipped CI artifact + CI-built plugin + the production wheel
+  runtime — the exact bytes a user gets.
+
 ## Risks
 
 * **Silent divergence** is the one that matters. Mitigated by making the
