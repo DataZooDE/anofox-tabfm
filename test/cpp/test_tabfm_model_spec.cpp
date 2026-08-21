@@ -221,3 +221,36 @@ TEST_CASE("model_spec: SelectGpuGraph — model-provided wins, bundled needs its
 	REQUIRE(SelectGpuGraph(false, false, true) == G::NONE);
 	REQUIRE(SelectGpuGraph(false, false, false) == G::NONE);
 }
+
+TEST_CASE("model_spec: NoGpuGraphMessage names the model and the real fix, not ep_path", "[tabfm][model_spec]") {
+	// GPU_HARDENING_PLAN follow-up, found running the examples on a pod: with
+	// ep_path SET and device='cuda', a model without a CUDA-servable graph
+	// errored with "SET anofox_tabfm_ep_path" — the one thing that was already
+	// configured. The message must name the model, the missing artifact, and
+	// the two real fixes (register a graph, or use cpu).
+	auto msg = duckdb::anofox::NoGpuGraphMessage("cuda", "mitra", "classification", "ext_graph");
+	REQUIRE(msg.find("mitra") != std::string::npos);
+	REQUIRE(msg.find("ext_graph") != std::string::npos);
+	REQUIRE(msg.find("classification") != std::string::npos);
+	REQUIRE(msg.find("device 'cuda'") != std::string::npos);
+	REQUIRE(msg.find("anofox_tabfm_device='cpu'") != std::string::npos);
+	// The one anti-requirement: it must NOT send the user to ep_path.
+	REQUIRE(msg.find("ep_path") == std::string::npos);
+
+	auto rocm = duckdb::anofox::NoGpuGraphMessage("rocm", "my-model", "regression", "migraphx_graph");
+	REQUIRE(rocm.find("migraphx_graph") != std::string::npos);
+	REQUIRE(rocm.find("regression_migraphx_graph") != std::string::npos);
+}
+
+TEST_CASE("model_spec: IsExplicitGpuRequest — only the named device (or its alias) throws", "[tabfm][model_spec]") {
+	using duckdb::anofox::IsExplicitGpuRequest;
+	// Explicit requests hard-error on a missing graph; 'auto' must stay a
+	// graceful CPU fallback — that asymmetry is the whole point.
+	REQUIRE(IsExplicitGpuRequest("cuda", "cuda"));
+	REQUIRE_FALSE(IsExplicitGpuRequest("auto", "cuda"));
+	REQUIRE_FALSE(IsExplicitGpuRequest("cpu", "cuda"));
+	REQUIRE(IsExplicitGpuRequest("rocm", "rocm"));
+	REQUIRE(IsExplicitGpuRequest("migraphx", "rocm")); // documented alias
+	REQUIRE_FALSE(IsExplicitGpuRequest("auto", "rocm"));
+	REQUIRE_FALSE(IsExplicitGpuRequest("cuda", "rocm"));
+}

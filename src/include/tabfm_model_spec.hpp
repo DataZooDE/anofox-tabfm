@@ -155,6 +155,30 @@ inline GpuGraphSource SelectGpuGraph(bool model_provides_graph, bool bundled_gra
 	return GpuGraphSource::NONE;
 }
 
+//! True when the raw anofox_tabfm_device setting explicitly names this GPU
+//! backend ('migraphx' is the documented alias for 'rocm'). 'auto' is never
+//! explicit: on a missing GPU graph an explicit request must hard-error while
+//! 'auto' quietly falls back to CPU — that asymmetry is the contract.
+inline bool IsExplicitGpuRequest(const string &device_setting, const string &backend) {
+	if (device_setting == backend) {
+		return true;
+	}
+	return backend == "rocm" && device_setting == "migraphx";
+}
+
+//! The error for "you asked for this GPU but the model ships no graph it can
+//! run". Found on hardware (examples on a pod): the previous path surfaced
+//! "SET anofox_tabfm_ep_path" — the one thing already configured. graph_kind
+//! is "ext_graph" (CUDA) or "migraphx_graph" (ROCm).
+inline string NoGpuGraphMessage(const string &device, const string &model, const string &task_name,
+                                const string &graph_kind) {
+	return "anofox_tabfm: device '" + device + "' was requested, but model '" + model +
+	       "' has no " + device + "-servable graph for task '" + task_name +
+	       "': it declares no " + graph_kind +
+	       " and the bundled GPU graph does not match its weights. Register the model with " + task_name + "_" +
+	       graph_kind + " := '<graph.onnx>' (CALL tabfm_register_model), or SET anofox_tabfm_device='cpu'.";
+}
+
 //! Parse + strictly validate a v1 or v2 manifest into a ModelSpec.
 ModelSpec ParseModelSpec(const string &json, const string &manifest_path = "(inline manifest)");
 

@@ -887,6 +887,13 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 		break;
 	}
 	case GpuGraphSource::NONE:
+		// Explicitly-requested ROCm + no runnable graph is an error here, with
+		// the real cause; declining silently used to surface a downstream
+		// message blaming ep_path (found running the examples on GPU hardware).
+		if (IsExplicitGpuRequest(ctx.device, "rocm")) {
+			throw InvalidInputException(
+			    NoGpuGraphMessage("rocm", resolved.manifest.model, task_name, "migraphx_graph"));
+		}
 		return nullptr;
 	}
 	const auto mxr_dir = fs.JoinPath(ctx.cache_dir, "migraphx");
@@ -957,6 +964,11 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 		break;
 	}
 	case GpuGraphSource::NONE:
+		// Same contract as the ROCm branch above: an explicit 'cuda' with no
+		// runnable graph names the model and the fix, never ep_path.
+		if (IsExplicitGpuRequest(ctx.device, "cuda")) {
+			throw InvalidInputException(NoGpuGraphMessage("cuda", resolved.manifest.model, task_name, "ext_graph"));
+		}
 		return nullptr;
 	}
 
