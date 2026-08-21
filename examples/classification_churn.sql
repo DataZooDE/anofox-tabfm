@@ -4,7 +4,7 @@
 -- We compute the F1 score of the positive class (churned) entirely in SQL.
 --
 -- Run:  duckdb :memory: < examples/classification_churn.sql
--- Needs: real classification weights downloaded (CALL tabfm_download('classification'))
+-- Needs: real classification weights downloaded (CALL tabfm_download('classification', model := 'tabfm-v1'))
 --        (built-in model 'tabfm-v1' — no manifest file needed).
 
 INSTALL httpfs; LOAD httpfs;

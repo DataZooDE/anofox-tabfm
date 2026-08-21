@@ -32,8 +32,8 @@ download beyond the weights).
 ```bash
 LOAD anofox_tabfm; INSTALL httpfs;
 SET anofox_tabfm_accept_hf_license = true;
-CALL tabfm_download('classification');   -- 6.56 GB, once (churn + iris)
-CALL tabfm_download('regression');       -- once (tips)
+CALL tabfm_download('classification', model := 'tabfm-v1');   -- 6.56 GB, once (churn + iris)
+CALL tabfm_download('regression', model := 'tabfm-v1');       -- once (tips)
 
 # run from the repository root:
 duckdb :memory: < examples/classification_churn.sql   # binary, F1
@@ -178,7 +178,7 @@ discover). All four also do **regression** (Mitra, TabPFN v2, TabICL v2, TabFM);
 on `mstz/wine` TabPFN scores MSE 0.482 and TabICL 0.586 vs a 0.860 mean baseline.
 Runtime is the per-predict `Run Time (s)` from `.timer on`.
 
-Setup (all one-time): Mitra downloads from HF (`CALL tabfm_download('classification')`
+Setup (all one-time): Mitra downloads from HF (`CALL tabfm_download('classification', model := 'mitra')`
 under `examples/mitra.json`, ~303 MB, ungated); TabPFN v2 and TabICL v2 ship
 PyTorch `.ckpt` (pickle), so a one-time converter stages real weights as
 safetensors (`uv run python tools/export_{tabpfn,tabicl}/convert_weights.py

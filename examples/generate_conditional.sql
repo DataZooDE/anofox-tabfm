@@ -7,8 +7,8 @@
 --       NULL, and let tabfm_impute fill them in.
 --
 -- Run:  duckdb :memory: < examples/generate_conditional.sql
--- Needs: CALL tabfm_download('classification');
---        CALL tabfm_download('regression');   -- for (b) on numeric columns
+-- Needs: CALL tabfm_download('classification', model := 'mitra');
+--        CALL tabfm_download('regression', model := 'mitra');   -- for (b) on numeric columns
 
 LOAD anofox_tabfm;
 -- With several models registered, one must be chosen explicitly

@@ -4,7 +4,7 @@
 -- tabfm_list_models() (the registry) and an explicit model := 'tabfm-v1'.
 --
 -- Run:  duckdb :memory: < examples/classification_income.sql
--- Needs: real classification weights (CALL tabfm_download('classification'))
+-- Needs: real classification weights (CALL tabfm_download('classification', model := 'tabfm-v1'))
 --        (built-in model 'tabfm-v1' — no manifest file needed).
 
 INSTALL httpfs; LOAD httpfs;

@@ -9,7 +9,7 @@
 --
 -- Run:  duckdb :memory: < examples/generate_synthetic.sql
 -- Needs: any model with classification weights, e.g.
---        CALL tabfm_download('classification');
+--        CALL tabfm_download('classification', model := 'mitra');
 
 LOAD anofox_tabfm;
 -- With several models registered, one must be chosen explicitly

@@ -7,7 +7,7 @@
 -- your use rather than taking the model's word for it.
 --
 -- Run:  duckdb :memory: < examples/generate_fidelity.sql
--- Needs: CALL tabfm_download('classification');
+-- Needs: CALL tabfm_download('classification', model := 'mitra');
 
 LOAD anofox_tabfm;
 -- With several models registered, one must be chosen explicitly
