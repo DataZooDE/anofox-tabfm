@@ -692,7 +692,13 @@ CI runs tiers 1–4 on CPU. GPU tiers are opt-in — they need hardware CI does 
 have — and are run by hand via `tools/gpu_test/`, which is why that harness
 refuses to report CPU results as GPU.
 
-## Backend performance (measured 2026-08-21)
+## Backend performance (measured 2026-08-21 on ORT 1.28; re-verified on 1.29)
+
+The 1.29 upgrade changed nothing measurable: the A3 round (2026-08-22,
+RTX 4090, full 1.29 chain — CI extension, 1.29-core plugin, 1.29 wheel)
+reproduced the CUDA numbers below within noise (fp32 T2500 warm
+0.49–0.65 s, T100 0.042 s) with `SERVED_BY=cuda:0` on every leg, and the
+same 5-pass/6-honest-refusal example adjudication.
 
 Real `tabfm-v1` classification weights, 10 numeric features, one
 `tabfm_classify` per measurement; times are `.timer on` wall clock. "Warm"

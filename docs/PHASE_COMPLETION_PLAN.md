@@ -6,7 +6,7 @@ Plan of record, 2026-08-22. PR #35's phase list, current truth:
 |---|---|---|
 | 0 — runtime-aware device resolution | ✅ shipped | — |
 | 1 — ROCm as a loadable plugin | ✅ shipped, hardware-verified | — |
-| 2 — ORT ≥ 1.28 | ✅ **complete at 1.29.0** (2026-08-22) | A3 hardware round pending |
+| 2 — ORT ≥ 1.28 | ✅ **complete at 1.29.0**, hardware-verified (A3, 2026-08-22) | — |
 | 3 — CUDA as a backend plugin + `tabfm_download_runtime('cuda')` | ✅ code shipped, hardware-verified | the **distribution tail**: no plugin-carrying release exists, so `tabfm_download_runtime` cannot actually hand users a plugin yet (Track B) |
 | 4 — CoreML | **out of scope by decision** | — |
 
