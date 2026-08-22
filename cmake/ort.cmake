@@ -56,21 +56,31 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
     # silently producing a broken artifact.
     set(_ort_platform "osx-arm64")
     set(_ort_ext "tgz")
-    if(DEFINED OSX_BUILD_ARCH AND NOT OSX_BUILD_ARCH STREQUAL "arm64")
-        # Fail loudly here rather than 404 inside FetchContent, where the error
-        # names a URL instead of the decision behind it.
-        message(FATAL_ERROR
-            "anofox_tabfm: OSX_BUILD_ARCH='${OSX_BUILD_ARCH}' is not supported. "
-            "ONNX Runtime ships no macOS x86_64 or universal2 archive after "
-            "v1.23.2, so Intel macOS cannot be built at ORT ${TABFM_ORT_VERSION}. "
-            "Build for arm64, or set TABFM_ORT_URL to a self-hosted archive.")
-    endif()
 elseif(WIN32)
     set(_ort_platform "win-x64")
     set(_ort_ext "zip")
 endif()
 
 function(_tabfm_fetch_prebuilt_ort archive_stem)
+    # Only this path needs a per-arch macOS archive to exist; a vcpkg/system ORT
+    # (the cpu release default, see Makefile TABFM_ORT_VCPKG) never gets here, so
+    # the check belongs to the fetch rather than to the platform mapping above.
+    #
+    # OSX_BUILD_ARCH is set-but-EMPTY for a normal host build and only carries a
+    # value when the DuckDB matrix cross-compiles, so test it for truthiness --
+    # `if(DEFINED ...)` matches the empty case and would reject every native
+    # macOS build.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND OSX_BUILD_ARCH
+       AND NOT OSX_BUILD_ARCH STREQUAL "arm64" AND NOT TABFM_ORT_URL)
+        # Fail here rather than 404 inside FetchContent, where the error names a
+        # URL instead of the decision behind it.
+        message(FATAL_ERROR
+            "anofox_tabfm: OSX_BUILD_ARCH='${OSX_BUILD_ARCH}' is not supported. "
+            "ONNX Runtime ships no macOS x86_64 or universal2 prebuilt archive "
+            "after v1.23.2, so Intel macOS cannot be built at ORT "
+            "${TABFM_ORT_VERSION}. Build for arm64, set TABFM_ORT_URL to a "
+            "self-hosted archive, or use the ort-vcpkg manifest feature.")
+    endif()
     if(TABFM_ORT_URL)
         set(_url "${TABFM_ORT_URL}")
     else()
