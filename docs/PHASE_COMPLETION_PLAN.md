@@ -87,7 +87,12 @@ decision lands.
 
 ## Track C — close the gaps the evaluation measured
 
-- **C1 — GPU graphs for mitra** ✅ complete, hardware-verified 2026-08-22 (see below). The 2026-08-21 run:
+- **C1 — GPU graphs for mitra** ✅ complete, hardware-verified 2026-08-22 (see
+  below) — **and extended to the whole catalog the same day**: ext graphs for
+  tabpfn-v2/tabicl-v2/orion-bix/tabpfn-v2-5/tabpfn-v3, 11/11 model-task pairs
+  verified cpu-vs-cuda:0 on a 4090; single_eval_pos models bundle no migraphx
+  variant (y-length split vs bucketed compiles). Follow-up noted:
+  tabfm_models() visibility for safetensors-without-ckpt staging. The 2026-08-21 run:
   every tabfm-v1 example passes on `cuda:0`; all six mitra-involved examples
   refuse (correctly, now with the honest error) because mitra ships no
   `ext_graph`/`migraphx_graph`. The P3 machinery (manifest keys,

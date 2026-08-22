@@ -704,6 +704,20 @@ Verified on hardware: mitra fp32 on rocm:0 exact vs CPU; all 11 examples on
 cuda:0 including generation (25 min CPU -> 19 s GPU for the breast-cancer
 benchmark) and imputation.
 
+**The whole catalog serves CUDA (2026-08-22):** bundled ext graphs for
+tabpfn-v2, tabicl-v2, orion-bix, tabpfn-v2-5 and tabpfn-v3 as well. These are
+single_eval_pos models (inputs x, y only; y's LENGTH is the train/test
+split), so the CUDA plugin feeds y as the [1, train_size] prefix — the same
+rule the CPU engine applies — and they bundle **no MIGraphX variants**:
+bucketed compilation would need one compile per distinct train_size. GPU
+support matrix: CUDA = every built-in model; ROCm = tabfm-v1 + mitra
+(train_size-scalar models). Verified on a 4090: 5/5 classification models
+0/90 label diffs vs CPU, 4/4 regression pairs max |diff| <= 1.7e-06, plus
+both mitra controls. On CPU all 9 new pairs are byte-identical between the
+ext-data and injection paths. Known edge: a model staged from converted
+safetensors WITHOUT its manifest's .ckpt is invisible to tabfm_models()
+(the normal download+convert flow keeps both files).
+
 **.mxr cache correctness note:** the compiled-program cache key now embeds a
 hash of the graph's full path (tabfm_mxr_cache_key.hpp). The old
 filename-stem key let two models staging `graph_migraphx_<task>.onnx` share
