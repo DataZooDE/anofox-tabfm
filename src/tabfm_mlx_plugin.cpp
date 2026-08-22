@@ -37,6 +37,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -335,6 +337,49 @@ private:
 //! tensor map is transform-free (resources/tensor_map_mitra_*.json is the
 //! identity), so no renaming happens here -- which is exactly why this plugin
 //! can read the same cached file every other backend reads.
+//! The numeric mode, mapped from anofox_tabfm_gpu_precision.
+//!
+//! The quantization boundary is deliberate and narrow: only the transformer
+//! STACK (`layers.*`) and the activations flowing through it are reduced. The
+//! quantile embedding, the input/label embeddings and the final projection stay
+//! fp32, because the first is a parameter-free rank statistic whose sort and
+//! division are the one place a half-precision rounding error changes a rank
+//! rather than a digit, and the last two bracket the logits the caller reads.
+//! This mirrors quantizing the MIGraphX program while leaving the surrounding
+//! graph alone.
+enum class Precision { FP32, BF16, FP16 };
+
+Precision ParsePrecision(const std::string &value) {
+	// Empty means "the engine did not set one" -- the CPU path leaves it blank.
+	if (value.empty() || value == "fp32") {
+		return Precision::FP32;
+	}
+	if (value == "bf16") {
+		return Precision::BF16;
+	}
+	if (value == "fp16") {
+		return Precision::FP16;
+	}
+	// P2 in docs/GPU_HARDENING_PLAN.md was the CUDA plugin silently ignoring
+	// this setting and always running fp32. Every mode must happen or error.
+	// 'tf32' is a CUDA tensor-core rounding mode with no Metal equivalent, so
+	// it is refused here rather than quietly delivering fp32 under its name.
+	throw MlxError("precision '" + value +
+	               "' is not available on the mlx backend. Use 'fp32' (default, the reference answer), 'bf16' or "
+	               "'fp16'; 'tf32' is a CUDA tensor-core mode with no Metal equivalent.");
+}
+
+mlx_dtype ComputeDtype(Precision p) {
+	switch (p) {
+	case Precision::BF16:
+		return MLX_BFLOAT16;
+	case Precision::FP16:
+		return MLX_FLOAT16;
+	default:
+		return MLX_FLOAT32;
+	}
+}
+
 class MitraWeights {
 public:
 	//! `load_stream` must be a CPU stream: MLX's Load op has no GPU
@@ -415,9 +460,36 @@ private:
 // ---------------------------------------------------------------------------
 class MitraForward {
 public:
-	MitraForward(const MitraWeights &w, const Ops &ops, int n_heads, bool classification)
+	MitraForward(const MitraWeights &w, const Ops &ops, int n_heads, bool classification, Precision precision)
 	    : w_(w), o_(ops), n_heads_(n_heads), classification_(classification), n_layers_(w.NLayers()),
-	      dim_(w.Dim()), dim_output_(w.DimOutput()) {
+	      dim_(w.Dim()), dim_output_(w.DimOutput()), precision_(precision),
+	      compute_dtype_(ComputeDtype(precision)) {
+		if (precision_ == Precision::FP32) {
+			return;
+		}
+		// Cast the stack's parameters ONCE, at load, and force the cast to
+		// complete. Casting inside the forward would re-do ~400 conversions on
+		// every call and, because MLX is lazy, would also rebuild that subgraph
+		// per predict -- turning a numeric mode meant to be faster into a mode
+		// that is reliably slower.
+		static const char *kSuffixes[] = {"attention1.q", "attention1.k", "attention1.v", "attention1.o",
+		                                  "attention2.q", "attention2.k", "attention2.v", "attention2.o",
+		                                  "linear1",      "linear2",      "linear3",      "linear4",
+		                                  "layer_norm1",  "layer_norm2",  "layer_norm3",  "layer_norm4"};
+		for (int i = 0; i < n_layers_; i++) {
+			const std::string p = "layers." + std::to_string(i) + ".";
+			for (const char *suffix : kSuffixes) {
+				for (const char *part : {".weight", ".bias"}) {
+					const std::string name = p + suffix + part;
+					if (!w_.Has(name)) {
+						continue;
+					}
+					Arr cast = o_.AsType(w_[name], compute_dtype_);
+					Ok(mlx_array_eval(cast.get()), "eval cast weight");
+					cast_cache_.emplace(name, std::move(cast));
+				}
+			}
+		}
 	}
 
 	int n_layers() const {
@@ -466,8 +538,22 @@ public:
 		Arr feat_key_mask = o_.Reshape(o_.Where(pad_feat_full, neg, zero), {1, 1, 1, h + 1});
 		Arr row_key_mask = o_.Reshape(o_.Where(pad_obs, neg, zero), {1, 1, 1, t});
 
+		// Enter the reduced-precision region (see Precision). The masks are cast
+		// too: an additive -1e9 sentinel that stays fp32 would silently promote
+		// every attention score back to fp32 through broadcasting, so the mode
+		// would appear to work while delivering fp32 speed and fp32 answers --
+		// the "silently ignored" failure P2 records for the CUDA plugin.
+		if (precision_ != Precision::FP32) {
+			support = o_.AsType(support, compute_dtype_);
+			query = o_.AsType(query, compute_dtype_);
+			row_key_mask = o_.AsType(row_key_mask, compute_dtype_);
+			feat_key_mask = o_.AsType(feat_key_mask, compute_dtype_);
+		}
 		for (int i = 0; i < n_layers_; i++) {
 			Layer(i, support, query, row_key_mask, feat_key_mask);
+		}
+		if (precision_ != Precision::FP32) {
+			query = o_.AsType(query, MLX_FLOAT32);
 		}
 
 		query = o_.LayerNorm(query, w_["final_layer_norm.weight"], w_["final_layer_norm.bias"]);
@@ -480,6 +566,19 @@ public:
 
 private:
 	static constexpr int kZero = 0;
+
+	//! A stack parameter, already in the compute dtype. Everything outside the
+	//! transformer stack keeps reading w_ directly and stays fp32.
+	Arr LW(const std::string &name) const {
+		auto it = cast_cache_.find(name);
+		if (it != cast_cache_.end()) {
+			// mlx arrays are refcounted handles; hand back an owning copy.
+			Arr copy;
+			Ok(mlx_array_set(copy.out(), it->second.get()), "share cast weight");
+			return copy;
+		}
+		return w_[name];
+	}
 
 	//! Tab2DQuantileEmbeddingX: rank normalization over VALID support rows.
 	void QuantileEmbedding(const Arr &x, const Arr &pad_obs, Arr &xs_out, Arr &xq_out) const {
@@ -576,18 +675,18 @@ private:
 		const int tk = key.dim(1);
 		const int hd = dim_ / n_heads_;
 		std::vector<int> to_heads = {0, 2, 1, 3};
-		Arr q = o_.Transpose(o_.Reshape(o_.Linear(query, w_[prefix + ".q.weight"], w_[prefix + ".q.bias"]),
+		Arr q = o_.Transpose(o_.Reshape(o_.Linear(query, LW(prefix + ".q.weight"), LW(prefix + ".q.bias")),
 		                                {b, tq, n_heads_, hd}),
 		                     to_heads);
 		Arr k = o_.Transpose(
-		    o_.Reshape(o_.Linear(key, w_[prefix + ".k.weight"], w_[prefix + ".k.bias"]), {b, tk, n_heads_, hd}),
+		    o_.Reshape(o_.Linear(key, LW(prefix + ".k.weight"), LW(prefix + ".k.bias")), {b, tk, n_heads_, hd}),
 		    to_heads);
 		Arr v = o_.Transpose(
-		    o_.Reshape(o_.Linear(key, w_[prefix + ".v.weight"], w_[prefix + ".v.bias"]), {b, tk, n_heads_, hd}),
+		    o_.Reshape(o_.Linear(key, LW(prefix + ".v.weight"), LW(prefix + ".v.bias")), {b, tk, n_heads_, hd}),
 		    to_heads);
 		Arr o = o_.Sdpa(q, k, v, mask, 1.0f / std::sqrt(static_cast<float>(hd)));
 		o = o_.Reshape(o_.Transpose(o, to_heads), {b, tq, dim_});
-		return o_.Linear(o, w_[prefix + ".o.weight"], w_[prefix + ".o.bias"]);
+		return o_.Linear(o, LW(prefix + ".o.weight"), LW(prefix + ".o.bias"));
 	}
 
 	void Layer(int i, Arr &support, Arr &query, const Arr &row_key_mask, const Arr &feat_key_mask) const {
@@ -598,11 +697,11 @@ private:
 		std::vector<int> swap = {0, 2, 1, 3};
 
 		auto ln = [&](const char *name, const Arr &t) {
-			return o_.LayerNorm(t, w_[p + name + ".weight"], w_[p + name + ".bias"]);
+			return o_.LayerNorm(t, LW(p + name + ".weight"), LW(p + name + ".bias"));
 		};
 		auto mlp = [&](const Arr &t, const char *a, const char *c) {
-			Arr hidden = o_.Gelu(o_.Linear(t, w_[p + a + ".weight"], w_[p + a + ".bias"]));
-			return o_.Linear(hidden, w_[p + c + ".weight"], w_[p + c + ".bias"]);
+			Arr hidden = o_.Gelu(o_.Linear(t, LW(p + a + ".weight"), LW(p + a + ".bias")));
+			return o_.Linear(hidden, LW(p + c + ".weight"), LW(p + c + ".bias"));
 		};
 
 		// --- attention across observations (rows); keys are the support rows ---
@@ -644,6 +743,9 @@ private:
 	int n_layers_;
 	int dim_;
 	int dim_output_;
+	Precision precision_;
+	mlx_dtype compute_dtype_;
+	std::map<std::string, Arr> cast_cache_; // layers.* in compute dtype, empty for fp32
 };
 
 // ---------------------------------------------------------------------------
@@ -658,9 +760,10 @@ std::string JoinPath(const std::string &dir, const std::string &leaf) {
 
 class MlxPluginBackend {
 public:
-	MlxPluginBackend(const std::string &weights_path, const std::string &arch, bool classification, int n_heads)
+	MlxPluginBackend(const std::string &weights_path, const std::string &arch, bool classification, int n_heads,
+	                 Precision precision)
 	    : gpu_(/*gpu=*/true), cpu_(/*gpu=*/false), ops_(gpu_.s), weights_(weights_path, cpu_.s),
-	      forward_(weights_, ops_, n_heads, classification), arch_(arch) {
+	      forward_(weights_, ops_, n_heads, classification, precision), arch_(arch) {
 	}
 
 	const Ops &ops() const {
@@ -696,27 +799,49 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		return nullptr;
 	}
 	try {
+		// `arch` carries "<model>-<task>" for this backend (see the field's note
+		// in tabfm_plugin_abi.h). The forward is hand-ported, so an arch this
+		// plugin does not implement must fail HERE: running mitra's math over
+		// another model's weights would return confident nonsense, which is
+		// strictly worse than an error. Keep the accepted set in step with
+		// MlxSupportsModel() in tabfm_model_spec.hpp -- the engine refuses first
+		// and this is the backstop for anyone loading the plugin directly.
 		const std::string arch = params->arch ? params->arch : "";
-		// Hand-ported forward, so the plugin knows one architecture. Anything
-		// else must fail here rather than run mitra's math on other weights.
-		if (arch != "mitra" && arch != "mitra-classification" && arch != "mitra-regression") {
+		bool classification = true;
+		if (arch == "mitra" || arch == "mitra-classification") {
+			classification = true;
+		} else if (arch == "mitra-regression") {
+			classification = false;
+		} else {
 			throw MlxError("the mlx backend implements the 'mitra' architecture only, not '" + arch +
 			               "'. Use SET anofox_tabfm_model='mitra', or SET anofox_tabfm_device='cpu' to run " +
 			               arch + " through ONNX Runtime.");
 		}
-		const std::string precision = params->precision ? params->precision : "fp32";
-		if (precision != "fp32" && precision != "auto" && precision.empty() == false && precision != "default") {
-			throw MlxError("the mlx backend currently runs fp32 only, not '" + precision +
-			               "'. Use SET anofox_tabfm_precision='fp32'.");
-		}
+		const Precision precision = ParsePrecision(params->precision ? params->precision : "");
 		const std::string weights_dir = params->weights_dir ? params->weights_dir : "";
 		const std::string weights_path = JoinPath(weights_dir, "model.safetensors");
 
 		// graph_path is deliberately unused: MLX has no ONNX importer, so the
 		// forward is transcribed from mitra_model_patched.py rather than read
 		// from the graph. Kept in the ABI because every other backend needs it.
-		const bool classification = arch != "mitra-regression";
-		auto *backend = new MlxPluginBackend(weights_path, arch, classification, /*n_heads=*/4);
+		auto *backend = new MlxPluginBackend(weights_path, arch, classification, /*n_heads=*/4, precision);
+
+		// The checkpoint decides the head, not the caller: a regression request
+		// pointed at classification weights (or vice versa) would otherwise run
+		// the wrong y-embedding over tensors that happen to load, and produce
+		// numbers rather than an error.
+		const int dim_output = backend->forward().dim_output();
+		if (classification && dim_output <= 1) {
+			delete backend;
+			throw MlxError("these weights have a single output and are a REGRESSION checkpoint, but "
+			               "classification was requested. Check the cached model.safetensors matches the task.");
+		}
+		if (!classification && dim_output != 1) {
+			delete backend;
+			throw MlxError("these weights have " + std::to_string(dim_output) +
+			               " outputs and are a CLASSIFICATION checkpoint, but regression was requested. Check "
+			               "the cached model.safetensors matches the task.");
+		}
 		return backend;
 	} catch (const std::exception &e) {
 		SetError(err, err_len, std::string("anofox_tabfm mlx plugin: ") + e.what());

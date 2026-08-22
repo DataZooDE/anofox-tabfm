@@ -410,6 +410,41 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		}
 	}
 
+	SECTION("mlx is a plugin lane, explicit-only") {
+		TabFMDeviceInfo mlx0;
+		mlx0.device_id = "mlx:0";
+		mlx0.ep = "MlxBackend";
+		mlx0.name = "Apple M3";
+		mlx0.arch = "Apple M3";
+		mlx0.usable = true;
+
+		// Like cuda and rocm since docs/DYNAMIC_BACKENDS.md phases 1 and 3, and
+		// UNLIKE coreml: MLX runs in a dlopen'd plugin with its own runtime, so
+		// every build can drive it and no flavor gate applies. A cpu-flavor
+		// build must therefore resolve it rather than complain about the build.
+		vector<TabFMDeviceInfo> devices {cpu, mlx0};
+		REQUIRE(ResolveDevice("mlx", devices, false, false, false).device_id == "mlx:0");
+		REQUIRE(ResolveDevice("cpu", devices, false, false, false).device_id == "cpu");
+
+		// Explicit opt-in only. Auto-selecting a device whose plugin is fetched
+		// separately would turn a working CPU install into a failing one the
+		// moment the extension is run on Apple Silicon -- the same reasoning
+		// that keeps cuda and rocm out of 'auto'.
+		REQUIRE(ResolveDevice("auto", devices, false, false, false).device_id == "cpu");
+
+		// No Apple Silicon -> a hardware message, never a flavor one.
+		vector<TabFMDeviceInfo> only_cpu {cpu};
+		try {
+			ResolveDevice("mlx", only_cpu, false, false, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("no usable 'mlx' device") != string::npos);
+			REQUIRE(message.find("tabfm_devices()") != string::npos);
+			REQUIRE(message.find("does not carry") == string::npos);
+		}
+	}
+
 	SECTION("cuda flavor with a usable device") {
 		vector<TabFMDeviceInfo> devices {cpu, cuda0};
 		REQUIRE(ResolveDevice("cuda", devices, true, false).device_id == "cuda:0");

@@ -83,11 +83,46 @@ def _mark(key: str, value: object) -> None:
     print(f"SM3_{key}={value}", flush=True)
 
 
+def _run_all(api, weights_dir, g, precision: str) -> dict:
+    """Every golden case at `precision`, returning raw logits per case."""
+    err = ctypes.create_string_buffer(1024)
+    params = CreateParams(graph_path=b"", weights_dir=str(weights_dir).encode(), cache_dir=b"",
+                          arch=b"mitra-classification", precision=precision.encode(), mxr_source=b"",
+                          device_ordinal=0)
+    handle = api.create(ctypes.byref(params), err, ctypes.sizeof(err))
+    if not handle:
+        raise SpikeError(f"create({precision}) failed: {err.value.decode()}")
+    out = {}
+    for name in sorted({k.split("__")[0] for k in g.files}):
+        x = np.ascontiguousarray(g[f"{name}__x"], dtype=np.float32)
+        y = np.ascontiguousarray(g[f"{name}__y"], dtype=np.float32)
+        train_size, d = (int(v) for v in g[f"{name}__meta"])
+        ri = RunInput(x=x.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                      y=y.ctypes.data_as(ctypes.POINTER(ctypes.c_float)),
+                      cat_mask=None, t=x.shape[1], h=x.shape[2], train_size=train_size, d=d)
+        ro = RunOutput()
+        if api.run(handle, ctypes.byref(ri), ctypes.byref(ro), err, ctypes.sizeof(err)) != 0:
+            raise SpikeError(f"{name}: run({precision}) failed: {err.value.decode()}")
+        shape = [ro.shape[i] for i in range(ro.shape_len)]
+        out[name] = np.ctypeslib.as_array(ro.logits, shape=(ro.logits_len,)).copy().reshape(shape)
+        api.free_output(ctypes.byref(ro))
+    api.destroy(handle)
+    return out
+
+
+def _mark_unused():
+    pass
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 1:
-        raise SpikeError("usage: python -m mlx_spike.sm3_abi <plugin.dylib>")
+    if not argv or len(argv) > 2:
+        raise SpikeError("usage: python -m mlx_spike.sm3_abi <plugin.dylib> [precision]")
     plugin_path = Path(argv[0]).resolve()
+    # Second argument drives the P2 check below: a precision mode that is
+    # accepted but silently ignored is indistinguishable from one that works,
+    # unless the LOGITS are compared rather than the predicted class.
+    precision = argv[1] if len(argv) == 2 else "fp32"
 
     print("=== S-M3: the built plugin, driven through tabfm_plugin_abi.h ===", flush=True)
     lib = ctypes.CDLL(str(plugin_path))
@@ -112,7 +147,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- create --------------------------------------------------------------
     params = CreateParams(graph_path=b"", weights_dir=str(weights_dir).encode(), cache_dir=b"",
-                          arch=b"mitra", precision=b"fp32", mxr_source=b"", device_ordinal=0)
+                          arch=b"mitra-classification", precision=precision.encode(), mxr_source=b"",
+                          device_ordinal=0)
+    _mark("PRECISION", precision)
     t0 = time.perf_counter()
     handle = api.create(ctypes.byref(params), err, ctypes.sizeof(err))
     if not handle:
@@ -126,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
 
     g = np.load(weights_dir / GOLDEN)
     worst_prob, worst_logit, failed = 0.0, 0.0, []
+    got_by_case: dict[str, np.ndarray] = {}
     for name in sorted({k.split("__")[0] for k in g.files}):
         x = np.ascontiguousarray(g[f"{name}__x"], dtype=np.float32)
         y = np.ascontiguousarray(g[f"{name}__y"], dtype=np.float32)
@@ -147,10 +185,19 @@ def main(argv: list[str] | None = None) -> int:
         shape = [ro.shape[i] for i in range(ro.shape_len)]
         got = np.ctypeslib.as_array(ro.logits, shape=(ro.logits_len,)).copy().reshape(shape)
         api.free_output(ctypes.byref(ro))  # plugin owns the buffers; it frees them
+        got_by_case[name] = got
 
         c = compare(reference[:, train_size:, :], got[:, train_size:, :])
-        ok = (c.prob_max_abs <= PROB_TOL and c.max_abs <= LOGIT_ABS_TOL
-              and c.argmax_agreement == 1.0)
+        # Tier the bar by precision, as tools/gpu_test/equivalence.py's header
+        # states: fp32 is the strict lane where a device switch must not change
+        # the answer, while bf16/fp16 are judged on CLASS AGREEMENT because
+        # losing mantissa bits is the entire point of asking for them. Holding
+        # bf16 to the fp32 tolerance would mark a correctly-working mode failed.
+        if precision == "fp32":
+            ok = (c.prob_max_abs <= PROB_TOL and c.max_abs <= LOGIT_ABS_TOL
+                  and c.argmax_agreement == 1.0)
+        else:
+            ok = c.argmax_agreement == 1.0
         worst_prob = max(worst_prob, c.prob_max_abs)
         worst_logit = max(worst_logit, c.max_abs)
         if not ok:
@@ -159,6 +206,20 @@ def main(argv: list[str] | None = None) -> int:
 
     api.destroy(handle)
     _mark("DESTROY_OK", True)
+
+    # P2 guard (docs/GPU_HARDENING_PLAN.md): the CUDA plugin once accepted this
+    # setting and always ran fp32. Reduced precision MUST move the logits; if
+    # bf16 reproduced fp32 bit-for-bit the mode would be a no-op wearing its
+    # name. Compared against the fp32 run's own logits, not the ORT golden.
+    if precision != "fp32":
+        ref32 = _run_all(api, weights_dir, g, "fp32")
+        moved = max(float(np.abs(ref32[k] - got_by_case[k]).max()) for k in got_by_case)
+        _mark("LOGIT_SHIFT_VS_FP32", f"{moved:.3e}")
+        _mark("PRECISION_ACTUALLY_APPLIED", moved > 0.0)
+        if moved == 0.0:
+            _mark("RESULT", "FAIL(precision silently ignored -- identical to fp32)")
+            return 1
+    _mark("BAR", "fp32: prob<=1e-4 + argmax" if precision == "fp32" else "reduced: argmax agreement only")
     _mark("WORST_PROB_ABS", f"{worst_prob:.3e}")
     _mark("WORST_LOGIT_ABS", f"{worst_logit:.3e}")
     if failed:

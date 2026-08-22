@@ -166,6 +166,24 @@ inline bool IsExplicitGpuRequest(const string &device_setting, const string &bac
 	return backend == "rocm" && device_setting == "migraphx";
 }
 
+//! Models the Apple MLX backend implements (docs/MLX_PLAN.md).
+//!
+//! This list exists because MLX is the one backend whose coverage is not
+//! implied by what we ship: CUDA and ROCm execute a bundled ONNX graph, so
+//! "is there a graph for this model" answers the question. MLX has no ONNX
+//! importer — none exists — so its forward is hand-transcribed from each
+//! model's reference implementation, and coverage grows one model FAMILY at a
+//! time. Keep this in step with the `arch` dispatch in tabfm_mlx_plugin.cpp:
+//! the engine's check and the plugin's refusal must agree, or one of them
+//! produces a message the other contradicts.
+inline bool MlxSupportsModel(const string &model) {
+	return model == "mitra";
+}
+
+inline string MlxSupportedModels() {
+	return "'mitra'";
+}
+
 //! The error for "you asked for this GPU but the model ships no graph it can
 //! run". Found on hardware (examples on a pod): the previous path surfaced
 //! "SET anofox_tabfm_ep_path" — the one thing already configured. graph_kind

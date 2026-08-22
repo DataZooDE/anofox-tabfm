@@ -81,7 +81,22 @@ typedef struct {
 } TabFMPluginRunOutput;
 
 /*! Everything a backend needs to construct itself. Strings are borrowed for the
- *  duration of the create call only. */
+ *  duration of the create call only.
+ *
+ *  Two fields are BACKEND-DEFINED rather than universal, because what a backend
+ *  needs to identify its target differs by kind:
+ *
+ *    - `arch` is a compute architecture for the GPU plugins ("gfx1201",
+ *      "sm_89"), which select kernels by it. The MLX backend needs no such
+ *      selector — Apple Silicon is one target — but it does need to know WHICH
+ *      hand-ported forward to run, since it executes no graph, so it reads
+ *      "<model>-<task>" (e.g. "mitra-classification") there instead.
+ *    - `graph_path` is empty for a backend that runs no graph. MLX is the only
+ *      such backend today; it mmaps `weights_dir`'s safetensors directly.
+ *
+ *  A backend must reject an `arch` it does not understand rather than guess:
+ *  running one model's math over another's weights returns confident nonsense,
+ *  which is strictly worse than an error. */
 typedef struct {
 	const char *graph_path;
 	const char *weights_dir;

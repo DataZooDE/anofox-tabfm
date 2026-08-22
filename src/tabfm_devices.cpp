@@ -426,6 +426,47 @@ void ProbeCoreMLDevices(vector<TabFMDeviceInfo> &devices) {
 }
 #endif // TABFM_EP_COREML
 
+//===----------------------------------------------------------------------===//
+// Apple MLX discovery (docs/MLX_PLAN.md)
+//
+// Unlike the CUDA and ROCm probes there is no driver to interrogate and no SDK
+// to dlopen: MLX runs on the SoC's own GPU, so "is there hardware" reduces to
+// "is this Apple Silicon". That is a compile-time platform test plus a runtime
+// SoC-name check, which is why this probe is compiled into every build rather
+// than flavor-gated -- the plugin that does the work is fetched separately, but
+// discovery must be able to say the hardware is there.
+//
+// One logical `mlx:0` row, like coreml. Rosetta is the case worth being careful
+// about: an x86_64 process on an Apple Silicon machine reads an Apple SoC name
+// while being unable to load an arm64 plugin, so usable is gated on the
+// compiled architecture, not just the reported chip.
+//===----------------------------------------------------------------------===//
+#if defined(__APPLE__)
+void ProbeMlxDevices(vector<TabFMDeviceInfo> &devices) {
+	const string soc = CpuModelName(); // e.g. "Apple M3"
+	const bool apple_silicon = StringUtil::Contains(StringUtil::Lower(soc), "apple");
+#if defined(__aarch64__) || defined(__arm64__)
+	const bool arm_process = true;
+#else
+	const bool arm_process = false; // x86_64 build (or under Rosetta): no arm64 plugin
+#endif
+	if (!apple_silicon) {
+		return; // Intel Mac -> no mlx row at all; there is no such hardware
+	}
+	TabFMDeviceInfo device;
+	device.device_id = "mlx:0";
+	device.ep = "MlxBackend";
+	device.name = soc;
+	device.arch = soc;
+	device.vram_total = -1; // unified memory; no discrete VRAM semantics
+	device.vram_free = -1;
+	device.driver = "";
+	device.usable = arm_process;
+	device.device_ordinal = 0;
+	devices.push_back(std::move(device));
+}
+#endif // __APPLE__
+
 } // anonymous namespace
 
 //===----------------------------------------------------------------------===//
@@ -447,6 +488,9 @@ vector<TabFMDeviceInfo> DiscoverDevices() {
 #endif
 #ifdef TABFM_EP_COREML
 	ProbeCoreMLDevices(devices);
+#endif
+#if defined(__APPLE__)
+	ProbeMlxDevices(devices);
 #endif
 	return devices;
 }
@@ -479,7 +523,7 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 		}
 		return MakeCpuDevice();
 	}
-	if (setting == "cuda" || setting == "rocm" || setting == "coreml") {
+	if (setting == "cuda" || setting == "rocm" || setting == "coreml" || setting == "mlx") {
 		// Both GPU lanes are carried by every build. Since
 		// docs/DYNAMIC_BACKENDS.md phases 1 and 3 neither is a compile-time
 		// flavor: each runs in a dlopen'd plugin with its own runtime, and the
@@ -566,7 +610,8 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 		return MakeCpuDevice();
 	}
 	throw InvalidInputException("anofox_tabfm: unknown device setting '" + setting_value +
-	                            "' — anofox_tabfm_device must be one of 'auto', 'cpu', 'cuda', 'rocm', 'coreml'");
+	                            "' — anofox_tabfm_device must be one of 'auto', 'cpu', 'cuda', 'rocm', 'coreml', "
+	                            "'mlx'");
 }
 
 //===----------------------------------------------------------------------===//

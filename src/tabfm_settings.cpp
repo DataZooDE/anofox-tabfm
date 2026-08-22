@@ -15,9 +15,9 @@ void ValidateDevice(ClientContext &context, SetScope scope, Value &parameter) {
 	}
 	auto value = StringUtil::Lower(StringValue::Get(parameter));
 	if (value != "auto" && value != "cpu" && value != "cuda" && value != "rocm" && value != "migraphx" &&
-	    value != "coreml") {
-		throw InvalidInputException("anofox_tabfm_device must be one of 'auto', 'cpu', 'cuda', 'rocm', 'coreml' "
-		                            "('migraphx' is accepted as an alias for 'rocm'), got '%s'",
+	    value != "coreml" && value != "mlx") {
+		throw InvalidInputException("anofox_tabfm_device must be one of 'auto', 'cpu', 'cuda', 'rocm', 'coreml', "
+		                            "'mlx' ('migraphx' is accepted as an alias for 'rocm'), got '%s'",
 		                            value);
 	}
 	parameter = Value(value == "migraphx" ? "rocm" : value);
@@ -162,8 +162,9 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
 
 	config.AddExtensionOption("anofox_tabfm_device",
-	                          "Execution device: auto|cpu|cuda|rocm|coreml ('migraphx' alias). Each flavor errors "
-	                          "helpfully on devices it does not carry.",
+	                          "Execution device: auto|cpu|cuda|rocm|coreml|mlx ('migraphx' alias). cuda, rocm and mlx "
+	                          "run in dlopen'd plugins and are explicit opt-ins ('auto' never selects them); coreml "
+	                          "is flavor-gated and errors helpfully where the build does not carry it.",
 	                          LogicalType::VARCHAR, Value("auto"), ValidateDevice);
 
 	config.AddExtensionOption("anofox_tabfm_ep_path",

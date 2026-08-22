@@ -981,6 +981,82 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 	                       ctx.gpu_precision, NumericCast<idx_t>(ctx.max_sessions));
 }
 
+// Apple MLX backend (docs/MLX_PLAN.md; spike verdicts in
+// docs/MLX_SPIKE_RESULTS.md). A plugin like the two above, but the resemblance
+// stops at the loader: MLX has no ONNX importer and none exists, so the plugin
+// runs a forward TRANSCRIBED from the model's reference implementation rather
+// than any graph we ship. Two consequences shape this function:
+//
+//   * there is no graph to select. SelectGpuGraph / StageBundledGraph /
+//     WeightsHeaderMatches have nothing to do here — the plugin mmaps the same
+//     cached safetensors every backend reads, addressed by tensor name.
+//   * it serves the models somebody has hand-ported, not every model with a
+//     graph. Asking for one it does not implement has to be an error naming
+//     what IS implemented, because the alternative — falling through to the
+//     CPU path — is the tier-4 "requested device quietly becomes CPU" failure.
+//
+// Since 'auto' never resolves to mlx (tabfm_devices.cpp keeps the plugin lanes
+// explicit), reaching here at all means the user asked for it by name, so every
+// failure below throws rather than returning nullptr.
+shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
+                                      const PredictContext &ctx) {
+	auto devices = DiscoverDevices();
+	auto device = ResolveDevice(ctx.device, devices);
+	if (!StringUtil::StartsWith(device.device_id, "mlx")) {
+		return nullptr; // not the MLX path
+	}
+	const string task_name = TabFMTaskName(resolved.manifest.task);
+	if (!MlxSupportsModel(resolved.manifest.model)) {
+		throw InvalidInputException(
+		    "anofox_tabfm: device 'mlx' cannot run model '" + resolved.manifest.model +
+		    "'. The Apple MLX backend implements a hand-ported forward per model family rather than executing a "
+		    "shipped ONNX graph, so it serves only: " +
+		    MlxSupportedModels() + ". SET anofox_tabfm_model='mitra', or SET anofox_tabfm_device='cpu' to run '" +
+		    resolved.manifest.model + "' through ONNX Runtime.");
+	}
+	if (ctx.ep_path.empty()) {
+		throw InvalidInputException(
+		    "anofox_tabfm: device 'mlx' was resolved but no backend plugin directory is configured. SET "
+		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_mlx_plugin.dylib (CALL "
+		    "tabfm_download_runtime('mlx') to fetch it).");
+	}
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_mlx_plugin.dylib");
+	const auto weights_dir = DirName(resolved.weights_path);
+
+	// `arch` is backend-defined (see tabfm_plugin_abi.h): the GPU plugins read a
+	// compute architecture there, but MLX's hardware needs no such selector —
+	// what it cannot infer is WHICH forward to run. So it carries "<model>-<task>".
+	const string arch = resolved.manifest.model + "-" + task_name;
+
+	TabFMPluginCreateParams params {};
+	params.graph_path = ""; // no graph: the forward is transcribed, not loaded
+	params.weights_dir = weights_dir.c_str();
+	params.cache_dir = ctx.cache_dir.c_str();
+	params.arch = arch.c_str();
+	params.precision = ctx.gpu_precision.c_str();
+	params.mxr_source = "";
+	params.device_ordinal = device.device_ordinal;
+	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
+
+	// Unlike the CUDA and ROCm registrations above, which report 0 bytes because
+	// their weights live in VRAM the host never counts, Apple Silicon's memory is
+	// UNIFIED: the plugin's tensors are ordinary resident pages of this process,
+	// competing with DuckDB's buffer manager for the same pool. Reporting 0 would
+	// make tabfm_models() claim a multi-hundred-MB session costs nothing, on the
+	// one backend where that number is real. (The anofox_tabfm_max_memory gates
+	// read process RSS rather than this field, so they already see MLX correctly
+	// -- arguably better than they see a discrete GPU.)
+	idx_t weight_bytes = 0;
+	try {
+		auto handle = fs.OpenFile(resolved.weights_path, FileFlags::FILE_FLAGS_READ);
+		weight_bytes = NumericCast<idx_t>(fs.GetFileSize(*handle));
+	} catch (const std::exception &) {
+		weight_bytes = 0; // size is a diagnostic, never a reason to fail a load
+	}
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, weight_bytes, false,
+	                       ctx.gpu_precision, NumericCast<idx_t>(ctx.max_sessions));
+}
+
 // The device a setting resolves to, memoized per distinct setting string.
 //
 // `DeviceMutex` must be keyed on this rather than on the setting, or two
@@ -1048,8 +1124,9 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	const string &wanted_device = ResolvedDeviceCached(ctx.device);
 	// gpu_precision only shapes GPU sessions; for CPU it is "" so flipping the
 	// setting does not rebuild a session it never influenced.
-	const bool wanted_is_gpu =
-	    StringUtil::StartsWith(wanted_device, "rocm") || StringUtil::StartsWith(wanted_device, "cuda");
+	const bool wanted_is_gpu = StringUtil::StartsWith(wanted_device, "rocm") ||
+	                           StringUtil::StartsWith(wanted_device, "cuda") ||
+	                           StringUtil::StartsWith(wanted_device, "mlx");
 	const string wanted_precision = wanted_is_gpu ? ctx.gpu_precision : "";
 
 	// Sessions cache per (model, device, precision) since P5 of
@@ -1066,6 +1143,16 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		// loaded. Fall through and rebuild the SAME (device, precision) entry —
 		// split and combined sessions of one configuration must not coexist,
 		// could not reach.
+	}
+
+	// Apple MLX runs no graph at all, so it sits OUTSIDE the want_split guard
+	// below on purpose. Inside it, a model shipping a split labelled-context
+	// pair would skip the MLX attempt and land on the CPU path — serving the
+	// CPU after the user named a device, which is the one outcome the tier-4
+	// contract rules out. Out here, such a model gets MlxSupportsModel's error
+	// instead, which says what is actually wrong.
+	if (auto gpu = TryMlxBackend(fs, state, resolved, ctx)) {
+		return gpu;
 	}
 
 	// The alternative backends below are driven by graphs compiled into the
