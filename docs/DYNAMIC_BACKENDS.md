@@ -692,6 +692,25 @@ CI runs tiers 1–4 on CPU. GPU tiers are opt-in — they need hardware CI does 
 have — and are run by hand via `tools/gpu_test/`, which is why that harness
 refuses to report CPU results as GPU.
 
+## Multi-model GPU serving (C1, 2026-08-22)
+
+The bundled-GPU-graph mechanism is model-keyed since C1: `BundledGpuGraphId`
++ `ExpectedWeightsHeaderShaFor` (tabfm_model_spec.hpp) gate one bundled
+ext/migraphx graph pair per model, mitra being the first beyond tabfm-v1
+(weight-free graphs in resources/, offsets baked against the HF safetensors
+by tools/make_external_graph.py and tools/make_migraphx_graph.py). The CUDA
+plugin binds inputs by the graph's declared names (mitra omits cat_mask).
+Verified on hardware: mitra fp32 on rocm:0 exact vs CPU; all 11 examples on
+cuda:0 including generation (25 min CPU -> 19 s GPU for the breast-cancer
+benchmark) and imputation.
+
+**.mxr cache correctness note:** the compiled-program cache key now embeds a
+hash of the graph's full path (tabfm_mxr_cache_key.hpp). The old
+filename-stem key let two models staging `graph_migraphx_<task>.onnx` share
+a compiled program — mitra on ROCm answered with tabfm-v1's program, 24/30
+query rows wrong, no error. Existing caches recompile once under new names;
+`anofox_tabfm_mxr_source` staging uses the new names too.
+
 ## Backend performance (measured 2026-08-21 on ORT 1.28; re-verified on 1.29)
 
 The 1.29 upgrade changed nothing measurable: the A3 round (2026-08-22,

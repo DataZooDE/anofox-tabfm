@@ -87,7 +87,7 @@ decision lands.
 
 ## Track C — close the gaps the evaluation measured
 
-- **C1 — GPU graphs for mitra** (then other models). The 2026-08-21 run:
+- **C1 — GPU graphs for mitra** ✅ complete, hardware-verified 2026-08-22 (see below). The 2026-08-21 run:
   every tabfm-v1 example passes on `cuda:0`; all six mitra-involved examples
   refuse (correctly, now with the honest error) because mitra ships no
   `ext_graph`/`migraphx_graph`. The P3 machinery (manifest keys,
@@ -97,6 +97,14 @@ decision lands.
   This is what unlocks GPU generation/imputation. Largest C item (~1–2 days,
   export-tooling work; U1 taught that MIGraphX cannot run plain ext graphs,
   so the migraphx variant is a distinct export, not a copy).
+  **Done:** four bundled weight-free graphs (ext+migraphx x clf+reg),
+  model-aware engine seams, CUDA plugin binds by graph inputs. Verified:
+  ROCm fp32 0/90 vs CPU (bf16 9/90, the quantize opt-in); CPU ext-data path
+  byte-identical; **all 11 examples pass on cuda:0** including generation
+  (generate_breast_cancer: 25 min CPU -> 19 s GPU) and imputation, both
+  models served-by-proven. Bonus catch: the .mxr cache collided across
+  models (filename-stem key) and silently served the wrong model's compiled
+  program -- fixed with a path-hashed key (tabfm_mxr_cache_key.hpp).
 - **C2 — ROCm cold-start UX.** Benchmark: warm ROCm is 20–60× CPU, but the
   first predict per (arch, precision, shape bucket) pays ~25 min of MIGraphX
   compile — worst exactly at the fp32 default. Smallest useful step:
