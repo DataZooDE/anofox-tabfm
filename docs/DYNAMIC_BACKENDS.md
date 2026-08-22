@@ -121,7 +121,17 @@ directly and never touches ORT's EP. What still uses that build is the fallback
 for tasks shipping no bundled migraphx graph, where `TryMIGraphXBackend`
 declines and the ORT session path appends the MIGraphX EP instead.
 
-### Phase 2 — ORT ≥ 1.28 (in progress)
+### Phase 2 — ORT ≥ 1.28 ✅ complete at 1.29.0 (2026-08-22)
+
+Every pin now names 1.29.0 — the vcpkg port (the mainline ORT for the shipped
+artifact), `TABFM_ORT_VERSION` for the prebuilt archives, the plugin's GPU
+core in `gpu_plugins.yml`, and `tabfm_download_runtime`'s wheel (whose
+filename shape changed at 1.29: `manylinux_2_28_x86_64` only). 1.29 resolves
+the provider-bridge global-ctor crash class recorded in
+`docs/UPSTREAM_ORT_ISSUES.md` (S5 measured the repro exiting clean). The
+SONAME rename is untouched: the SONAME is still `libonnxruntime.so.1`, only
+the zip member name moved to `libonnxruntime.so.1.29.0`. Historical notes
+below keep their 1.28 numbers deliberately.
 
 **The archive naming changed**, so this is not a version bump:
 

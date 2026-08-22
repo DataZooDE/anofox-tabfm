@@ -1,11 +1,12 @@
 # Upstream ONNX Runtime issue drafts (P8) — ready to file, not yet filed
 
-Status per S5 of `docs/GPU_HARDENING_PLAN.md`: the crash below **does not
-reproduce on the 1.29.0 wheel** (exit 0 on an A40), so both drafts are scoped
-as "affects ≤ 1.28.x, apparently resolved by 1.29" — worth filing only if
-maintainers still take 1.28.x fixes, or as a request to confirm the fix was
-intentional rather than incidental. Filing is an outward-facing action;
-these stay drafts until explicitly approved.
+Status per S5 of `docs/GPU_HARDENING_PLAN.md`, updated 2026-08-22: the crash
+below **does not reproduce on the 1.29.0 wheel** (exit 0 on an A40), and this
+project now pins 1.29.0 everywhere (phase 2 complete) — so we are no longer
+affected. Both drafts stay scoped "affects ≤ 1.28.x, apparently resolved by
+1.29"; filing would only serve other downstreams on 1.28.x or confirm the fix
+was intentional. Filing is an outward-facing action; these stay drafts until
+explicitly approved.
 
 ---
 
