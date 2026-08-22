@@ -387,8 +387,22 @@ drives libMIGraphX directly, with a compiled-program `.mxr` cache), and `coreml`
 where the graph is supported, CPU fallback otherwise). GPU builds
 link no vendor runtime — CUDA/cuDNN or ROCm resolve from your system, and
 `tabfm_devices()` reports what was found. GPU dtype is set by
-`anofox_tabfm_gpu_precision` (default `fp32` — strict CPU parity; faster modes are opt-in); `CALL tabfm_gpu_precompile(task)`
-warms a shape bucket ahead of the first predict (builds/caches the ROCm `.mxr`).
+`anofox_tabfm_gpu_precision` (default `fp32` — strict CPU parity; faster modes are opt-in).
+
+**ROCm first-run cost — plan for it.** MIGraphX compiles a program per
+(GPU arch, precision, shape bucket), and on the full-size model that compile is
+**~25 minutes** (measured, gfx1201, fp32 or bf16) — while every *later* predict
+in that bucket is sub-second. Two tools manage this:
+
+```sql
+CALL tabfm_gpu_precompile('classification');   -- warm the bucket now, on purpose
+SET anofox_tabfm_mxr_source = '/shared/mxr';   -- or stage programs compiled elsewhere
+```
+
+Precompile once per shape bucket you will use (the compiled `.mxr` persists in
+the weight cache across sessions); `mxr_source` lets a fleet share one
+machine's compiles. CUDA has no analogous cost (~30 s cold start, no long
+compile).
 Released cpu builds are served from the anofox extension repository
 (`SET custom_extension_repository = 'https://get.anofox.com'`) as well as from
 the DuckDB community repository.
