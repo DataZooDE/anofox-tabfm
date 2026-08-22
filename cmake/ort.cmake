@@ -42,11 +42,29 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
     set(_ort_ext "tgz")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "Darwin")
-    # The DuckDB extension matrix cross-builds osx_amd64 (OSX_BUILD_ARCH=x86_64)
-    # on an arm64 runner, so we cannot key off the host. The universal2 archive
-    # carries both slices → links for either target arch.
-    set(_ort_platform "osx-universal2")
+    # macOS is arm64-only, because upstream is. ONNX Runtime shipped
+    # osx-universal2 and osx-x86_64 through v1.23.2, published NO macOS assets
+    # at v1.24.0, and has shipped osx-arm64 alone from v1.25.0 on — so at the
+    # TABFM_ORT_VERSION this project needs (>= 1.28 for the CUDA phase) there is
+    # no Intel-macOS build to link against at any price.
+    #
+    # This retires the previous universal2 choice, whose comment read: "The
+    # DuckDB extension matrix cross-builds osx_amd64 (OSX_BUILD_ARCH=x86_64) on
+    # an arm64 runner, so we cannot key off the host." That is still true of the
+    # matrix; what changed is that the archive carrying both slices no longer
+    # exists. osx_amd64 is therefore dropped from the build matrix rather than
+    # silently producing a broken artifact.
+    set(_ort_platform "osx-arm64")
     set(_ort_ext "tgz")
+    if(DEFINED OSX_BUILD_ARCH AND NOT OSX_BUILD_ARCH STREQUAL "arm64")
+        # Fail loudly here rather than 404 inside FetchContent, where the error
+        # names a URL instead of the decision behind it.
+        message(FATAL_ERROR
+            "anofox_tabfm: OSX_BUILD_ARCH='${OSX_BUILD_ARCH}' is not supported. "
+            "ONNX Runtime ships no macOS x86_64 or universal2 archive after "
+            "v1.23.2, so Intel macOS cannot be built at ORT ${TABFM_ORT_VERSION}. "
+            "Build for arm64, or set TABFM_ORT_URL to a self-hosted archive.")
+    endif()
 elseif(WIN32)
     set(_ort_platform "win-x64")
     set(_ort_ext "zip")
