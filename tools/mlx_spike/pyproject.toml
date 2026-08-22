@@ -1,0 +1,43 @@
+# Spike vehicle for docs/MLX_PLAN.md (S-M1..S-M4).
+#
+#   uv sync
+#   uv run sm1_env        # environment + Metal proof + ORT CPU golden reference
+#   uv run sm2_parity     # MLX mitra forward vs the ORT CPU golden
+#   uv run sm4_bench      # warm per-predict latency, MLX vs ORT CPU
+#
+# This is Python only and never ships: it de-risks the math and the runtime
+# before src/tabfm_mlx_plugin.cpp exists. torch is here as a *third* opinion
+# when MLX and ORT disagree -- mitra_model_patched.py is the authority on what
+# the forward is supposed to compute, and it is a torch module.
+[project]
+name = "mlx-spike"
+version = "0.1.0"
+description = "anofox-tabfm Apple MLX backend spikes: feasibility, parity, performance"
+requires-python = ">=3.11"
+dependencies = [
+    "mlx>=0.32",
+    "numpy",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "safetensors",
+    "torch>=2.6",
+    "huggingface_hub",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[project.scripts]
+sm1_env = "mlx_spike.sm1_env:main"
+sm2_parity = "mlx_spike.sm2_parity:main"
+sm4_bench = "mlx_spike.sm4_bench:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mlx_spike"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

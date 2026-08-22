@@ -13,6 +13,25 @@ Written 2026-08-22, before any code. Everything below that is not marked
 GPU-hardening work earned that rule (three of its plan's claims died on
 contact with hardware).
 
+> **Status — see `docs/MLX_SPIKE_RESULTS.md` for the verdicts.** S-M1, S-M2 and
+> S-M4 are executed on an M3; S-M3 is next. Three of this plan's hypotheses
+> died on contact, exactly as the paragraph above anticipated, and the sections
+> below are left as written so the corrections stay legible:
+>
+> 1. **Route 1 does not exist.** There is no ONNX→MLX importer —
+>    `ml-explore/mlx-onnx` is an empty placeholder repo, and the `mlx-onnx` name
+>    on PyPI is an unrelated project that exports in the opposite direction.
+>    The hand-port (route 2) is the only path; it took hours, not 1–2 days.
+> 2. **The parity tolerance below is unmeetable, by anything.** "rtol 1e-4" on
+>    logits is failed by the torch reference implementation against its own ONNX
+>    export (9.3e-04). Parity is now judged on post-softmax probabilities plus
+>    argmax. MLX passes, and is closer to the reference than ORT is.
+> 3. **Per-shape compile cost is a non-issue** (217 ms, not ROCm's minutes), so
+>    the shape-bucket / precompile machinery must *not* be generalized to MLX.
+>
+> Also obsolete: "no Apple Silicon is available to this environment". The work
+> now runs directly on an M3, so the spikes are executed rather than prepared.
+
 ## What is already in place (known, no work)
 
 - **The plugin ABI is platform-neutral C** (`tabfm_plugin_abi.h`, abi_version
