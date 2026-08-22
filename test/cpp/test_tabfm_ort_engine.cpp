@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 #include <cstring>
 #include <fstream>
 #include <unordered_map>
@@ -322,10 +323,28 @@ TEST_CASE("tabfm_devices: discovery always yields the usable cpu row", "[tabfm][
 	REQUIRE(cpu.vram_total == -1);
 	REQUIRE(cpu.vram_free == -1);
 	REQUIRE(cpu.usable);
-#if !defined(TABFM_EP_CUDA) && !defined(TABFM_EP_MIGRAPHX)
-	// cpu flavor: exactly the one row
-	REQUIRE(devices.size() == 1);
-#endif
+
+	// There is deliberately NO "cpu flavor sees exactly one row" assertion any
+	// more. It used to be here, and it encoded the bug: the GPU probes were
+	// compiled only into their own flavor, so the shipped cpu artifact could not
+	// see a card even with a working backend plugin installed — which defeats
+	// the point of docs/DYNAMIC_BACKENDS.md. Every flavor probes now, so the row
+	// count is a property of the MACHINE and cannot be asserted here.
+	//
+	// What must hold regardless of hardware: cpu is first, ids are unique, and
+	// every discovered row is self-describing enough to act on.
+	std::set<string> ids;
+	for (auto &device : devices) {
+		INFO("device " << device.device_id);
+		REQUIRE(!device.device_id.empty());
+		REQUIRE(!device.ep.empty());
+		REQUIRE(ids.insert(device.device_id).second); // no duplicates
+		if (device.device_id != "cpu") {
+			// A GPU row exists because a driver enumerated it, so it must carry
+			// the ordinal the backends address it by.
+			REQUIRE(device.device_ordinal >= 0);
+		}
+	}
 }
 
 TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices]") {
@@ -350,22 +369,45 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		vector<TabFMDeviceInfo> devices {cpu};
 		REQUIRE(ResolveDevice("cpu", devices, false, false).device_id == "cpu");
 		REQUIRE(ResolveDevice("auto", devices, false, false).device_id == "cpu");
-		// requesting a GPU lane on the cpu flavor: actionable flavor error
+		// Requesting cuda on a cpu-flavor build is NOT a flavor error any more
+		// (docs/DYNAMIC_BACKENDS.md phase 3): CUDA is a downloadable plugin with
+		// its own ORT-GPU runtime, so every build can drive an NVIDIA card. What
+		// is wrong here is that this machine has no such card, and the message
+		// must say so rather than blaming the build.
 		try {
 			ResolveDevice("cuda", devices, false, false);
 			FAIL("expected an exception");
 		} catch (std::exception &error) {
 			string message = error.what();
-			REQUIRE(message.find("does not carry 'cuda'") != string::npos);
-			// The route must be one that exists: the repository serves the cpu
-			// flavor only, so the message names the from-source build instead,
-			// and must never point at the dead ext.anofox.com host (issue #25).
-			REQUIRE(message.find("TABFM_FLAVOR=cuda") != string::npos);
+			REQUIRE(message.find("no usable 'cuda' device") != string::npos);
+			REQUIRE(message.find("tabfm_devices()") != string::npos);
+			REQUIRE(message.find("does not carry") == string::npos);
+		}
+		// rocm is carried by every build too (its plugin is built independently
+		// of TABFM_FLAVOR), so with no AMD card present this is a hardware
+		// message, not a flavor one.
+		try {
+			ResolveDevice("rocm", devices, false, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("no usable 'rocm' device") != string::npos);
+			REQUIRE(message.find("does not carry") == string::npos);
+		}
+		// CoreML IS still a compile-time flavor — it is an ordinary ORT EP in
+		// this process — so it still reports as one, and must never point at the
+		// dead ext.anofox.com host (issue #25).
+		try {
+			ResolveDevice("coreml", devices, false, false, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("does not carry 'coreml'") != string::npos);
+			REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
 			REQUIRE(message.find("ext.anofox.com") == string::npos);
 			REQUIRE(message.find("get.anofox.com") != string::npos);
 			REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
 		}
-		REQUIRE_THROWS(ResolveDevice("rocm", devices, false, false));
 	}
 
 	SECTION("cuda flavor with a usable device") {
@@ -375,6 +417,57 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		REQUIRE(ResolveDevice("cpu", devices, true, false).device_id == "cpu");
 		// carried flavor but the other GPU vendor requested
 		REQUIRE_THROWS(ResolveDevice("rocm", devices, true, false));
+	}
+
+	SECTION("runtime present but no such device, vs device present but no runtime") {
+		// Phase 0 of docs/DYNAMIC_BACKENDS.md: resolution asks whether the
+		// RUNTIME is usable here, not whether this build was compiled as a
+		// particular flavor. The two failures are different and a user can only
+		// act on the difference: install a driver, or fetch a runtime.
+		vector<TabFMDeviceInfo> only_cpu {cpu};
+		try {
+			// runtime available, but the machine has no NVIDIA device
+			ResolveDevice("cuda", only_cpu, true, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("tabfm_devices()") != string::npos);
+			// must NOT claim the build lacks cuda -- it does not
+			REQUIRE(message.find("does not carry") == string::npos);
+		}
+
+		// The mirror case used to be "device present but this build carries no
+		// cuda runtime". Since phase 3 there is no such state for CUDA: the
+		// runtime travels with the plugin, so a cpu-flavor build resolves a
+		// discovered, usable NVIDIA card successfully. (If the plugin has not
+		// been fetched, TryCudaBackend is what says so — resolution is not the
+		// place that knows.)
+		vector<TabFMDeviceInfo> with_gpu {cpu, cuda0};
+		REQUIRE(ResolveDevice("cuda", with_gpu, false, false).device_id == "cuda:0");
+
+		// Same for rocm, and for the same reason: a cpu-flavor build with the
+		// MIGraphX plugin present drives a discovered AMD card. Refusing here
+		// used to tell users to rebuild with TABFM_FLAVOR=rocm while the plugin
+		// was already at their ep_path — advice that could not fix anything.
+		vector<TabFMDeviceInfo> with_rocm {cpu, rocm0};
+		REQUIRE(ResolveDevice("rocm", with_rocm, false, false).device_id == "rocm:0");
+
+		// CoreML keeps the distinction, being an in-process ORT EP.
+		TabFMDeviceInfo apple;
+		apple.device_id = "coreml:0";
+		apple.ep = "CoreMLExecutionProvider";
+		apple.name = "Apple M3";
+		apple.usable = true;
+		vector<TabFMDeviceInfo> with_coreml {cpu, apple};
+		try {
+			ResolveDevice("coreml", with_coreml, false, false, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			REQUIRE(message.find("coreml") != string::npos);
+			// naming the discovered hardware is what makes this actionable
+			REQUIRE(message.find("runtime") != string::npos);
+		}
 	}
 
 	SECTION("cuda flavor, device present but not usable") {
@@ -431,7 +524,9 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 		REQUIRE(ResolveDevice("coreml", devices, false, false, true).device_id == "coreml:0");
 		REQUIRE(ResolveDevice("auto", devices, false, false, true).device_id == "coreml:0");
 		REQUIRE(ResolveDevice("cpu", devices, false, false, true).device_id == "cpu");
-		// carried coreml flavor but a GPU vendor requested: not carried -> throws
+		// A GPU vendor requested on the coreml flavor. rocm is not carried;
+		// cuda is always carried now but there is no NVIDIA card in this list,
+		// so both still throw — for different, and correct, reasons.
 		REQUIRE_THROWS(ResolveDevice("cuda", devices, false, false, true));
 		REQUIRE_THROWS(ResolveDevice("rocm", devices, false, false, true));
 	}
@@ -519,8 +614,16 @@ TEST_CASE("tabfm_ort_engine: coreml device on a non-coreml flavor gives the acti
 		FAIL("expected an exception");
 	} catch (std::exception &error) {
 		string message = error.what();
-		REQUIRE(message.find("does not carry 'coreml'") != string::npos);
+		// The message describes the situation that actually obtains — no GPU
+		// backend could serve this model, so it fell back to an ORT without that
+		// provider — rather than the old "this build does not carry coreml",
+		// which contradicted device resolution now that a plugin can carry a
+		// device the build was not compiled for.
+		REQUIRE(message.find("carries no 'coreml' execution provider") != string::npos);
+		REQUIRE(message.find("no GPU backend could serve this model") != string::npos);
+		// The routes offered must still be ones that exist (issue #25).
 		REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
+		REQUIRE(message.find("anofox_tabfm_ep_path") != string::npos);
 		REQUIRE(message.find("ext.anofox.com") == string::npos);
 		REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
 	}
@@ -648,6 +751,75 @@ shared_ptr<LoadedModel> MakeFakeModel(bool &freed_flag, const string &device = "
 
 } // anonymous namespace
 
+TEST_CASE("tabfm_state: a cached session is not reused for a different device", "[tabfm][ort_engine][state]") {
+	// Regression test for the bug where SET anofox_tabfm_device was ignored
+	// after the first predict of a session: LoadOrGetSession returned any
+	// cached session whose key matched, so
+	//
+	//     SET anofox_tabfm_device='cpu';   SELECT ... tabfm_classify(...);
+	//     SET anofox_tabfm_device='rocm';  SELECT ... tabfm_classify(...);  -- still cpu
+	//
+	// ran the second query on the CPU with no error and no indication. It was
+	// caught only after tabfm_models() gained a device column; before that it
+	// even made this repo's own GPU equivalence run a cpu-vs-cpu comparison
+	// that reported a perfect score.
+	//
+	// The device switch itself cannot be exercised here (CI has no GPU), so
+	// this asserts the predicate the engine now consults, which is where the
+	// omission lived.
+	LoadedModel cached;
+	cached.model_key = "classification";
+	cached.device_id = "cpu";
+	cached.split_context = false;
+	// CPU sessions carry "" — anofox_tabfm_gpu_precision does not shape them.
+
+	SECTION("same device and shape: reuse") {
+		REQUIRE(CanReuseSession(cached, false, "cpu", ""));
+	}
+	SECTION("different device: rebuild, whatever the shape") {
+		REQUIRE_FALSE(CanReuseSession(cached, false, "rocm:0", "fp32"));
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cuda:0", "fp32"));
+	}
+	SECTION("a second card of the same vendor is still a different device") {
+		cached.device_id = "cuda:0";
+		cached.precision = "fp32";
+		REQUIRE(CanReuseSession(cached, false, "cuda:0", "fp32"));
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cuda:1", "fp32"));
+	}
+	SECTION("different split shape: rebuild, as before") {
+		REQUIRE_FALSE(CanReuseSession(cached, true, "cpu", ""));
+	}
+	SECTION("both differ: rebuild") {
+		REQUIRE_FALSE(CanReuseSession(cached, true, "rocm:0", "fp32"));
+	}
+	SECTION("a GPU session is not reused for a cpu request either") {
+		// The direction that matters least in practice and most in principle:
+		// falling back to cpu must also rebuild, or a user who switches away
+		// from the GPU keeps paying for it.
+		cached.device_id = "rocm:0";
+		cached.precision = "fp32";
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cpu", ""));
+		REQUIRE(CanReuseSession(cached, false, "rocm:0", "fp32"));
+	}
+	SECTION("a precision switch rebuilds a GPU session — the device bug, one setting over") {
+		// Once gpu_precision shapes the session (fp32 vs tf32 vs bf16 build
+		// different programs), reusing across a SET would silently serve the
+		// old mode: the exact failure 70a6800 fixed for the device, so it gets
+		// the same predicate treatment and the same mutation-honest pinning.
+		cached.device_id = "rocm:0";
+		cached.precision = "fp32";
+		REQUIRE(CanReuseSession(cached, false, "rocm:0", "fp32"));
+		REQUIRE_FALSE(CanReuseSession(cached, false, "rocm:0", "bf16"));
+		cached.device_id = "cuda:0";
+		REQUIRE_FALSE(CanReuseSession(cached, false, "cuda:0", "tf32"));
+	}
+	SECTION("flipping the setting does not rebuild a CPU session") {
+		// The caller maps cpu -> "" on both sides, so the predicate sees no
+		// change; encoded here so the mapping's intent survives refactors.
+		REQUIRE(CanReuseSession(cached, false, "cpu", ""));
+	}
+}
+
 TEST_CASE("tabfm_state: load / snapshot / unload-while-in-use / refcount release", "[tabfm][ort_engine][state]") {
 	auto state = make_shared_ptr<TabFMState>();
 	bool freed = false;
@@ -655,7 +827,7 @@ TEST_CASE("tabfm_state: load / snapshot / unload-while-in-use / refcount release
 	state->Register("classification", MakeFakeModel(freed));
 	REQUIRE(state->LoadedKeys() == vector<string> {"classification"});
 
-	auto snapshot = state->Snapshot("classification");
+	auto snapshot = state->Snapshot("classification", "cpu", "");
 	REQUIRE(snapshot);
 	REQUIRE(snapshot->model_key == "classification");
 	REQUIRE(!snapshot->evicted);
@@ -666,7 +838,7 @@ TEST_CASE("tabfm_state: load / snapshot / unload-while-in-use / refcount release
 	REQUIRE(state->Unload("classification"));
 	REQUIRE(snapshot->evicted);
 	REQUIRE(!freed);
-	REQUIRE(state->Snapshot("classification") == nullptr);
+	REQUIRE(state->Snapshot("classification", "cpu", "") == nullptr);
 	REQUIRE(state->LoadedKeys().empty());
 	REQUIRE(!state->Unload("classification")); // second unload: not found
 
@@ -684,12 +856,12 @@ TEST_CASE("tabfm_state: re-register replaces and evicts the old model", "[tabfm]
 	auto state = make_shared_ptr<TabFMState>();
 
 	state->Register("regression", MakeFakeModel(freed_old));
-	auto old_snapshot = state->Snapshot("regression");
+	auto old_snapshot = state->Snapshot("regression", "cpu", "");
 
 	state->Register("regression", MakeFakeModel(freed_new));
 	REQUIRE(old_snapshot->evicted);
 	REQUIRE(!freed_old); // still held
-	auto new_snapshot = state->Snapshot("regression");
+	auto new_snapshot = state->Snapshot("regression", "cpu", "");
 	REQUIRE(new_snapshot.get() != old_snapshot.get());
 	REQUIRE(!new_snapshot->evicted);
 
@@ -711,6 +883,70 @@ TEST_CASE("tabfm_state: UnloadAll evicts everything", "[tabfm][ort_engine][state
 	REQUIRE(freed_b);
 }
 
+TEST_CASE("tabfm_state: one model caches sessions per device, unload frees them all", "[tabfm][ort_engine][state]") {
+	// P5 of docs/GPU_HARDENING_PLAN.md. S6 measured 18-27 s of pure rebuild per
+	// device alternation under one-slot-per-key caching, so cpu and GPU
+	// sessions of a model now coexist — and tabfm_unload must still reach every
+	// one of them by the model's single name.
+	bool freed_cpu = false, freed_gpu = false, freed_third = false;
+	auto state = make_shared_ptr<TabFMState>();
+
+	state->Register("classification", MakeFakeModel(freed_cpu, "cpu"));
+	state->Register("classification", MakeFakeModel(freed_gpu, "rocm:0"));
+
+	// Both configurations live at once; registering the GPU entry did NOT
+	// evict the cpu one (that eviction was the 18-27 s thrash).
+	auto cpu_snapshot = state->Snapshot("classification", "cpu", "");
+	auto gpu_snapshot = state->Snapshot("classification", "rocm:0", "");
+	REQUIRE(cpu_snapshot);
+	REQUIRE(gpu_snapshot);
+	REQUIRE(!cpu_snapshot->evicted);
+	REQUIRE(cpu_snapshot.get() != gpu_snapshot.get());
+	// One key listed once, not once per configuration.
+	REQUIRE(state->LoadedKeys() == vector<string> {"classification"});
+	// tabfm_models() sees every configuration, deterministically ordered.
+	REQUIRE(state->SnapshotsFor("classification").size() == 2);
+
+	// A different precision on the same device is its own entry too — the
+	// device-switch bug one setting over, kept out by construction here.
+	state->Register("classification", MakeFakeModel(freed_third, "rocm:0"));
+	// same (device, precision): THIS one replaces.
+	REQUIRE(gpu_snapshot->evicted);
+	REQUIRE(state->SnapshotsFor("classification").size() == 2);
+
+	// One name frees everything.
+	REQUIRE(state->Unload("classification"));
+	REQUIRE(cpu_snapshot->evicted);
+	REQUIRE(state->SnapshotsFor("classification").empty());
+	cpu_snapshot.reset();
+	gpu_snapshot.reset();
+	REQUIRE(freed_cpu);
+	REQUIRE(freed_gpu);
+}
+
+TEST_CASE("tabfm_state: the session cap evicts oldest-first and spares the newcomer", "[tabfm][ort_engine][state]") {
+	// Multi-GB sessions must not accumulate behind the user's back now that
+	// (models x devices x precisions) is unbounded. Cap = 2: registering a
+	// third evicts the OLDEST, never the entry just registered.
+	bool freed_a = false, freed_b = false, freed_c = false;
+	auto state = make_shared_ptr<TabFMState>();
+
+	state->Register("model_a", MakeFakeModel(freed_a, "cpu"), 2);
+	state->Register("model_b", MakeFakeModel(freed_b, "cpu"), 2);
+	state->Register("model_a", MakeFakeModel(freed_c, "rocm:0"), 2);
+
+	// model_a/cpu was oldest: evicted and its outer key survives via rocm:0.
+	REQUIRE(state->Snapshot("model_a", "cpu", "") == nullptr);
+	REQUIRE(state->Snapshot("model_a", "rocm:0", ""));
+	REQUIRE(state->Snapshot("model_b", "cpu", ""));
+	REQUIRE(freed_a);
+	REQUIRE(!freed_b);
+	REQUIRE(!freed_c);
+	// Uncapped (0) never evicts.
+	state->Register("model_c", MakeFakeModel(freed_a, "cpu"), 0);
+	REQUIRE(state->SnapshotsFor("model_b").size() == 1);
+}
+
 TEST_CASE("tabfm_state: shared across connections via the ObjectCache", "[tabfm][ort_engine][state]") {
 	DuckDB db(nullptr);
 	Connection connection_a(db);
@@ -723,7 +959,7 @@ TEST_CASE("tabfm_state: shared across connections via the ObjectCache", "[tabfm]
 
 	bool freed = false;
 	state_a->Register("classification", MakeFakeModel(freed));
-	auto snapshot = state_b->Snapshot("classification"); // visible cross-connection
+	auto snapshot = state_b->Snapshot("classification", "cpu", ""); // visible cross-connection
 	REQUIRE(snapshot);
 	REQUIRE(snapshot->device_id == "cpu");
 

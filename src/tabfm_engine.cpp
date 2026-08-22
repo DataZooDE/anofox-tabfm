@@ -28,7 +28,7 @@
 #include "tabfm_ckpt.hpp"
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_bundled_resources.hpp"
-#include "tabfm_migraphx.hpp"
+#include "tabfm_plugin_backend.hpp"
 #include "tabfm_state.hpp"
 
 #include "duckdb/common/file_system.hpp"
@@ -103,6 +103,11 @@ struct ResolvedModel {
 	// (custom/scenario/fixture manifests that point at an .onnx file).
 	string graph_path;
 	BundledResource graph_bundle;
+	// Model-provided GPU graphs, resolved to on-disk paths ("" = not declared).
+	// Their external-data files must sit beside them; the dispatch hands the
+	// containing directory to the plugin as weights_dir.
+	string ext_graph_path;
+	string migraphx_graph_path;
 	string weights_path;
 	unordered_map<string, string> tensor_map; // onnx initializer name -> st key
 	string cache_key;
@@ -268,6 +273,8 @@ ModelManifest SpecTaskToManifest(const ModelSpec &spec, TabFMTask task) {
 	m.revision = art.revision;
 	m.files = art.files;
 	m.graph = art.graph;
+	m.ext_graph = art.ext_graph;
+	m.migraphx_graph = art.migraphx_graph;
 	m.tensor_map_path = art.tensor_map_path;
 	m.tensor_map = art.tensor_map;
 	m.preprocessing_profile = art.preprocessing_profile;
@@ -328,6 +335,24 @@ void ResolveModelArtifacts(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	} else {
 		resolved.graph_path = ResolveGraphPath(fs, resolved.manifest, resolved.manifest_dir);
 	}
+	// Model-provided GPU graphs resolve like the plain graph — against the
+	// manifest dir — but must exist NOW if declared: a bad path failing at
+	// declaration time beats a GPU dispatch that silently falls back later.
+	auto resolve_gpu_graph = [&](const string &declared, const char *what) -> string {
+		if (declared.empty()) {
+			return "";
+		}
+		auto candidate = JoinPath(fs, resolved.manifest_dir, declared);
+		if (!fs.FileExists(candidate)) {
+			throw InvalidInputException(
+			    "tabfm: model '%s' declares %s '%s' for task '%s' but the file does not exist at '%s'. Its "
+			    "external-data files must sit beside it.",
+			    resolved.manifest.model, what, declared, task_name, candidate);
+		}
+		return candidate;
+	};
+	resolved.ext_graph_path = resolve_gpu_graph(resolved.manifest.ext_graph, "ext_graph");
+	resolved.migraphx_graph_path = resolve_gpu_graph(resolved.manifest.migraphx_graph, "migraphx_graph");
 	resolved.tensor_map = LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin);
 	resolved.cache_key = TabFMModelCacheKey(resolved.manifest.model, task_name, resolved.manifest.revision);
 }
@@ -681,31 +706,18 @@ struct SplitOrtBackend : public TabFMBackend {
 // the predict loop can recover it and dispatch Run() virtually.
 shared_ptr<LoadedModel> RegisterBackend(TabFMState &state, const string &cache_key,
                                         shared_ptr<TabFMBackend> backend, const string &device_id, idx_t bytes,
-                                        bool split_context = false) {
+                                        bool split_context = false, const string &precision = "",
+                                        idx_t max_sessions = 0) {
 	auto model = make_shared_ptr<LoadedModel>();
 	model->model_key = cache_key;
 	model->session = shared_ptr<void>(std::move(backend));
 	model->device_id = device_id;
+	model->precision = precision;
 	model->dtype = "f32";
 	model->bytes = bytes;
 	model->split_context = split_context;
-	state.Register(cache_key, model);
+	state.Register(cache_key, model, max_sessions);
 	return model;
-}
-
-// SHA-256 (hex) of the safetensors JSON header the bundled external-data graphs
-// were generated against (tools/make_external_graph.py prints these). A
-// byte-identical header guarantees the graph's baked offsets are correct; any
-// other layout falls back to the injection path. Empty => no external-data graph.
-const char *ExpectedWeightsHeaderSha(TabFMTask task) {
-	switch (task) {
-	case TabFMTask::CLASSIFICATION:
-		return "534d6d38b49b323bb38682858f232573c254689df03d3d9f17e7504716a31d96";
-	case TabFMTask::REGRESSION:
-		return "35c346e4e29f61b493a9e601e66bf0ae241d0fb76623a3336c61408cfc3e88d0";
-	default:
-		return "";
-	}
 }
 
 string Sha256Hex(const_data_ptr_t data, idx_t len) {
@@ -744,9 +756,12 @@ bool ReadWeightsHeaderBytes(FileSystem &fs, const string &path, string &header) 
 // checkpoint the bundled external-data / migraphx graphs were baked against — so
 // the graphs' baked external offsets are correct. Also requires the weights to be
 // a local file named model.safetensors (the graphs' external-data location).
-bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, TabFMTask task) {
-	const char *expected = ExpectedWeightsHeaderSha(task);
-	if (!expected || !*expected) {
+// The (model, task)-keyed hash table lives in tabfm_model_spec.hpp
+// (ExpectedWeightsHeaderShaFor) beside the bundled-id naming, since GPU graph
+// selection is a model-spec concern shared by three backends.
+bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task) {
+	const string expected = ExpectedWeightsHeaderShaFor(model, TabFMTaskName(task));
+	if (expected.empty()) {
 		return false;
 	}
 	if (StringUtil::Split(weights_path, "/").back() != "model.safetensors") {
@@ -756,7 +771,7 @@ bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, TabFMTask 
 	if (!ReadWeightsHeaderBytes(fs, weights_path, header)) {
 		return false;
 	}
-	return Sha256Hex(const_data_ptr_cast(header.data()), header.size()) == string(expected);
+	return Sha256Hex(const_data_ptr_cast(header.data()), header.size()) == expected;
 }
 
 // Stage a bundled graph next to the weights (idempotent by size) so external-data
@@ -789,14 +804,14 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 		return nullptr;
 	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
-	auto graph = GetBundledResource("graph_ext_" + task_name);
-	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task)) {
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
+	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task)) {
 		return nullptr;
 	}
 	// Place the external-data graph next to the weights (idempotent) so ORT can
 	// resolve the relative "model.safetensors" reference.
 	const auto dir = DirName(resolved.weights_path);
-	const auto graph_path = fs.JoinPath(dir, "graph_ext_" + task_name + ".onnx");
+	const auto graph_path = fs.JoinPath(dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
 	if (!StageBundledGraph(fs, graph, graph_path)) {
 		return nullptr;
 	}
@@ -809,20 +824,29 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 	config.device_id = device.device_id;
 	config.device_ordinal = device.device_ordinal;
 	config.model_tag = task_name;
+	config.ep_path = ctx.ep_path;
 	// No injected initializers: ORT loads them from the safetensors via the
 	// graph's external-data references.
 	auto session = CreateSessionFromPath(graph_path, {}, config);
 	auto backend = make_shared_ptr<OrtBackend>();
 	backend->session = std::move(session);
-	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, 0);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, 0, false,
+	                       SessionPrecisionFor(config.device_id, ctx.gpu_precision),
+	                       NumericCast<idx_t>(ctx.max_sessions));
 }
 
-// Direct AMD MIGraphX GPU backend. ORT's MIGraphX EP cannot run this model
-// (re-inlines weights -> 2 GB proto), so ROCm bypasses ORT: parse the
-// migraphx-ready graph (external-data + Shape-rewrite), compile per shape-bucket
-// (cached to .mxr), run. Engages only when the resolved device is a rocm GPU and
-// a bundled migraphx graph + matching weights exist; nullptr => fall back to the
-// CPU/ORT path.
+// AMD ROCm GPU backend. ORT's MIGraphX EP cannot run this model (re-inlines
+// weights -> 2 GB proto), so ROCm bypasses ORT entirely: a standalone plugin
+// (docs/DYNAMIC_BACKENDS.md phase 1, src/tabfm_migraphx_plugin.cpp) parses the
+// migraphx-ready graph (external-data + Shape-rewrite) directly and compiles
+// per shape-bucket (cached to .mxr). Engages only when the resolved device is
+// a rocm GPU and a bundled migraphx graph + matching weights exist; nullptr
+// => fall back to the CPU/ORT path (no migraphx graph shipped for this task).
+//
+// Past the point where a migraphx graph is confirmed to exist for a resolved
+// rocm device, this must succeed or throw: silently falling back to CPU here
+// would be exactly the "requested device quietly becomes CPU" failure mode
+// the equivalence suite's tier 4 exists to catch (DYNAMIC_BACKENDS.md).
 shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                            const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
@@ -831,19 +855,141 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 		return nullptr; // not the GPU path (cpu / cuda handled by the ORT backend)
 	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
-	auto graph = GetBundledResource("graph_migraphx_" + task_name);
-	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task)) {
-		return nullptr;
+	// Graph source (docs/GPU_HARDENING_PLAN.md P3): a model-provided
+	// migraphx_graph wins; the bundled tabfm-v1 graph needs its header match.
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "migraphx", task_name));
+	const bool bundled_matches =
+	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
+	string graph_path;
+	string weights_dir;
+	switch (SelectGpuGraph(!resolved.migraphx_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
+	case GpuGraphSource::MODEL_PROVIDED:
+		graph_path = resolved.migraphx_graph_path;
+		weights_dir = DirName(graph_path); // external data sits beside the graph
+		break;
+	case GpuGraphSource::BUNDLED: {
+		weights_dir = DirName(resolved.weights_path);
+		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "migraphx", task_name) + ".onnx");
+		if (!StageBundledGraph(fs, graph, graph_path)) {
+			if (IsExplicitGpuRequest(ctx.device, "rocm")) {
+				throw IOException("anofox_tabfm: device 'rocm' needs the bundled GPU graph staged beside the "
+				                  "weights, but '" + graph_path + "' could not be written (read-only weights "
+				                  "directory?). Make the directory writable or SET anofox_tabfm_device='cpu'.");
+			}
+			return nullptr;
+		}
+		break;
 	}
-	const auto dir = DirName(resolved.weights_path);
-	const auto graph_path = fs.JoinPath(dir, "graph_migraphx_" + task_name + ".onnx");
-	if (!StageBundledGraph(fs, graph, graph_path)) {
+	case GpuGraphSource::NONE:
+		// Explicitly-requested ROCm + no runnable graph is an error here, with
+		// the real cause; declining silently used to surface a downstream
+		// message blaming ep_path (found running the examples on GPU hardware).
+		if (IsExplicitGpuRequest(ctx.device, "rocm")) {
+			throw InvalidInputException(
+			    NoGpuGraphMessage("rocm", resolved.manifest.model, task_name, "migraphx_graph"));
+		}
 		return nullptr;
 	}
 	const auto mxr_dir = fs.JoinPath(ctx.cache_dir, "migraphx");
-	shared_ptr<TabFMBackend> backend = MakeMIGraphXBackend(graph_path, dir, mxr_dir, device.arch,
-	                                                       device.device_ordinal, ctx.gpu_precision, ctx.mxr_source);
-	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0);
+
+	if (ctx.ep_path.empty()) {
+		throw InvalidInputException(
+		    "anofox_tabfm: device 'rocm' was resolved but no backend plugin directory is configured. SET "
+		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_migraphx_plugin.so.");
+	}
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_migraphx_plugin.so");
+
+	TabFMPluginCreateParams params {};
+	params.graph_path = graph_path.c_str();
+	params.weights_dir = weights_dir.c_str();
+	params.cache_dir = mxr_dir.c_str();
+	params.arch = device.arch.c_str();
+	params.precision = ctx.gpu_precision.c_str();
+	params.mxr_source = ctx.mxr_source.c_str();
+	params.device_ordinal = device.device_ordinal;
+	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0, false,
+	                       ctx.gpu_precision, NumericCast<idx_t>(ctx.max_sessions));
+}
+
+// NVIDIA CUDA GPU backend. Structurally identical to the ROCm path above, and
+// for a related reason: GPU inference cannot run inside this binary's ORT.
+// The release build links ORT statically, and a static core cannot load ORT's
+// prebuilt provider libraries — their classes collide with the core's own and
+// the executable's copies win symbol resolution, corrupting the heap mid-Run().
+// So CUDA also runs through a standalone plugin (src/tabfm_cuda_plugin.cpp)
+// that links its own shared ORT-GPU distribution, where core and providers
+// match by construction. See the CUDA section of docs/DYNAMIC_BACKENDS.md.
+//
+// Reuses the same external-data graph the CPU low-memory path stages, since
+// ORT resolves the weights itself. Engages only when the resolved device is a
+// cuda GPU and that graph + matching weights exist; nullptr => fall back.
+//
+// As with ROCm, past the point where the graph is confirmed to exist for a
+// resolved cuda device this must succeed or throw — quietly running on CPU
+// after the user asked for a GPU is the tier-4 failure the equivalence suite
+// exists to catch.
+shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
+                                       const PredictContext &ctx) {
+	auto devices = DiscoverDevices();
+	auto device = ResolveDevice(ctx.device, devices);
+	if (!StringUtil::StartsWith(device.device_id, "cuda")) {
+		return nullptr; // not the CUDA path (cpu handled by the ORT backend, rocm above)
+	}
+	const string task_name = TabFMTaskName(resolved.manifest.task);
+	// Graph source (docs/GPU_HARDENING_PLAN.md P3): a model-provided ext_graph
+	// wins; the bundled tabfm-v1 graph needs its header match.
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
+	const bool bundled_matches =
+	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
+	string graph_path;
+	string weights_dir;
+	switch (SelectGpuGraph(!resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
+	case GpuGraphSource::MODEL_PROVIDED:
+		graph_path = resolved.ext_graph_path;
+		weights_dir = DirName(graph_path); // external data sits beside the graph
+		break;
+	case GpuGraphSource::BUNDLED: {
+		weights_dir = DirName(resolved.weights_path);
+		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
+		if (!StageBundledGraph(fs, graph, graph_path)) {
+			if (IsExplicitGpuRequest(ctx.device, "cuda")) {
+				throw IOException("anofox_tabfm: device 'cuda' needs the bundled GPU graph staged beside the "
+				                  "weights, but '" + graph_path + "' could not be written (read-only weights "
+				                  "directory?). Make the directory writable or SET anofox_tabfm_device='cpu'.");
+			}
+			return nullptr;
+		}
+		break;
+	}
+	case GpuGraphSource::NONE:
+		// Same contract as the ROCm branch above: an explicit 'cuda' with no
+		// runnable graph names the model and the fix, never ep_path.
+		if (IsExplicitGpuRequest(ctx.device, "cuda")) {
+			throw InvalidInputException(NoGpuGraphMessage("cuda", resolved.manifest.model, task_name, "ext_graph"));
+		}
+		return nullptr;
+	}
+
+	if (ctx.ep_path.empty()) {
+		throw InvalidInputException(
+		    "anofox_tabfm: device 'cuda' was resolved but no backend plugin directory is configured. SET "
+		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_cuda_plugin.so (CALL "
+		    "tabfm_download_runtime('cuda') to fetch it).");
+	}
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_cuda_plugin.so");
+
+	TabFMPluginCreateParams params {};
+	params.graph_path = graph_path.c_str();
+	params.weights_dir = weights_dir.c_str();
+	params.cache_dir = ctx.cache_dir.c_str();
+	params.arch = device.arch.c_str();
+	params.precision = ctx.gpu_precision.c_str();
+	params.mxr_source = "";
+	params.device_ordinal = device.device_ordinal;
+	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0, false,
+	                       ctx.gpu_precision, NumericCast<idx_t>(ctx.max_sessions));
 }
 
 // The device a setting resolves to, memoized per distinct setting string.
@@ -887,8 +1033,10 @@ const string &ResolvedDeviceCached(const string &setting) {
 }
 
 // Build (or reuse) the ORT session for `resolved` and return a snapshot of the
-// LoadedModel. Order: direct MIGraphX (ROCm GPU) -> low-memory external-data
-// (CPU/CUDA, ORT reads weights from disk) -> read/mmap + in-memory injection.
+// LoadedModel. Order: MIGraphX plugin (ROCm GPU) -> CUDA plugin (NVIDIA GPU)
+// -> low-memory external-data (CPU, ORT reads weights from disk) -> read/mmap
+// + in-memory injection. Both GPU backends run in dlopen'd plugins with their
+// own runtimes rather than through this binary's ORT (DYNAMIC_BACKENDS.md).
 shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                          const PredictContext &ctx) {
 	// Does this model ship a split (prepare/query) pair, and did the user ask for
@@ -900,22 +1048,65 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	}
 	const bool want_split = split.Available();
 
-	if (auto snapshot = state.Snapshot(resolved.cache_key)) {
-		if (snapshot->split_context == want_split) {
+	// The device the caller is asking for right now. A cached session belongs to
+	// the device it was BUILT for, so reusing it whenever the key matches
+	// silently ignores anofox_tabfm_device: a connection that ran anything on
+	// the cpu and then SET anofox_tabfm_device='cuda' kept getting the cpu
+	// session and never touched the GPU. That is precisely the "requested device
+	// quietly becomes CPU" outcome the tier-4 contract in
+	// docs/DYNAMIC_BACKENDS.md exists to rule out, and it is invisible without
+	// looking at tabfm_models().device.
+	const string &wanted_device = ResolvedDeviceCached(ctx.device);
+	// gpu_precision only shapes GPU sessions; for CPU it is "" so flipping the
+	// setting does not rebuild a session it never influenced.
+	const string wanted_precision = SessionPrecisionFor(wanted_device, ctx.gpu_precision);
+
+	// Sessions cache per (model, device, precision) since P5 of
+	// docs/GPU_HARDENING_PLAN.md: S6 measured 18–27 s of pure rebuild per
+	// device alternation under the old one-slot-per-key design. The lookup is
+	// exact, so a device or precision switch is a cache MISS that builds a new
+	// entry beside the old one — not a replacement — and tabfm_unload(key)
+	// still frees every entry by one name (the two-level map guarantees it).
+	if (auto snapshot = state.Snapshot(resolved.cache_key, wanted_device, wanted_precision)) {
+		if (CanReuseSession(*snapshot, want_split, wanted_device, wanted_precision)) {
 			return snapshot;
 		}
-		// anofox_tabfm_context_cache changed since this model was loaded. Fall
-		// through and rebuild under the SAME key, so tabfm_models() and
-		// tabfm_unload() keep seeing exactly one entry per model — a suffixed key
-		// would leave a session that a targeted unload could not reach.
+		// anofox_tabfm_context_cache changed since this configuration was
+		// loaded. Fall through and rebuild the SAME (device, precision) entry —
+		// split and combined sessions of one configuration must not coexist,
+		// could not reach.
 	}
 
-	// Both alternative backends below are driven by graphs compiled into the
-	// binary, and neither has a split form, so a model that ships a pair takes
-	// the injection path below instead.
+	// The alternative backends below are driven by graphs compiled into the
+	// binary, and none of them has a split form, so a model that ships a pair
+	// takes the injection path below instead. That includes the CUDA plugin:
+	// like the MIGraphX one it runs a bundled graph_ext_/graph_migraphx_ graph,
+	// so letting a split-pair model reach it would silently drop the labelled
+	// context cache (#40) rather than use it.
+	if (want_split) {
+		// The GPU backends run bundled single-graph forwards; routing a
+		// split-pair model through them would silently drop the cached
+		// labelled context (#40). An EXPLICIT GPU request must therefore say
+		// which setting conflicts — the fall-through used to end in "SET
+		// anofox_tabfm_ep_path", the one thing already configured.
+		for (const char *backend_name : {"rocm", "cuda"}) {
+			if (IsExplicitGpuRequest(ctx.device, backend_name)) {
+				throw InvalidInputException(
+				    "anofox_tabfm: device '%s' cannot serve this model while anofox_tabfm_context_cache is "
+				    "enabled: the model ships a prepare/query graph pair and the GPU plugins run single-graph "
+				    "forwards, which would drop the cached labelled context. SET anofox_tabfm_context_cache = "
+				    "false, or SET anofox_tabfm_device = 'cpu'.",
+				    backend_name);
+			}
+		}
+	}
 	if (!want_split) {
 		// ROCm GPU: direct MIGraphX backend (bypasses ORT's unusable MIGraphX EP).
 		if (auto gpu = TryMIGraphXBackend(fs, state, resolved, ctx)) {
+			return gpu;
+		}
+		// NVIDIA GPU: CUDA backend plugin (its own shared ORT-GPU runtime).
+		if (auto gpu = TryCudaBackend(fs, state, resolved, ctx)) {
 			return gpu;
 		}
 		// Low-memory path (external-data graph; ORT reads weights from disk).
@@ -1046,6 +1237,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	config.model_tag = TabFMTaskName(resolved.manifest.task);
 	config.contract_inputs = resolved.contract_inputs;
 	config.contract_outputs = resolved.contract_outputs;
+	config.ep_path = ctx.ep_path;
 
 	const idx_t weight_bytes = nbytes;
 
@@ -1119,7 +1311,9 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		backend->weights = std::move(weights);
 		backend->mapping = std::move(mapping);
 		backend->arena = std::move(arena);
-		return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, true);
+		return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, true,
+	                       SessionPrecisionFor(config.device_id, ctx.gpu_precision),
+		                       NumericCast<idx_t>(ctx.max_sessions));
 	}
 
 	auto session = resolved.graph_bundle.data
@@ -1133,7 +1327,9 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	backend->mapping = std::move(mapping);
 	backend->arena = std::move(arena);
 	backend->session = std::move(session);
-	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes);
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, false,
+	                       SessionPrecisionFor(config.device_id, ctx.gpu_precision),
+	                       NumericCast<idx_t>(ctx.max_sessions));
 }
 
 //===--------------------------------------------------------------------===//

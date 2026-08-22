@@ -66,7 +66,7 @@ set(EXTENSION_SOURCES
         src/tabfm_generate.cpp
         src/tabfm_generate_macros.cpp
         src/tabfm_engine.cpp
-        src/tabfm_migraphx.cpp
+        src/tabfm_plugin_backend.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
 )
 
@@ -123,6 +123,88 @@ if(UNIX AND NOT APPLE)
     target_link_options(${LOADABLE_EXTENSION_NAME} PRIVATE -Wl,--allow-multiple-definition)
 endif()
 
+# --- MIGraphX backend plugin (docs/DYNAMIC_BACKENDS.md phase 1) ---
+#
+# A standalone shared library, built and shipped independently of the cpu/cuda
+# extension binary: the ROCm backend becomes something tabfm_download_runtime
+# fetches and the engine dlopens at runtime, not a compile-time flavor choice.
+# Optional and silent when absent — cpu/cuda CI machines carry no MIGraphX
+# install and must not fail configure over a plugin they cannot use.
+set(TABFM_MIGRAPHX_DIR "/opt/rocm" CACHE PATH "MIGraphX install prefix (include/ + lib/libmigraphx_c) for the plugin build")
+find_library(TABFM_MIGRAPHX_PLUGIN_LIB migraphx_c
+    PATHS "${TABFM_MIGRAPHX_DIR}/lib" "${TABFM_MIGRAPHX_DIR}/lib64" NO_DEFAULT_PATH)
+if(TABFM_MIGRAPHX_PLUGIN_LIB AND EXISTS "${TABFM_MIGRAPHX_DIR}/include/migraphx/migraphx.hpp")
+    message(STATUS "anofox_tabfm: building the migraphx backend plugin from ${TABFM_MIGRAPHX_DIR}")
+    add_library(anofox_tabfm_migraphx_plugin SHARED src/tabfm_migraphx_plugin.cpp)
+    target_include_directories(anofox_tabfm_migraphx_plugin PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+        "${TABFM_MIGRAPHX_DIR}/include")
+    target_link_libraries(anofox_tabfm_migraphx_plugin PRIVATE "${TABFM_MIGRAPHX_PLUGIN_LIB}")
+    target_compile_features(anofox_tabfm_migraphx_plugin PRIVATE cxx_std_17)
+    set_target_properties(anofox_tabfm_migraphx_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    set(TABFM_MIGRAPHX_PLUGIN_BUILT TRUE)
+else()
+    message(STATUS "anofox_tabfm: no MIGraphX install found at ${TABFM_MIGRAPHX_DIR}, skipping the migraphx backend plugin")
+endif()
+
+# The CUDA backend plugin (docs/DYNAMIC_BACKENDS.md phase 3), same deal as the
+# MIGraphX one above: a standalone .so fetched by tabfm_download_runtime('cuda')
+# and dlopen'd at runtime, never linked into the extension binary.
+#
+# It links its OWN shared libonnxruntime from an ORT *GPU* distribution rather
+# than reusing the extension's ORT. That is not incidental — the release build
+# links ORT statically, and a statically-linked core cannot load ORT's prebuilt
+# provider libraries (symbol interposition corrupts the heap; see the header of
+# src/tabfm_cuda_plugin.cpp). Point TABFM_ORT_GPU_DIR at an unpacked
+# onnxruntime-linux-x64-gpu_cudaNN archive, whose core and providers ship in one
+# directory and match by construction.
+#
+# Optional and silent when absent — cpu CI machines carry no ORT-GPU archive and
+# must not fail configure over a plugin they cannot use.
+set(TABFM_ORT_GPU_DIR "" CACHE PATH "Unpacked ONNX Runtime GPU archive (include/ + lib/libonnxruntime.so) for the cuda plugin build")
+if(TABFM_ORT_GPU_DIR AND EXISTS "${TABFM_ORT_GPU_DIR}/include/onnxruntime_cxx_api.h")
+    find_library(TABFM_ORT_GPU_LIB onnxruntime PATHS "${TABFM_ORT_GPU_DIR}/lib" NO_DEFAULT_PATH)
+endif()
+if(TABFM_ORT_GPU_LIB)
+    message(STATUS "anofox_tabfm: building the cuda backend plugin from ${TABFM_ORT_GPU_DIR}")
+    # The plugin links a RENAMED copy of the ORT-GPU core (SONAME + basename
+    # libanofoxort_gpu.so, an equal-length byte patch — GPU_HARDENING_PLAN S2):
+    # keeping upstream's SONAME would let any host-loaded libonnxruntime.so.1
+    # shadow the plugin's runtime. tabfm_download_runtime('cuda') performs the
+    # same rename on the wheel core it extracts, so DT_NEEDED matches at both
+    # ends. The python one-liner mirrors PatchOrtSonameInPlace
+    # (tabfm_soname_patch.hpp): NUL-terminated match, exactly one occurrence.
+    set(TABFM_ORT_GPU_RENAMED_DIR "${CMAKE_CURRENT_BINARY_DIR}/anofox_ort_gpu")
+    set(TABFM_ORT_GPU_RENAMED_LIB "${TABFM_ORT_GPU_RENAMED_DIR}/libanofoxort_gpu.so")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_custom_command(
+        OUTPUT "${TABFM_ORT_GPU_RENAMED_LIB}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${TABFM_ORT_GPU_RENAMED_DIR}"
+        COMMAND ${Python3_EXECUTABLE} -c "import sys; d = open(sys.argv[1], 'rb').read(); old = b'libonnxruntime.so.1\x00'; new = b'libanofoxort_gpu.so\x00'; n = d.count(old); assert n == 1, f'expected exactly one SONAME string, found {n}'; open(sys.argv[2], 'wb').write(d.replace(old, new))" "${TABFM_ORT_GPU_LIB}" "${TABFM_ORT_GPU_RENAMED_LIB}"
+        DEPENDS "${TABFM_ORT_GPU_LIB}"
+        COMMENT "anofox_tabfm: renaming the ORT-GPU core SONAME (S2 shadowing fix)"
+        VERBATIM)
+    add_custom_target(anofox_ort_gpu_renamed DEPENDS "${TABFM_ORT_GPU_RENAMED_LIB}")
+    add_library(anofox_tabfm_cuda_plugin SHARED src/tabfm_cuda_plugin.cpp)
+    add_dependencies(anofox_tabfm_cuda_plugin anofox_ort_gpu_renamed)
+    target_include_directories(anofox_tabfm_cuda_plugin PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+        "${TABFM_ORT_GPU_DIR}/include")
+    target_link_directories(anofox_tabfm_cuda_plugin PRIVATE "${TABFM_ORT_GPU_RENAMED_DIR}")
+    target_link_libraries(anofox_tabfm_cuda_plugin PRIVATE "-l:libanofoxort_gpu.so")
+    target_compile_features(anofox_tabfm_cuda_plugin PRIVATE cxx_std_17)
+    set_target_properties(anofox_tabfm_cuda_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    # $ORIGIN so the shipped plugin finds the renamed core + provider libraries
+    # that tabfm_download_runtime('cuda') unpacks alongside it, wherever the
+    # user pointed anofox_tabfm_ep_path.
+    set_target_properties(anofox_tabfm_cuda_plugin PROPERTIES
+        BUILD_RPATH "${TABFM_ORT_GPU_RENAMED_DIR}"
+        INSTALL_RPATH "$ORIGIN")
+    set(TABFM_CUDA_PLUGIN_BUILT TRUE)
+else()
+    message(STATUS "anofox_tabfm: no ONNX Runtime GPU archive at TABFM_ORT_GPU_DIR, skipping the cuda backend plugin")
+endif()
+
 # --- C++ unit tests (Catch2, compiled into DuckDB's test/unittest binary) ---
 #
 # Registered through a deferred call because this CMakeLists is processed via
@@ -142,10 +224,50 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_generate.cpp
     test/cpp/test_tabfm_bundled_resources.cpp
     test/cpp/test_tabfm_weights.cpp
+    test/cpp/test_tabfm_plugin_backend.cpp
+    test/cpp/test_tabfm_migraphx_plugin.cpp
+    test/cpp/test_tabfm_cuda_plugin.cpp
     test/cpp/test_tabfm_cpu_budget.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
+    # Backend-plugin fixtures (docs/DYNAMIC_BACKENDS.md phase 1). The real GPU
+    # backend needs hardware CI does not have, which would leave the LOADER —
+    # where an ABI mismatch is undefined behaviour rather than a wrong answer —
+    # untested. These stand in for it: real shared libraries, one correct and
+    # one built with a deliberately wrong ABI version.
+    add_library(anofox_tabfm_fake_plugin SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
+    target_include_directories(anofox_tabfm_fake_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_compile_features(anofox_tabfm_fake_plugin PRIVATE cxx_std_17)
+    set_target_properties(anofox_tabfm_fake_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+    add_library(anofox_tabfm_fake_plugin_bad_abi SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
+    target_include_directories(anofox_tabfm_fake_plugin_bad_abi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_compile_features(anofox_tabfm_fake_plugin_bad_abi PRIVATE cxx_std_17)
+    target_compile_definitions(anofox_tabfm_fake_plugin_bad_abi PRIVATE TABFM_FAKE_PLUGIN_BAD_ABI=1)
+    set_target_properties(anofox_tabfm_fake_plugin_bad_abi PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
     add_library(anofox_tabfm_unittest_tests OBJECT ${TABFM_CPP_TEST_SOURCES})
+    add_dependencies(anofox_tabfm_unittest_tests anofox_tabfm_fake_plugin anofox_tabfm_fake_plugin_bad_abi)
+    target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
+        TABFM_FAKE_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_fake_plugin>"
+        TABFM_FAKE_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:anofox_tabfm_fake_plugin_bad_abi>")
+    if(TABFM_MIGRAPHX_PLUGIN_BUILT)
+        # Real GPU test: only on a machine that actually built the plugin
+        # (a MIGraphX install present). Skips itself (no device / no bundled
+        # migraphx graph) rather than failing on a machine with the library
+        # but no GPU.
+        add_dependencies(anofox_tabfm_unittest_tests anofox_tabfm_migraphx_plugin)
+        target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
+            TABFM_MIGRAPHX_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_migraphx_plugin>")
+    endif()
+    if(TABFM_CUDA_PLUGIN_BUILT)
+        # Same deal for CUDA: only on a machine that had an ORT-GPU archive to
+        # build the plugin against. Skips itself without a device or a real
+        # model cache rather than failing the build.
+        add_dependencies(anofox_tabfm_unittest_tests anofox_tabfm_cuda_plugin)
+        target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
+            TABFM_CUDA_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_cuda_plugin>")
+    endif()
     target_compile_features(anofox_tabfm_unittest_tests PRIVATE cxx_std_17)
     target_include_directories(anofox_tabfm_unittest_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include

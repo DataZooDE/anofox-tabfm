@@ -22,8 +22,9 @@
 # TABFM_ORT_PROVIDERS (list of provider compile definitions).
 
 set(TABFM_FLAVOR "cpu" CACHE STRING "anofox_tabfm flavor: cpu | cuda | rocm")
-# 1.23.2 matches the ROCm-flavor ORT build; the CPU prebuilt is used by default.
-set(TABFM_ORT_VERSION "1.23.2" CACHE STRING "ONNX Runtime version for prebuilt archives")
+# The CPU prebuilt archive is used by default; the ort-vcpkg manifest feature builds the port instead.
+set(TABFM_ORT_VERSION "1.29.0" CACHE STRING "ONNX Runtime version for prebuilt archives")
+set(TABFM_ORT_CUDA_MAJOR "12" CACHE STRING "CUDA major version for the ORT GPU archive (>= 1.28: 12 | 13)")
 set(TABFM_ORT_URL "" CACHE STRING "Override URL for the prebuilt ONNX Runtime archive (mirror support)")
 set(TABFM_ORT_ROCM_DIR "" CACHE PATH "Install tree of an ONNX Runtime build with --use_migraphx (rocm flavor)")
 
@@ -114,7 +115,15 @@ elseif(TABFM_FLAVOR STREQUAL "cuda")
         message(FATAL_ERROR "anofox_tabfm: cuda flavor is only available on linux_amd64/windows_amd64 (got ${_ort_platform})")
     endif()
     message(STATUS "anofox_tabfm: ONNX Runtime GPU (CUDA EP) from prebuilt archive v${TABFM_ORT_VERSION}")
-    _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}-gpu")
+    # ORT >= 1.28 renamed this archive and split it by CUDA major version:
+    #   1.23   onnxruntime-linux-x64-gpu-1.23.2.tgz
+    #   1.28   onnxruntime-linux-x64-gpu_cuda12-1.28.0.tgz  (and gpu_cuda13)
+    # TABFM_ORT_CUDA_MAJOR picks the variant; the old stem stays for < 1.28.
+    if(TABFM_ORT_VERSION VERSION_LESS "1.28.0")
+        _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}-gpu")
+    else()
+        _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}-gpu_cuda${TABFM_ORT_CUDA_MAJOR}")
+    endif()
     list(APPEND TABFM_ORT_PROVIDERS "TABFM_EP_CUDA=1")
 elseif(TABFM_FLAVOR STREQUAL "rocm")
     if(NOT TABFM_ORT_ROCM_DIR)
@@ -127,14 +136,16 @@ elseif(TABFM_FLAVOR STREQUAL "rocm")
     set(TABFM_ORT_LIB_DIR "${TABFM_ORT_ROCM_DIR}/lib")
     list(APPEND TABFM_ORT_PROVIDERS "TABFM_EP_MIGRAPHX=1")
 
-    # Direct MIGraphX backend (tabfm_migraphx.cpp): ORT's MIGraphX EP can't handle
-    # >2 GB models, so ROCm inference goes straight through MIGraphX. Needs the
-    # MIGraphX headers + the C-API lib (migraphx.hpp is a header-only wrapper over
-    # libmigraphx_c). Defaults to /opt/rocm; override for a local extracted prefix.
-    set(TABFM_MIGRAPHX_DIR "/opt/rocm" CACHE PATH "MIGraphX install prefix (include/ + lib/libmigraphx_c)")
-    target_include_directories(tabfm_onnxruntime INTERFACE "${TABFM_MIGRAPHX_DIR}/include")
-    find_library(TABFM_MIGRAPHX_LIB migraphx_c PATHS "${TABFM_MIGRAPHX_DIR}/lib" "${TABFM_MIGRAPHX_DIR}/lib64" NO_DEFAULT_PATH REQUIRED)
-    target_link_libraries(tabfm_onnxruntime INTERFACE "${TABFM_MIGRAPHX_LIB}")
+    # No MIGraphX linkage here: inference no longer goes through the main
+    # extension binary at all (docs/DYNAMIC_BACKENDS.md phase 1) — it runs
+    # through the standalone anofox_tabfm_migraphx_plugin target below, which
+    # links libmigraphx_c on its own and is dlopen'd at runtime.
+    #
+    # Device discovery no longer needs this build either: `usable` is decided
+    # by a static gfx allowlist, because the plugin drives MIGraphX directly
+    # and never touches ORT's EP. What still uses it is the fallback for tasks
+    # that ship no bundled migraphx graph, where TryMIGraphXBackend declines
+    # and the ORT session path appends the MIGraphX EP instead.
 else()
     message(FATAL_ERROR "anofox_tabfm: unknown TABFM_FLAVOR '${TABFM_FLAVOR}' (expected cpu | cuda | rocm)")
 endif()

@@ -37,6 +37,34 @@ EXTENSION_NAME = "anofox_tabfm"
 # and only fail when actually called. Verified against a real build of this
 # extension before being committed.
 SMOKE_QUERY = "SELECT count(*) AS n FROM anofox_tabfm_devices();"
+
+# End-to-end inference on the shipped artifact. devices() proves functions are
+# callable; it never touches ONNX Runtime. This registers the committed
+# weight-free fixture model (no network, no license gate) and runs a real
+# classify through the ORT session — the code path a user hits first, and the
+# one a green build has already shipped broken once (an artifact can resolve
+# lazily and only fail at Run). The final SELECT is the house served-by proof:
+# "it returned rows" is also what a silently wrong device prints.
+_FIXTURES = "{fixtures}"  # substituted with an absolute path at runtime
+INFERENCE_QUERY = f"""
+CALL anofox_tabfm_register_model(
+  id := 'smoke-fixture', base_dir := '{_FIXTURES}',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal');
+SET anofox_tabfm_device = 'cpu';
+CREATE TABLE smoke_t AS SELECT * FROM (VALUES
+  (0.5, 1.0, 'c0'), (1.5, 0.2, 'c1'), (2.5, -1.0, 'c0'),
+  (0.2, 0.8, 'c0'), (1.1, 0.4, 'c1'), (3.0, -0.5, 'c1'),
+  (1.3, 0.3, NULL), (2.4, -0.2, NULL)) v(f1, f2, label);
+SELECT count(*) FILTER (WHERE yhat IS NOT NULL) FROM anofox_tabfm_classify('smoke_t', 'label', model := 'smoke-fixture');
+SELECT DISTINCT device FROM anofox_tabfm_models() WHERE model = 'smoke-fixture';
+"""
+# The CALL echoes a registration row first; the contract is the tail:
+# non-NULL prediction count (a session emitting NaN/garbage still counts
+# plain rows -- yhat must actually exist), then the serving device.
+INFERENCE_EXPECT = ["8", "cpu"]
 # ─────────────────────────────────────────────────────────────────────────────
 
 ARCH_TO_CLI_ZIP: dict[str, str] = {
@@ -84,6 +112,8 @@ def _run_sql(duckdb_bin: str, sql: str, home: str) -> subprocess.CompletedProces
     env = dict(os.environ)
     env["HOME"] = home
     env["USERPROFILE"] = home
+    # No telemetry from CI, and no network dependence in the smoke path.
+    env["DATAZOO_DISABLE_TELEMETRY"] = "1"
     return subprocess.run(
         [duckdb_bin, "-unsigned", "-noheader", "-list", "-c", sql],
         capture_output=True,
@@ -123,13 +153,13 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
         )
 
         # 1. Install -- catches a truncated or wrong-platform artifact.
-        print("[1/3] Installing the artifact into a stock CLI")
+        print("[1/4] Installing the artifact into a stock CLI")
         proc = _run_sql(duckdb_bin, f"INSTALL '{ext}';", home)
         if proc.returncode != 0:
             _fail("the artifact is not installable on this platform", proc)
 
         # 2. Load, and confirm DuckDB itself agrees it loaded.
-        print("[2/3] Loading and checking duckdb_extensions()")
+        print("[2/4] Loading and checking duckdb_extensions()")
         proc = _run_sql(
             duckdb_bin,
             f"LOAD {EXTENSION_NAME};\n"
@@ -149,13 +179,34 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
 
         # 3. Call a real function -- loading alone does not prove the registered
         #    functions work.
-        print(f"[3/3] Calling a real function:\n      {SMOKE_QUERY}")
+        print(f"[3/4] Calling a real function:\n      {SMOKE_QUERY}")
         proc = _run_sql(duckdb_bin, f"LOAD {EXTENSION_NAME};\n{SMOKE_QUERY}", home)
         if proc.returncode != 0:
             _fail("the smoke query failed", proc)
         if not (proc.stdout or "").strip():
             _fail("the smoke query returned no output", proc)
         print(f"      -> {proc.stdout.strip()}")
+
+        # 4. Real inference through ONNX Runtime on the fixture model, plus the
+        #    served-by proof that the CPU backend actually ran it.
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        fixtures = os.path.join(repo_root, "test", "fixtures").replace("\\", "/")
+        if not os.path.isdir(fixtures):
+            _fail(f"fixture directory not found: {fixtures}")
+        sql = INFERENCE_QUERY.replace(_FIXTURES, fixtures)
+        print("[4/4] CPU inference on the committed fixture model")
+        proc = _run_sql(duckdb_bin, f"LOAD {EXTENSION_NAME};\n{sql}", home)
+        if proc.returncode != 0:
+            _fail("fixture-model inference failed", proc)
+        lines = [ln.strip() for ln in (proc.stdout or "").splitlines() if ln.strip()]
+        if lines[-2:] != INFERENCE_EXPECT:
+            _fail(
+                f"inference output mismatch: expected {INFERENCE_EXPECT}, got {lines}. "
+                f"The second value is the serving device — anything but 'cpu' "
+                f"means the session was not served where claimed",
+                proc,
+            )
+        print(f"      -> rows={lines[-2]} served_by={lines[-1]}")
 
     print(f"\nSmoke test PASSED ({EXTENSION_NAME} on {arch})")
 

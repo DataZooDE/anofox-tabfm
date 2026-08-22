@@ -40,8 +40,9 @@ void ValidateGpuPrecision(ClientContext &context, SetScope scope, Value &paramet
 		throw InvalidInputException("anofox_tabfm_gpu_precision cannot be NULL");
 	}
 	auto value = StringUtil::Lower(StringValue::Get(parameter));
-	if (value != "fp32" && value != "bf16" && value != "fp16") {
-		throw InvalidInputException("anofox_tabfm_gpu_precision must be 'bf16', 'fp16' or 'fp32', got '%s'", value);
+	if (value != "fp32" && value != "tf32" && value != "bf16" && value != "fp16") {
+		throw InvalidInputException("anofox_tabfm_gpu_precision must be 'fp32', 'tf32', 'bf16' or 'fp16', got '%s'",
+		                            value);
 	}
 	parameter = Value(value);
 }
@@ -66,6 +67,10 @@ void ValidateMaxRows(ClientContext &context, SetScope scope, Value &parameter) {
 
 void ValidateMaxFeatures(ClientContext &context, SetScope scope, Value &parameter) {
 	ValidatePositive("anofox_tabfm_max_features", context, scope, parameter);
+}
+
+void ValidateMaxSessions(ClientContext &context, SetScope scope, Value &parameter) {
+	ValidatePositive("anofox_tabfm_max_sessions", context, scope, parameter);
 }
 
 void ValidateMaxMemory(ClientContext &context, SetScope scope, Value &parameter) {
@@ -109,6 +114,13 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	                          LogicalType::BIGINT, Value::BIGINT(500), ValidateMaxFeatures);
 
 	config.AddExtensionOption(
+	    "anofox_tabfm_max_sessions",
+	    "Cap on cached model sessions across all models, devices and precisions (default 4); beyond it the "
+	    "oldest-loaded session is evicted. Sessions are cached per (model, device, precision) so switching devices "
+	    "does not rebuild multi-GB sessions, and this cap keeps that from accumulating unbounded memory.",
+	    LogicalType::BIGINT, Value::BIGINT(4), ValidateMaxSessions);
+
+	config.AddExtensionOption(
 	    "anofox_tabfm_max_memory",
 	    "Refuse a predict call when this process's resident memory is already at or above this size (e.g. '16GB') "
 	    "before the call starts, so the failure is a DuckDB exception instead of a cgroup OOM-kill. '' (default) "
@@ -126,9 +138,13 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_gpu_precision",
-	    "MIGraphX compile precision on the ROCm GPU: bf16|fp16|fp32. bf16 (default) runs ~2x faster than fp32 on "
-	    "RDNA4 and halves VRAM/.mxr, keeping fp32's exponent range; fp32 is the accuracy reference.",
-	    LogicalType::VARCHAR, Value("bf16"), ValidateGpuPrecision);
+	    "GPU numeric mode: fp32|tf32|bf16|fp16. fp32 (default) is strict — a device switch does not change answers, "
+	    "measured exact on both GPUs; on CUDA it disables TF32 tensor-core rounding. tf32 re-enables that rounding "
+	    "(CUDA only; fp32 storage, faster matmuls). bf16/fp16 quantize the MIGraphX program on ROCm (~2x faster on "
+	    "RDNA4, half the VRAM/.mxr; label flips vs fp32 are rare (~2%% measured) but NOT confined to near-ties — "
+	    "measured flips include high-confidence rows, so validate bf16 on your own data) and are rejected on CUDA "
+	    "rather than silently running fp32.",
+	    LogicalType::VARCHAR, Value("fp32"), ValidateGpuPrecision);
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_context_cache",
@@ -151,13 +167,15 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	                          LogicalType::VARCHAR, Value("auto"), ValidateDevice);
 
 	config.AddExtensionOption("anofox_tabfm_ep_path",
-	                          "Directory with ONNX Runtime provider / plugin-EP shared libraries",
+	                          "Directory holding the GPU backend plugins (libanofox_tabfm_cuda_plugin.so, "
+	                          "libanofox_tabfm_migraphx_plugin.so) and the runtime libraries they load alongside "
+	                          "themselves. CALL tabfm_download_runtime('cuda') populates it.",
 	                          LogicalType::VARCHAR, Value(""));
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_mxr_source",
 	    "Directory holding precompiled MIGraphX .mxr programs (offline/CI/shared cache). Before compiling a "
-	    "shape-bucket (~27 min on ROCm), a matching '<model>_<arch>_<precision>_T<t>_H<h>.mxr' here is staged into the "
+	    "shape-bucket (~27 min on ROCm), a matching '<graph-stem>_<content-hash8>_<arch>_<precision>_T<t>_H<h>.mxr' here is staged into the "
 	    "cache and reused; empty ('' default) always compiles on-device. Artifacts are arch- and ROCm-version-specific.",
 	    LogicalType::VARCHAR, Value(""));
 }

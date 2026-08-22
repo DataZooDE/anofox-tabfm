@@ -4,7 +4,7 @@
 -- MSE / RMSE / MAE (and a mean-predictor baseline) entirely in SQL.
 --
 -- Run:  duckdb :memory: < examples/regression_wine.sql
--- Needs: real regression weights (CALL tabfm_download('regression'))
+-- Needs: real regression weights (CALL tabfm_download('regression', model := 'tabfm-v1'))
 --        (built-in model 'tabfm-v1' — no manifest file needed).
 
 INSTALL httpfs; LOAD httpfs;

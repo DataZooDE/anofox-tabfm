@@ -35,8 +35,9 @@ good default — Apache-2.0, ~303 MB. It also has a permissive license. The exte
 CALL tabfm_download('classification', model := 'mitra');    -- ~303 MB, cached in ~/.cache/anofox-tabfm
 ```
 
-For the Google model (`tabfm-v1`) which has special licensing, you additionally need to
-`SET anofox_tabfm_accept_hf_license = true;`.
+Models whose license needs an explicit nod (`tabfm-v1`, `tabpfn-v2`, `tabpfn-v2-5`,
+`tabpfn-v3` — "(gated)" in the table below) additionally need
+`SET anofox_tabfm_accept_hf_license = true;` before `tabfm_download`.
 
 Some repositories are additionally **gated by Hugging Face** — accept the license on
 the model page while signed in, then pass your token via a standard DuckDB secret:
@@ -230,7 +231,7 @@ SELECT * FROM tabfm_list_models();          -- the registry: every known model
 |---|---|---|---|
 | `tabfm-v1` | Google TabFM | non-commercial (gated) | `false` |
 | `mitra` | AWS AutoGluon | Apache-2.0 | `true` |
-| `tabpfn-v2` | Prior Labs | Apache-2.0 + attribution | `true` |
+| `tabpfn-v2` | Prior Labs | Apache-2.0 + attribution (gated) | `true` |
 | `tabicl-v2` | Inria | BSD-3-Clause | `true` |
 | `orion-bix` | Lexsi Labs | MIT | `true` (classify only) |
 | `tabpfn-v2-5` | Prior Labs | TabPFN-2.5 (non-commercial, gated) | `false` |
@@ -303,12 +304,17 @@ iris, `mitra` / `tabpfn-v2` / `tabicl-v2` all reach **0.962** vs `tabfm-v1`'s
 SELECT * FROM tabfm_models();     -- what's cached / loaded
 ```
 ```
-┌───────────┬────────────────┬──────────┬──────────────┬────────────┬─────────┬──────────────────────────┐
-│   model   │      task      │ revision │     path     │   bytes    │ loaded  │         license          │
-├───────────┼────────────────┼──────────┼──────────────┼────────────┼─────────┼──────────────────────────┤
-│ tabfm-v1  │ classification │ main     │ …/model.saf… │ 6557888408 │ true    │ tabfm-non-commercial-v1.0│
-└───────────┴────────────────┴──────────┴──────────────┴────────────┴─────────┴──────────────────────────┘
+┌───────────┬────────────────┬──────────┬──────────────┬────────────┬─────────┬───────────────────────────┬─────────┐
+│   model   │      task      │ revision │     path     │   bytes    │ loaded  │          license          │ device  │
+├───────────┼────────────────┼──────────┼──────────────┼────────────┼─────────┼───────────────────────────┼─────────┤
+│ tabfm-v1  │ classification │ main     │ …/model.saf… │ 6557888408 │ true    │ tabfm-non-commercial-v1.0 │ rocm:0  │
+└───────────┴────────────────┴──────────┴──────────────┴────────────┴─────────┴───────────────────────────┴─────────┘
 ```
+
+`device` is which backend is serving the model right now — `cpu`, `cuda:0`,
+`rocm:0` — and is empty until a predict warms a session. It is the way to check
+that a GPU is actually being used: a device that silently fell back to the CPU
+produces the same answers, only slower, so agreement alone will not tell you.
 
 ```sql
 CALL tabfm_load('classification');    -- warm the model (else lazy on first predict)
@@ -337,10 +343,12 @@ CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_…', SCOPE 'https://huggingface.c
 | `anofox_tabfm_max_rows` | `10000` | guardrail per predict / group |
 | `anofox_tabfm_max_features` | `500` | guardrail |
 | `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `coreml` (`migraphx` alias for `rocm`) |
-| `anofox_tabfm_gpu_precision` | `bf16` | GPU dtype: `bf16` / `fp16` / `fp32` |
+| `anofox_tabfm_gpu_precision` | `fp32` | GPU numeric mode: `fp32` (strict — same answers as CPU, measured exact on both GPUs) / `tf32` (CUDA tensor-core rounding) / `bf16` / `fp16` (ROCm quantize; flip rates vs fp32 are model-dependent — measured: tabfm-v1 bf16 flipped ~2% including high-confidence rows, mitra bf16 flipped 30% of query rows but only at near-ties (margins ≤ 0.023) while fp16 flipped 10% at margins ≤ 0.002 — validate on your data) |
+| `anofox_tabfm_max_sessions` | `4` | loaded (device, precision) sessions kept per model; oldest evicted beyond this |
+| `anofox_tabfm_max_memory` | `''` | refuse predicts once resident memory is at/above this (e.g. `'16GB'`); `''` disables |
 | `anofox_tabfm_default_model` | `''` | session-wide model when `model :=` is not given |
 | `anofox_tabfm_mxr_source` | `''` | directory of precompiled ROCm `.mxr` programs to stage from |
-| `anofox_tabfm_ep_path` | `''` | extra search path for execution-provider shared libraries |
+| `anofox_tabfm_ep_path` | `''` | directory holding the GPU backend plugin (and the runtime libraries beside it) |
 | `anofox_tabfm_trace_level` | `warn` | log verbosity: `error` / `warn` / `info` / `debug` / `trace` |
 
 Options (the trailing `opts` MAP, all values VARCHAR): `task`, `n_estimators`
@@ -372,20 +380,83 @@ surfaces (`tabfm_predict_by` / `_agg` / `_win`) — planned on the same engine.
 ## Flavors (CPU / GPU)
 
 One codebase, four builds (`TABFM_FLAVOR`): `cpu` (default, community-extension
-eligible), `cuda` (NVIDIA, bf16), `rocm` (AMD via a **direct MIGraphX backend** —
+eligible), `cuda` (NVIDIA), `rocm` (AMD via a **direct MIGraphX backend** —
 ONNX Runtime's MIGraphX EP can't load the >2 GB model, so ROCm bypasses it and
 drives libMIGraphX directly, with a compiled-program `.mxr` cache), and `coreml`
 (Apple Silicon via ONNX Runtime's CoreML EP — same macOS archive as `cpu`, GPU/ANE
 where the graph is supported, CPU fallback otherwise). GPU builds
 link no vendor runtime — CUDA/cuDNN or ROCm resolve from your system, and
 `tabfm_devices()` reports what was found. GPU dtype is set by
-`anofox_tabfm_gpu_precision` (default `bf16`); `CALL tabfm_gpu_precompile(task)`
-warms a shape bucket ahead of the first predict (builds/caches the ROCm `.mxr`).
+`anofox_tabfm_gpu_precision` (default `fp32` — strict CPU parity; faster modes are opt-in).
+
+**ROCm first-run cost — plan for it.** MIGraphX compiles a program per
+(GPU arch, precision, shape bucket), and on the full-size model that compile is
+**~25 minutes** (measured, gfx1201, fp32 or bf16) — while every *later* predict
+in that bucket is sub-second. Two tools manage this:
+
+```sql
+CALL tabfm_gpu_precompile('classification');   -- warm the bucket now, on purpose
+SET anofox_tabfm_mxr_source = '/shared/mxr';   -- or stage programs compiled elsewhere
+```
+
+Precompile once per shape bucket you will use (the compiled `.mxr` persists in
+the weight cache across sessions); `mxr_source` lets a fleet share one
+machine's compiles. CUDA has no analogous cost (~30 s cold start, no long
+compile).
 Released cpu builds are served from the anofox extension repository
 (`SET custom_extension_repository = 'https://get.anofox.com'`) as well as from
-the DuckDB community repository. The GPU flavors are **not published yet** —
-build one from source with `TABFM_FLAVOR=cuda|rocm` (see
-[`docs/rocm-build.md`](docs/rocm-build.md) for the ROCm toolchain).
+the DuckDB community repository.
+
+**Backend support matrix** (what is verified, not what might work):
+
+| backend | platforms | models | verified on |
+|---|---|---|---|
+| CPU | Linux x64/arm64, macOS x64/arm64, Windows x64 | all 7 built-ins | CI suites + install-smoke with inference on every platform |
+| CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | **all 7 built-ins** | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max |
+| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1 + mitra (train_size-scalar family) | RX 9070 XT: parity, concurrency, user workflow |
+| CoreML | — | — | out of scope by decision (docs/PHASE_COMPLETION_PLAN.md) |
+| MLX | planned | — | docs/MLX_PLAN.md |
+
+GPU plugins are Linux-only today; macOS/Windows artifacts are CPU-only by
+design. The single_eval_pos models (TabPFN/TabICL/Orion) cannot use ROCm's
+bucketed compilation (y's length is the train/test split) — CUDA serves them.
+
+**Using a GPU.** A GPU backend is a plugin the extension `dlopen`s at runtime,
+not a separate build of the extension: point `anofox_tabfm_ep_path` at the
+directory holding it and select the device.
+
+```sql
+CALL tabfm_download_runtime('cuda');    -- fetch the ORT GPU runtime into that directory
+SET anofox_tabfm_ep_path = '/path/to/plugin/dir';
+SET anofox_tabfm_device  = 'cuda';      -- or 'rocm'
+-- confirm it is really being used, rather than trusting the answers:
+SELECT model, device FROM tabfm_models() WHERE loaded;
+```
+
+The plugins themselves are **not published yet**, so today you build the one
+you need from source (`src/tabfm_cuda_plugin.cpp`,
+`src/tabfm_migraphx_plugin.cpp`; see [`docs/rocm-build.md`](docs/rocm-build.md)
+for the ROCm toolchain and [`docs/DYNAMIC_BACKENDS.md`](docs/DYNAMIC_BACKENDS.md)
+for how the two fit together). `tabfm_download_runtime('cuda')` fetches the
+ONNX Runtime GPU libraries the CUDA plugin needs, not the plugin itself.
+
+**Any build can host the CUDA plugin now.** Earlier, a host that loaded a
+*shared* `libonnxruntime.so` (the local `make debug` build) shadowed the
+plugin's own ONNX Runtime — same SONAME, first one loaded wins — so CUDA
+required the statically-linked release build. Fixed at both ends
+(`docs/GPU_HARDENING_PLAN.md` S2): the plugin's core ships under a private
+SONAME (`libanofoxort_gpu.so`, applied by `tabfm_download_runtime` and by the
+plugin build itself), and the plugin loader binds with `RTLD_DEEPBIND`.
+Verified on hardware including the hostile case — a foreign upstream-SONAME
+ORT preloaded into the global scope — which the plugin no longer notices.
+
+`anofox_tabfm_gpu_precision` now means something on both GPUs, with fp32 the
+default everywhere: strict fp32 (on CUDA that disables the TF32 tensor-core
+rounding ORT would otherwise apply to fp32 matmuls) so a device switch does
+not change answers. `tf32` re-enables that rounding (CUDA only); `bf16`/`fp16`
+quantize the MIGraphX program (ROCm only) for ~2x speed at the cost of a few
+near-tie label flips. A mode a backend cannot honour is an error, never a
+silent fp32 run.
 
 ## Feedback
 

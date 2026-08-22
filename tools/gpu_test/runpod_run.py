@@ -217,8 +217,8 @@ def ort_preamble(version: str) -> str:
     )
 
 
-def _pod_spec(args, gpu_ids, cloud, pub):
-    return {
+def _pod_spec(args, gpu_ids, cloud, pub, volume=None):
+    spec = {
         "name": "anofox-tabfm-gpu-test",
         "imageName": args.image,
         "gpuTypeIds": gpu_ids,
@@ -230,6 +230,18 @@ def _pod_spec(args, gpu_ids, cloud, pub):
         "supportPublicIp": True,
         "env": {"PUBLIC_KEY": pub},
     }
+    if volume:
+        # A persistent network volume mounted AT /workspace (S7 of
+        # docs/GPU_HARDENING_PLAN.md): uploads, toolchains, build trees and
+        # weights survive across pods, which is what turns a 40-90 min CUDA
+        # iteration into minutes. Volumes are datacenter-pinned, so the pod is
+        # restricted to the volume's datacenter -- capacity misses there are a
+        # real possibility the caller sees as the usual "no capacity" fallback.
+        spec["networkVolumeId"] = volume["id"]
+        spec["volumeMountPath"] = "/workspace"
+        spec["dataCenterIds"] = [volume["dataCenterId"]]
+        spec["cloudType"] = "SECURE"  # network volumes live in secure DCs
+    return spec
 
 
 def main() -> int:
@@ -256,12 +268,34 @@ def main() -> int:
                     help="comma-separated onnxruntime-gpu versions to sweep")
     ap.add_argument("--timeout", type=int, default=900, help="seconds to wait for the pod")
     ap.add_argument("--keep", action="store_true", help="do NOT terminate the pod (debugging; costs money)")
+    ap.add_argument("--volume-id", help="attach this persistent network volume at /workspace (S7: uploads, "
+                                        "toolchains and build trees survive across pods)")
+    ap.add_argument("--create-volume", type=int, metavar="GB",
+                    help="create a network volume of this size and exit. RECURRING COST until deleted "
+                         "(~$0.07/GB/month); delete with --delete-volume")
+    ap.add_argument("--volume-dc", default="EU-RO-1", help="datacenter for --create-volume")
+    ap.add_argument("--list-volumes", action="store_true", help="list network volumes and exit")
+    ap.add_argument("--delete-volume", help="delete a network volume id and exit (ends its recurring cost)")
     ap.add_argument("--list", action="store_true", help="list running pods and exit")
     ap.add_argument("--terminate", help="terminate a pod id and exit")
     args = ap.parse_args()
 
     key = api_key()
 
+    if args.create_volume:
+        volume = call("POST", "/networkvolumes", key,
+                      {"name": "anofox-tabfm-gpu", "size": args.create_volume, "dataCenterId": args.volume_dc})
+        print(f"created volume {volume['id']} ({args.create_volume} GB, {args.volume_dc}) — "
+              f"RECURRING COST until --delete-volume {volume['id']}")
+        return 0
+    if args.list_volumes:
+        for volume in call("GET", "/networkvolumes", key) or []:
+            print(f"{volume['id']}\t{volume.get('size')}GB\t{volume.get('dataCenterId')}\t{volume.get('name')}")
+        return 0
+    if args.delete_volume:
+        call("DELETE", f"/networkvolumes/{args.delete_volume}", key)
+        print(f"deleted volume {args.delete_volume}")
+        return 0
     if args.list:
         for pod in call("GET", "/pods", key) or []:
             print(f"{pod['id']}\t{pod.get('desiredStatus')}\t{pod.get('name')}\t{pod.get('machine', {}).get('gpuTypeId', '')}")
@@ -319,13 +353,19 @@ def main() -> int:
         print(f"cheapest rentable GPUs: {cheapest}")
 
     print(f"image={args.image}")
+    volume = None
+    if args.volume_id:
+        volume = call("GET", f"/networkvolumes/{args.volume_id}", key)
+        print(f"volume={volume['id']} ({volume.get('size')}GB, {volume['dataCenterId']}) mounted at /workspace")
     pod = None
     # Cheapest first, each on both clouds: capacity is transient and per-cloud,
-    # so falling through the list beats failing on one sold-out card.
+    # so falling through the list beats failing on one sold-out card. With a
+    # volume attached the cloud is forced to SECURE and the datacenter to the
+    # volume's, so the inner loop degenerates to one attempt per GPU type.
     for price, gpu_id, vram in candidates:
-        for cloud in ("COMMUNITY", "SECURE"):
+        for cloud in (("SECURE",) if volume else ("COMMUNITY", "SECURE")):
             try:
-                pod = call("POST", "/pods", key, _pod_spec(args, [gpu_id], cloud, pub))
+                pod = call("POST", "/pods", key, _pod_spec(args, [gpu_id], cloud, pub, volume))
                 tag = f"${price}/hr" if price is not None else "?"
                 print(f"  got {gpu_id} ({tag}, {vram}GB) on {cloud}")
                 break

@@ -8,10 +8,13 @@
 --
 -- Run:  duckdb :memory: < examples/impute_missing.sql
 -- Needs: a model with BOTH classification and regression weights for mixed
---        tables, e.g. CALL tabfm_download('classification');
---                     CALL tabfm_download('regression');
+--        tables, e.g. CALL tabfm_download('classification', model := 'mitra');
+--                     CALL tabfm_download('regression', model := 'mitra');
 
 LOAD anofox_tabfm;
+-- With several models registered, one must be chosen explicitly
+-- (generate_breast_cancer.sql does the same):
+SET anofox_tabfm_default_model = 'mitra';
 
 -- 1. A table where the columns genuinely inform each other, then punch holes
 --    in it. `keep` remembers the truth so we can score the fills.

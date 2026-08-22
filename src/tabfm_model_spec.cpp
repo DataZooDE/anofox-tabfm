@@ -313,6 +313,11 @@ void ParseV2(yyjson_val *root, ModelSpec &spec, const string &path) {
 		Fail(path, "v2 \"weights\" must be a non-empty object keyed by task");
 	}
 	auto graph = yyjson_obj_get(root, "graph");
+	// Optional GPU-format graphs, keyed by task like "graph". Optional per
+	// task and per field; absent => empty (the model does not reach that GPU
+	// backend). See ModelTaskArtifacts for why ext and migraphx stay separate.
+	auto ext_graph = yyjson_obj_get(root, "ext_graph");
+	auto migraphx_graph = yyjson_obj_get(root, "migraphx_graph");
 	// The tensor map is either shared across tasks (path/inline object) or keyed
 	// per task (graphs with different initializers, e.g. TabPFN clf vs reg).
 	yyjson_val *tmap_val = (graph && yyjson_is_obj(graph)) ? yyjson_obj_get(graph, "tensor_map") : nullptr;
@@ -341,6 +346,12 @@ void ParseV2(yyjson_val *root, ModelSpec &spec, const string &path) {
 		}
 		if (art.graph.empty()) {
 			Fail(path, "v2 \"graph\" has no entry for task '" + task_name + "'");
+		}
+		if (ext_graph && yyjson_is_obj(ext_graph)) {
+			art.ext_graph = OptStr(ext_graph, task_name.c_str(), "", path);
+		}
+		if (migraphx_graph && yyjson_is_obj(migraphx_graph)) {
+			art.migraphx_graph = OptStr(migraphx_graph, task_name.c_str(), "", path);
 		}
 		if (task_keyed_map) {
 			ParseTensorMapInto(yyjson_obj_get(tmap_val, task_name.c_str()), art, path);

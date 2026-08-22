@@ -1,0 +1,24 @@
+# name: test/sql/tabfm_download_runtime.test
+# description: tabfm_download_runtime's declaration surface — the parts that
+#              need no network. The cuda wheel flow and (once a release
+#              carries plugins) the plugin fetch are exercised on real
+#              hardware via tools/gpu_test/; what CI can pin is that the
+#              error paths name their fixes and never a URL that does not
+#              exist (docs/GPU_HARDENING_PLAN.md P7).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# A plugin-carrying release is pinned (v2026.08.22), so 'rocm' now performs a
+# real fetch — which CI must not depend on. The fetch itself is exercised by
+# the hardware harness (tools/gpu_test) and the post-release end-to-end;
+# what stays pinned here is the network-free declaration surface below.
+
+# An unknown backend is refused with the accepted set.
+statement error
+CALL tabfm_download_runtime('tpu')
+----
+<REGEX>:.*unknown backend 'tpu'.*expected 'cuda' or 'rocm'.*

@@ -94,6 +94,14 @@ SELECT path LIKE '%acme__tabfm-test@main/classification/model.safetensors' FROM 
 ----
 true
 
+# 'device' says which backend is serving the model, so a GPU run can be told
+# apart from a CPU one. Empty until a predict warms a session -- downloaded is
+# not loaded.
+query T
+SELECT device FROM tabfm_models()
+----
+(empty)
+
 # Full-name alias returns the same surface
 query I
 SELECT count(*) FROM anofox_tabfm_models()

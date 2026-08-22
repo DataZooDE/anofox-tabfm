@@ -76,6 +76,9 @@ struct ModelManifest {
 	string revision = "main";
 	vector<ManifestFile> files;
 	string graph;
+	//! Model-provided GPU graphs (empty = none). See ModelTaskArtifacts.
+	string ext_graph;
+	string migraphx_graph;
 	//! Exactly one of the two tensor-map forms is populated (or neither).
 	string tensor_map_path;
 	unordered_map<string, string> tensor_map;

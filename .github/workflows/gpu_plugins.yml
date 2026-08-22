@@ -1,0 +1,165 @@
+#
+# Build the GPU backend plugins (docs/GPU_HARDENING_PLAN.md P7).
+#
+# Neither plugin needs a GPU to BUILD — that is the point of building them
+# here: the CUDA plugin links only the ONNX Runtime GPU archive (a download),
+# and the MIGraphX plugin links only libmigraphx_c from the ROCm apt repo. A
+# GPU is required to RUN them, which the manual harnesses under tools/gpu_test/
+# cover on real hardware.
+#
+# Deliberately separate from MainDistributionPipeline.yml (scaffold-owned):
+# the plugins version independently of the extension binary, and this workflow
+# needs none of the DuckDB platform matrix.
+#
+# Every push builds and uploads workflow artifacts (sanity: the plugin ABI
+# symbol is exported, the CUDA plugin's DT_NEEDED names the RENAMED core —
+# GPU_HARDENING_PLAN S2 — and never upstream's SONAME). A version tag attaches
+# both .so files plus sha256s to the GitHub release, which is what
+# tabfm_download_runtime() fetches.
+#
+name: GPU backend plugins
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # release-asset upload on tags; read is enough elsewhere
+
+env:
+  ORT_GPU_VERSION: "1.29.0"
+  ORT_GPU_ARCHIVE: "onnxruntime-linux-x64-gpu_cuda12-1.29.0"
+
+jobs:
+  cuda-plugin:
+    name: CUDA plugin (links its own renamed ORT-GPU core)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch the ONNX Runtime GPU archive
+        run: |
+          curl -sSL -o ort_gpu.tgz \
+            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_GPU_VERSION}/${ORT_GPU_ARCHIVE}.tgz"
+          tar xzf ort_gpu.tgz
+
+      - name: Rename the core SONAME (S2 shadowing fix)
+        run: |
+          python3 - "${ORT_GPU_ARCHIVE}/lib/libonnxruntime.so.${ORT_GPU_VERSION}" <<'PY'
+          import sys
+          data = open(sys.argv[1], "rb").read()
+          old, new = b"libonnxruntime.so.1\x00", b"libanofoxort_gpu.so\x00"
+          n = data.count(old)
+          assert n == 1, f"expected exactly one SONAME string, found {n} — archive changed shape"
+          open("libanofoxort_gpu.so", "wb").write(data.replace(old, new))
+          print("renamed core written")
+          PY
+
+      - name: Build the plugin
+        run: |
+          g++ -O2 -std=c++17 -shared -fPIC -o libanofox_tabfm_cuda_plugin.so \
+            src/tabfm_cuda_plugin.cpp \
+            -Isrc/include -I"${ORT_GPU_ARCHIVE}/include" \
+            -L. -l:libanofoxort_gpu.so -Wl,-rpath,'$ORIGIN'
+
+      - name: Sanity - ABI symbol exported, DT_NEEDED names the renamed core only
+        run: |
+          nm -D libanofox_tabfm_cuda_plugin.so | grep -q "TabFMGetPluginApi" || { echo "ABI symbol missing"; exit 1; }
+          readelf -d libanofox_tabfm_cuda_plugin.so | grep NEEDED
+          readelf -d libanofox_tabfm_cuda_plugin.so | grep -q "libanofoxort_gpu.so" || { echo "renamed core not in NEEDED"; exit 1; }
+          if readelf -d libanofox_tabfm_cuda_plugin.so | grep -q "libonnxruntime.so.1"; then
+            echo "plugin still references upstream's SONAME — the S2 fix did not take"; exit 1
+          fi
+          sha256sum libanofox_tabfm_cuda_plugin.so libanofoxort_gpu.so | tee cuda_plugin.sha256
+
+      # nm proves the symbol is in the file; only dlopen proves the artifact
+      # resolves (DT_NEEDED, rpath, SONAME). The runner has no GPU — that is
+      # the point: loading must work and create() must refuse cleanly, which
+      # is exactly what a user's GPU-less machine does at SET ep_path.
+      - name: Load check - dlopen answers and create fails gracefully without a GPU
+        run: |
+          gcc -O2 -o plugin_load_check tools/gpu_test/plugin_load_check.c -ldl
+          ./plugin_load_check ./libanofox_tabfm_cuda_plugin.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anofox-tabfm-cuda-plugin
+          path: |
+            libanofox_tabfm_cuda_plugin.so
+            cuda_plugin.sha256
+          if-no-files-found: error
+
+  migraphx-plugin:
+    name: MIGraphX plugin (links libmigraphx_c only)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MIGraphX dev from the ROCm apt repo
+        run: |
+          sudo mkdir -p /etc/apt/keyrings
+          wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor | \
+            sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+          # 7.2.4 matches the ROCm generation every hardware verification in
+          # tools/gpu_test/ ran against (gfx1201, docs/GPU_HARDENING_PLAN.md).
+          echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.4 jammy main" | \
+            sudo tee /etc/apt/sources.list.d/rocm.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq migraphx-dev half
+
+      - name: Build the plugin
+        run: |
+          g++ -O2 -std=c++17 -shared -fPIC -o libanofox_tabfm_migraphx_plugin.so \
+            src/tabfm_migraphx_plugin.cpp \
+            -Isrc/include -I/opt/rocm/include \
+            -L/opt/rocm/lib -lmigraphx_c -Wl,-rpath,'$ORIGIN'
+
+      - name: Sanity - ABI symbol exported
+        run: |
+          nm -D libanofox_tabfm_migraphx_plugin.so | grep -q "TabFMGetPluginApi" || { echo "ABI symbol missing"; exit 1; }
+          readelf -d libanofox_tabfm_migraphx_plugin.so | grep NEEDED
+          sha256sum libanofox_tabfm_migraphx_plugin.so | tee migraphx_plugin.sha256
+
+      # Same contract as the CUDA job: resolve on a GPU-less machine, refuse
+      # cleanly at create. libmigraphx_c lives outside the default search path.
+      - name: Load check - dlopen answers and create fails gracefully without a GPU
+        run: |
+          gcc -O2 -o plugin_load_check tools/gpu_test/plugin_load_check.c -ldl
+          LD_LIBRARY_PATH=/opt/rocm/lib ./plugin_load_check ./libanofox_tabfm_migraphx_plugin.so
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anofox-tabfm-migraphx-plugin
+          path: |
+            libanofox_tabfm_migraphx_plugin.so
+            migraphx_plugin.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Attach plugins to the release (tags only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [cuda-plugin, migraphx-plugin]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # gh release upload does NOT create the release object; a tag pushed
+          # before a human creates one would red-fail here and ship the pinned
+          # release without its plugins (review finding, 2026-08-22).
+          gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes \
+            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
+          gh release upload "${GITHUB_REF_NAME}" \
+            libanofox_tabfm_cuda_plugin.so \
+            libanofox_tabfm_migraphx_plugin.so \
+            cuda_plugin.sha256 migraphx_plugin.sha256 \
+            --repo "${GITHUB_REPOSITORY}" --clobber

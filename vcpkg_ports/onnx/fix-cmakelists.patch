@@ -1,0 +1,27 @@
+Also install the generated .proto/.proto3 files alongside the headers.
+
+onnxruntime's vcpkg build consumes onnx as a pure package dependency (it never
+builds onnx's sources itself), but onnxruntime_proto.cmake still needs
+onnx/onnx-ml.proto / onnx-operators-ml.proto at configure time to regenerate
+its own protobuf bindings against the same schema. Upstream only installs the
+generated headers, not the .proto files they were generated from.
+
+Rebased onto onnx v1.22.0 from vcpkg's ports/onnx/fix-cmakelists.patch
+(vcpkg registry, synced 2025-12-27); only the line numbers moved, the
+onnxruntime_INSTALL guard around the install() calls is new since then.
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8b5af30..6836651 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -600,6 +600,10 @@ if(ONNX_INSTALL)
+           DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+           FILES_MATCHING
+           PATTERN "*.h")
++  install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/onnx DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
++          FILES_MATCHING PATTERN "*.proto")
++  install(DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/onnx DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
++          FILES_MATCHING PATTERN "*.proto3")
+ endif()
+
+ configure_file(

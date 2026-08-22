@@ -8,6 +8,21 @@ execution provider and reports what happened.
 **Not wired into CI.** It spends money and needs a key CI does not have. Run it
 by hand when a change touches a GPU path.
 
+For repeated CUDA iterations, attach a persistent network volume so uploads,
+toolchains and build trees survive across pods (S7 of
+`docs/GPU_HARDENING_PLAN.md` — proven with a marker written by one pod and
+read by a fresh one):
+
+```bash
+tools/gpu_test/runpod_run.py --create-volume 40 --volume-dc EUR-IS-1  # RECURRING cost until deleted
+tools/gpu_test/runpod_run.py --volume-id <id> --gpu "NVIDIA GeForce RTX 4090" --command ...
+tools/gpu_test/runpod_run.py --delete-volume <id>                     # ends the cost
+```
+
+Volumes exist only in specific datacenters (a wrong `--volume-dc` errors with
+the valid list) and pin the pod to their datacenter, where GPU stock may be
+scarce — pass an explicit `--gpu` for a type that datacenter actually stocks.
+
 ## `ort_ep_check.py` — run a graph on a provider
 
 Synthesizes deterministic random initializers for the weight-free graphs in
@@ -44,6 +59,137 @@ python ort_repro.py --pinned   # bounds pinned as outputs: both providers ok
 
 Keep the URLs in it working: the upstream issue tells maintainers to `curl`
 this file from `main`.
+
+## `equivalence.py` — a device switch must not change the answer
+
+The contract behind `docs/DYNAMIC_BACKENDS.md`. Runs the same graph on several
+providers and compares each against the CPU result, which is the reference by
+definition — it is the one every user gets.
+
+```bash
+# CPU self-check, synthesized weights (this is what CI can run)
+tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --providers cpu
+
+# the stronger statement: the real checkpoint
+tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --providers cpu \
+    --weights ~/.cache/anofox-tabfm/jingang__TabICL@main/classification/model.safetensors \
+    --tensor-map resources/tensor_map_tabicl_classification.json
+
+# on a GPU box: ONNX Runtime's own CUDA execution provider
+tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --providers cpu,cuda
+```
+
+### Measuring what ships, not what ONNX Runtime does
+
+A backend suffixed `-plugin` is driven through the **real backend plugin**
+(`tabfm_plugin_abi.h`, `dlopen`'d from `--plugin-dir`) instead of through ORT's
+execution provider. On GPU that distinction is the whole point: since
+`docs/DYNAMIC_BACKENDS.md` phases 1 and 3, neither ROCm nor CUDA reaches the
+accelerator through this process's ORT, so `--providers cpu,cuda` measures
+ONNX Runtime while `--providers cpu,cuda-plugin` measures the shipped path.
+
+```bash
+# ROCm, against a locally built plugin
+tools/gpu_test/equivalence.py resources/graph_migraphx_classification.onnx \
+    --providers cpu,rocm-plugin --plugin-dir build/debug/extension/anofox_tabfm
+
+# CUDA, against what tabfm_download_runtime('cuda') fetched
+tools/gpu_test/equivalence.py resources/graph_ext_classification.onnx \
+    --providers cpu,cuda-plugin --plugin-dir ~/.cache/anofox-tabfm/ep
+```
+
+Verified on real hardware: `cpu` vs `rocm-plugin` on gfx1201 with the
+classification graph and synthesized weights gives `max relative 1.034e-05`
+(tolerance `1e-04`) with argmax agreement `1.0000`. Expect the first run of a
+new shape bucket to take tens of minutes — MIGraphX compiles per bucket, and a
+synthesized-weights run deliberately cannot reuse a cached `.mxr` (see
+`plugin_cache_dir`).
+
+The plugins only speak the 5-input tabfm signature (`x, y, cat_mask,
+train_size, d`), so pair them with a `graph_ext_*` / `graph_migraphx_*` graph —
+the `(x, y)` graphs are ORT-provider only. The signature is detected from the
+graph rather than assumed, and both sides are fed the same initializer values
+(materialized to an external-data file for the plugin, which has no way to
+receive them in memory).
+
+Exit codes: `0` equivalent, `1` a backend failed, `2` answers diverged, `3` a
+requested provider was not available. **Unavailable is never silent** — a GPU
+comparison that quietly ran on CPU would pass while testing nothing, which is
+the failure mode this whole directory exists to prevent.
+
+## `usecase_equivalence.sql` — the same query on CPU and on a GPU
+
+The other checks here drive a plugin from a C++ host with a handful of
+hand-built rows. This one goes through the surface a user actually touches:
+`SET anofox_tabfm_device` -> backend dispatch -> `ep_path` -> the plugin ->
+the aggregate's chunking, against the real cached weights, comparing the
+predicted labels row for row.
+
+```bash
+{ echo "SET anofox_tabfm_ep_path='$PWD/build/debug/extension/anofox_tabfm';"; \
+  cat tools/gpu_test/usecase_equivalence.sql; } | ./build/debug/duckdb
+```
+
+Results on gfx1201 with the real TabFM v1 classification weights:
+
+| scenario | served by | rows | disagreements | agreement |
+|---|---|---|---|---|
+| 100 rows, `fp32` | `rocm:0` | 100 | 0 | 100% |
+| 100 rows, `bf16` (opt-in; was the default before Track A) | `rocm:0` | 100 | 2 | 98.0% |
+| 2500 rows, `bf16` — crosses DuckDB's 2048-row vector boundary, T4096 bucket | `rocm:0` | 2500 | 42 | 98.32% |
+
+(Disagreements and agreement are over every returned row, which is what the
+script prints. Only 30 of the 100 rows in the small case are unlabelled
+predictions, so 2 flips there is 2 of 30 actual predictions.)
+
+fp32 agrees with CPU exactly. The bf16 differences are the documented
+opt-in tradeoff, and S3's margin analysis says what they are with precision:
+rare (1.7% here) but NOT confined to near-ties — flipped rows' fp32 margins
+reached 0.805, so bf16 can overturn confident predictions on hard data. fp32
+is the default since Track A of `docs/GPU_HARDENING_PLAN.md`; validate bf16
+against fp32 on your own data before adopting it. The class
+spread stays non-degenerate at scale (cpu a824/b837/c839 vs gpu a827/b832/c841),
+which is what rules out "the GPU returned one class and got lucky".
+
+**Read `*_served_by` before believing any of those numbers.** An earlier version
+of this file reported 100 rows / 0 disagreements at bf16, which was wrong: the
+engine reused the cached CPU session across a device switch, so the comparison
+was cpu-vs-cpu. Fixed in 70a6800, and the script now prints which backend
+actually served each side — anything other than `rocm:N` on the GPU side means
+the comparison is meaningless however green it looks.
+
+Sized to stay inside the already-compiled T128/H16 shape bucket (<=128 rows,
+<=16 features) so it needs no MIGraphX recompile. Going outside that bucket is
+a fine thing to test, but budget ~27 min for the first run of each new bucket.
+
+Needs a GPU and a real model cache, so it is a manual check rather than a CI
+one — and it is the check that found every GPU bug on this branch, none of
+which any unit test could reach (they build device lists by hand and never
+touch discovery or the SQL path):
+
+- the GPU probes were compiled out of non-GPU flavors, so a cpu build could not
+  see a card at all (0c6af12);
+- `rocm` was refused on such a build even with its plugin installed (0c6af12);
+- a device switch mid-session kept serving the previous device, silently, so
+  asking for a GPU after any CPU query got CPU results (70a6800) — the one that
+  made this script's own first result a cpu-vs-cpu comparison;
+- nothing reported which backend served a query, which is why that went
+  unnoticed; `tabfm_models().device` exists now because of it (ab5c6e3).
+
+## `cuda_plugin_verify.sh` — the CUDA plugin on rented hardware
+
+Builds `src/tabfm_cuda_plugin.cpp` against a real ORT-GPU distribution, loads
+it through the plugin ABI, compares CPU vs CUDA on the committed fixture, and
+checks the artifacts `tabfm_download_runtime('cuda')` declares against the real
+wheel (byte count, entry names, SONAME).
+
+```bash
+tools/gpu_test/runpod_run.py --upload tools/gpu_test/cuda_plugin_verify.sh \
+    tools/gpu_test/cuda_plugin_verify_host.cpp src/tabfm_cuda_plugin.cpp \
+    src/include/tabfm_plugin_abi.h test/fixtures/graph_fixture.onnx \
+    test/fixtures/model.safetensors \
+    --command 'bash /workspace/cuda_plugin_verify.sh'
+```
 
 ## `runpod_run.py` — rent a GPU, run, destroy
 
