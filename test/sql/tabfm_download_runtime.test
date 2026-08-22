@@ -12,13 +12,10 @@ require anofox_tabfm
 statement ok
 LOAD anofox_tabfm
 
-# No plugin-carrying release is pinned in this build yet, so 'rocm' (which is
-# ONLY a plugin — no wheel) must say so and name both from-source routes,
-# rather than 404 at a guessed URL.
-statement error
-CALL tabfm_download_runtime('rocm')
-----
-<REGEX>:.*no plugin-carrying release is pinned.*anofox-tabfm-migraphx-plugin.*anofox_tabfm_ep_path.*
+# A plugin-carrying release is pinned (v2026.08.22), so 'rocm' now performs a
+# real fetch — which CI must not depend on. The fetch itself is exercised by
+# the hardware harness (tools/gpu_test) and the post-release end-to-end;
+# what stays pinned here is the network-free declaration surface below.
 
 # An unknown backend is refused with the accepted set.
 statement error

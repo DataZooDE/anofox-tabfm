@@ -536,7 +536,11 @@ struct RuntimeArtifact {
 //! plugin-carrying release is cut; bumped per release thereafter. Kept empty
 //! rather than guessed so download errors say "not published yet" instead of
 //! 404-ing at a URL that never existed.
-constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "";
+// v2026.08.22 is the first plugin-carrying release (Track B of
+// docs/PHASE_COMPLETION_PLAN.md): gpu_plugins.yml attaches both plugins +
+// sha256s to it on tag push. Pinned BEFORE the tag is cut so the release
+// contains code that points at itself.
+constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "v2026.08.22";
 
 string PluginReleaseUrl(const string &asset) {
 	if (string(TABFM_PLUGIN_RELEASE_TAG).empty()) {
