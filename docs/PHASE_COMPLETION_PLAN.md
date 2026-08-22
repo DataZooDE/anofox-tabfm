@@ -136,6 +136,30 @@ decision lands.
   gfx1201 equivalence run at both modes, margins analysis like S3, table
   row + settings-description sentence. Hours, not days.
 
+## Production gap-closure record (2026-08-22)
+
+The readiness review named five gaps; state after closure:
+
+1. **Distribution** — `TABFM_PLUGIN_RELEASE_TAG` pinned to `v2026.08.22`
+   *before* the tag exists (self-referential release). Remaining: merge #35,
+   cut the tag on main, then the zero-staging end-to-end (B3).
+2. **CUDA concurrency** ✅ `a_concurrency` on a 4090: 0 mismatches,
+   `SERVED_BY=cuda:0` — the lock-scenario where failure corrupts silently.
+3. **CUDA user workflow** ✅ `user_workflow` (CSV, NULLs, join-back): cpu vs
+   cuda 0 disagreements; the GPU leg ran under explicit `device='cuda'`,
+   which the hard-error contract guarantees was CUDA-served.
+4. **Guardrail-max scale** ✅ 10,000-row predict on `cuda:0` in ~28 s
+   (verified twice).
+5. **ROCm post-.mxr-key-fix** ✅ tabfm-v1 fp32 recompiled fresh under the
+   path-hashed key: 0/90 vs CPU. Plus: README backend support matrix, the
+   `tabfm_models()` converted-sibling visibility fix (ListableArtifactPath),
+   and `docs/MLX_PLAN.md` for the Apple MLX backend.
+
+**Production verdict:** CPU is production-ready on all platforms. GPU is
+production-ready in behavior on Linux (all seven models on CUDA, two on
+ROCm, realistic scenarios + concurrency + scale verified) and blocked for
+users only on the release cut.
+
 ## What this plan deliberately does not include
 
 CoreML (phase 4) — excluded by decision. Windows/macOS *GPU plugins* — the
