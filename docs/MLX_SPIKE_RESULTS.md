@@ -21,7 +21,7 @@ re-checkable by someone else on different hardware.
 | S-M1 | **route 1 dead, environment green** | no ONNX→MLX importer exists, anywhere |
 | S-M2 | **PASS** | MLX matches the shipped graph — and is *closer to the reference implementation than ORT is* |
 | S-M4 | **PASS** | 4.3×–11.8× faster than ORT CPU; per-shape compile is 217 ms, not minutes |
-| S-M3 | pending | `mlx-c` is alive and brew-installable; the feared blocker did not materialise |
+| S-M3 | **PASS** | plugin builds, loads, and matches through the real C ABI; mlx-c covers the whole forward |
 
 ---
 
@@ -188,17 +188,96 @@ know where the wall is rather than discover it.
 
 ## S-M3 — mlx-c plugin skeleton
 
-Pending. The plan named **mlx-c maturity as the biggest product risk**, with
-"if it blocks, the plugin links the C++ `libmlx` directly" as the fallback.
-Early evidence says the risk is smaller than feared, and both paths are open on
-this machine:
+`src/tabfm_mlx_plugin.cpp` · `tools/gpu_test/plugin_load_check.c` ·
+`uv run python -m mlx_spike.sm3_abi <plugin.dylib>`
 
-- `ml-explore/mlx-c` is actively maintained (231 stars, last push 2026-08-10)
-  and packaged: `brew install mlx-c` gives **0.6.0**.
-- `brew install mlx` gives **0.32.1** — the exact version the Python spikes ran
-  against, so a C++ port can be compared against `mitra_mlx.py` with the
-  runtime held constant.
-- The `mlx` pip wheel *also* ships `libmlx.dylib`, headers, and a working
-  `MLXConfig.cmake`, so the fallback needs no source build either.
+**PASS — and the plan's biggest risk did not materialise.** The plan named
+**mlx-c maturity** as the top product risk, with "if it blocks, the plugin links
+the C++ `libmlx` directly" as the fallback. The fallback was not needed:
+`mlx-c` 0.6.0 covers the entire mitra forward, including the two ops most likely
+to have been missing, `mlx_fast_layer_norm` and
+`mlx_fast_scaled_dot_product_attention`. This was checked against the headers
+*before* any code was written, since that is what the risk deserved.
 
-Both are already installed on the spike machine.
+`ml-explore/mlx-c` is actively maintained (231 stars, last push 2026-08-10);
+`brew install mlx mlx-c` gives 0.32.1 / 0.6.0 — MLX at the exact version the
+Python spikes ran against, so the C++ port is comparable to `mitra_mlx.py` with
+the runtime held constant.
+
+**The artifact.** A 76 KB `.dylib` exporting exactly one symbol,
+`_TabFMGetPluginApi`, linking only `libmlxc`, `libmlx` and `libc++`. The
+project's own `plugin_load_check.c` compiled on macOS **unchanged**, as the plan
+predicted, and passes:
+
+```
+LOAD_CHECK dlopen ok
+LOAD_CHECK_OK name=mlx abi=1
+CREATE_WITHOUT_GPU graceful error: … the mlx backend implements the 'mitra'
+architecture only, not 'load-check'. Use SET anofox_tabfm_model='mitra', …
+```
+
+**Correctness through the ABI, not just loading.** A plugin that loads and
+returns wrong logits passes a load check, so `sm3_abi.py` drives
+create/run/free_output/destroy through `tabfm_plugin_abi.h` via ctypes — the
+struct layouts declared independently of the C header, so a field-order or size
+mismatch surfaces as garbage instead of being papered over by including the
+header that defined it. Against the same ORT CPU golden:
+
+| case | logit max_abs | prob max_abs | argmax |
+|---|---|---|---|
+| small (40×8) | 3.290e-05 | 6.4e-06 | 1.0000 |
+| padded (50×16) | 5.770e-05 | 3.8e-06 | 1.0000 |
+| wide (200×20) | 5.579e-05 | 1.5e-05 | 1.0000 |
+
+These are **the same numbers to every digit** as the Python port's fast-SDPA
+run in S-M2 — strong evidence the transcription is faithful rather than
+accidentally close. Model load is 114 ms for 303 MB. The wrong-architecture
+refusal is asserted, not assumed: a plugin that failed open there would serve
+mitra's math over another model's weights.
+
+Two things the plugin does differently from its siblings, both deliberate:
+
+- **It ignores `graph_path`.** There is no ONNX importer, so the forward is
+  transcribed from `mitra_model_patched.py`; the parameter is used only to
+  locate weights. The consequence — this file is a *second implementation of a
+  model we already ship*, and must be kept in step with the torch source — is
+  stated at the top of the file, because it is the maintenance cost of the whole
+  approach.
+- **`precompile` is a no-op that succeeds**, per S-M4's 217 ms measurement.
+
+**Weights must be read on a CPU stream.** MLX's `Load` op has no GPU
+implementation; scheduling the safetensors read on the GPU stream produces
+arrays that fail at *first forward* with `[Load::eval_gpu] Not implemented` —
+far from the cause. The plugin loads on a CPU stream and forces the read to
+completion at create time. Unified memory means the materialized tensors are
+then usable by GPU ops with no copy.
+
+**Build wiring.** `CMakeLists.txt` gains an optional `anofox_tabfm_mlx_plugin`
+target on the MIGraphX pattern — silent when MLX is absent, and additionally
+guarded on `APPLE AND arm64`, so the plugin is never required for the cpu build.
+Verified to configure and build.
+
+---
+
+## Blocker for M1, found while wiring the build (not MLX's fault)
+
+**The extension itself does not configure on macOS.** `cmake/ort.cmake` pins
+`osx-universal2` prebuilt archives, and Microsoft no longer publishes them:
+
+| ORT release | macOS assets |
+|---|---|
+| v1.29.0 (`TABFM_ORT_VERSION` default) | `onnxruntime-osx-arm64-1.29.0.tgz` only |
+| v1.28.0 / v1.27.0 / v1.26.0 | `osx-arm64` only |
+
+so configure dies on a 404. This predates the MLX work and blocks nothing in the
+spikes above — the plugin builds standalone and was verified standalone — but
+**M1 cannot be integration-tested until it is fixed**, since that needs a
+working macOS build of the extension.
+
+It is not a one-line swap. The comment at `cmake/ort.cmake:45` explains the
+universal2 choice: "The DuckDB extension matrix cross-builds osx_amd64
+(`OSX_BUILD_ARCH=x86_64`) on an arm64 runner, so we cannot key off the host."
+Moving to `osx-arm64` gets arm64 building but leaves the osx_amd64 target with
+no ORT, so it is a decision about whether x86_64 macOS is still a supported
+platform — worth making deliberately rather than as a side effect of unblocking
+MLX.

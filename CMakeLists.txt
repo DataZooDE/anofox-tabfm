@@ -147,6 +147,37 @@ else()
     message(STATUS "anofox_tabfm: no MIGraphX install found at ${TABFM_MIGRAPHX_DIR}, skipping the migraphx backend plugin")
 endif()
 
+# --- Apple MLX backend plugin (docs/MLX_PLAN.md, spikes in docs/MLX_SPIKE_RESULTS.md) ---
+#
+# Same shape as the MIGraphX plugin, and for the same reason: MLX is a runtime
+# we drive directly, not an ORT execution provider. Unlike both GPU plugins it
+# carries no ONNX graph at all -- MLX has no ONNX importer and none exists, so
+# the mitra forward is transcribed from mitra_model_patched.py into
+# src/tabfm_mlx_plugin.cpp. That makes it model-specific by construction; it
+# refuses any architecture but mitra at create time.
+#
+# Optional and silent when absent, like the others: Linux and Intel-Mac CI
+# runners carry no MLX and must not fail configure over a plugin they cannot
+# use. Guarded on APPLE + arm64 as well, since MLX exists only there.
+set(TABFM_MLX_DIR "/opt/homebrew" CACHE PATH "MLX + mlx-c install prefix (include/mlx/c + lib/libmlxc) for the plugin build")
+if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
+    find_library(TABFM_MLX_C_LIB mlxc PATHS "${TABFM_MLX_DIR}/lib" NO_DEFAULT_PATH)
+    find_library(TABFM_MLX_LIB mlx PATHS "${TABFM_MLX_DIR}/lib" NO_DEFAULT_PATH)
+    if(TABFM_MLX_C_LIB AND TABFM_MLX_LIB AND EXISTS "${TABFM_MLX_DIR}/include/mlx/c/ops.h")
+        message(STATUS "anofox_tabfm: building the mlx backend plugin from ${TABFM_MLX_DIR}")
+        add_library(anofox_tabfm_mlx_plugin SHARED src/tabfm_mlx_plugin.cpp)
+        target_include_directories(anofox_tabfm_mlx_plugin PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+            "${TABFM_MLX_DIR}/include")
+        target_link_libraries(anofox_tabfm_mlx_plugin PRIVATE "${TABFM_MLX_C_LIB}" "${TABFM_MLX_LIB}")
+        target_compile_features(anofox_tabfm_mlx_plugin PRIVATE cxx_std_17)
+        set_target_properties(anofox_tabfm_mlx_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        set(TABFM_MLX_PLUGIN_BUILT TRUE)
+    else()
+        message(STATUS "anofox_tabfm: no MLX/mlx-c install found at ${TABFM_MLX_DIR}, skipping the mlx backend plugin")
+    endif()
+endif()
+
 # The CUDA backend plugin (docs/DYNAMIC_BACKENDS.md phase 3), same deal as the
 # MIGraphX one above: a standalone .so fetched by tabfm_download_runtime('cuda')
 # and dlopen'd at runtime, never linked into the extension binary.
