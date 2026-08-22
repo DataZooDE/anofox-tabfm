@@ -22,7 +22,7 @@
 # TABFM_ORT_PROVIDERS (list of provider compile definitions).
 
 set(TABFM_FLAVOR "cpu" CACHE STRING "anofox_tabfm flavor: cpu | cuda | rocm")
-# 1.23.2 matches the ROCm-flavor ORT build; the CPU prebuilt is used by default.
+# The CPU prebuilt archive is used by default; the ort-vcpkg manifest feature builds the port instead.
 set(TABFM_ORT_VERSION "1.29.0" CACHE STRING "ONNX Runtime version for prebuilt archives")
 set(TABFM_ORT_CUDA_MAJOR "12" CACHE STRING "CUDA major version for the ORT GPU archive (>= 1.28: 12 | 13)")
 set(TABFM_ORT_URL "" CACHE STRING "Override URL for the prebuilt ONNX Runtime archive (mirror support)")

@@ -21,7 +21,7 @@ SET anofox_tabfm_device='cpu';
 CREATE TABLE pred_cpu AS
 SELECT customer_id, yhat FROM tabfm_classify('customers', 'churned');
 .mode list
-SELECT 'STEP2_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded;
+SELECT 'STEP2_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded AND model='tabfm-v1';
 SELECT 'STEP2_PREDICTED=' || count(*) FROM pred_cpu WHERE yhat IS NOT NULL;
 SELECT 'STEP2_LABELS=' || string_agg(DISTINCT yhat, ',') FROM pred_cpu;
 .mode duckbox
@@ -31,7 +31,7 @@ SET anofox_tabfm_device='rocm';
 CREATE TABLE pred_gpu AS
 SELECT customer_id, yhat FROM tabfm_classify('customers', 'churned');
 .mode list
-SELECT 'STEP3_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded;
+SELECT 'STEP3_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded AND model='tabfm-v1';
 SELECT 'STEP3_DISAGREEMENTS=' || count(*)
   FROM pred_cpu c JOIN pred_gpu g USING (customer_id)
  WHERE c.yhat IS DISTINCT FROM g.yhat;

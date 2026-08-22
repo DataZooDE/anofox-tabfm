@@ -15,7 +15,7 @@ CREATE TABLE w_cpu AS SELECT id, yhat FROM tabfm_classify('wide','label');
 SET anofox_tabfm_device='rocm';
 CREATE TABLE w_gpu AS SELECT id, yhat FROM tabfm_classify('wide','label');
 .mode list
-SELECT 'WIDE_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded;
+SELECT 'WIDE_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded AND model='tabfm-v1';
 SELECT 'WIDE_FEATURES=20 -> H64 bucket';
 SELECT 'WIDE_DISAGREEMENTS=' || count(*) FROM w_cpu c JOIN w_gpu g USING (id)
  WHERE c.yhat IS DISTINCT FROM g.yhat;

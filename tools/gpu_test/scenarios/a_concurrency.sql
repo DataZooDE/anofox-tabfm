@@ -22,7 +22,7 @@ SELECT 2, id, yhat FROM tabfm_classify('s2','label') UNION ALL
 SELECT 3, id, yhat FROM tabfm_classify('s3','label') UNION ALL
 SELECT 4, id, yhat FROM tabfm_classify('s4','label');
 .mode list
-SELECT 'CONC_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded;
+SELECT 'CONC_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded AND model='tabfm-v1';
 SELECT 'CONC_ROWS=' || count(*) FROM par;
 -- every parallel branch must equal the sequential answer; a locking bug here
 -- corrupts results rather than erroring, so this is the assertion that matters

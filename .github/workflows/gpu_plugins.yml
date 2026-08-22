@@ -153,6 +153,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # gh release upload does NOT create the release object; a tag pushed
+          # before a human creates one would red-fail here and ship the pinned
+          # release without its plugins (review finding, 2026-08-22).
+          gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes \
+            --repo "${GITHUB_REPOSITORY}" 2>/dev/null || true
           gh release upload "${GITHUB_REF_NAME}" \
             libanofox_tabfm_cuda_plugin.so \
             libanofox_tabfm_migraphx_plugin.so \
