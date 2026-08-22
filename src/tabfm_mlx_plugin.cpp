@@ -39,6 +39,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -455,41 +456,53 @@ private:
 	mlx_map_string_to_array map_;
 };
 
+
+//! `layers.*` converted to the compute dtype. Built once at create time and
+//! shared by every call: mlx arrays are refcounted values that any thread may
+//! read, unlike streams, which are not (see MlxPluginBackend::Run).
+using CastCache = std::map<std::string, Arr>;
+
+CastCache BuildCastCache(const MitraWeights &w, const Ops &o, Precision precision, int n_layers) {
+	CastCache cache;
+	if (precision == Precision::FP32) {
+		return cache;
+	}
+	// Cast ONCE, and force it to complete. Casting inside the forward would
+	// redo ~400 conversions per call and, because MLX is lazy, rebuild that
+	// subgraph every predict -- turning a mode meant to be faster into one
+	// that is reliably slower.
+	static const char *kSuffixes[] = {"attention1.q", "attention1.k", "attention1.v", "attention1.o",
+	                                  "attention2.q", "attention2.k", "attention2.v", "attention2.o",
+	                                  "linear1",      "linear2",      "linear3",      "linear4",
+	                                  "layer_norm1",  "layer_norm2",  "layer_norm3",  "layer_norm4"};
+	const mlx_dtype dtype = ComputeDtype(precision);
+	for (int i = 0; i < n_layers; i++) {
+		const std::string p = "layers." + std::to_string(i) + ".";
+		for (const char *suffix : kSuffixes) {
+			for (const char *part : {".weight", ".bias"}) {
+				const std::string name = p + suffix + part;
+				if (!w.Has(name)) {
+					continue;
+				}
+				Arr cast = o.AsType(w[name], dtype);
+				Ok(mlx_array_eval(cast.get()), "eval cast weight");
+				cache.emplace(name, std::move(cast));
+			}
+		}
+	}
+	return cache;
+}
+
 // ---------------------------------------------------------------------------
 // The forward — a transcription of mitra_model_patched.py + its ExportWrapper
 // ---------------------------------------------------------------------------
 class MitraForward {
 public:
-	MitraForward(const MitraWeights &w, const Ops &ops, int n_heads, bool classification, Precision precision)
+	MitraForward(const MitraWeights &w, const Ops &ops, int n_heads, bool classification, Precision precision,
+	             const CastCache &cast_cache)
 	    : w_(w), o_(ops), n_heads_(n_heads), classification_(classification), n_layers_(w.NLayers()),
 	      dim_(w.Dim()), dim_output_(w.DimOutput()), precision_(precision),
-	      compute_dtype_(ComputeDtype(precision)) {
-		if (precision_ == Precision::FP32) {
-			return;
-		}
-		// Cast the stack's parameters ONCE, at load, and force the cast to
-		// complete. Casting inside the forward would re-do ~400 conversions on
-		// every call and, because MLX is lazy, would also rebuild that subgraph
-		// per predict -- turning a numeric mode meant to be faster into a mode
-		// that is reliably slower.
-		static const char *kSuffixes[] = {"attention1.q", "attention1.k", "attention1.v", "attention1.o",
-		                                  "attention2.q", "attention2.k", "attention2.v", "attention2.o",
-		                                  "linear1",      "linear2",      "linear3",      "linear4",
-		                                  "layer_norm1",  "layer_norm2",  "layer_norm3",  "layer_norm4"};
-		for (int i = 0; i < n_layers_; i++) {
-			const std::string p = "layers." + std::to_string(i) + ".";
-			for (const char *suffix : kSuffixes) {
-				for (const char *part : {".weight", ".bias"}) {
-					const std::string name = p + suffix + part;
-					if (!w_.Has(name)) {
-						continue;
-					}
-					Arr cast = o_.AsType(w_[name], compute_dtype_);
-					Ok(mlx_array_eval(cast.get()), "eval cast weight");
-					cast_cache_.emplace(name, std::move(cast));
-				}
-			}
-		}
+	      compute_dtype_(ComputeDtype(precision)), cast_cache_(cast_cache) {
 	}
 
 	int n_layers() const {
@@ -745,7 +758,7 @@ private:
 	int dim_output_;
 	Precision precision_;
 	mlx_dtype compute_dtype_;
-	std::map<std::string, Arr> cast_cache_; // layers.* in compute dtype, empty for fp32
+	const CastCache &cast_cache_; // layers.* in compute dtype; empty for fp32
 };
 
 // ---------------------------------------------------------------------------
@@ -758,27 +771,54 @@ std::string JoinPath(const std::string &dir, const std::string &leaf) {
 	return dir.back() == '/' ? dir + leaf : dir + "/" + leaf;
 }
 
+//! MLX's default streams are THREAD-LOCAL. A stream created on the thread that
+//! ran create() does not exist on the thread DuckDB later runs the query on,
+//! and using it there fails with "There is no Stream(gpu, 0) in current
+//! thread" -- at the first forward, not at load, so it looks like a model bug
+//! rather than a threading one. (Found by tools/gpu_test/scenarios/mlx_stress.sql
+//! alternating devices mid-session, which is the only way a second thread gets
+//! involved.) So the backend holds NO stream: each call acquires the current
+//! thread's own. Everything else here -- weights, the cast cache -- is
+//! refcounted mlx arrays, which any thread may read.
 class MlxPluginBackend {
 public:
 	MlxPluginBackend(const std::string &weights_path, const std::string &arch, bool classification, int n_heads,
 	                 Precision precision)
-	    : gpu_(/*gpu=*/true), cpu_(/*gpu=*/false), ops_(gpu_.s), weights_(weights_path, cpu_.s),
-	      forward_(weights_, ops_, n_heads, classification, precision), arch_(arch) {
+	    : n_heads_(n_heads), classification_(classification), precision_(precision), arch_(arch) {
+		Stream cpu(/*gpu=*/false); // the safetensors read -- see MitraWeights
+		weights_ = make_unique_weights(weights_path, cpu.s);
+		Stream gpu(/*gpu=*/true);
+		Ops ops(gpu.s);
+		n_layers_ = weights_->NLayers();
+		dim_output_ = weights_->DimOutput();
+		cast_cache_ = BuildCastCache(*weights_, ops, precision_, n_layers_);
 	}
 
-	const Ops &ops() const {
-		return ops_;
+	int dim_output() const {
+		return dim_output_;
 	}
-	const MitraForward &forward() const {
-		return forward_;
+
+	//! One forward, on the CALLING thread's stream.
+	template <typename Fn>
+	auto WithForward(Fn &&fn) const -> decltype(fn(std::declval<const Ops &>(), std::declval<const MitraForward &>())) {
+		Stream gpu(/*gpu=*/true);
+		Ops ops(gpu.s);
+		MitraForward forward(*weights_, ops, n_heads_, classification_, precision_, cast_cache_);
+		return fn(ops, forward);
 	}
 
 private:
-	Stream gpu_; // every forward op
-	Stream cpu_; // the safetensors read only -- see MitraWeights
-	Ops ops_;
-	MitraWeights weights_;
-	MitraForward forward_;
+	static std::unique_ptr<MitraWeights> make_unique_weights(const std::string &path, mlx_stream s) {
+		return std::unique_ptr<MitraWeights>(new MitraWeights(path, s));
+	}
+
+	std::unique_ptr<MitraWeights> weights_;
+	CastCache cast_cache_;
+	int n_heads_;
+	bool classification_;
+	Precision precision_;
+	int n_layers_ = 0;
+	int dim_output_ = 0;
 	std::string arch_;
 };
 
@@ -830,7 +870,7 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		// pointed at classification weights (or vice versa) would otherwise run
 		// the wrong y-embedding over tensors that happen to load, and produce
 		// numbers rather than an error.
-		const int dim_output = backend->forward().dim_output();
+		const int dim_output = backend->dim_output();
 		if (classification && dim_output <= 1) {
 			delete backend;
 			throw MlxError("these weights have a single output and are a REGRESSION checkpoint, but "
@@ -858,14 +898,17 @@ TabFMPluginStatus PluginRun(void *handle, const TabFMPluginRunInput *input, TabF
 	}
 	std::memset(output, 0, sizeof(*output));
 	try {
-		const Ops &o = backend->ops();
 		const int t = static_cast<int>(input->t);
 		const int h = static_cast<int>(input->h);
-		Arr x = o.FromData(input->x, {1, t, h}, MLX_FLOAT32);
-		Arr y = o.FromData(input->y, {1, t}, MLX_FLOAT32);
-
-		Arr logits = backend->forward().Run(x, y, input->train_size, input->d);
-		Ok(mlx_array_eval(logits.get()), "eval"); // MLX is lazy; nothing ran until here
+		// The stream is acquired inside WithForward, on THIS thread. See the
+		// note on MlxPluginBackend: MLX default streams do not cross threads.
+		Arr logits = backend->WithForward([&](const Ops &o, const MitraForward &forward) {
+			Arr x = o.FromData(input->x, {1, t, h}, MLX_FLOAT32);
+			Arr y = o.FromData(input->y, {1, t}, MLX_FLOAT32);
+			Arr out = forward.Run(x, y, input->train_size, input->d);
+			Ok(mlx_array_eval(out.get()), "eval"); // MLX is lazy; nothing ran until here
+			return out;
+		});
 
 		const float *data = mlx_array_data_float32(logits.get());
 		if (!data) {

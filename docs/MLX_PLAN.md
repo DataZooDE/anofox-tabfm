@@ -32,6 +32,52 @@ contact with hardware).
 > Also obsolete: "no Apple Silicon is available to this environment". The work
 > now runs directly on an M3, so the spikes are executed rather than prepared.
 
+## Scope change (2026-08-22): every supported model, not just mitra
+
+The requirement is now that **all registered models run on MLX**, matching what
+cpu already does: `tabfm-v1`, `mitra`, `tabpfn-v2`, `tabpfn-v2-5`, `tabpfn-v3`,
+`tabicl-v2`, `orion-bix` — classification and regression.
+
+That inverts this plan's route decision, and the deciding number was measured
+rather than argued. Across the 13 shipped `graph_ext_*` graphs:
+
+| | |
+|---|---|
+| models to cover | 7 (13 model×task graphs) |
+| nodes per graph | 4,526 – 12,424 |
+| distinct ops per graph | 33 – 48 |
+| **union of op kinds, all graphs** | **64** |
+
+- **Route 2 (hand-port), scaled to the new scope**, is 7 architectures ported by
+  hand. Each is a *second implementation of a model we already ship* — the cost
+  this plan already flags for mitra alone — so the drift surface multiplies by
+  seven, and each needs its own parity harness against its own weights. The
+  plan's "one forward per model *family*" hoped to amortise this, but the
+  families differ inside too (tabpfn-v2-5 and v3 are 12k-node graphs, roughly
+  double mitra).
+- **Route 3 (an ONNX interpreter over MLX ops)** is **one** implementation
+  covering all 13 graphs and any model added later, with *no drift by
+  construction*: it executes the same graph every other backend executes. The
+  cost is 64 op kinds, most of them elementwise and 1:1 with MLX.
+
+So route 3 becomes the plan of record for coverage, and the mitra hand-port
+(already shipped and verified) stays as the fast path and as the **oracle**: it
+is an independent implementation to check the interpreter against on the one
+model where both exist. This plan predicted the condition exactly — "only worth
+it if the hand-port turns out to fight model drift" — and seven hand-ports is
+that condition.
+
+Sequencing, each gated on parity against the ORT CPU golden for that model:
+
+1. Interpreter core + mitra's 33 ops → must reproduce the hand-port's logits.
+2. `tabfm-v1` (41/38 ops), the largest weights (6.6 GB) — also the unified-memory test.
+3. `orion-bix` (34), `tabicl-v2` (42/46).
+4. `tabpfn-v2` (44/46), `tabpfn-v2-5` (46/47), `tabpfn-v3` (48/47).
+
+The hard ops are known up front and are the ones this plan named: `ScatterND`,
+`GatherND`, `ScatterElements`, `SplitToSequence`/`SequenceAt`, `Einsum`, `Pad`,
+`CumSum`, `TopK`, plus the `Shape`/`Slice` dynamic-shape patterns.
+
 ## What is already in place (known, no work)
 
 - **The plugin ABI is platform-neutral C** (`tabfm_plugin_abi.h`, abi_version
