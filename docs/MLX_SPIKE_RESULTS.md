@@ -25,6 +25,10 @@ re-checkable by someone else on different hardware.
 | S-M4 | **PASS** | 4.3×–11.8× faster than ORT CPU; per-shape compile is 217 ms, not minutes |
 | S-M3 | **PASS** | plugin builds, loads, and matches through the real C ABI; mlx-c covers the whole forward |
 
+Plus one finding about the existing suite that the MLX work turned up:
+**`equivalence.py`'s default (synthesized-weights) mode cannot pass for any
+backend** — see the last section.
+
 ---
 
 ## S-M1 — environment + `mlx-onnx` feasibility
@@ -103,11 +107,17 @@ was exported from it — so torch eager sits upstream of both ORT and MLX.
 
 Two things fall out, and the spike asserts both rather than stating them:
 
-1. **The shipped CPU graph scores 1.4e-03 against its own authoring code** —
-   14× outside the 1e-4 bar. Any backend judged by this metric fails, including
-   the reference. (`CLAIM_STRICT_METRIC_FAILS_ON_REFERENCE=True`)
+1. **On these inputs the shipped CPU graph scores 1.4e-03 against its own
+   authoring code** — 14× outside the 1e-4 bar, on a CPU-vs-CPU pair where no
+   accelerator is involved at all.
+   (`CLAIM_STRICT_METRIC_FAILS_ON_REFERENCE=True`)
 2. **MLX is *closer* to the definition than ORT is** — 0.93×, 0.86×, 0.70× the
    error, in every case. (`CLAIM_MLX_NO_WORSE_THAN_ORT=True`)
+
+The scope of (1) matters and is narrowed by the investigation below: the strict
+metric's verdict turns on how close the reference logits come to zero, which is
+a property of the *inputs and weights*, not of the backend. It is not the case
+that every comparison fails — see "Does the 1e-4 bar do any work?".
 
 So parity is judged on what the extension actually returns to SQL: the
 post-softmax probabilities, plus the predicted class.
@@ -131,11 +141,10 @@ at the 1e-05 level on logits, neither consistently closer. Both pass
 comfortably; fast SDPA is kept for the speed, and the difference is noted here
 so it is not rediscovered as a mystery later.
 
-> **This finding is not MLX-specific and should outlive this plan.**
-> `equivalence.py` applies the same metric to the CUDA and ROCm backends. Either
-> those comparisons are passing for a reason other than the stated tolerance, or
-> the tolerance is doing no work there either. Worth checking before the next
-> backend is judged by it.
+> **This finding is not MLX-specific.** `equivalence.py` applies the same metric
+> to the CUDA and ROCm backends, so it was worth knowing whether those
+> comparisons mean what they claim. That investigation is the next section, and
+> its answer is *"yes for the real-weights path, no for the default one"*.
 
 ---
 
@@ -283,3 +292,89 @@ Moving to `osx-arm64` gets arm64 building but leaves the osx_amd64 target with
 no ORT, so it is a decision about whether x86_64 macOS is still a supported
 platform — worth making deliberately rather than as a side effect of unblocking
 MLX.
+
+---
+
+## Does the 1e-4 bar do any work for CUDA/ROCm today?
+
+`uv run python -m mlx_spike.tolerance_probe`
+
+S-M2 found the strict metric failing on a CPU-vs-CPU pair, and that metric is
+what the CUDA and ROCm comparisons are judged by — while those are reported as
+passing. Both could not straightforwardly be true, so this measured which it
+was, **importing `equivalence.py` itself** and using its synthesis, its default
+`--shapes`, and its `compare()`. Reimplementing them would have tested a
+lookalike rather than the thing that ships.
+
+The answer is split, and the split is the useful part.
+
+### With real weights: the bar holds, and it is doing real work
+
+torch (the definition) vs ORT (the reference), mitra, `equivalence.py`'s own
+default shapes:
+
+| shape | strict rel | verdict | logit max_abs | prob max_abs | min \|logit\| |
+|---|---|---|---|---|---|
+| 70×3×60 | 1.301e-05 | **PASS** | 3.052e-05 | 7.9e-06 | 1.255 |
+| 128×8×100 | 1.578e-05 | **PASS** | 1.621e-05 | 2.6e-06 | 0.447 |
+
+Comfortably inside 1e-4, with an order of magnitude to spare. **So a
+`--weights`-backed CUDA or ROCm comparison is legitimately judged**, and the
+S-M2 finding does not invalidate the GPU verification already done on this PR.
+Trained mitra produces confident logits that stay well away from zero, so the
+denominator never gets small and the metric behaves like the relative error it
+is meant to be.
+
+### With synthesized weights — the default mode — it cannot pass at all
+
+Omit `--weights` and `equivalence.py` synthesizes initializers as
+`standard_normal * 0.02`. That is an untrained, near-degenerate network: its
+logits collapse into `[-0.036, 0.040]`, and the smallest one is 8.0e-05 from
+zero. The same torch-vs-ORT pair:
+
+| shape | strict rel | verdict | **logit max_abs** | prob max_abs | min \|logit\| |
+|---|---|---|---|---|---|
+| 70×3×60 | 1.387e-04 | **FAIL** | **2.794e-08** | 3.3e-09 | 8.0e-05 |
+| 128×8×100 | 1.065e-04 | **FAIL** | **2.980e-08** | 2.9e-09 | 1.0e-04 |
+
+Read the absolute column: the two implementations agree to **28 nanounits**,
+and the probability delta is 3e-09 — essentially machine precision on a CPU/CPU
+pair. The metric calls it a failure.
+
+The mechanism is that both quantities shrink with the weight scale, but not at
+the same rate: going from real to synthesized weights divided the absolute
+error by ~1000, and divided `min |logit|` by ~15000. The ratio therefore gets
+*worse* as the network gets more degenerate. (This also corrects an intermediate
+version of this probe, which tried to predict the verdict from
+`eps / min|logit|` at a fixed `eps`. That assumes error magnitude is independent
+of value scale, which is false — hence the measurement above rather than an
+extrapolation.)
+
+### What this means
+
+- **`equivalence.py` run the way its own README documents first** —
+  `equivalence.py resources/graph_tabicl_classification.onnx --providers cpu` —
+  is on the synthesized path. For `--providers cpu` alone this is invisible,
+  because `compare()` short-circuits on `np.array_equal` and CPU-vs-CPU is
+  bit-identical. **Add any second backend and it fails**, no matter how correct
+  that backend is, because non-bit-identical is all it takes.
+- So the suite is sound exactly where it has been exercised with real weights,
+  and a trap everywhere else. The design intent — "runs with synthesized
+  initializers by default (no licensed weights), or against a real cached
+  checkpoint with `--weights`, which is the stronger statement" — has the
+  weaker mode being not merely weaker but unusable for its stated purpose.
+- The fix is the S-M2 metric: judge post-softmax probabilities plus argmax.
+  Under it, the synthesized pair passes at 3e-09 and the real pair at 8e-06,
+  both by wide margins, and a genuinely diverging backend still fails.
+  Deliberately **not** applied to `equivalence.py` in this PR — changing the
+  pass/fail definition for CUDA and ROCm should be verified against that
+  hardware, which is not available here.
+
+Recommended follow-up, in order: raise the synthesized weight scale so the
+default mode produces non-degenerate logits (a one-line change that makes the
+existing metric usable), then adopt the probability metric once it can be
+re-run on GPU hardware.
+
+*Note: the probe prints a `recursive_mutex lock failed` line at interpreter
+teardown, from having both MLX and torch loaded in one process. It occurs after
+the result and does not affect the exit code, which is 0.*
