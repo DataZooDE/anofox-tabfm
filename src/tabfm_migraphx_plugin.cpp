@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 
 #include "tabfm_mxr_cache_key.hpp"
 #include <memory>
@@ -124,6 +125,11 @@ struct MigraphxPluginBackend {
 	std::string model_tag;
 	int device_ordinal = 0;
 	std::mutex mutex;
+	//! Serializes eval per handle: migraphx::program::eval's thread-safety is
+	//! not documented, and the ABI now states run may be called concurrently
+	//! on one handle (the CUDA plugin locks its whole Run for the same
+	//! reason). Separate from `mutex` (which GetProgram takes internally).
+	std::mutex run_mutex;
 	std::map<std::pair<int64_t, int64_t>, migraphx::program> programs;
 
 	migraphx::program &GetProgram(int64_t tp, int64_t hp) {
@@ -232,10 +238,20 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 
 		auto slash = backend->graph_path.find_last_of("/\\");
 		auto dot = backend->graph_path.find_last_of('.');
-		// Path-hashed stem: same-named graphs staged beside different models'
-		// weights must never share a compiled program (tabfm_mxr_cache_key.hpp
-		// records the bug this fixed).
-		backend->model_tag = anofox_tabfm_mxr::MxrCacheStem(backend->graph_path);
+		// Content-hashed stem: same-named graphs of different models must never
+		// share a compiled program, while the same graph on another machine
+		// must (mxr_source sharing) — tabfm_mxr_cache_key.hpp records both
+		// halves of that bug history.
+		{
+			std::ifstream gf(backend->graph_path, std::ios::binary);
+			std::string bytes((std::istreambuf_iterator<char>(gf)), std::istreambuf_iterator<char>());
+			if (bytes.empty()) {
+				SetError(err, err_len, "cannot read the graph for cache keying: " + backend->graph_path);
+				return nullptr;
+			}
+			backend->model_tag =
+			    anofox_tabfm_mxr::MxrCacheStem(backend->graph_path, anofox_tabfm_mxr::Fnv1a64(bytes));
+		}
 		return backend.release();
 	} catch (const std::exception &e) {
 		SetError(err, err_len, std::string("could not initialise the migraphx backend: ") + e.what());
@@ -251,6 +267,7 @@ TabFMPluginStatus PluginRun(void *handle, const TabFMPluginRunInput *input, TabF
 		return TABFM_PLUGIN_ERROR;
 	}
 	try {
+		std::lock_guard<std::mutex> run_guard(backend->run_mutex);
 		duckdb::anofox::ShapeBucket bucket = PadToShapeBucket(input->t, input->h);
 		const int64_t tp = bucket.padded_t;
 		const int64_t hp = bucket.padded_h;

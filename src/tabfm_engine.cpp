@@ -830,7 +830,8 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 	auto session = CreateSessionFromPath(graph_path, {}, config);
 	auto backend = make_shared_ptr<OrtBackend>();
 	backend->session = std::move(session);
-	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, 0, false, "",
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, 0, false,
+	                       SessionPrecisionFor(config.device_id, ctx.gpu_precision),
 	                       NumericCast<idx_t>(ctx.max_sessions));
 }
 
@@ -870,6 +871,11 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 		weights_dir = DirName(resolved.weights_path);
 		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "migraphx", task_name) + ".onnx");
 		if (!StageBundledGraph(fs, graph, graph_path)) {
+			if (IsExplicitGpuRequest(ctx.device, "rocm")) {
+				throw IOException("anofox_tabfm: device 'rocm' needs the bundled GPU graph staged beside the "
+				                  "weights, but '" + graph_path + "' could not be written (read-only weights "
+				                  "directory?). Make the directory writable or SET anofox_tabfm_device='cpu'.");
+			}
 			return nullptr;
 		}
 		break;
@@ -947,6 +953,11 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 		weights_dir = DirName(resolved.weights_path);
 		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
 		if (!StageBundledGraph(fs, graph, graph_path)) {
+			if (IsExplicitGpuRequest(ctx.device, "cuda")) {
+				throw IOException("anofox_tabfm: device 'cuda' needs the bundled GPU graph staged beside the "
+				                  "weights, but '" + graph_path + "' could not be written (read-only weights "
+				                  "directory?). Make the directory writable or SET anofox_tabfm_device='cpu'.");
+			}
 			return nullptr;
 		}
 		break;
@@ -1048,9 +1059,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	const string &wanted_device = ResolvedDeviceCached(ctx.device);
 	// gpu_precision only shapes GPU sessions; for CPU it is "" so flipping the
 	// setting does not rebuild a session it never influenced.
-	const bool wanted_is_gpu =
-	    StringUtil::StartsWith(wanted_device, "rocm") || StringUtil::StartsWith(wanted_device, "cuda");
-	const string wanted_precision = wanted_is_gpu ? ctx.gpu_precision : "";
+	const string wanted_precision = SessionPrecisionFor(wanted_device, ctx.gpu_precision);
 
 	// Sessions cache per (model, device, precision) since P5 of
 	// docs/GPU_HARDENING_PLAN.md: S6 measured 18–27 s of pure rebuild per
@@ -1074,6 +1083,23 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	// like the MIGraphX one it runs a bundled graph_ext_/graph_migraphx_ graph,
 	// so letting a split-pair model reach it would silently drop the labelled
 	// context cache (#40) rather than use it.
+	if (want_split) {
+		// The GPU backends run bundled single-graph forwards; routing a
+		// split-pair model through them would silently drop the cached
+		// labelled context (#40). An EXPLICIT GPU request must therefore say
+		// which setting conflicts — the fall-through used to end in "SET
+		// anofox_tabfm_ep_path", the one thing already configured.
+		for (const char *backend_name : {"rocm", "cuda"}) {
+			if (IsExplicitGpuRequest(ctx.device, backend_name)) {
+				throw InvalidInputException(
+				    "anofox_tabfm: device '%s' cannot serve this model while anofox_tabfm_context_cache is "
+				    "enabled: the model ships a prepare/query graph pair and the GPU plugins run single-graph "
+				    "forwards, which would drop the cached labelled context. SET anofox_tabfm_context_cache = "
+				    "false, or SET anofox_tabfm_device = 'cpu'.",
+				    backend_name);
+			}
+		}
+	}
 	if (!want_split) {
 		// ROCm GPU: direct MIGraphX backend (bypasses ORT's unusable MIGraphX EP).
 		if (auto gpu = TryMIGraphXBackend(fs, state, resolved, ctx)) {
@@ -1285,7 +1311,8 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		backend->weights = std::move(weights);
 		backend->mapping = std::move(mapping);
 		backend->arena = std::move(arena);
-		return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, true, "",
+		return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, true,
+	                       SessionPrecisionFor(config.device_id, ctx.gpu_precision),
 		                       NumericCast<idx_t>(ctx.max_sessions));
 	}
 
@@ -1300,7 +1327,8 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	backend->mapping = std::move(mapping);
 	backend->arena = std::move(arena);
 	backend->session = std::move(session);
-	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, false, "",
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, false,
+	                       SessionPrecisionFor(config.device_id, ctx.gpu_precision),
 	                       NumericCast<idx_t>(ctx.max_sessions));
 }
 

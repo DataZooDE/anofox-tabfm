@@ -343,3 +343,16 @@ TEST_CASE("model_spec: listing accepts a converted sibling for a missing .ckpt",
 	REQUIRE(ListableArtifactPath(string("/c/x/model.onnx"), only) == "");
 	REQUIRE(ListableArtifactPath(string("/c/slug@main/classification/model.ckpt"), none) == "");
 }
+
+TEST_CASE("model_spec: session precision key follows the device, not the code path", "[tabfm][model_spec]") {
+	using duckdb::anofox::SessionPrecisionFor;
+	// Review finding: the external-data/split/injection paths registered GPU
+	// sessions with precision "" while the cache lookup used gpu_precision —
+	// an unfindable entry, rebuilt on every predict. One rule, both sides.
+	REQUIRE(SessionPrecisionFor("rocm:0", "fp32") == "fp32");
+	REQUIRE(SessionPrecisionFor("cuda:1", "bf16") == "bf16");
+	REQUIRE(SessionPrecisionFor("migraphx:0", "fp16") == "fp16");
+	REQUIRE(SessionPrecisionFor("cpu", "fp32") == "");
+	REQUIRE(SessionPrecisionFor("", "fp32") == "");
+	REQUIRE(SessionPrecisionFor("coreml:0", "fp32") == "");
+}

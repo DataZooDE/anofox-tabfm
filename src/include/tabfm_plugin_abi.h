@@ -103,7 +103,10 @@ typedef struct {
 	/*! Construct a backend. Returns NULL on failure with *err populated. */
 	void *(*create)(const TabFMPluginCreateParams *params, char *err, size_t err_len);
 
-	/*! One forward pass. */
+	/*! One forward pass. The HOST serializes calls per handle today (the
+	 *  engine's per-device mutex), but plugins must not rely on that:
+	 *  run may be called concurrently on ONE handle and must either lock
+	 *  internally or be reentrant. */
 	TabFMPluginStatus (*run)(void *handle, const TabFMPluginRunInput *input, TabFMPluginRunOutput *output, char *err,
 	                         size_t err_len);
 

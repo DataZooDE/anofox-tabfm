@@ -155,6 +155,21 @@ inline GpuGraphSource SelectGpuGraph(bool model_provides_graph, bool bundled_gra
 	return GpuGraphSource::NONE;
 }
 
+//! The precision component of a session-cache key. gpu_precision shapes GPU
+//! sessions only; CPU (and anything else) keys as "" so flipping the setting
+//! never rebuilds a session it did not influence. BOTH the cache lookup and
+//! every RegisterBackend call must use this one rule — a review found the
+//! external-data/split/injection paths registering GPU sessions under "",
+//! which the gpu_precision-keyed lookup could never find again (a silent
+//! rebuild-every-predict loop).
+inline string SessionPrecisionFor(const string &resolved_device_id, const string &gpu_precision) {
+	auto starts = [&](const char *prefix) { return resolved_device_id.rfind(prefix, 0) == 0; };
+	if (starts("rocm") || starts("cuda") || starts("migraphx")) {
+		return gpu_precision;
+	}
+	return "";
+}
+
 //! True when the raw anofox_tabfm_device setting explicitly names this GPU
 //! backend ('migraphx' is the documented alias for 'rocm'). 'auto' is never
 //! explicit: on a missing GPU graph an explicit request must hard-error while

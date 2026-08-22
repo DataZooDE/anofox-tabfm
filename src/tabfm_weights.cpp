@@ -702,7 +702,18 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 		auto wheel_handle = fs.OpenFile(wheel_path, FileFlags::FILE_FLAGS_READ);
 		const idx_t wheel_size = fs.GetFileSize(*wheel_handle);
 		auto wheel_bytes = make_unsafe_uniq_array<char>(wheel_size);
-		wheel_handle->Read(wheel_bytes.get(), wheel_size);
+		// Read may return short on some filesystems (the codebase's own
+		// ReadWholeFile comment records the hazard); a zero-tailed buffer
+		// would fail later in miniz with a message blaming the download.
+		idx_t wheel_read = 0;
+		while (wheel_read < wheel_size) {
+			auto got = wheel_handle->Read(wheel_bytes.get() + wheel_read, wheel_size - wheel_read);
+			if (got <= 0) {
+				throw IOException("anofox_tabfm: short read of the runtime wheel (%llu of %llu bytes)",
+				                  (unsigned long long)wheel_read, (unsigned long long)wheel_size);
+			}
+			wheel_read += NumericCast<idx_t>(got);
+		}
 		wheel_handle.reset();
 
 		duckdb_miniz::mz_zip_archive zip {};
