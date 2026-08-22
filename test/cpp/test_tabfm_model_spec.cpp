@@ -279,6 +279,49 @@ TEST_CASE("model_spec: weights-header table is (model, task)-keyed", "[tabfm][mo
 	REQUIRE(ExpectedWeightsHeaderShaFor("mitra", "regression") ==
 	        "44f9293fa2d81ccf56dffab09600ec4f775c5c30bbc2af551cf4f6b2cf889f01");
 	// Unknown (model, task) means "no bundled GPU graph": empty, never a guess.
+	// (tabpfn-v2 gained a real entry when the catalog landed; use a model that
+	// genuinely has none.)
 	REQUIRE(ExpectedWeightsHeaderShaFor("mitra", "generate") == "");
-	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2", "classification") == "");
+	REQUIRE(ExpectedWeightsHeaderShaFor("some-user-model", "classification") == "");
+}
+
+TEST_CASE("model_spec: the whole catalog has (model, task) header hashes for ext graphs", "[tabfm][model_spec]") {
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// tools/make_external_graph.py output against each model's HF-downloaded
+	// safetensors. These gate the CUDA + CPU-low-memory ext path; the
+	// single_eval_pos family (x, y only — no train_size input) deliberately
+	// bundles NO migraphx variant: MIGraphX compiles per fixed shape, and for
+	// those models y's LENGTH is the train/test split, so bucketing would need
+	// a compile per distinct train_size.
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2", "classification") ==
+	        "e97043c10b4572d6011cb1e389db2c7d57425213c761288f935188e25e953362");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2", "regression") ==
+	        "ca4435a405cbd17afc8cf08346954705d7cc01fc6d08bdcf9c06363faed867a9");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabicl-v2", "classification") ==
+	        "085731de6a7b33e6fcbda7e1b3cba725d798d30f93ec3cdc91c3ac2c2c762d3f");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabicl-v2", "regression") ==
+	        "d792dd9433bdf78773eddcd4bda3e0e49550aec0a2df1a0bfa36afebf320e8ae");
+	REQUIRE(ExpectedWeightsHeaderShaFor("orion-bix", "classification") ==
+	        "c2b7ff39add2b0c1c2d3ddabbaf413e8c15f433b620f3091f0562f376255d166");
+	REQUIRE(ExpectedWeightsHeaderShaFor("orion-bix", "regression") == "");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5", "classification") ==
+	        "b230477af81d4ac5bff856b2f9dcc281d5b9a04d659a5dee335553f0f49897ea");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5", "regression") ==
+	        "8865ee281d0172e31e1a03d1d43057ac8e69b88a27b2ce0a93ee77b865f45737");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3", "classification") ==
+	        "c0f3a23322d1ec039356b618565e5e1c62378613e3081167881220968933f04b");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3", "regression") ==
+	        "92cf58d84bf968d6e5de90f7ccc29c0d1e79e8f0e9a04c7e0ab66274185d061c");
+}
+
+TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the registry ids", "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	// Registry ids (tabpfn-v2, tabicl-v2, ...) differ from the resource file
+	// stems (tabpfn, tabicl, ...) — the id function owns that mapping so the
+	// engine never string-mangles.
+	REQUIRE(BundledGpuGraphId("tabpfn-v2", "ext", "classification") == "graph_ext_tabpfn_classification");
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5", "ext", "regression") == "graph_ext_tabpfn25_regression");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3", "ext", "classification") == "graph_ext_tabpfn3_classification");
+	REQUIRE(BundledGpuGraphId("tabicl-v2", "ext", "regression") == "graph_ext_tabicl_regression");
+	REQUIRE(BundledGpuGraphId("orion-bix", "ext", "classification") == "graph_ext_orion_bix_classification");
 }

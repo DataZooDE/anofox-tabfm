@@ -186,7 +186,21 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 	if (model == "tabfm-v1") {
 		return "graph_" + kind + "_" + task_name;
 	}
-	return "graph_" + kind + "_" + model + "_" + task_name;
+	// Registry ids and resource-file stems differ for the catalog models; this
+	// function owns the mapping so the engine never string-mangles.
+	string stem = model;
+	if (model == "tabpfn-v2") {
+		stem = "tabpfn";
+	} else if (model == "tabpfn-v2-5") {
+		stem = "tabpfn25";
+	} else if (model == "tabpfn-v3") {
+		stem = "tabpfn3";
+	} else if (model == "tabicl-v2") {
+		stem = "tabicl";
+	} else if (model == "orion-bix") {
+		stem = "orion_bix";
+	}
+	return "graph_" + kind + "_" + stem + "_" + task_name;
 }
 
 //! SHA-256 (hex) of the safetensors JSON header each bundled external-data /
@@ -209,6 +223,45 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 		}
 		if (task_name == "regression") {
 			return "44f9293fa2d81ccf56dffab09600ec4f775c5c30bbc2af551cf4f6b2cf889f01";
+		}
+	}
+	// The single_eval_pos family (x, y inputs only): ext graphs bundle for the
+	// CUDA + CPU-low-memory paths; no migraphx variants — MIGraphX compiles
+	// per fixed shape, and these models read the train/test split from y's
+	// length, so bucketed compiles would need one per distinct train_size.
+	if (model == "tabpfn-v2") {
+		if (task_name == "classification") {
+			return "e97043c10b4572d6011cb1e389db2c7d57425213c761288f935188e25e953362";
+		}
+		if (task_name == "regression") {
+			return "ca4435a405cbd17afc8cf08346954705d7cc01fc6d08bdcf9c06363faed867a9";
+		}
+	}
+	if (model == "tabicl-v2") {
+		if (task_name == "classification") {
+			return "085731de6a7b33e6fcbda7e1b3cba725d798d30f93ec3cdc91c3ac2c2c762d3f";
+		}
+		if (task_name == "regression") {
+			return "d792dd9433bdf78773eddcd4bda3e0e49550aec0a2df1a0bfa36afebf320e8ae";
+		}
+	}
+	if (model == "orion-bix" && task_name == "classification") {
+		return "c2b7ff39add2b0c1c2d3ddabbaf413e8c15f433b620f3091f0562f376255d166";
+	}
+	if (model == "tabpfn-v2-5") {
+		if (task_name == "classification") {
+			return "b230477af81d4ac5bff856b2f9dcc281d5b9a04d659a5dee335553f0f49897ea";
+		}
+		if (task_name == "regression") {
+			return "8865ee281d0172e31e1a03d1d43057ac8e69b88a27b2ce0a93ee77b865f45737";
+		}
+	}
+	if (model == "tabpfn-v3") {
+		if (task_name == "classification") {
+			return "c0f3a23322d1ec039356b618565e5e1c62378613e3081167881220968933f04b";
+		}
+		if (task_name == "regression") {
+			return "92cf58d84bf968d6e5de90f7ccc29c0d1e79e8f0e9a04c7e0ab66274185d061c";
 		}
 	}
 	return "";

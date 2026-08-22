@@ -67,10 +67,14 @@ struct CudaPluginBackend {
 	Ort::Env env {ORT_LOGGING_LEVEL_WARNING, "anofox_tabfm_cuda"};
 	Ort::Session session {nullptr};
 	//! The graph's declared inputs, in graph order. Models differ: tabfm-v1
-	//! takes (x, y, cat_mask, train_size, d); mitra omits cat_mask. Binding a
-	//! name the graph does not declare is an ORT error, so Run feeds exactly
-	//! this list.
+	//! takes (x, y, cat_mask, train_size, d); mitra omits cat_mask; the
+	//! TabPFN/TabICL/Orion family declares only (x, y). Binding a name the
+	//! graph does not declare is an ORT error, so Run feeds exactly this list.
 	std::vector<std::string> input_names;
+	//! Single_eval_pos convention (same rule as the CPU engine): a graph with
+	//! no "train_size" input derives the split from y's LENGTH, so y is fed as
+	//! the training prefix [1, train_size] rather than the full [1, t].
+	bool graph_has_train_size = false;
 	std::mutex mutex; // Ort::Session::Run is thread-safe, but the engine may
 	                  // share one handle across DuckDB threads and we also want
 	                  // deterministic error reporting through the err buffer.
@@ -135,6 +139,9 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		Ort::AllocatorWithDefaultOptions alloc;
 		for (size_t i = 0; i < backend->session.GetInputCount(); i++) {
 			backend->input_names.emplace_back(backend->session.GetInputNameAllocated(i, alloc).get());
+			if (backend->input_names.back() == "train_size") {
+				backend->graph_has_train_size = true;
+			}
 		}
 		return backend.release();
 	} catch (const std::exception &e) {
@@ -158,7 +165,8 @@ TabFMPluginStatus PluginRun(void *handle, const TabFMPluginRunInput *input, TabF
 		// dynamic dimensions directly, so the real extents go straight in.
 		auto mem_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
 		const std::vector<int64_t> x_shape = {1, input->t, input->h};
-		const std::vector<int64_t> y_shape = {1, input->t};
+		const int64_t y_len = backend->graph_has_train_size ? input->t : input->train_size;
+		const std::vector<int64_t> y_shape = {1, y_len};
 		const std::vector<int64_t> mask_shape = {1, input->h};
 		const std::vector<int64_t> scalar_shape = {1};
 		int64_t train_size = input->train_size;
@@ -177,7 +185,7 @@ TabFMPluginStatus PluginRun(void *handle, const TabFMPluginRunInput *input, TabF
 				                                                 x_shape.data(), x_shape.size()));
 			} else if (name == "y") {
 				inputs.push_back(Ort::Value::CreateTensor<float>(mem_info, const_cast<float *>(input->y),
-				                                                 static_cast<size_t>(input->t), y_shape.data(),
+				                                                 static_cast<size_t>(y_len), y_shape.data(),
 				                                                 y_shape.size()));
 			} else if (name == "cat_mask") {
 				inputs.push_back(Ort::Value::CreateTensor<bool>(

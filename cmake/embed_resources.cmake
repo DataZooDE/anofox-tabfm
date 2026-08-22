@@ -33,6 +33,17 @@ set(_tabfm_inputs
     "graph_ext_mitra_regression.onnx"
     "graph_migraphx_mitra_classification.onnx"
     "graph_migraphx_mitra_regression.onnx"
+    # Catalog ext graphs (CUDA + CPU low-memory; single_eval_pos family — no
+    # migraphx variants, see ExpectedWeightsHeaderShaFor's comment).
+    "graph_ext_tabpfn_classification.onnx"
+    "graph_ext_tabpfn_regression.onnx"
+    "graph_ext_tabpfn25_classification.onnx"
+    "graph_ext_tabpfn25_regression.onnx"
+    "graph_ext_tabpfn3_classification.onnx"
+    "graph_ext_tabpfn3_regression.onnx"
+    "graph_ext_tabicl_classification.onnx"
+    "graph_ext_tabicl_regression.onnx"
+    "graph_ext_orion_bix_classification.onnx"
     "graph_tabpfn_classification.onnx"
     "graph_tabpfn_regression.onnx"
     "graph_tabicl_classification.onnx"
