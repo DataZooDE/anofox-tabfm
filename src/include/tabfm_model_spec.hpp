@@ -267,6 +267,28 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	return "";
 }
 
+//! The path tabfm_models() should account a declared artifact under, or ""
+//! when the model-task is incomplete. Mirrors ResolveWeightsPath's converter
+//! rule: a missing .ckpt whose sibling model.safetensors exists is listable —
+//! the engine will serve exactly that sibling. `exists` is injected so the
+//! rule is testable without a filesystem.
+template <typename ExistsFn>
+string ListableArtifactPath(const string &declared_path, ExistsFn exists) {
+	if (exists(declared_path)) {
+		return declared_path;
+	}
+	const string suffix = ".ckpt";
+	if (declared_path.size() > suffix.size() &&
+	    declared_path.compare(declared_path.size() - suffix.size(), suffix.size(), suffix) == 0) {
+		auto slash = declared_path.find_last_of('/');
+		auto sibling = declared_path.substr(0, slash + 1) + "model.safetensors";
+		if (exists(sibling)) {
+			return sibling;
+		}
+	}
+	return "";
+}
+
 //! Parse + strictly validate a v1 or v2 manifest into a ModelSpec.
 ModelSpec ParseModelSpec(const string &json, const string &manifest_path = "(inline manifest)");
 

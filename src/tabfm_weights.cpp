@@ -840,8 +840,12 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 			row.license = manifest.license;
 			bool complete = true;
 			for (idx_t i = 0; i < manifest.files.size(); i++) {
-				auto path = base_dir + "/" + manifest.files[i].path;
-				if (!fs.FileExists(path)) {
+				// ListableArtifactPath: a .ckpt whose converted sibling exists is
+				// servable, so it is listable (hiding it made exactly the
+				// converted-and-working models invisible).
+				auto path = ListableArtifactPath(base_dir + "/" + manifest.files[i].path,
+				                                 [&](const string &p) { return fs.FileExists(p); });
+				if (path.empty()) {
 					complete = false;
 					break;
 				}

@@ -325,3 +325,21 @@ TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the regis
 	REQUIRE(BundledGpuGraphId("tabicl-v2", "ext", "regression") == "graph_ext_tabicl_regression");
 	REQUIRE(BundledGpuGraphId("orion-bix", "ext", "classification") == "graph_ext_orion_bix_classification");
 }
+
+TEST_CASE("model_spec: listing accepts a converted sibling for a missing .ckpt", "[tabfm][model_spec]") {
+	using duckdb::anofox::ListableArtifactPath;
+	// Found on a pod: models staged from converter output only (no raw ckpt)
+	// predicted fine but vanished from tabfm_models(). The listing rule must
+	// match the engine's ResolveWeightsPath preference.
+	auto only = [](const string &p) { return p == "/c/slug@main/classification/model.safetensors"; };
+	REQUIRE(ListableArtifactPath(string("/c/slug@main/classification/model.ckpt"), only) ==
+	        "/c/slug@main/classification/model.safetensors");
+	// A declared file that exists is authoritative.
+	auto both = [](const string &) { return true; };
+	REQUIRE(ListableArtifactPath(string("/c/slug@main/classification/model.ckpt"), both) ==
+	        "/c/slug@main/classification/model.ckpt");
+	// No sibling rescue for non-ckpt artifacts, and nothing at all -> "".
+	auto none = [](const string &) { return false; };
+	REQUIRE(ListableArtifactPath(string("/c/x/model.onnx"), only) == "");
+	REQUIRE(ListableArtifactPath(string("/c/slug@main/classification/model.ckpt"), none) == "");
+}
