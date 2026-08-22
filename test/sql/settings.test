@@ -101,6 +101,17 @@ SELECT current_setting('anofox_tabfm_device')
 ----
 coreml
 
+# 'mlx' is carried by every build like cuda/rocm (a dlopen'd plugin, not a
+# compile-time flavor), so the SETTING always validates. Whether the hardware
+# exists is ResolveDevice's business at use time, not the validator's.
+statement ok
+SET anofox_tabfm_device = 'mlx'
+
+query I
+SELECT current_setting('anofox_tabfm_device')
+----
+mlx
+
 statement ok
 SET anofox_tabfm_device = 'auto'
 

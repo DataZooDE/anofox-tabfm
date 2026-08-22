@@ -43,3 +43,37 @@ usable	BOOLEAN
 # Works via CALL too (management-call convention, SQL-API §3)
 statement ok
 CALL tabfm_devices();
+
+# --- Apple MLX (docs/MLX_PLAN.md) ---------------------------------------------
+# The mlx row exists only on Apple Silicon, so this asserts the INVARIANTS that
+# hold everywhere rather than a row count that would fail on Linux CI.
+
+# There is at most one mlx row, and if present it is the SoC's single logical
+# device: ordinal 0, unified memory (no VRAM semantics), non-empty name.
+query I
+SELECT count(*) <= 1 FROM tabfm_devices() WHERE device_id LIKE 'mlx%';
+----
+true
+
+query I
+SELECT coalesce(bool_and(
+           device_id = 'mlx:0' AND ep = 'MlxBackend'
+           AND vram_total IS NULL AND vram_free IS NULL
+           AND name <> ''), true)
+FROM tabfm_devices() WHERE device_id LIKE 'mlx%';
+----
+true
+
+# An mlx row implies an Apple SoC: discovery must never invent one on hardware
+# that cannot run Metal.
+query I
+SELECT coalesce(bool_and(lower(name) LIKE '%apple%'), true)
+FROM tabfm_devices() WHERE device_id LIKE 'mlx%';
+----
+true
+
+# The cpu row is never displaced by it.
+query I
+SELECT count(*) = 1 FROM tabfm_devices() WHERE device_id = 'cpu' AND usable;
+----
+true

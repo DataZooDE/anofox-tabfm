@@ -460,3 +460,68 @@ which is all that is needed to test op semantics.
 plugin currently runs the hand-port. Porting the interpreter to C++ over mlx-c
 is the remaining work, and the hand-port stays afterwards as an independent
 oracle on the one model where two implementations exist.
+
+---
+
+## M1 production verification — `tools/gpu_test/scenarios/mlx_stress.sql`
+
+4000-row table, 2500-row context, 1500 scored, on the M3. Every stage prints
+`*_SERVED_BY`, because "cpu and mlx agree" is also what a silent CPU fallback
+prints.
+
+| check | result |
+|---|---|
+| classification, cpu vs mlx | **0 disagreements / 1500** |
+| wall clock | cpu 63.2 s → **mlx 12.9 s (4.9×)** |
+| device alternation mid-session | `ALT_STABLE drift=0`, both sessions resident |
+| regression, cpu vs mlx | max abs diff **6.95e-05**, correlation **0.99999999999** |
+| bf16 label flips | **2 / 1500** |
+| fp16 label flips | **1 / 1500** |
+| sessions cached | **4** — (cpu) + (mlx × fp32/bf16/fp16), so a precision switch is a new entry, not an eviction |
+| single-class context | 1 distinct prediction over 60 rows, no error |
+| constant feature (zero variance) | 60/60 non-null — the `where(var==0, 0, x)` guard survives the port |
+| NULL-bearing feature | 60/60 non-null |
+
+**This scenario earned its keep by finding a real bug before it shipped.** The
+device-alternation stage failed with
+
+    MLX error: There is no Stream(gpu, 0) in current thread
+
+MLX's default streams are thread-local; the backend held one created on the
+thread that ran `create()`, and the first forward on any other thread died —
+at predict time, far from the cause. Alternating devices mid-session is the
+only thing in the suite that gets a second DuckDB thread involved. The backend
+now holds no stream and each call acquires the calling thread's own.
+
+Two honest limits of this run:
+
+- **`CLS_ACCURACY` was 0.422 against a 0.333 baseline** on the first version,
+  because a positional split of a sin/cos series puts context and query in
+  different phase regions. The cpu/mlx agreement was still exact — which is the
+  point: agreement is insensitive to whether the task is learnable, so the
+  accuracy guard has to be independently meaningful or it is decoration. Now
+  split by `hash(row_id)` with the majority-class rate printed beside it.
+- **The unsupported-model stage did not reach its assertion**: `tabpfn-v2` has
+  no downloaded weights on this machine, so it failed at the download gate
+  before the MLX arch check. The refusal itself is covered by
+  `test_tabfm_mlx_plugin.cpp` and by `MlxSupportsModel`, but the scenario stage
+  is currently proving the wrong error.
+
+## Where all-model coverage actually stands
+
+`uv run python -m mlx_spike.sm5_all_models --shapes 128x8x100`
+
+| verdict | graphs |
+|---|---|
+| **PASS** (5) | mitra classification + regression (**real weights**), tabicl classification + regression, orion-bix classification |
+| **INCONCLUSIVE** (3) | tabpfn-v2, tabpfn-v2-5, tabpfn-v3 classification — the ORT *reference* returns a constant, so any comparison is vacuous |
+| **ERROR** (3) | tabpfn-v2, tabpfn-v2-5, tabpfn-v3 regression — **ORT itself** fails a MatMul on the harness's feed |
+| **SKIPPED** (2) | tabfm-v1 classification + regression — 6.1 GB of synthesized initializers |
+
+None of the six non-passes is a known interpreter defect; all are limits of the
+*harness*. The three INCONCLUSIVE need real checkpoints (synthesized weights
+cannot drive those graphs off a constant, even rescaled 10×), the three ERROR
+need a feed those graphs accept, and the two SKIPPED need the interpreter to
+stream weights rather than materialize them twice in Python. Stated as
+inconclusive rather than passed, because an exact match against a constant
+reference is exactly what a completely broken interpreter also produces.

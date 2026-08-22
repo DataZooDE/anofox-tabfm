@@ -87,6 +87,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", help="substring filter on the graph stem")
     ap.add_argument("--shapes", default="70x3x60,128x8x100")
+    ap.add_argument("--synth-scale", type=float, default=10.0,
+                    help="multiplier on synthesized float weights; 1.0 keeps equivalence.py's 0.02 sigma")
     ap.add_argument("--skip-larger-than-gb", type=float, default=2.0,
                     help="skip graphs whose initializers exceed this, to avoid thrashing")
     args = ap.parse_args()
@@ -125,7 +127,7 @@ def main() -> int:
         graphs.append(g)
     shapes = [tuple(int(v) for v in c.split("x")) for c in args.shapes.split(",")]
 
-    passed, failed, errored, degenerate_cases = [], [], [], []
+    passed, failed, errored, degenerate_cases, inconclusive = [], [], [], [], []
     for graph_path in graphs:
         stem = graph_path.stem
         weights = REAL_WEIGHTS.get(stem)
@@ -137,6 +139,16 @@ def main() -> int:
             # file, so a difference can only come from execution.
             arrays = eq.initializer_arrays(graph_path, 0, weights if use_real else None,
                                            tmap if use_real else None)
+            if not use_real and args.synth_scale != 1.0:
+                # equivalence.py fills synthesized weights at standard_normal *
+                # 0.02, which is near-degenerate through a deep stack -- for
+                # several of these graphs it drives the logits to a CONSTANT,
+                # and then any comparison passes. Rescaling gives the network
+                # something to do. Integer initializers are left alone: they
+                # are shapes and indices, and scaling them is nonsense.
+                arrays = {k: (v * args.synth_scale).astype(v.dtype)
+                          if v.dtype.kind == "f" else v
+                          for k, v in arrays.items()}
             with tempfile.TemporaryDirectory() as tmp:
                 # materialize_external_data returns the DIRECTORY it staged
                 # into (it is written to be handed to the plugin as
@@ -168,9 +180,17 @@ def main() -> int:
                           f"ref_spread={spread:.3e}{' DEGENERATE' if degenerate else ''} ms={dt * 1000:.0f}")
                     if degenerate:
                         degenerate_cases.append(f"{stem}@{t}x{h}x{s}")
-                ok = worst.argmax_agreement == 1.0 and worst.prob_max_abs <= 1e-4
-                (passed if ok else failed).append(stem)
-                _mark(f"{stem}_VERDICT", "PASS" if ok else "FAIL")
+                # A degenerate reference cannot pass: an exact match against a
+                # constant is what a completely broken interpreter also
+                # produces. Counting it green would be the single most
+                # misleading thing this harness could do.
+                if any(c.startswith(stem + "@") for c in degenerate_cases):
+                    inconclusive.append(stem)
+                    _mark(f"{stem}_VERDICT", "INCONCLUSIVE (reference output is constant)")
+                else:
+                    ok = worst.argmax_agreement == 1.0 and worst.prob_max_abs <= 1e-4
+                    (passed if ok else failed).append(stem)
+                    _mark(f"{stem}_VERDICT", "PASS" if ok else "FAIL")
         except UnsupportedOp as exc:
             errored.append((stem, f"unsupported op: {exc}"))
             _mark(f"{stem}_VERDICT", f"UNSUPPORTED ({exc})")
@@ -191,8 +211,11 @@ def main() -> int:
         # mean anything. Reported so an exact match on a flat reference is
         # never mistaken for evidence.
         _mark("DEGENERATE_REFERENCE", ",".join(degenerate_cases))
-    _mark("RESULT", "PASS" if not failed and not errored else "FAIL")
-    return 0 if not failed and not errored else 1
+    if inconclusive:
+        _mark("INCONCLUSIVE", ",".join(inconclusive))
+    ok = not failed and not errored and not inconclusive
+    _mark("RESULT", "PASS" if ok else "FAIL")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
