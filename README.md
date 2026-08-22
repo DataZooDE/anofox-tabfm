@@ -407,6 +407,20 @@ Released cpu builds are served from the anofox extension repository
 (`SET custom_extension_repository = 'https://get.anofox.com'`) as well as from
 the DuckDB community repository.
 
+**Backend support matrix** (what is verified, not what might work):
+
+| backend | platforms | models | verified on |
+|---|---|---|---|
+| CPU | Linux x64/arm64, macOS x64/arm64, Windows x64 | all 7 built-ins | CI suites + install-smoke with inference on every platform |
+| CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | **all 7 built-ins** | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max |
+| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1 + mitra (train_size-scalar family) | RX 9070 XT: parity, concurrency, user workflow |
+| CoreML | — | — | out of scope by decision (docs/PHASE_COMPLETION_PLAN.md) |
+| MLX | planned | — | docs/MLX_PLAN.md |
+
+GPU plugins are Linux-only today; macOS/Windows artifacts are CPU-only by
+design. The single_eval_pos models (TabPFN/TabICL/Orion) cannot use ROCm's
+bucketed compilation (y's length is the train/test split) — CUDA serves them.
+
 **Using a GPU.** A GPU backend is a plugin the extension `dlopen`s at runtime,
 not a separate build of the extension: point `anofox_tabfm_ep_path` at the
 directory holding it and select the device.
