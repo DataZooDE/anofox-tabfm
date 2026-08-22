@@ -258,6 +258,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_plugin_backend.cpp
     test/cpp/test_tabfm_migraphx_plugin.cpp
     test/cpp/test_tabfm_cuda_plugin.cpp
+    test/cpp/test_tabfm_mlx_plugin.cpp
     test/cpp/test_tabfm_cpu_budget.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
@@ -290,6 +291,15 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
         add_dependencies(anofox_tabfm_unittest_tests anofox_tabfm_migraphx_plugin)
         target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
             TABFM_MIGRAPHX_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_migraphx_plugin>")
+    endif()
+    if(TABFM_MLX_PLUGIN_BUILT)
+        # Apple MLX (docs/MLX_PLAN.md): only where the plugin was built, i.e.
+        # an arm64 Mac with MLX installed. The equivalence case additionally
+        # needs the developer's mitra cache and skips itself without it; the
+        # refusal case runs anywhere the plugin exists.
+        add_dependencies(anofox_tabfm_unittest_tests anofox_tabfm_mlx_plugin)
+        target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
+            TABFM_MLX_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_mlx_plugin>")
     endif()
     if(TABFM_CUDA_PLUGIN_BUILT)
         # Same deal for CUDA: only on a machine that had an ORT-GPU archive to
