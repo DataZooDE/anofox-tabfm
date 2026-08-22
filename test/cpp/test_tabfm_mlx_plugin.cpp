@@ -114,7 +114,24 @@ TEST_CASE("mlx_plugin: CPU and MLX agree on the same real weights", "[tabfm][plu
 	const string cpu_graph = weights_dir + "/graph_ext_mitra_classification.onnx";
 
 	if (!FileExists(weights) || !FileExists(cpu_graph)) {
-		SUCCEED("no mitra model cache on this machine, skipping (see docs/MLX_SPIKE_RESULTS.md)");
+		// Name the fix rather than gesture at a document: a skip nobody knows
+		// how to un-skip is indistinguishable from no test at all, and this is
+		// the only case that compares the two implementations.
+		WARN("skipping CPU/MLX equivalence: no mitra cache at "
+		     << weights_dir
+		     << "\n  Set it up with (Apache-2.0 weights, ~303 MB):\n"
+		        "    mkdir -p \""
+		     << weights_dir
+		     << "\"\n"
+		        "    curl -L -o \""
+		     << weights << "\" \\\n"
+		        "      https://huggingface.co/autogluon/mitra-classifier/resolve/main/model.safetensors\n"
+		        "    ln -s \"$PWD/resources/graph_ext_mitra_classification.onnx\" \""
+		     << cpu_graph
+		     << "\"\n"
+		        "  The graph must sit beside the weights: ORT resolves the ext graph's\n"
+		        "  external data relative to the graph file. See docs/MLX_SPIKE_RESULTS.md.");
+		SUCCEED("skipped -- see the warning above for the one-time setup");
 		return;
 	}
 
