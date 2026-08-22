@@ -23,6 +23,7 @@ reporting a perfect score.
 | `a_concurrency.sql` | four predicts in one query as parallel pipelines, finalizing on one device — the path `#42`'s per-device lock guards. A lock bug here corrupts results rather than erroring, so equality with the sequential answer is the assertion, not "it didn't crash". | `rocm:0`, 400 rows, **0 mismatches** |
 | `b_regress.sql` | the regression task on a GPU at all. Continuous output, so closeness rather than label agreement. | `rocm:0`, max abs diff `0.004837`, corr `0.999943` |
 | `c_wide.sql` | 20 feature columns, so the H64 shape bucket instead of the H16 every other run uses. | `rocm:0`, 7 disagreements / 100 (bf16) |
+| `rocm_fixture.sql` | the **weight-free** ROCm smoke test: the committed fixture's MIGraphX variant compiles + serves in seconds, no download/license. Run before pushing ROCm-path changes. | `FIXTURE_SERVED_BY=rocm:0`, 9 rows |
 | `registered_model_gpu.sql` | a **registered** model carrying its own `migraphx_graph` served by the ROCm plugin — the model-provided GPU-graph dispatch (GPU_HARDENING_PLAN P3) that bundled-graph runs never touch. Paths inside are machine-local (the weight cache); adjust `base_dir` before running. | `REGISTERED_SERVED_BY=rocm:0`, `PATHS_DISAGREE=0` |
 | `user_workflow.sql` | a workflow shaped like a user's: `read_csv_auto` with inferred types, categorical columns, NULLs in **both** features and label, then joining predictions back and aggregating by a business dimension. | `cpu` then `rocm:0`, **0 disagreements**, 25 rows joined |
 
