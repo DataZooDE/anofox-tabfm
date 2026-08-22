@@ -401,6 +401,27 @@ def _op_pad(node, ins, env):
     return mx.pad(data, widths, constant_values=pad_value)
 
 
+
+def _scatter_safe(data, fn):
+    """MLX's GPU scatter has no int64 kernel ([ScatterAxis::eval_gpu] Does not
+    support int64), and these graphs scatter int64 because that is the dtype
+    ONNX shape arithmetic uses. Round-trip through int32 for the scatter only.
+
+    Safe here for the reason the values exist: they are shapes, indices and
+    offsets bounded by tensor extents, which are orders of magnitude below
+    2^31. A guard is asserted rather than assumed, so a graph that ever
+    scattered a genuinely large int64 fails loudly instead of wrapping.
+    """
+    if data.dtype != mx.int64:
+        return fn(data)
+    peak = float(mx.max(mx.abs(data)).item()) if data.size else 0.0
+    if peak >= 2**31 - 1:
+        raise UnsupportedOp(
+            f"scatter over int64 values up to {peak:.0f}; MLX has no int64 scatter kernel "
+            "and the int32 round-trip used here would overflow")
+    return fn(data.astype(mx.int32)).astype(mx.int64)
+
+
 def _op_scatter_elements(node, ins, env):
     data, indices, updates = ins[0], ins[1], ins[2]
     axis = int(node.attrs.get("axis", 0))
@@ -411,7 +432,7 @@ def _op_scatter_elements(node, ins, env):
     # ONNX allows negative indices; put_along_axis does not.
     dim = data.shape[axis if axis >= 0 else axis + data.ndim]
     idx = mx.where(idx < 0, idx + dim, idx)
-    return mx.put_along_axis(data, idx, updates.astype(data.dtype), axis=axis)
+    return _scatter_safe(data, lambda d: mx.put_along_axis(d, idx, updates.astype(d.dtype), axis=axis))
 
 
 def _op_scatter_nd(node, ins, env):
@@ -437,7 +458,7 @@ def _op_scatter_nd(node, ins, env):
     for _ in tail:
         idx_arr = mx.expand_dims(idx_arr, -1)
     idx_arr = mx.broadcast_to(idx_arr, [flat_idx.shape[0]] + tail)
-    out = mx.put_along_axis(flat_data, idx_arr, flat_upd, axis=0)
+    out = _scatter_safe(flat_data, lambda d: mx.put_along_axis(d, idx_arr, flat_upd.astype(d.dtype), axis=0))
     return mx.reshape(out, list(data.shape))
 
 

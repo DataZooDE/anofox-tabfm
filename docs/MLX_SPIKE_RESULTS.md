@@ -406,3 +406,57 @@ re-run on GPU hardware.
 *Note: the probe prints a `recursive_mutex lock failed` line at interpreter
 teardown, from having both MLX and torch loaded in one process. It occurs after
 the result and does not affect the exit code, which is 0.*
+
+---
+
+## S-M5 — route 3: one interpreter, every model
+
+`uv run python -m mlx_spike.sm5_all_models`
+
+The scope changed to *all* registered models (see the plan's "Scope change"),
+which turned the hand-port from the product path into the wrong shape of
+answer: seven architectures transcribed by hand is seven second
+implementations, each able to drift from the graph the other backends run.
+`tools/mlx_spike/src/mlx_spike/onnx_mlx.py` executes the shipped graph instead.
+
+**Op coverage: 13/13 graphs, complete.** Measured, not estimated:
+
+| | |
+|---|---|
+| graphs | 13 (`resources/graph_ext_*.onnx`) |
+| nodes | 4,526 – 12,424 |
+| distinct ops per graph | 33 – 48 |
+| union of op kinds | 64 |
+
+The first pass — elementwise, shape, reduction and nn ops — already covered
+**4 graphs outright** (tabfm-v1 and mitra, both tasks). The gap to the other
+nine was exactly seven ops, and exactly the ones this plan predicted would be
+the hard part: `Pad` (9 graphs), `ScatterND` (5), `ScatterElements` (4),
+`Einsum` (3), `SequenceAt` + `SplitToSequence` (3), `GatherND` (2).
+
+**Correctness, so far: mitra classification AND regression, against real
+weights.** Interpreter vs ORT CPU on the same staged initializers:
+
+| graph | weights | logit max_abs | prob max_abs | argmax |
+|---|---|---|---|---|
+| mitra classification 70×3×60 | real | 2.193e-05 | 6.4e-06 | 1.0000 |
+| mitra classification 128×8×100 | real | 1.097e-05 | 2.3e-06 | 1.0000 |
+| mitra regression 70×3×60 | real | 2.384e-06 | — | — |
+| mitra regression 128×8×100 | real | 2.563e-06 | — | — |
+
+On the golden shapes the interpreter is *closer to ORT than the hand-port is*
+(5.3e-05 vs 8.5e-05 on `wide`), which is what running the same graph should
+produce.
+
+**Stated plainly: op coverage is not correctness.** All 64 ops are implemented,
+but only mitra is parity-verified end to end. The remaining eleven graphs are
+covered-but-unverified until `sm5_all_models` has run them, and a `Pad` that
+packs its widths wrongly raises nothing — it returns wrong numbers. The harness
+uses synthesized initializers by default precisely so every model is testable
+without seven checkpoints and seven licences: both sides get the same numbers,
+which is all that is needed to test op semantics.
+
+**Still to do before this is the shipping path**: the interpreter is Python. The
+plugin currently runs the hand-port. Porting the interpreter to C++ over mlx-c
+is the remaining work, and the hand-port stays afterwards as an independent
+oracle on the one model where two implementations exist.

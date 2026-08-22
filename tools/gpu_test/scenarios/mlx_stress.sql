@@ -44,9 +44,17 @@ SELECT
     sin(i * 0.013) * 10 + cos(i * 0.007) * 3       AS target
 FROM range(4000) t(i);
 
-CREATE TABLE ctx  AS SELECT * FROM big WHERE row_id <  2500;
-CREATE TABLE qry  AS SELECT * EXCLUDE (label, target) FROM big WHERE row_id >= 2500;
-CREATE TABLE act  AS SELECT row_id, label, target FROM big WHERE row_id >= 2500;
+-- Split by a HASH of row_id, not by position. A positional split on a series
+-- built from sin/cos of the row index hands the model a context drawn from one
+-- phase region and a query set from another, so accuracy collapses toward
+-- chance and the "better than guessing" guard below stops guarding anything.
+-- (Measured: 0.422 against a 0.333 baseline on the positional split. The
+-- cpu/mlx agreement was still exact -- which is the point: agreement is
+-- insensitive to whether the task is learnable, so the accuracy check has to
+-- be independently meaningful or it is decoration.)
+CREATE TABLE ctx  AS SELECT * FROM big WHERE hash(row_id) % 100 <  62;
+CREATE TABLE qry  AS SELECT * EXCLUDE (label, target) FROM big WHERE hash(row_id) % 100 >= 62;
+CREATE TABLE act  AS SELECT row_id, label, target FROM big WHERE hash(row_id) % 100 >= 62;
 
 .print ''
 .print '=== 1. classification at scale: cpu reference ==='
@@ -75,7 +83,11 @@ FROM c_cpu a JOIN c_mlx b USING (row_id);
 
 .print '-- and both must be better than guessing, or agreement proves nothing --'
 SELECT 'CLS_ACCURACY' AS marker,
-       avg((c.yhat = act.label)::INT) AS mlx_accuracy
+       avg((c.yhat = act.label)::INT)                       AS mlx_accuracy,
+       -- the majority-class rate is the bar a useless model clears
+       (SELECT max(share) FROM (
+            SELECT count(*) * 1.0 / sum(count(*)) OVER () AS share
+            FROM act GROUP BY label))                       AS baseline
 FROM c_mlx c JOIN act USING (row_id);
 
 .print ''
