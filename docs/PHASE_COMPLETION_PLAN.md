@@ -105,7 +105,9 @@ decision lands.
   models served-by-proven. Bonus catch: the .mxr cache collided across
   models (filename-stem key) and silently served the wrong model's compiled
   program -- fixed with a path-hashed key (tabfm_mxr_cache_key.hpp).
-- **C2 — ROCm cold-start UX.** Benchmark: warm ROCm is 20–60× CPU, but the
+- **C2 — ROCm cold-start UX.** (step 1 ✅: README block with the measured
+  ~25 min compile + precompile/mxr_source patterns; shipping .mxr assets
+  stays the open decision.) Originally: Benchmark: warm ROCm is 20–60× CPU, but the
   first predict per (arch, precision, shape bucket) pays ~25 min of MIGraphX
   compile — worst exactly at the fp32 default. Smallest useful step:
   `tabfm_gpu_precompile` + `anofox_tabfm_mxr_source` get a prominent
@@ -114,11 +116,18 @@ decision lands.
   to stage them (design exists via `mxr_source`; needs a size/licensing
   look — `.mxr` embeds the weights, so **license-gated models cannot ship
   compiled programs**; mitra/Apache models can).
-- **C3 — MIGraphX-compatible weight-free fixture.** The ROCm plugin has no
+- **C3 — MIGraphX-compatible weight-free fixture.** ✅ done 2026-08-22:
+  graph_migraphx_fixture.onnx + scenarios/rocm_fixture.sql, served rocm:0 in
+  seconds with no download (U1 held for the plain ext format only).
+  Originally: The ROCm plugin has no
   CI-runnable inference test (U1: the committed fixture graph is not
   MIGraphX-parseable). A fixture export MIGraphX accepts turns the local
   gfx1201 run into a pre-push check and future-proofs for ROCm runners.
-- **C4 — fp16 vs bf16 flip comparison** (open plan item): one local
+- **C4 — fp16 vs bf16 flip comparison** ✅ measured 2026-08-22 (mitra, gfx1201,
+  30 query rows): fp32 exact; bf16 9 flips at CPU margins ≤ 0.023 (near-ties on
+  this model, unlike S3's tabfm finding); fp16 3 flips at margins ≤ 0.002 —
+  fp16 is the gentler fast mode where supported, and the flip profile is
+  model-dependent. Recorded in README's precision row. Original scope: one local
   gfx1201 equivalence run at both modes, margins analysis like S3, table
   row + settings-description sentence. Hours, not days.
 
