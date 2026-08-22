@@ -108,15 +108,19 @@ def _golden_reference() -> None:
     _mark("ORT_GRAPH", ref.graph_path)
 
     cases = {
-        # (t, h, train_size, d) -- the fixture-sized shape the plan names, a
-        # padded-features case, and a larger one that exercises the quantile path.
-        "small": (40, 8, 24, 8),
-        "padded": (50, 16, 30, 10),
-        "wide": (200, 20, 120, 20),
+        # (t, h, train_size, d, seed) -- the fixture-sized shape the plan names,
+        # a padded-features case, and a larger one that exercises the quantile
+        # path. Seeds are literals, not derived from the name: Python salts
+        # hash() per process, so `hash(name) % 1000` would regenerate a
+        # *different* golden on every run and quietly destroy the one property
+        # a reference needs.
+        "small": (40, 8, 24, 8, 101),
+        "padded": (50, 16, 30, 10, 202),
+        "wide": (200, 20, 120, 20, 303),
     }
     out: dict[str, np.ndarray] = {}
-    for name, (t, h, train_size, d) in cases.items():
-        w = make_workload(t=t, h=h, train_size=train_size, d=d, seed=abs(hash(name)) % 1000)
+    for name, (t, h, train_size, d, seed) in cases.items():
+        w = make_workload(t=t, h=h, train_size=train_size, d=d, seed=seed)
         t0 = time.perf_counter()
         logits = ref.run(w)
         dt = time.perf_counter() - t0

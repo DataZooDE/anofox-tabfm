@@ -8,6 +8,8 @@ awaiting hardware. Three of its hypotheses changed on contact; they are marked
 All measurements: Apple M3, 10 GPU cores, 16 GB unified memory, macOS
 (Darwin 25.6.0, arm64), MLX 0.32.1, ONNX Runtime 1.29.0, torch 2.13.0.
 Reproduce with `tools/mlx_spike` (`uv sync`, then the commands named per spike).
+Every input is seeded from a literal, so a re-run reproduces these numbers rather
+than merely numbers of the same magnitude.
 
 **CORRECTION (scope).** The plan states "no Apple Silicon is available to this
 environment; every spike and verification runs on your macOS machine", and
@@ -95,23 +97,23 @@ was exported from it — so torch eager sits upstream of both ORT and MLX.
 
 | pair | logit max_abs | **strict rel** | prob max_abs | argmax |
 |---|---|---|---|---|
-| torch ↔ ORT (**the shipped CPU path**) | 8.5e-05 | **9.3e-04** | 1.0e-05 | 1.0000 |
-| torch ↔ MLX | 6.1e-05 | 7.8e-04 | 6.1e-06 | 1.0000 |
-| ORT ↔ MLX | 2.9e-05 | 6.6e-04 | 6.9e-06 | 1.0000 |
+| torch ↔ ORT (**the shipped CPU path**) | 8.5e-05 | **1.4e-03** | 4.6e-06 | 1.0000 |
+| torch ↔ MLX | 5.9e-05 | 1.2e-03 | 4.3e-06 | 1.0000 |
+| ORT ↔ MLX | 6.6e-05 | 1.9e-03 | 3.1e-06 | 1.0000 |
 
 Two things fall out, and the spike asserts both rather than stating them:
 
-1. **The shipped CPU graph scores 9.3e-04 against its own authoring code** —
-   9× outside the 1e-4 bar. Any backend judged by this metric fails, including
+1. **The shipped CPU graph scores 1.4e-03 against its own authoring code** —
+   14× outside the 1e-4 bar. Any backend judged by this metric fails, including
    the reference. (`CLAIM_STRICT_METRIC_FAILS_ON_REFERENCE=True`)
-2. **MLX is *closer* to the definition than ORT is** — 0.91×, 0.87×, 0.72× the
+2. **MLX is *closer* to the definition than ORT is** — 0.93×, 0.86×, 0.70× the
    error, in every case. (`CLAIM_MLX_NO_WORSE_THAN_ORT=True`)
 
 So parity is judged on what the extension actually returns to SQL: the
 post-softmax probabilities, plus the predicted class.
 
 - `prob_max_abs ≤ 1e-4` — bounded in [0, 1], four orders below anything a user
-  could observe, and passed by torch↔ORT at 1.0e-05
+  could observe, and passed by torch↔ORT at 4.6e-06
   (`CLAIM_PROB_METRIC_PASSES_ON_REFERENCE=True`).
 - `argmax_agreement == 1.0` — the property the whole exercise exists to hold.
 - a coarse `logit_max_abs ≤ 1e-3` guard, to catch a real bug while ignoring
@@ -120,14 +122,14 @@ post-softmax probabilities, plus the predicted class.
 The strict metric is still computed and reported, marked informational, so the
 claim stays checkable instead of asserted.
 
-**Results under that bar:** every shape passes, worst `prob_max_abs` 1.5e-05,
+**Results under that bar:** every shape passes, worst `prob_max_abs` 5.8e-06,
 argmax agreement 1.0000 throughout — on the real 302 MB weights, not a
 synthesized fixture.
 
-`mx.fast.scaled_dot_product_attention` roughly doubles the logit error versus an
-explicit `softmax(QK^T)V` (5.8e-05 vs 2.9e-05). Both pass comfortably; fast SDPA
-is kept for the speed and the difference is noted here so it is not rediscovered
-as a mystery later.
+`mx.fast.scaled_dot_product_attention` and an explicit `softmax(QK^T)V` differ
+at the 1e-05 level on logits, neither consistently closer. Both pass
+comfortably; fast SDPA is kept for the speed, and the difference is noted here
+so it is not rediscovered as a mystery later.
 
 > **This finding is not MLX-specific and should outlive this plan.**
 > `equivalence.py` applies the same metric to the CUDA and ROCm backends. Either
@@ -225,9 +227,9 @@ header that defined it. Against the same ORT CPU golden:
 
 | case | logit max_abs | prob max_abs | argmax |
 |---|---|---|---|
-| small (40×8) | 3.290e-05 | 6.4e-06 | 1.0000 |
-| padded (50×16) | 5.770e-05 | 3.8e-06 | 1.0000 |
-| wide (200×20) | 5.579e-05 | 1.5e-05 | 1.0000 |
+| small (40×8) | 3.052e-05 | 4.3e-06 | 1.0000 |
+| padded (50×16) | 1.979e-05 | 5.8e-06 | 1.0000 |
+| wide (200×20) | 8.535e-05 | 2.7e-06 | 1.0000 |
 
 These are **the same numbers to every digit** as the Python port's fast-SDPA
 run in S-M2 — strong evidence the transcription is faithful rather than
