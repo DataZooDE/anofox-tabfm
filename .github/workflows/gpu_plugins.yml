@@ -32,8 +32,8 @@ permissions:
   contents: write # release-asset upload on tags; read is enough elsewhere
 
 env:
-  ORT_GPU_VERSION: "1.28.0"
-  ORT_GPU_ARCHIVE: "onnxruntime-linux-x64-gpu_cuda12-1.28.0"
+  ORT_GPU_VERSION: "1.29.0"
+  ORT_GPU_ARCHIVE: "onnxruntime-linux-x64-gpu_cuda12-1.29.0"
 
 jobs:
   cuda-plugin:

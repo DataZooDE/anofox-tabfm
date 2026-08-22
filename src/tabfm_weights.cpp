@@ -489,7 +489,7 @@ void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk
 // extract_to_file): only the two needed entries are decompressed, not the
 // whole wheel.
 //
-// NOT the plain PyPI `onnxruntime-gpu` package: as of 1.28.0 that targets
+// NOT the plain PyPI `onnxruntime-gpu` package: as of 1.28+ that targets
 // CUDA 13 (needs libcublasLt.so.13 and friends) with no CUDA-12 variant on
 // PyPI proper — discovered by actually running this on a RunPod CUDA-12.4
 // image, where the plain-PyPI wheel's provider failed to dlopen. Microsoft
@@ -546,7 +546,7 @@ string PluginReleaseUrl(const string &asset) {
 	       asset;
 }
 
-//! Currently the only published, verified source: onnxruntime-gpu 1.28.0's
+//! Currently the only published, verified source: onnxruntime-gpu 1.29.0's
 //! manylinux CUDA-12 wheel from Microsoft's onnxruntime-cuda-12 Azure
 //! Artifacts feed (cp312 tag — the C++ .so payload is identical across cp3xx
 //! tags; the tag only affects the Python bindings we discard). CUDA 13 /
@@ -555,15 +555,15 @@ string PluginReleaseUrl(const string &asset) {
 bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string &error) {
 	if (backend == "cuda") {
 		out.wheel_url = "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/"
-		                "_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.28/"
-		                "onnxruntime_gpu-1.28.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl";
-		out.wheel_bytes = 432340836;
+		                "_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.29/"
+		                "onnxruntime_gpu-1.29.0-cp312-cp312-manylinux_2_28_x86_64.whl";
+		out.wheel_bytes = 475434900;
 		// The ORT *core* comes along too, not just the providers: the CUDA
 		// backend is a standalone plugin with its own shared runtime, because a
 		// statically-linked ORT cannot host these provider libraries at all (see
 		// src/tabfm_cuda_plugin.cpp). Core and providers must come from one
 		// distribution — pairing a CPU-flavor core with a GPU provider crashes.
-		out.zip_entries = {{"onnxruntime/capi/libonnxruntime.so.1.28.0", ORT_RENAMED_SONAME, /*patch_soname=*/true},
+		out.zip_entries = {{"onnxruntime/capi/libonnxruntime.so.1.29.0", ORT_RENAMED_SONAME, /*patch_soname=*/true},
 		                   {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so"},
 		                   {"onnxruntime/capi/libonnxruntime_providers_shared.so",
 		                    "libonnxruntime_providers_shared.so"}};
@@ -688,7 +688,7 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 	// (re-downloaded on the next miss, same as a truncated .part would be).
 	// Skipped entirely for a backend with no wheel (rocm ships only a plugin).
 	if (!bind.artifact.wheel_url.empty()) {
-		const string wheel_path = bind.ep_path + "/.onnxruntime_gpu-1.28.0-cp312.whl";
+		const string wheel_path = bind.ep_path + "/.onnxruntime_gpu-1.29.0-cp312.whl";
 		DownloadItem wheel_item;
 		wheel_item.cache_path = wheel_path;
 		wheel_item.url = bind.artifact.wheel_url;

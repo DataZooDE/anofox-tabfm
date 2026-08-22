@@ -14,7 +14,7 @@ FAILED=0
 echo "=== GPU ==="
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 
-ORT_VER=1.28.0
+ORT_VER=1.29.0
 ARCHIVE=onnxruntime-linux-x64-gpu_cuda12-${ORT_VER}
 echo
 echo "=== 1. fetch the ORT-GPU archive ==="
@@ -128,13 +128,13 @@ echo "  verify_host(fp32, shadowed) exit=${RC}"
 
 echo
 echo "=== 5. verify what tabfm_download_runtime('cuda') fetches ==="
-WHEEL_URL="https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.28/onnxruntime_gpu-1.28.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
+WHEEL_URL="https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.29/onnxruntime_gpu-1.29.0-cp312-cp312-manylinux_2_28_x86_64.whl"
 curl -sSL -o rt.whl "$WHEEL_URL" || { echo "WHEEL DOWNLOAD FAILED"; FAILED=1; }
 if [ -f rt.whl ]; then
   echo "  wheel bytes: $(stat -c %s rt.whl) (src/tabfm_weights.cpp declares 432340836)"
   python3 - <<'PY'
 import zipfile, sys
-want = ["onnxruntime/capi/libonnxruntime.so.1.28.0",
+want = ["onnxruntime/capi/libonnxruntime.so.1.29.0",
         "onnxruntime/capi/libonnxruntime_providers_cuda.so",
         "onnxruntime/capi/libonnxruntime_providers_shared.so"]
 z = zipfile.ZipFile("/workspace/rt.whl")
