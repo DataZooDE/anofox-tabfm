@@ -66,6 +66,11 @@ struct CudaPluginBackend {
 	// keeping it here ties its lifetime to the handle the caller destroys.
 	Ort::Env env {ORT_LOGGING_LEVEL_WARNING, "anofox_tabfm_cuda"};
 	Ort::Session session {nullptr};
+	//! The graph's declared inputs, in graph order. Models differ: tabfm-v1
+	//! takes (x, y, cat_mask, train_size, d); mitra omits cat_mask. Binding a
+	//! name the graph does not declare is an ORT error, so Run feeds exactly
+	//! this list.
+	std::vector<std::string> input_names;
 	std::mutex mutex; // Ort::Session::Run is thread-safe, but the engine may
 	                  // share one handle across DuckDB threads and we also want
 	                  // deterministic error reporting through the err buffer.
@@ -127,6 +132,10 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		Ort::GetApi().ReleaseCUDAProviderOptions(cuda_options);
 
 		backend->session = Ort::Session(backend->env, params->graph_path, options);
+		Ort::AllocatorWithDefaultOptions alloc;
+		for (size_t i = 0; i < backend->session.GetInputCount(); i++) {
+			backend->input_names.emplace_back(backend->session.GetInputNameAllocated(i, alloc).get());
+		}
 		return backend.release();
 	} catch (const std::exception &e) {
 		SetError(err, err_len, std::string("could not initialise the CUDA backend on device ") +
@@ -157,22 +166,38 @@ TabFMPluginStatus PluginRun(void *handle, const TabFMPluginRunInput *input, TabF
 
 		// const_cast: ORT's CreateTensor borrows a mutable pointer but does not
 		// write through it for inputs; the ABI's buffers stay owned by the caller.
+		// Bind exactly the graph's declared inputs, in graph order — mitra's
+		// contract omits cat_mask, tabfm-v1's includes it.
 		std::vector<Ort::Value> inputs;
-		inputs.push_back(Ort::Value::CreateTensor<float>(mem_info, const_cast<float *>(input->x),
-		                                                 static_cast<size_t>(input->t * input->h), x_shape.data(),
-		                                                 x_shape.size()));
-		inputs.push_back(Ort::Value::CreateTensor<float>(mem_info, const_cast<float *>(input->y),
-		                                                 static_cast<size_t>(input->t), y_shape.data(), y_shape.size()));
-		inputs.push_back(Ort::Value::CreateTensor<bool>(
-		    mem_info, reinterpret_cast<bool *>(const_cast<uint8_t *>(input->cat_mask)),
-		    static_cast<size_t>(input->h), mask_shape.data(), mask_shape.size()));
-		inputs.push_back(
-		    Ort::Value::CreateTensor<int64_t>(mem_info, &train_size, 1, scalar_shape.data(), scalar_shape.size()));
-		inputs.push_back(Ort::Value::CreateTensor<int64_t>(mem_info, &d, 1, scalar_shape.data(), scalar_shape.size()));
+		std::vector<const char *> names;
+		for (const auto &name : backend->input_names) {
+			if (name == "x") {
+				inputs.push_back(Ort::Value::CreateTensor<float>(mem_info, const_cast<float *>(input->x),
+				                                                 static_cast<size_t>(input->t * input->h),
+				                                                 x_shape.data(), x_shape.size()));
+			} else if (name == "y") {
+				inputs.push_back(Ort::Value::CreateTensor<float>(mem_info, const_cast<float *>(input->y),
+				                                                 static_cast<size_t>(input->t), y_shape.data(),
+				                                                 y_shape.size()));
+			} else if (name == "cat_mask") {
+				inputs.push_back(Ort::Value::CreateTensor<bool>(
+				    mem_info, reinterpret_cast<bool *>(const_cast<uint8_t *>(input->cat_mask)),
+				    static_cast<size_t>(input->h), mask_shape.data(), mask_shape.size()));
+			} else if (name == "train_size") {
+				inputs.push_back(Ort::Value::CreateTensor<int64_t>(mem_info, &train_size, 1, scalar_shape.data(),
+				                                                   scalar_shape.size()));
+			} else if (name == "d") {
+				inputs.push_back(
+				    Ort::Value::CreateTensor<int64_t>(mem_info, &d, 1, scalar_shape.data(), scalar_shape.size()));
+			} else {
+				SetError(err, err_len, "graph declares input '" + name + "' which this plugin does not provide");
+				return TABFM_PLUGIN_ERROR;
+			}
+			names.push_back(name.c_str());
+		}
 
-		const char *input_names[] = {"x", "y", "cat_mask", "train_size", "d"};
 		const char *output_names[] = {"logits"};
-		auto outputs = backend->session.Run(Ort::RunOptions {nullptr}, input_names, inputs.data(), inputs.size(),
+		auto outputs = backend->session.Run(Ort::RunOptions {nullptr}, names.data(), inputs.data(), inputs.size(),
 		                                    output_names, 1);
 
 		auto shape = outputs[0].GetTensorTypeAndShapeInfo().GetShape();

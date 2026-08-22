@@ -254,3 +254,31 @@ TEST_CASE("model_spec: IsExplicitGpuRequest — only the named device (or its al
 	REQUIRE_FALSE(IsExplicitGpuRequest("auto", "rocm"));
 	REQUIRE_FALSE(IsExplicitGpuRequest("cuda", "rocm"));
 }
+
+TEST_CASE("model_spec: bundled GPU graph ids are model-qualified, tabfm-v1 keeps legacy names", "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	// tabfm-v1's graphs predate multi-model bundling and keep their unqualified
+	// resource ids — renaming them would orphan the embedded resources.
+	REQUIRE(BundledGpuGraphId("tabfm-v1", "ext", "classification") == "graph_ext_classification");
+	REQUIRE(BundledGpuGraphId("tabfm-v1", "migraphx", "regression") == "graph_migraphx_regression");
+	// Every other model gets a model-qualified id.
+	REQUIRE(BundledGpuGraphId("mitra", "ext", "classification") == "graph_ext_mitra_classification");
+	REQUIRE(BundledGpuGraphId("mitra", "migraphx", "regression") == "graph_migraphx_mitra_regression");
+}
+
+TEST_CASE("model_spec: weights-header table is (model, task)-keyed", "[tabfm][model_spec]") {
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// tabfm-v1's hashes (tools/make_external_graph.py output, unchanged).
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabfm-v1", "classification") ==
+	        "534d6d38b49b323bb38682858f232573c254689df03d3d9f17e7504716a31d96");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabfm-v1", "regression") ==
+	        "35c346e4e29f61b493a9e601e66bf0ae241d0fb76623a3336c61408cfc3e88d0");
+	// mitra's, from the same tool against the HF-downloaded safetensors.
+	REQUIRE(ExpectedWeightsHeaderShaFor("mitra", "classification") ==
+	        "cb1a261bb3d9ca505e0db66e21df85bec6777f7e104247d4a71a8eb8d8b3b96a");
+	REQUIRE(ExpectedWeightsHeaderShaFor("mitra", "regression") ==
+	        "44f9293fa2d81ccf56dffab09600ec4f775c5c30bbc2af551cf4f6b2cf889f01");
+	// Unknown (model, task) means "no bundled GPU graph": empty, never a guess.
+	REQUIRE(ExpectedWeightsHeaderShaFor("mitra", "generate") == "");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2", "classification") == "");
+}

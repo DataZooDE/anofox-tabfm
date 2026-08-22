@@ -19,7 +19,11 @@ are needed to get it through migraphx's ONNX parser + compiler:
 Output goes next to the cached weights so migraphx resolves "model.safetensors".
 Then:  migraphx-driver perf  <out>.onnx --gpu     (compile + run on gfx1201)
 
-Usage: make_migraphx_graph.py <task> [--rows N --features M] [--dynamic]
+Usage: make_migraphx_graph.py <task> [--weights PATH] [--graph PATH]
+       [--tensor-map PATH] [--rows N --features M] [--dynamic] [--out PATH]
+
+Defaults target tabfm-v1; pass the three paths for any other model (the mitra
+variants in resources/ are produced this way).
 """
 import argparse, json, os, struct, sys
 import onnx
@@ -87,14 +91,17 @@ def pin_shapes(g, rows, feats):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("task", choices=["classification", "regression"])
+    ap.add_argument("--weights")
+    ap.add_argument("--graph")
+    ap.add_argument("--tensor-map")
     ap.add_argument("--rows", type=int, default=16)
     ap.add_argument("--features", type=int, default=8)
     ap.add_argument("--dynamic", action="store_true", help="keep dynamic shapes (backend sets per-bucket)")
     ap.add_argument("--out")
     a = ap.parse_args()
-    weights = os.path.join(DEF_CACHE, a.task, "model.safetensors")
-    m = onnx.load(f"resources/graph_{a.task}.onnx", load_external_data=False)
-    externalize(m, weights, f"resources/tensor_map_{a.task}.json")
+    weights = a.weights or os.path.join(DEF_CACHE, a.task, "model.safetensors")
+    m = onnx.load(a.graph or f"resources/graph_{a.task}.onnx", load_external_data=False)
+    externalize(m, weights, a.tensor_map or f"resources/tensor_map_{a.task}.json")
     n = rewrite_shapes(m.graph)
     if not a.dynamic:
         pin_shapes(m.graph, a.rows, a.features)

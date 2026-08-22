@@ -27,6 +27,12 @@ set(_tabfm_inputs
     # usable by name with no manifest file (pure-SQL surface).
     "graph_mitra_classification.onnx"
     "graph_mitra_regression.onnx"
+    # Mitra GPU variants (tools/make_external_graph.py / make_migraphx_graph.py
+    # against the HF weights; gated by ExpectedWeightsHeaderShaFor at load).
+    "graph_ext_mitra_classification.onnx"
+    "graph_ext_mitra_regression.onnx"
+    "graph_migraphx_mitra_classification.onnx"
+    "graph_migraphx_mitra_regression.onnx"
     "graph_tabpfn_classification.onnx"
     "graph_tabpfn_regression.onnx"
     "graph_tabicl_classification.onnx"

@@ -27,6 +27,8 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+
+#include "tabfm_mxr_cache_key.hpp"
 #include <memory>
 #include <map>
 #include <mutex>
@@ -230,9 +232,10 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 
 		auto slash = backend->graph_path.find_last_of("/\\");
 		auto dot = backend->graph_path.find_last_of('.');
-		backend->model_tag = backend->graph_path.substr(
-		    slash == std::string::npos ? 0 : slash + 1,
-		    (dot == std::string::npos ? backend->graph_path.size() : dot) - (slash == std::string::npos ? 0 : slash + 1));
+		// Path-hashed stem: same-named graphs staged beside different models'
+		// weights must never share a compiled program (tabfm_mxr_cache_key.hpp
+		// records the bug this fixed).
+		backend->model_tag = anofox_tabfm_mxr::MxrCacheStem(backend->graph_path);
 		return backend.release();
 	} catch (const std::exception &e) {
 		SetError(err, err_len, std::string("could not initialise the migraphx backend: ") + e.what());

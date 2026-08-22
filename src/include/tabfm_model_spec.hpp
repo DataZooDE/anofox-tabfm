@@ -179,6 +179,41 @@ inline string NoGpuGraphMessage(const string &device, const string &model, const
 	       graph_kind + " := '<graph.onnx>' (CALL tabfm_register_model), or SET anofox_tabfm_device='cpu'.";
 }
 
+//! Embedded-resource id of a bundled GPU graph (kind = "ext" | "migraphx").
+//! tabfm-v1 keeps its unqualified pre-multi-model ids; every other model is
+//! model-qualified so the same task can bundle one graph per model.
+inline string BundledGpuGraphId(const string &model, const string &kind, const string &task_name) {
+	if (model == "tabfm-v1") {
+		return "graph_" + kind + "_" + task_name;
+	}
+	return "graph_" + kind + "_" + model + "_" + task_name;
+}
+
+//! SHA-256 (hex) of the safetensors JSON header each bundled external-data /
+//! migraphx graph pair was generated against (tools/make_external_graph.py and
+//! tools/make_migraphx_graph.py print it). A byte-identical header guarantees
+//! the graphs' baked offsets index the downloaded weights correctly; empty
+//! means "this model bundles no GPU graphs" and the caller falls back.
+inline string ExpectedWeightsHeaderShaFor(const string &model, const string &task_name) {
+	if (model == "tabfm-v1") {
+		if (task_name == "classification") {
+			return "534d6d38b49b323bb38682858f232573c254689df03d3d9f17e7504716a31d96";
+		}
+		if (task_name == "regression") {
+			return "35c346e4e29f61b493a9e601e66bf0ae241d0fb76623a3336c61408cfc3e88d0";
+		}
+	}
+	if (model == "mitra") {
+		if (task_name == "classification") {
+			return "cb1a261bb3d9ca505e0db66e21df85bec6777f7e104247d4a71a8eb8d8b3b96a";
+		}
+		if (task_name == "regression") {
+			return "44f9293fa2d81ccf56dffab09600ec4f775c5c30bbc2af551cf4f6b2cf889f01";
+		}
+	}
+	return "";
+}
+
 //! Parse + strictly validate a v1 or v2 manifest into a ModelSpec.
 ModelSpec ParseModelSpec(const string &json, const string &manifest_path = "(inline manifest)");
 

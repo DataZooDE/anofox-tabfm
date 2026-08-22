@@ -208,3 +208,27 @@ TEST_CASE("soname_patch: exactly the NUL-terminated SONAME is rewritten", "[tabf
 		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer) - 0) == 1);
 	}
 }
+
+#include "tabfm_mxr_cache_key.hpp"
+
+TEST_CASE("mxr cache key: same filename in different model dirs never collides", "[tabfm][plugin_backend]") {
+	using anofox_tabfm_mxr::MxrCacheStem;
+	// The 2026-08-22 bug: every model stages graph_migraphx_<task>.onnx beside
+	// its own weights; a stem-only key made mitra load tabfm-v1's compiled
+	// program and return the wrong model's answers with no error.
+	auto tabfm = MxrCacheStem("/cache/google__tabfm@main/classification/graph_migraphx_classification.onnx");
+	auto mitra = MxrCacheStem("/cache/autogluon__mitra-classifier@main/graph_migraphx_classification.onnx");
+	REQUIRE(tabfm != mitra);
+	// Deterministic (the whole point of a cache), and the readable stem leads.
+	REQUIRE(tabfm == MxrCacheStem("/cache/google__tabfm@main/classification/graph_migraphx_classification.onnx"));
+	REQUIRE(tabfm.rfind("graph_migraphx_classification_", 0) == 0);
+	REQUIRE(mitra.rfind("graph_migraphx_classification_", 0) == 0);
+	// Suffix is 8 hex chars.
+	REQUIRE(tabfm.size() == std::string("graph_migraphx_classification_").size() + 8);
+}
+
+TEST_CASE("mxr cache key: stem extraction handles plain names and extensionless paths", "[tabfm][plugin_backend]") {
+	using anofox_tabfm_mxr::MxrCacheStem;
+	REQUIRE(MxrCacheStem("graph.onnx").rfind("graph_", 0) == 0);
+	REQUIRE(MxrCacheStem("/a.b/dir/noext").rfind("noext_", 0) == 0);
+}

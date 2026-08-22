@@ -720,21 +720,6 @@ shared_ptr<LoadedModel> RegisterBackend(TabFMState &state, const string &cache_k
 	return model;
 }
 
-// SHA-256 (hex) of the safetensors JSON header the bundled external-data graphs
-// were generated against (tools/make_external_graph.py prints these). A
-// byte-identical header guarantees the graph's baked offsets are correct; any
-// other layout falls back to the injection path. Empty => no external-data graph.
-const char *ExpectedWeightsHeaderSha(TabFMTask task) {
-	switch (task) {
-	case TabFMTask::CLASSIFICATION:
-		return "534d6d38b49b323bb38682858f232573c254689df03d3d9f17e7504716a31d96";
-	case TabFMTask::REGRESSION:
-		return "35c346e4e29f61b493a9e601e66bf0ae241d0fb76623a3336c61408cfc3e88d0";
-	default:
-		return "";
-	}
-}
-
 string Sha256Hex(const_data_ptr_t data, idx_t len) {
 	unsigned char digest[EVP_MAX_MD_SIZE];
 	unsigned int n = 0;
@@ -771,9 +756,12 @@ bool ReadWeightsHeaderBytes(FileSystem &fs, const string &path, string &header) 
 // checkpoint the bundled external-data / migraphx graphs were baked against — so
 // the graphs' baked external offsets are correct. Also requires the weights to be
 // a local file named model.safetensors (the graphs' external-data location).
-bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, TabFMTask task) {
-	const char *expected = ExpectedWeightsHeaderSha(task);
-	if (!expected || !*expected) {
+// The (model, task)-keyed hash table lives in tabfm_model_spec.hpp
+// (ExpectedWeightsHeaderShaFor) beside the bundled-id naming, since GPU graph
+// selection is a model-spec concern shared by three backends.
+bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task) {
+	const string expected = ExpectedWeightsHeaderShaFor(model, TabFMTaskName(task));
+	if (expected.empty()) {
 		return false;
 	}
 	if (StringUtil::Split(weights_path, "/").back() != "model.safetensors") {
@@ -783,7 +771,7 @@ bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, TabFMTask 
 	if (!ReadWeightsHeaderBytes(fs, weights_path, header)) {
 		return false;
 	}
-	return Sha256Hex(const_data_ptr_cast(header.data()), header.size()) == string(expected);
+	return Sha256Hex(const_data_ptr_cast(header.data()), header.size()) == expected;
 }
 
 // Stage a bundled graph next to the weights (idempotent by size) so external-data
@@ -816,14 +804,14 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 		return nullptr;
 	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
-	auto graph = GetBundledResource("graph_ext_" + task_name);
-	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task)) {
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
+	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task)) {
 		return nullptr;
 	}
 	// Place the external-data graph next to the weights (idempotent) so ORT can
 	// resolve the relative "model.safetensors" reference.
 	const auto dir = DirName(resolved.weights_path);
-	const auto graph_path = fs.JoinPath(dir, "graph_ext_" + task_name + ".onnx");
+	const auto graph_path = fs.JoinPath(dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
 	if (!StageBundledGraph(fs, graph, graph_path)) {
 		return nullptr;
 	}
@@ -868,9 +856,9 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 	const string task_name = TabFMTaskName(resolved.manifest.task);
 	// Graph source (docs/GPU_HARDENING_PLAN.md P3): a model-provided
 	// migraphx_graph wins; the bundled tabfm-v1 graph needs its header match.
-	auto graph = GetBundledResource("graph_migraphx_" + task_name);
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "migraphx", task_name));
 	const bool bundled_matches =
-	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task);
+	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
 	string graph_path;
 	string weights_dir;
 	switch (SelectGpuGraph(!resolved.migraphx_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
@@ -880,7 +868,7 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 		break;
 	case GpuGraphSource::BUNDLED: {
 		weights_dir = DirName(resolved.weights_path);
-		graph_path = fs.JoinPath(weights_dir, "graph_migraphx_" + task_name + ".onnx");
+		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "migraphx", task_name) + ".onnx");
 		if (!StageBundledGraph(fs, graph, graph_path)) {
 			return nullptr;
 		}
@@ -945,9 +933,9 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 	const string task_name = TabFMTaskName(resolved.manifest.task);
 	// Graph source (docs/GPU_HARDENING_PLAN.md P3): a model-provided ext_graph
 	// wins; the bundled tabfm-v1 graph needs its header match.
-	auto graph = GetBundledResource("graph_ext_" + task_name);
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
 	const bool bundled_matches =
-	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.task);
+	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
 	string graph_path;
 	string weights_dir;
 	switch (SelectGpuGraph(!resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
@@ -957,7 +945,7 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 		break;
 	case GpuGraphSource::BUNDLED: {
 		weights_dir = DirName(resolved.weights_path);
-		graph_path = fs.JoinPath(weights_dir, "graph_ext_" + task_name + ".onnx");
+		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
 		if (!StageBundledGraph(fs, graph, graph_path)) {
 			return nullptr;
 		}
