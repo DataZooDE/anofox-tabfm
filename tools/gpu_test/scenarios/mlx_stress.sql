@@ -162,9 +162,21 @@ FROM tabfm_classify('sparse_ctx', 'label', test := 'sparse_q', model := 'mitra')
 
 .print ''
 .print '=== 7. error contracts ==='
--- A model the MLX backend does not implement must name what it does implement,
--- and must NEVER silently serve CPU.
+-- This stage USED to assert that an unimplemented model was refused. That
+-- contract no longer exists: the backend runs the model's own ONNX graph, so
+-- every registered model is served (tools/gpu_test/scenarios/mlx_all_models.sql
+-- checks all of them). Left as a marker named for what it now proves, because
+-- the old version returned 1484 rows under the name `should_not_reach_here` --
+-- a passing check whose label said the opposite.
 SET anofox_tabfm_device = 'mlx';
-SELECT 'UNSUPPORTED_MODEL' AS marker,
-       count(*) AS should_not_reach_here
+SELECT 'OTHER_MODEL_SERVED_ON_MLX' AS marker, count(*) AS n
 FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'tabpfn-v2');
+SELECT 'OTHER_MODEL_SERVED_BY' AS marker, string_agg(DISTINCT device, ',') AS devices
+FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v2';
+
+-- What IS still a refusal: a device named but no plugin to load. It must name
+-- the fix and must never fall back to CPU.
+.print '-- ep_path unset must error, not silently serve cpu --'
+SET anofox_tabfm_ep_path = '';
+SELECT 'NO_PLUGIN_MUST_ERROR' AS marker, count(*) AS should_not_reach_here
+FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'mitra');
