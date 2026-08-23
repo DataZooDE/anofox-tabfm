@@ -8,11 +8,14 @@
  * tabfm-v1's answers for 24/30 query rows; scores looked plausible because the
  * program was a real model — just the wrong one).
  *
- * The stem therefore embeds a hash of the graph's full path: same-named graphs
- * in different directories (different models, or different registered models
- * sharing a filename) get distinct cache entries, while the human-readable
- * stem stays in front for debuggability. FNV-1a because the plugin links no
- * crypto library and this is a partition key, not a security boundary.
+ * The stem therefore embeds a hash of the graph's CONTENT: same-named graphs
+ * of different models get distinct cache entries (their bytes differ), while
+ * the same graph staged under any path on any machine hashes identically —
+ * which is what keeps anofox_tabfm_mxr_source sharing working across
+ * machines (a path hash, the first fix, silently broke it). The
+ * human-readable stem stays in front for debuggability. FNV-1a because the
+ * plugin links no crypto library and this is a partition key, not a
+ * security boundary.
  *
  * Header-only and dependency-free: compiled into the standalone plugins AND
  * into the unittest binary, so the collision contract is enforced by tests
@@ -35,10 +38,10 @@ inline uint64_t Fnv1a64(const std::string &s) {
 	return h;
 }
 
-//! "<filename stem>_<8 hex chars of full-path hash>". The path — not the
-//! bytes — because the path identifies which model's weights sit beside the
-//! graph, which is what the compiled program actually depends on.
-inline std::string MxrCacheStem(const std::string &graph_path) {
+//! "<filename stem>_<8 hex chars of content hash>". content_hash is
+//! Fnv1a64 over the graph file's bytes (weight-free graphs are ~1 MB; the
+//! plugin reads them for parsing anyway).
+inline std::string MxrCacheStem(const std::string &graph_path, uint64_t content_hash) {
 	auto slash = graph_path.find_last_of("/\\");
 	auto start = slash == std::string::npos ? 0 : slash + 1;
 	auto dot = graph_path.rfind('.');
@@ -47,7 +50,7 @@ inline std::string MxrCacheStem(const std::string &graph_path) {
 	}
 	std::string stem = graph_path.substr(start, dot - start);
 	static const char *hex = "0123456789abcdef";
-	uint64_t h = Fnv1a64(graph_path);
+	uint64_t h = content_hash;
 	std::string suffix;
 	for (int i = 7; i >= 0; i--) {
 		suffix.push_back(hex[(h >> (i * 4)) & 0xf]);

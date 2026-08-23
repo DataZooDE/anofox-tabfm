@@ -23,6 +23,15 @@
  * anything else fails loudly at create time rather than quietly computing the
  * wrong thing with the wrong architecture's weights.
  *
+ * THREAD SAFETY (tabfm_plugin_abi.h now requires it): run() may be called
+ * concurrently on one handle, so it must not rely on the host's per-device
+ * mutex. Both paths here are reentrant by construction rather than by locking:
+ * every call takes its own MLX stream (they are thread-local -- see
+ * MlxPluginBackend) and its own scratch state, and everything that persists
+ * across calls -- the weights map, the bf16/fp16 cast cache, the parsed graph --
+ * is read-only after create and held in refcounted mlx arrays that any thread
+ * may read.
+ *
  * mlx-c (0.6+) covers the whole forward — S-M3 checked this before any code was
  * written, since the plan named mlx-c maturity as the biggest product risk.
  * The C API returns a status and writes through an out-param, and every

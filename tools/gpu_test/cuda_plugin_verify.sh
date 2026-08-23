@@ -131,7 +131,14 @@ echo "=== 5. verify what tabfm_download_runtime('cuda') fetches ==="
 WHEEL_URL="https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.29/onnxruntime_gpu-1.29.0-cp312-cp312-manylinux_2_28_x86_64.whl"
 curl -sSL -o rt.whl "$WHEEL_URL" || { echo "WHEEL DOWNLOAD FAILED"; FAILED=1; }
 if [ -f rt.whl ]; then
-  echo "  wheel bytes: $(stat -c %s rt.whl) (src/tabfm_weights.cpp declares 432340836)"
+WHEEL_FILE=rt.whl
+WHEEL_BYTES_DECLARED=475434900  # src/tabfm_weights.cpp wheel_bytes — keep in sync
+ACTUAL_BYTES=$(stat -c %s "$WHEEL_FILE" 2>/dev/null || stat -f %z "$WHEEL_FILE")
+if [ "$ACTUAL_BYTES" != "$WHEEL_BYTES_DECLARED" ]; then
+  echo "WHEEL_SIZE_MISMATCH actual=$ACTUAL_BYTES declared=$WHEEL_BYTES_DECLARED"; FAILED=1
+else
+  echo "WHEEL_SIZE_OK $ACTUAL_BYTES"
+fi
   python3 - <<'PY'
 import zipfile, sys
 want = ["onnxruntime/capi/libonnxruntime.so.1.29.0",

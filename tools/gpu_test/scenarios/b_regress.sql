@@ -11,12 +11,12 @@ FROM range(100) t(i);
 SET anofox_tabfm_device='cpu';
 CREATE TABLE r_cpu AS SELECT id, yhat FROM tabfm_regress('reg','target');
 .mode list
-SELECT 'REG_CPU_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded;
+SELECT 'REG_CPU_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded AND model='tabfm-v1';
 .mode duckbox
 SET anofox_tabfm_device='rocm';
 CREATE TABLE r_gpu AS SELECT id, yhat FROM tabfm_regress('reg','target');
 .mode list
-SELECT 'REG_GPU_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded;
+SELECT 'REG_GPU_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded AND model='tabfm-v1';
 SELECT 'REG_ROWS=' || count(*) FROM r_gpu;
 SELECT 'REG_MAX_ABS_DIFF=' || round(max(abs(c.yhat - g.yhat))::DOUBLE, 6)
   FROM r_cpu c JOIN r_gpu g USING (id);

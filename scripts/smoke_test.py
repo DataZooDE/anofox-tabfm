@@ -58,11 +58,12 @@ CREATE TABLE smoke_t AS SELECT * FROM (VALUES
   (0.5, 1.0, 'c0'), (1.5, 0.2, 'c1'), (2.5, -1.0, 'c0'),
   (0.2, 0.8, 'c0'), (1.1, 0.4, 'c1'), (3.0, -0.5, 'c1'),
   (1.3, 0.3, NULL), (2.4, -0.2, NULL)) v(f1, f2, label);
-SELECT count(*) FROM anofox_tabfm_classify('smoke_t', 'label', model := 'smoke-fixture');
+SELECT count(*) FILTER (WHERE yhat IS NOT NULL) FROM anofox_tabfm_classify('smoke_t', 'label', model := 'smoke-fixture');
 SELECT DISTINCT device FROM anofox_tabfm_models() WHERE model = 'smoke-fixture';
 """
 # The CALL echoes a registration row first; the contract is the tail:
-# row count, then the device that served the session.
+# non-NULL prediction count (a session emitting NaN/garbage still counts
+# plain rows -- yhat must actually exist), then the serving device.
 INFERENCE_EXPECT = ["8", "cpu"]
 # ─────────────────────────────────────────────────────────────────────────────
 

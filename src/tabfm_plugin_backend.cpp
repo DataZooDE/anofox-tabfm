@@ -181,9 +181,15 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 	char err[512] = {0};
 	void *handle = api->create(&params, err, sizeof(err));
 	if (!handle) {
-		// Same hazard: api->name() returns a pointer into the library.
 		const string backend_name = api->name();
-		CloseLibrary(library);
+		// Deliberately NOT CloseLibrary here (review finding): create has
+		// already executed plugin code — the CUDA plugin constructs an
+		// Ort::Env and probes the driver before it can fail, leaving TLS and
+		// atexit registrations pointing into the library. Unmapping it turns
+		// a clean "could not be initialised" into a crash at shutdown or on
+		// retry. The pre-create failure paths above ran no plugin code and
+		// may keep closing; this path leaks the handle exactly like the
+		// destructor does, for the same reason.
 		throw InvalidInputException("anofox_tabfm: the '%s' backend could not be initialised: %s", backend_name, err);
 	}
 	return make_uniq<PluginBackend>(library, api, handle, library_path);

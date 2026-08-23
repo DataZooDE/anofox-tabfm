@@ -35,6 +35,7 @@ INTMAX = 2**63 - 1
 
 
 def externalize(m, weights, tmap):
+    missing = []
     with open(weights, "rb") as f:
         hlen = struct.unpack("<Q", f.read(8))[0]
         header = json.loads(f.read(hlen))
@@ -44,6 +45,7 @@ def externalize(m, weights, tmap):
     for init in m.graph.initializer:
         st = onnx2st.get(init.name) or (init.name[2:] if init.name.startswith("m.") else init.name)
         if st not in off:
+            missing.append(init.name)
             continue
         b, e = off[st]
         init.ClearField("raw_data")
@@ -54,6 +56,11 @@ def externalize(m, weights, tmap):
         for k, v in (("location", "model.safetensors"), ("offset", str(base + b)), ("length", str(e - b))):
             en = init.external_data.add()
             en.key, en.value = k, v
+    if missing:
+        # A stub initializer the tensor map missed keeps its stub bytes and the
+        # graph silently predicts garbage -- the one failure mode this tool
+        # must never allow (review finding, 2026-08-22).
+        raise SystemExit(f"REFUSING: {len(missing)} initializers not in the tensor map: {missing[:5]}")
 
 
 def rewrite_shapes(g):
