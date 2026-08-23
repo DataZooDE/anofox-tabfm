@@ -411,11 +411,15 @@ the DuckDB community repository.
 
 | backend | platforms | models | verified on |
 |---|---|---|---|
-| CPU | Linux x64/arm64, macOS x64/arm64, Windows x64 | all 7 built-ins | CI suites + install-smoke with inference on every platform |
+| CPU | Linux x64/arm64, macOS **arm64**, Windows x64 | all 7 built-ins | CI suites + install-smoke with inference on every platform |
 | CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | **all 7 built-ins** | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max |
 | ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1 + mitra (train_size-scalar family) | RX 9070 XT: parity, concurrency, user workflow |
 | CoreML | — | — | out of scope by decision (docs/PHASE_COMPLETION_PLAN.md) |
 | MLX (plugin) | macOS arm64 (Apple Silicon) | every model CPU serves (6 verified through SQL; tabfm-v1 via the graph harness) | Apple M3: 10 model×task pairs cpu-compared (0 disagreements), 4000-row stress, device/precision alternation |
+
+macOS is **arm64 only**: ONNX Runtime published its last macOS x86_64 /
+universal2 archive at v1.23.2, so there is nothing to link an Intel-Mac build
+against at the version this project needs. `osx_amd64` is therefore not built.
 
 The CUDA and ROCm plugins are Linux-only; Windows artifacts are CPU-only by
 design. On Apple Silicon the MLX plugin is the accelerator — unlike the other
