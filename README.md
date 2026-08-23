@@ -312,7 +312,7 @@ SELECT * FROM tabfm_models();     -- what's cached / loaded
 ```
 
 `device` is which backend is serving the model right now — `cpu`, `cuda:0`,
-`rocm:0` — and is empty until a predict warms a session. It is the way to check
+`rocm:0`, `mlx:0` — and is empty until a predict warms a session. It is the way to check
 that a GPU is actually being used: a device that silently fell back to the CPU
 produces the same answers, only slower, so agreement alone will not tell you.
 
@@ -342,7 +342,7 @@ CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_…', SCOPE 'https://huggingface.c
 | `anofox_tabfm_context_cache` | `false` | encode the labelled context once and reuse it, for models that ship a prepare/query graph pair — see [docs/KV_CACHE_DESIGN.md](docs/KV_CACHE_DESIGN.md) |
 | `anofox_tabfm_max_rows` | `10000` | guardrail per predict / group |
 | `anofox_tabfm_max_features` | `500` | guardrail |
-| `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `coreml` (`migraphx` alias for `rocm`) |
+| `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `mlx` / `coreml` (`migraphx` alias for `rocm`). `cuda`, `rocm` and `mlx` are explicit opt-ins — `auto` never selects a device whose plugin is fetched separately |
 | `anofox_tabfm_gpu_precision` | `fp32` | GPU numeric mode: `fp32` (strict — same answers as CPU, measured exact on both GPUs) / `tf32` (CUDA tensor-core rounding) / `bf16` / `fp16` (ROCm quantize; flip rates vs fp32 are model-dependent — measured: tabfm-v1 bf16 flipped ~2% including high-confidence rows, mitra bf16 flipped 30% of query rows but only at near-ties (margins ≤ 0.023) while fp16 flipped 10% at margins ≤ 0.002 — validate on your data) |
 | `anofox_tabfm_max_sessions` | `4` | loaded (device, precision) sessions kept per model; oldest evicted beyond this |
 | `anofox_tabfm_max_memory` | `''` | refuse predicts once resident memory is at/above this (e.g. `'16GB'`); `''` disables |
@@ -415,10 +415,12 @@ the DuckDB community repository.
 | CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | **all 7 built-ins** | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max |
 | ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1 + mitra (train_size-scalar family) | RX 9070 XT: parity, concurrency, user workflow |
 | CoreML | — | — | out of scope by decision (docs/PHASE_COMPLETION_PLAN.md) |
-| MLX | planned | — | docs/MLX_PLAN.md |
+| MLX (plugin) | macOS arm64 (Apple Silicon) | every model CPU serves (6 verified through SQL; tabfm-v1 via the graph harness) | Apple M3: 10 model×task pairs cpu-compared (0 disagreements), 4000-row stress, device/precision alternation |
 
-GPU plugins are Linux-only today; macOS/Windows artifacts are CPU-only by
-design. The single_eval_pos models (TabPFN/TabICL/Orion) cannot use ROCm's
+The CUDA and ROCm plugins are Linux-only; Windows artifacts are CPU-only by
+design. On Apple Silicon the MLX plugin is the accelerator — unlike the other
+two it runs the model's own ONNX graph directly (no ONNX Runtime), which is why
+its model coverage matches CPU's. The single_eval_pos models (TabPFN/TabICL/Orion) cannot use ROCm's
 bucketed compilation (y's length is the train/test split) — CUDA serves them.
 
 **Using a GPU.** A GPU backend is a plugin the extension `dlopen`s at runtime,
@@ -428,14 +430,16 @@ directory holding it and select the device.
 ```sql
 CALL tabfm_download_runtime('cuda');    -- fetch the ORT GPU runtime into that directory
 SET anofox_tabfm_ep_path = '/path/to/plugin/dir';
-SET anofox_tabfm_device  = 'cuda';      -- or 'rocm'
+SET anofox_tabfm_device  = 'cuda';      -- or 'rocm', or 'mlx' on Apple Silicon
 -- confirm it is really being used, rather than trusting the answers:
 SELECT model, device FROM tabfm_models() WHERE loaded;
 ```
 
 The plugins themselves are **not published yet**, so today you build the one
 you need from source (`src/tabfm_cuda_plugin.cpp`,
-`src/tabfm_migraphx_plugin.cpp`; see [`docs/rocm-build.md`](docs/rocm-build.md)
+`src/tabfm_migraphx_plugin.cpp`, `src/tabfm_mlx_plugin.cpp` — the last needs
+`brew install mlx mlx-c` and builds via the `anofox_tabfm_mlx_plugin` CMake
+target; see [`docs/rocm-build.md`](docs/rocm-build.md)
 for the ROCm toolchain and [`docs/DYNAMIC_BACKENDS.md`](docs/DYNAMIC_BACKENDS.md)
 for how the two fit together). `tabfm_download_runtime('cuda')` fetches the
 ONNX Runtime GPU libraries the CUDA plugin needs, not the plugin itself.
