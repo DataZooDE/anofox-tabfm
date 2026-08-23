@@ -582,6 +582,14 @@ struct Graph::Impl {
 	::anofox::onnxread::Graph parsed;
 	std::unique_ptr<Mapping> weights;
 	std::map<std::string, Arr> initializers;
+	//! For each node index, the intermediates whose LAST consumer it is.
+	//!
+	//! Without this the interpreter holds every value it ever produced until
+	//! the graph finishes -- which is fine on toy inputs and fatal at scale:
+	//! tabpfn-v3 over 8000 rows reached a 40.7 GB footprint and was killed,
+	//! while the same graph at 4000 rows peaks at 0.5 GB. Nothing about the
+	//! model needs that memory; it is purely values nobody will read again.
+	std::vector<std::vector<std::string>> dead_after;
 };
 
 Graph::Graph(const std::string &graph_path, const std::string &weights_dir) : impl_(new Impl()) {
@@ -630,6 +638,28 @@ Graph::Graph(const std::string &graph_path, const std::string &weights_dir) : im
 		impl_->initializers.emplace(
 		    t.name, Arr(mlx_array_new_data(bytes, shape.data(), static_cast<int>(shape.size()), dt)));
 	}
+
+	// Last-use analysis. A value may be dropped once the last node reading it
+	// has run -- except graph outputs, and except initializers, which are owned
+	// by Impl and merely borrowed per run.
+	std::map<std::string, size_t> last_use;
+	for (size_t i = 0; i < impl_->parsed.nodes.size(); i++) {
+		for (const auto &in : impl_->parsed.nodes[i].inputs) {
+			if (!in.empty()) {
+				last_use[in] = i;
+			}
+		}
+	}
+	for (const auto &out : impl_->parsed.outputs) {
+		last_use.erase(out);
+	}
+	for (const auto &kv : impl_->initializers) {
+		last_use.erase(kv.first);
+	}
+	impl_->dead_after.assign(impl_->parsed.nodes.size(), {});
+	for (const auto &kv : last_use) {
+		impl_->dead_after[kv.second].push_back(kv.first);
+	}
 }
 
 Graph::~Graph() = default;
@@ -658,11 +688,11 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 	mlx_stream gpu = mlx_default_gpu_stream_new();
 	Ctx ctx {gpu};
 
+	// env holds INTERMEDIATES only. Copying every initializer in would add one
+	// reference per weight per call for no benefit; a lookup miss falls through
+	// to impl_->initializers below.
 	std::map<std::string, Arr> env;
 	std::map<std::string, std::vector<Arr>> seqs;
-	for (const auto &kv : impl_->initializers) {
-		env.emplace(kv.first, kv.second.Share());
-	}
 	for (const auto &f : feeds) {
 		auto shape = f.second.shape;
 		env[f.first] = Arr(mlx_array_new_data(f.second.data.data(), shape.data(),
@@ -679,7 +709,8 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 	}
 
 	const auto &table = Handlers();
-	for (const auto &node : impl_->parsed.nodes) {
+	for (size_t node_index = 0; node_index < impl_->parsed.nodes.size(); node_index++) {
+		const auto &node = impl_->parsed.nodes[node_index];
 		if (node.op_type == "Constant") {
 			// A Constant carries its value in ONE of several attributes, and
 			// which one depends on the exporter: `value` (a tensor) is the
@@ -739,7 +770,8 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 			Fail("Constant '" + node.name + "' has no recognised value attribute");
 		}
 		if (node.op_type == "SplitToSequence") {
-			const Arr &data = env.at(node.inputs[0]);
+			const Arr &data = env.count(node.inputs[0]) ? env.at(node.inputs[0])
+			                                            : impl_->initializers.at(node.inputs[0]);
 			int axis = static_cast<int>(AttrInt(node, "axis", 0));
 			auto shape = data.shape();
 			const int rank = static_cast<int>(shape.size());
@@ -756,8 +788,10 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 			// -- seen as "cannot reshape array of size 163840 into (…,2,128)".
 			std::vector<int64_t> bounds; // exclusive end of each part
 			bool squeeze_parts = false;
-			if (node.inputs.size() > 1 && !node.inputs[1].empty() && env.count(node.inputs[1])) {
-				const Arr &split = env.at(node.inputs[1]);
+			if (node.inputs.size() > 1 && !node.inputs[1].empty() &&
+			    (env.count(node.inputs[1]) || impl_->initializers.count(node.inputs[1]))) {
+				const Arr &split = env.count(node.inputs[1]) ? env.at(node.inputs[1])
+				                                             : impl_->initializers.at(node.inputs[1]);
 				if (split.ndim() == 0) {
 					const int64_t chunk = static_cast<int64_t>(ToScalar(split, ctx.s));
 					if (chunk <= 0) {
@@ -808,7 +842,9 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 			if (it == seqs.end()) {
 				Fail("SequenceAt on '" + node.inputs[0] + "', which is not a sequence");
 			}
-			int64_t pos = static_cast<int64_t>(ToScalar(env.at(node.inputs[1]), ctx.s));
+			int64_t pos = static_cast<int64_t>(ToScalar(
+			    env.count(node.inputs[1]) ? env.at(node.inputs[1]) : impl_->initializers.at(node.inputs[1]),
+			    ctx.s));
 			if (pos < 0) {
 				pos += static_cast<int64_t>(it->second.size());
 			}
@@ -833,7 +869,12 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 				continue;
 			}
 			auto it = env.find(in);
-			args.push_back(it == env.end() ? nullptr : &it->second);
+			if (it != env.end()) {
+				args.push_back(&it->second);
+				continue;
+			}
+			auto init = impl_->initializers.find(in);
+			args.push_back(init == impl_->initializers.end() ? nullptr : &init->second);
 		}
 		std::vector<Arr> results;
 		try {
@@ -846,6 +887,12 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 			if (!node.outputs[i].empty()) {
 				env[node.outputs[i]] = std::move(results[i]);
 			}
+		}
+		// Drop what nothing will read again. MLX is refcounted, so erasing the
+		// last handle is what actually releases the buffer.
+		for (const auto &dead : impl_->dead_after[node_index]) {
+			env.erase(dead);
+			seqs.erase(dead);
 		}
 	}
 

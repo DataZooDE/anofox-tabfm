@@ -587,3 +587,55 @@ through.
 Also worth recording for anyone testing locally: **these checkpoints need a
 one-time conversion before they work on ANY backend, cpu included.** The MLX
 work did not create that requirement, it just ran into it first.
+
+---
+
+## Production hardening of the interpreter
+
+Two failures found by running the shipped build at realistic sizes rather than
+by reasoning about it. Both were mine, and neither was visible on small inputs.
+
+### 1. mitra silently lost its hand-port, and OOM-killed
+
+Once the engine started supplying a graph for every model, the plugin's
+"hand-port only when no graph" rule quietly routed mitra through the
+interpreter. The stress scenario died with **SIGKILL (137)** partway through
+classification at 2500 context / 1500 query rows.
+
+The interpreter keeps every intermediate alive as long as the graph might
+reference it; the hand-port reuses buffers. mitra now takes the hand-port
+whenever it is asked for. It remains the interpreter's independent oracle.
+
+### 2. The interpreter never freed anything
+
+The same root cause, unfixed, capped every *other* model. Measured on
+tabpfn-v3, same metric (peak memory footprint) before and after adding
+last-use eviction:
+
+| rows | before | after |
+|---|---|---|
+| 4 000 | completes, **27.7 s** | completes, **1.8 s** |
+| 8 000 | **40.7 GB → killed** | **7.3 GB, exit 0, 3.1 s** |
+
+The fix is the standard one: compute each value's last consumer at load time,
+and erase it from the environment once that node has run. Initializers are no
+longer copied into the environment at all — a lookup miss falls through to the
+mapped weights — so a run holds intermediates only. tabicl-v2 at 8 000 rows
+lands at 7.7 GB / 2.1 s.
+
+The 15× speedup at 4 000 rows is not a separate optimisation: it is what
+happens when a process stops thrashing.
+
+### Verified after both fixes
+
+- Every model still exact: 1.0 label agreement on all six classification
+  models; regression max diff ≤ 6.5e-05, correlation ≥ 0.99999999999.
+- Stress scenario, genuine exit 0: 0 disagreements / 1484, cpu 71.4 s vs
+  mlx 12.9 s, bf16 1 flip and fp16 0 flips / 1484, four sessions resident,
+  device alternation stable, constant-feature and single-class shapes clean.
+- Suite: 685 sqllogictest assertions, 72 125 Catch2 assertions.
+
+> **A process note, since it cost real time.** Three times I wrote
+> `make ... ; echo "EXIT=$?"`, which reports `echo`'s status, and twice I
+> reported a passing build that had actually failed — including the OOM above.
+> The exit code of a pipeline is not the exit code of the thing you care about.
