@@ -5,7 +5,7 @@ Places it at the extension cache slug so `model := 'tabpfn-v2'` (or
 user-side one-time conversion (the extension stays pure C++/ORT — dev tooling,
 run once).
 
-Usage:  uv run python convert_weights.py <task> [cache_dir] [--arch v2|v2.5]
+Usage:  uv run python convert_weights.py <task> [cache_dir] [--arch v2|v2.5|v3]
         task = classification | regression
 """
 import json, pathlib, sys, tempfile
@@ -18,6 +18,11 @@ arch = "v2"
 for a in sys.argv[1:]:
     if a.startswith("--arch"):
         arch = a.split("=", 1)[1] if "=" in a else "v2.5"
+if arch not in ("v2", "v2.5", "v3"):
+    # Previously any unknown --arch silently fell through to the v2 branch and
+    # rewrote the v2 safetensors under the name of whatever was asked for,
+    # reporting success. Refuse instead.
+    raise SystemExit(f"unknown --arch {arch!r}; expected v2, v2.5 or v3")
 
 task = argv[0] if argv else "classification"
 cache_dir = pathlib.Path(argv[1]).expanduser() if len(argv) > 1 \
@@ -29,6 +34,14 @@ if arch == "v2.5":
     repo_slug = "Prior-Labs__tabpfn_2_5"
     hf_file = f"tabpfn-v2.5-{which}-v2.5_default.ckpt"
     hf_url = f"https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/main/{hf_file}"
+elif arch == "v3":
+    # tabpfn_patched.load_real_model has handled arch="v3" all along; only this
+    # script's slug table did not, so `--arch=v3` fell into the v2 branch and
+    # produced v2 weights while printing a v3-shaped success line.
+    slug_name = "tabpfn3"
+    repo_slug = "Prior-Labs__tabpfn_3"
+    hf_file = f"tabpfn-v3-{which}-v3_default.ckpt"
+    hf_url = f"https://huggingface.co/Prior-Labs/tabpfn_3/resolve/main/{hf_file}"
 else:
     slug_name = "tabpfn"
     repo_slug = {"classification": "Prior-Labs__TabPFN-v2-clf",
@@ -41,7 +54,7 @@ inits = tmap.get("initializers", tmap)  # onnx-init-name -> checkpoint key
 want_keys = set(inits.values())  # checkpoint-namespace keys the graph references
 
 tmp = pathlib.Path(tempfile.mkdtemp())
-if arch == "v2.5":
+if arch in ("v2.5", "v3"):
     # The tabpfn_2_5 repo carries `extra_gated_fields`, but the resolve endpoint
     # serves anonymously; if that ever changes this download 401s and the user
     # needs an HF token (see docs/REAL_MODELS.md).

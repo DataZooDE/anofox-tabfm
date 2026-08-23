@@ -38,11 +38,27 @@ from .onnx_mlx import OnnxMlxGraph, UnsupportedOp
 REAL_WEIGHTS = {
     "graph_ext_mitra_classification": CACHE_ROOT / "autogluon__mitra-classifier@main" / "model.safetensors",
     "graph_ext_mitra_regression": CACHE_ROOT / "autogluon__mitra-regressor@main" / "model.safetensors",
+    "graph_ext_regression": CACHE_ROOT / "google__tabfm-1.0.0-pytorch@main" / "regression" / "model.safetensors",
+    "graph_ext_tabicl_classification": CACHE_ROOT / "jingang__TabICL@main" / "classification" / "model.safetensors",
+    "graph_ext_tabicl_regression": CACHE_ROOT / "jingang__TabICL@main" / "regression" / "model.safetensors",
+    "graph_ext_orion_bix_classification": CACHE_ROOT / "Lexsi__Orion-BiX@main" / "classification" / "model.safetensors",
+    "graph_ext_tabpfn_classification": CACHE_ROOT / "Prior-Labs__TabPFN-v2-clf@main" / "classification" / "model.safetensors",
+    "graph_ext_tabpfn_regression": CACHE_ROOT / "Prior-Labs__TabPFN-v2-reg@main" / "regression" / "model.safetensors",
+    "graph_ext_tabpfn25_classification": CACHE_ROOT / "Prior-Labs__tabpfn_2_5@main" / "classification" / "model.safetensors",
+    "graph_ext_tabpfn25_regression": CACHE_ROOT / "Prior-Labs__tabpfn_2_5@main" / "regression" / "model.safetensors",
+    "graph_ext_tabpfn3_classification": CACHE_ROOT / "Prior-Labs__tabpfn_3@main" / "classification" / "model.safetensors",
+    # tabpfn-v3 regression has no converted weights: the released checkpoint
+    # carries no FullSupportBarDistribution criterion.borders, so
+    # tools/export_tabpfn/convert_weights.py cannot build its point-estimate
+    # head. Falls back to synthesized weights below.
 }
 TENSOR_MAP = {
-    "graph_ext_mitra_classification": RESOURCES / "tensor_map_mitra_classification.json",
-    "graph_ext_mitra_regression": RESOURCES / "tensor_map_mitra_regression.json",
+    stem: RESOURCES / f"tensor_map_{stem.replace('graph_ext_', '')}.json"
+    for stem in REAL_WEIGHTS
 }
+# tabfm-v1 keeps its pre-multi-model unqualified map names.
+TENSOR_MAP["graph_ext_regression"] = RESOURCES / "tensor_map_regression.json"
+TENSOR_MAP = {k: v for k, v in TENSOR_MAP.items() if v.exists()}
 
 
 def _mark(key: str, value: object) -> None:
