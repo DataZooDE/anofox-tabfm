@@ -32,6 +32,7 @@
  *===----------------------------------------------------------------------===*/
 
 #include "tabfm_plugin_abi.h"
+#include "tabfm_mlx_graph.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -39,6 +40,7 @@
 #include <cstring>
 #include <limits>
 #include <map>
+#include <algorithm>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -822,6 +824,21 @@ private:
 	std::string arch_;
 };
 
+
+//! What create() hands back. Exactly one of the two paths is populated:
+//! `graph` for the general ONNX interpreter, `mitra` for the hand-ported fast
+//! path. Keeping them in one handle means run/destroy stay a single ABI shape
+//! while the choice is made once, at create.
+struct MlxHandle {
+	std::unique_ptr<::anofox::mlxgraph::Graph> graph;
+	std::unique_ptr<MlxPluginBackend> mitra;
+
+	explicit MlxHandle(std::unique_ptr<::anofox::mlxgraph::Graph> g) : graph(std::move(g)) {
+	}
+	explicit MlxHandle(MlxPluginBackend *m) : mitra(m) {
+	}
+};
+
 void SetError(char *err, size_t err_len, const std::string &msg) {
 	if (!err || err_len == 0) {
 		return;
@@ -847,42 +864,67 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		// MlxSupportsModel() in tabfm_model_spec.hpp -- the engine refuses first
 		// and this is the backstop for anyone loading the plugin directly.
 		const std::string arch = params->arch ? params->arch : "";
-		bool classification = true;
-		if (arch == "mitra" || arch == "mitra-classification") {
-			classification = true;
-		} else if (arch == "mitra-regression") {
-			classification = false;
-		} else {
-			throw MlxError("the mlx backend implements the 'mitra' architecture only, not '" + arch +
-			               "'. Use SET anofox_tabfm_model='mitra', or SET anofox_tabfm_device='cpu' to run " +
-			               arch + " through ONNX Runtime.");
-		}
+		const std::string graph_path = params->graph_path ? params->graph_path : "";
 		const Precision precision = ParsePrecision(params->precision ? params->precision : "");
 		const std::string weights_dir = params->weights_dir ? params->weights_dir : "";
 		const std::string weights_path = JoinPath(weights_dir, "model.safetensors");
 
-		// graph_path is deliberately unused: MLX has no ONNX importer, so the
-		// forward is transcribed from mitra_model_patched.py rather than read
-		// from the graph. Kept in the ABI because every other backend needs it.
-		auto *backend = new MlxPluginBackend(weights_path, arch, classification, /*n_heads=*/4, precision);
-
-		// The checkpoint decides the head, not the caller: a regression request
-		// pointed at classification weights (or vice versa) would otherwise run
-		// the wrong y-embedding over tensors that happen to load, and produce
-		// numbers rather than an error.
-		const int dim_output = backend->dim_output();
-		if (classification && dim_output <= 1) {
-			delete backend;
-			throw MlxError("these weights have a single output and are a REGRESSION checkpoint, but "
-			               "classification was requested. Check the cached model.safetensors matches the task.");
+		// Two execution paths, and which one runs is decided here.
+		//
+		// The GRAPH INTERPRETER (tabfm_mlx_graph.cpp) executes the shipped ONNX
+		// graph and therefore serves every model, present and future, with no
+		// per-model code and no possibility of drifting from what the other
+		// backends compute. It is the general answer and the default.
+		//
+		// The mitra HAND-PORT stays for two reasons worth stating: it is
+		// faster (no per-node dispatch, and the bf16/fp16 cast cache lives
+		// across calls), and it is an INDEPENDENT implementation to check the
+		// interpreter against on the one model where two exist. It is used only
+		// when mitra is asked for AND no graph was supplied.
+		const bool is_mitra = arch == "mitra" || arch == "mitra-classification" || arch == "mitra-regression";
+		if (is_mitra && graph_path.empty()) {
+			const bool classification = arch != "mitra-regression";
+			auto *backend = new MlxPluginBackend(weights_path, arch, classification, /*n_heads=*/4, precision);
+			const int dim_output = backend->dim_output();
+			if (classification && dim_output <= 1) {
+				delete backend;
+				throw MlxError("these weights have a single output and are a REGRESSION checkpoint, but "
+				               "classification was requested. Check the cached model.safetensors matches the task.");
+			}
+			if (!classification && dim_output != 1) {
+				delete backend;
+				throw MlxError("these weights have " + std::to_string(dim_output) +
+				               " outputs and are a CLASSIFICATION checkpoint, but regression was requested. "
+				               "Check the cached model.safetensors matches the task.");
+			}
+			return new MlxHandle(backend);
 		}
-		if (!classification && dim_output != 1) {
-			delete backend;
-			throw MlxError("these weights have " + std::to_string(dim_output) +
-			               " outputs and are a CLASSIFICATION checkpoint, but regression was requested. Check "
-			               "the cached model.safetensors matches the task.");
+		if (graph_path.empty()) {
+			throw MlxError("no graph was supplied for '" + arch +
+			               "'. The mlx backend runs the model's ONNX graph; if this model ships none, SET "
+			               "anofox_tabfm_device='cpu' to run it through ONNX Runtime.");
 		}
-		return backend;
+		if (precision != Precision::FP32) {
+			// Better an error than a mode that silently does nothing: the
+			// interpreter runs the graph's own dtypes (P2 in
+			// docs/GPU_HARDENING_PLAN.md is exactly this failure).
+			throw MlxError("precision '" + std::string(params->precision ? params->precision : "") +
+			               "' is not implemented for models running through the mlx graph interpreter; only "
+			               "'mitra' has a reduced-precision path today. SET anofox_tabfm_gpu_precision='fp32'.");
+		}
+		auto graph = std::unique_ptr<::anofox::mlxgraph::Graph>(
+		    new ::anofox::mlxgraph::Graph(graph_path, weights_dir));
+		auto missing = graph->MissingOps();
+		if (!missing.empty()) {
+			std::string list;
+			for (const auto &op : missing) {
+				list += (list.empty() ? "" : ", ") + op;
+			}
+			throw MlxError("this graph needs ONNX ops the mlx backend does not implement (" + list +
+			               "). SET anofox_tabfm_device='cpu' to run it through ONNX Runtime, and please report "
+			               "these op names.");
+		}
+		return new MlxHandle(std::move(graph));
 	} catch (const std::exception &e) {
 		SetError(err, err_len, std::string("anofox_tabfm mlx plugin: ") + e.what());
 		return nullptr;
@@ -891,48 +933,98 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 
 TabFMPluginStatus PluginRun(void *handle, const TabFMPluginRunInput *input, TabFMPluginRunOutput *output, char *err,
                             size_t err_len) {
-	auto *backend = static_cast<MlxPluginBackend *>(handle);
-	if (!backend || !input || !output) {
+	auto *h = static_cast<MlxHandle *>(handle);
+	if (!h || !input || !output) {
 		SetError(err, err_len, "null handle, input or output");
 		return TABFM_PLUGIN_ERROR;
 	}
 	std::memset(output, 0, sizeof(*output));
 	try {
 		const int t = static_cast<int>(input->t);
-		const int h = static_cast<int>(input->h);
-		// The stream is acquired inside WithForward, on THIS thread. See the
-		// note on MlxPluginBackend: MLX default streams do not cross threads.
-		Arr logits = backend->WithForward([&](const Ops &o, const MitraForward &forward) {
-			Arr x = o.FromData(input->x, {1, t, h}, MLX_FLOAT32);
-			Arr y = o.FromData(input->y, {1, t}, MLX_FLOAT32);
-			Arr out = forward.Run(x, y, input->train_size, input->d);
-			Ok(mlx_array_eval(out.get()), "eval"); // MLX is lazy; nothing ran until here
-			return out;
-		});
+		const int h_feat = static_cast<int>(input->h);
+		std::vector<float> logits;
+		std::vector<int> shape;
 
-		const float *data = mlx_array_data_float32(logits.get());
-		if (!data) {
-			throw MlxError("logits buffer is null after eval");
+		if (h->mitra) {
+			// The stream is acquired inside WithForward, on THIS thread. See
+			// the note on MlxPluginBackend: MLX default streams do not cross
+			// threads.
+			Arr out = h->mitra->WithForward([&](const Ops &o, const MitraForward &forward) {
+				Arr x = o.FromData(input->x, {1, t, h_feat}, MLX_FLOAT32);
+				Arr y = o.FromData(input->y, {1, t}, MLX_FLOAT32);
+				Arr r = forward.Run(x, y, input->train_size, input->d);
+				Ok(mlx_array_eval(r.get()), "eval"); // MLX is lazy; nothing ran until here
+				return r;
+			});
+			const float *data = mlx_array_data_float32(out.get());
+			if (!data) {
+				throw MlxError("logits buffer is null after eval");
+			}
+			shape = out.shape();
+			logits.assign(data, data + mlx_array_size(out.get()));
+		} else {
+			// The graph decides its own signature. tabfm-v1 and mitra take
+			// train_size + d as scalars beside a full-length y; the
+			// single_eval_pos family (TabPFN, TabICL, Orion) takes NO scalars
+			// and infers the split from y's LENGTH -- so y is truncated to the
+			// context rows for them. Feeding that family a full-length y makes
+			// it read every row as context and return a constant.
+			std::vector<std::pair<std::string, ::anofox::mlxgraph::Tensor>> feeds;
+			::anofox::mlxgraph::Tensor x;
+			x.shape = {1, t, h_feat};
+			x.data.assign(input->x, input->x + static_cast<size_t>(t) * h_feat);
+			feeds.emplace_back("x", std::move(x));
+
+			const auto &names = h->graph->InputNames();
+			const bool has_train_size =
+			    std::find(names.begin(), names.end(), "train_size") != names.end();
+			::anofox::mlxgraph::Tensor y;
+			const int64_t y_len = has_train_size ? t : input->train_size;
+			y.shape = {1, static_cast<int>(y_len)};
+			y.data.assign(input->y, input->y + y_len);
+			feeds.emplace_back("y", std::move(y));
+
+			if (has_train_size) {
+				::anofox::mlxgraph::Tensor ts;
+				ts.shape = {1};
+				ts.data = {static_cast<float>(input->train_size)};
+				feeds.emplace_back("train_size", std::move(ts));
+			}
+			if (std::find(names.begin(), names.end(), "d") != names.end()) {
+				::anofox::mlxgraph::Tensor d;
+				d.shape = {1};
+				d.data = {static_cast<float>(input->d)};
+				feeds.emplace_back("d", std::move(d));
+			}
+			if (std::find(names.begin(), names.end(), "cat_mask") != names.end() && input->cat_mask) {
+				::anofox::mlxgraph::Tensor cm;
+				cm.shape = {1, h_feat};
+				cm.data.reserve(h_feat);
+				for (int i = 0; i < h_feat; i++) {
+					cm.data.push_back(input->cat_mask[i] ? 1.0f : 0.0f);
+				}
+				feeds.emplace_back("cat_mask", std::move(cm));
+			}
+			auto result = h->graph->Run(feeds);
+			shape = result.shape;
+			logits = std::move(result.data);
 		}
-		const size_t n = mlx_array_size(logits.get());
-		auto *out = static_cast<float *>(std::malloc(n * sizeof(float)));
-		if (!out) {
+
+		auto *out_buf = static_cast<float *>(std::malloc(logits.size() * sizeof(float)));
+		if (!out_buf) {
 			throw MlxError("out of memory copying logits");
 		}
-		std::memcpy(out, data, n * sizeof(float));
-
-		std::vector<int> shape = logits.shape();
+		std::memcpy(out_buf, logits.data(), logits.size() * sizeof(float));
 		auto *shape_out = static_cast<int64_t *>(std::malloc(shape.size() * sizeof(int64_t)));
 		if (!shape_out) {
-			std::free(out);
+			std::free(out_buf);
 			throw MlxError("out of memory copying shape");
 		}
 		for (size_t i = 0; i < shape.size(); i++) {
 			shape_out[i] = shape[i];
 		}
-
-		output->logits = out;
-		output->logits_len = static_cast<int64_t>(n);
+		output->logits = out_buf;
+		output->logits_len = static_cast<int64_t>(logits.size());
 		output->shape = shape_out;
 		output->shape_len = static_cast<int64_t>(shape.size());
 		return TABFM_PLUGIN_OK;
@@ -968,7 +1060,7 @@ void PluginFreeOutput(TabFMPluginRunOutput *output) {
 }
 
 void PluginDestroy(void *handle) {
-	delete static_cast<MlxPluginBackend *>(handle);
+	delete static_cast<MlxHandle *>(handle);
 }
 
 const TabFMPluginApi kApi = {

@@ -165,7 +165,14 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
     find_library(TABFM_MLX_LIB mlx PATHS "${TABFM_MLX_DIR}/lib" NO_DEFAULT_PATH)
     if(TABFM_MLX_C_LIB AND TABFM_MLX_LIB AND EXISTS "${TABFM_MLX_DIR}/include/mlx/c/ops.h")
         message(STATUS "anofox_tabfm: building the mlx backend plugin from ${TABFM_MLX_DIR}")
-        add_library(anofox_tabfm_mlx_plugin SHARED src/tabfm_mlx_plugin.cpp)
+        # The plugin carries its own minimal ONNX reader rather than linking
+        # libonnx + libprotobuf: it is separately distributed, and coupling a
+        # small .dylib to protobuf's ABI (and to whatever abseil the extension
+        # built against) buys nothing it needs. See tabfm_onnx_reader.hpp.
+        add_library(anofox_tabfm_mlx_plugin SHARED
+            src/tabfm_mlx_plugin.cpp
+            src/tabfm_mlx_graph.cpp
+            src/tabfm_onnx_reader.cpp)
         target_include_directories(anofox_tabfm_mlx_plugin PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src/include
             "${TABFM_MLX_DIR}/include")

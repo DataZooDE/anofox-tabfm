@@ -176,12 +176,19 @@ inline bool IsExplicitGpuRequest(const string &device_setting, const string &bac
 //! time. Keep this in step with the `arch` dispatch in tabfm_mlx_plugin.cpp:
 //! the engine's check and the plugin's refusal must agree, or one of them
 //! produces a message the other contradicts.
+//! Every model reaches MLX now: the backend executes the shipped ONNX graph
+//! (docs/MLX_PLAN.md route 3) rather than a hand-transcribed forward, so
+//! coverage is a property of the op table, not of a per-model list. What can
+//! still fail is a graph needing an op the interpreter lacks, and the plugin
+//! reports THAT by name at create time -- which is a better error than a
+//! registry check here could produce, because it names the ops.
 inline bool MlxSupportsModel(const string &model) {
-	return model == "mitra";
+	(void)model;
+	return true;
 }
 
 inline string MlxSupportedModels() {
-	return "'mitra'";
+	return "every registered model (the backend runs the model's ONNX graph)";
 }
 
 //! The error for "you asked for this GPU but the model ships no graph it can

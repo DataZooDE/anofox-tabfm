@@ -86,23 +86,36 @@ TabFMPluginCreateParams MlxParams(const string &weights_dir, const char *arch) {
 
 } // namespace
 
-TEST_CASE("mlx_plugin: refuses an architecture it does not implement", "[tabfm][plugin][mlx]") {
-	// The plugin hand-implements ONE model. If it accepted any arch it would
-	// run mitra's math over another model's weights and return confident
-	// nonsense, which is worse than an error — so the refusal is a contract,
-	// not a nicety. Needs no weights: the arch check precedes the load.
+TEST_CASE("mlx_plugin: refuses a model it has no way to run", "[tabfm][plugin][mlx]") {
+	// This contract MOVED when the backend gained the graph interpreter, and
+	// the move is the point. It used to refuse by ARCHITECTURE, because the
+	// only forward it had was mitra's hand-port. It now executes any shipped
+	// ONNX graph, so architecture is no longer the question -- what it cannot
+	// do is run a model for which it was given neither a graph nor a hand-port.
+	//
+	// That is still a refusal, and still for the original reason: serving a
+	// wrong answer is worse than erroring. Needs no weights, since the check
+	// precedes the load.
 	const string weights_dir = MitraCacheDir();
-	auto params = MlxParams(weights_dir, "tabpfn-v2");
+	auto params = MlxParams(weights_dir, "tabpfn-v2"); // MlxParams supplies no graph_path
 	REQUIRE_THROWS_AS(LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params), InvalidInputException);
 
 	// And the message has to name the fix, per CLAUDE.md rule 5.
 	try {
 		LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
-		FAIL("expected the mlx plugin to refuse arch 'tabpfn-v2'");
+		FAIL("expected the mlx plugin to refuse a graphless, non-mitra model");
 	} catch (const InvalidInputException &e) {
 		const string msg = e.what();
-		REQUIRE(msg.find("mitra") != string::npos);
 		REQUIRE(msg.find("tabpfn-v2") != string::npos);
+		REQUIRE(msg.find("anofox_tabfm_device='cpu'") != string::npos);
+	}
+
+	// mitra WITHOUT a graph must still work: its hand-port is the fast path and
+	// the interpreter's independent oracle, so losing it would go unnoticed
+	// until the two silently agreed on nothing.
+	if (FileExists(weights_dir + "/model.safetensors")) {
+		auto mitra = MlxParams(weights_dir, "mitra-classification");
+		REQUIRE_NOTHROW(LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, mitra));
 	}
 }
 

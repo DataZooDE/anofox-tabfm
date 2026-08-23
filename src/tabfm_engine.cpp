@@ -1006,13 +1006,37 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		return nullptr; // not the MLX path
 	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
-	if (!MlxSupportsModel(resolved.manifest.model)) {
-		throw InvalidInputException(
-		    "anofox_tabfm: device 'mlx' cannot run model '" + resolved.manifest.model +
-		    "'. The Apple MLX backend implements a hand-ported forward per model family rather than executing a "
-		    "shipped ONNX graph, so it serves only: " +
-		    MlxSupportedModels() + ". SET anofox_tabfm_model='mitra', or SET anofox_tabfm_device='cpu' to run '" +
-		    resolved.manifest.model + "' through ONNX Runtime.");
+
+	// The MLX backend executes the model's ONNX graph, so it needs the same
+	// external-data graph the CUDA plugin runs -- selected the same way, since
+	// the rule ("a model-provided graph wins; the bundled one needs its header
+	// to match the downloaded weights") is a property of the graphs, not of the
+	// accelerator. mitra is the one exception: it also has a hand-ported
+	// forward, which the plugin uses when no graph is supplied.
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
+	const bool bundled_matches =
+	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
+	string graph_path;
+	string weights_dir = DirName(resolved.weights_path);
+	switch (SelectGpuGraph(!resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
+	case GpuGraphSource::MODEL_PROVIDED:
+		graph_path = resolved.ext_graph_path;
+		weights_dir = DirName(graph_path); // external data sits beside the graph
+		break;
+	case GpuGraphSource::BUNDLED:
+		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
+		if (!StageBundledGraph(fs, graph, graph_path)) {
+			graph_path.clear();
+		}
+		break;
+	case GpuGraphSource::NONE:
+		graph_path.clear();
+		break;
+	}
+	// No graph and no hand-port means nothing to run. Explicit 'mlx' must say
+	// so rather than fall through to CPU -- the tier-4 contract.
+	if (graph_path.empty() && resolved.manifest.model != "mitra") {
+		throw InvalidInputException(NoGpuGraphMessage("mlx", resolved.manifest.model, task_name, "ext_graph"));
 	}
 	if (ctx.ep_path.empty()) {
 		throw InvalidInputException(
@@ -1021,15 +1045,15 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		    "tabfm_download_runtime('mlx') to fetch it).");
 	}
 	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_mlx_plugin.dylib");
-	const auto weights_dir = DirName(resolved.weights_path);
 
 	// `arch` is backend-defined (see tabfm_plugin_abi.h): the GPU plugins read a
-	// compute architecture there, but MLX's hardware needs no such selector —
-	// what it cannot infer is WHICH forward to run. So it carries "<model>-<task>".
+	// compute architecture there, but MLX's hardware needs no such selector. It
+	// carries "<model>-<task>" so the plugin can pick mitra's hand-ported fast
+	// path, and so a task/weights mismatch is caught rather than computed.
 	const string arch = resolved.manifest.model + "-" + task_name;
 
 	TabFMPluginCreateParams params {};
-	params.graph_path = ""; // no graph: the forward is transcribed, not loaded
+	params.graph_path = graph_path.c_str(); // no graph: the forward is transcribed, not loaded
 	params.weights_dir = weights_dir.c_str();
 	params.cache_dir = ctx.cache_dir.c_str();
 	params.arch = arch.c_str();
