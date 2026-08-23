@@ -881,8 +881,20 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		// across calls), and it is an INDEPENDENT implementation to check the
 		// interpreter against on the one model where two exist. It is used only
 		// when mitra is asked for AND no graph was supplied.
+		// mitra takes the hand-port WHENEVER it is asked for, graph or not.
+		//
+		// This is not a preference, it is a memory bound. The interpreter keeps
+		// every intermediate as its own array for as long as the graph might
+		// reference it; the hand-port reuses buffers and drops each block's
+		// temporaries as it goes. Routing mitra through the interpreter because
+		// a graph happened to be supplied took the 2500-context/1500-query
+		// scenario from 12.9 s to an OOM kill (SIGKILL) on a 16 GB machine.
+		//
+		// The interpreter is still what serves every OTHER model, and is still
+		// checked against this hand-port on mitra by tools/mlx_spike -- which is
+		// the point of keeping two implementations of one model.
 		const bool is_mitra = arch == "mitra" || arch == "mitra-classification" || arch == "mitra-regression";
-		if (is_mitra && graph_path.empty()) {
+		if (is_mitra) {
 			const bool classification = arch != "mitra-regression";
 			auto *backend = new MlxPluginBackend(weights_path, arch, classification, /*n_heads=*/4, precision);
 			const int dim_output = backend->dim_output();
