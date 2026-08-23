@@ -121,6 +121,10 @@ struct PredictContext {
 	//! engine as well as checked at bind: the bind-time check only sees memory
 	//! already held, and the forward pass is where a single call grows.
 	idx_t max_memory_bytes = 0;
+	//! SET anofox_tabfm_max_sessions — cap on cached sessions across all models
+	//! and devices; oldest evicted beyond it. Sessions are multi-GB, so growth
+	//! must be bounded now that one model can hold cpu + GPU entries at once.
+	int64_t max_sessions = 4;
 	//! SET anofox_tabfm_context_cache — reuse the encoded labelled context across
 	//! calls when the model ships a split (prepare/query) graph pair. Off by
 	//! default; inert for a model that ships no pair.
@@ -132,6 +136,12 @@ struct PredictContext {
 	//! (offline/CI/shared). A matching bucket artifact is staged into the cache
 	//! instead of compiling on-device (~27 min). '' → always compile. ROCm only.
 	string mxr_source;
+	//! SET anofox_tabfm_ep_path — directory holding backend-plugin shared
+	//! libraries (docs/DYNAMIC_BACKENDS.md phase 1), e.g.
+	//! libanofox_tabfm_migraphx_plugin.so. '' → the rocm device path throws
+	//! rather than silently running on CPU (tier 4: a requested device that
+	//! cannot actually be driven must error, never fall back quietly).
+	string ep_path;
 };
 
 struct PredictInput {

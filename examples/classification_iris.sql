@@ -4,7 +4,7 @@
 -- We compute multiclass accuracy (overall + per-species) entirely in SQL.
 --
 -- Run:  duckdb :memory: < examples/classification_iris.sql
--- Needs: real classification weights downloaded (CALL tabfm_download('classification'))
+-- Needs: real classification weights downloaded (CALL tabfm_download('classification', model := 'tabfm-v1'))
 --        (built-in model 'tabfm-v1' — no manifest file needed).
 
 INSTALL httpfs; LOAD httpfs;

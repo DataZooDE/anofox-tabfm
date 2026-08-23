@@ -45,6 +45,10 @@ struct LoadedModel {
 	shared_ptr<void> session;
 	//! Resolved device the session runs on ("cpu", "cuda:0", ...)
 	string device_id;
+	//! Effective GPU numeric mode this session was built with ("fp32"/"tf32"/
+	//! "bf16"/"fp16"), and "" for CPU sessions — anofox_tabfm_gpu_precision
+	//! does not shape those, so flipping it must not rebuild them.
+	string precision;
 	//! Weight dtype loaded into the session ("f32", "f16", "bf16")
 	string dtype;
 	//! Resident weight bytes (for tabfm_models() reporting)
@@ -52,12 +56,43 @@ struct LoadedModel {
 	//! Loaded as a split (prepare/query) pair with a cached labelled context,
 	//! rather than as the single combined graph. Recorded so that flipping
 	//! anofox_tabfm_context_cache rebuilds the session instead of silently
-	//! answering from whichever backend happened to be cached first.
+	//! answering from whichever backend happened to be cached first. The same
+	//! argument applies to device_id above, which is why CanReuseSession below
+	//! checks both — it used to check only this one.
 	bool split_context = false;
 	//! Set by Unload; snapshot holders may finish their forward, new
 	//! snapshots will not see this model anymore.
 	atomic<bool> evicted {false};
+	//! Monotone registration order, for the session-cap eviction (oldest goes).
+	idx_t sequence = 0;
 };
+
+//! Whether a cached session can serve a request, or must be rebuilt.
+//!
+//! Both conditions exist for the same reason: a session is built FOR a
+//! particular device and a particular split/combined shape, so reusing it
+//! whenever the cache key matches silently answers from whichever
+//! configuration happened to be loaded first. The device half of that was a
+//! real bug — a connection that ran anything on the cpu and then
+//! SET anofox_tabfm_device='cuda' kept getting the cpu session, with no error
+//! and no GPU, which is the "requested device quietly becomes CPU" outcome the
+//! tier-4 contract in docs/DYNAMIC_BACKENDS.md exists to rule out.
+//!
+//! Pulled out of LoadOrGetSession as a pure function so it is testable without
+//! a GPU: CI cannot run the cpu->cuda switch that exposed the bug, but it can
+//! assert this predicate, which is where the mistake actually lived.
+//!
+//! `wanted_precision` joined in Track A (docs/GPU_HARDENING_PLAN.md P1/P2),
+//! because the device story repeats one setting over: once gpu_precision
+//! shapes the session (fp32 vs tf32 vs bf16 build different programs),
+//! ignoring it here silently serves the old mode after a SET — the exact
+//! failure shape 70a6800 fixed for the device. Callers pass "" for CPU
+//! sessions, which the setting does not shape.
+inline bool CanReuseSession(const LoadedModel &cached, bool want_split, const string &wanted_device,
+                            const string &wanted_precision) {
+	return cached.split_context == want_split && cached.device_id == wanted_device &&
+	       cached.precision == wanted_precision;
+}
 
 //! Canonical loaded-model key for a (model, task, revision). The engine (which
 //! registers sessions during predict) and the lifecycle SQL (tabfm_models /
@@ -94,14 +129,27 @@ public:
 	static shared_ptr<TabFMState> Get(DatabaseInstance &db);
 	static shared_ptr<TabFMState> Get(ClientContext &context);
 
-	//! Register a freshly created model under `key` (tabfm_load). Replacing
-	//! an existing entry marks the old one evicted first.
-	void Register(const string &key, shared_ptr<LoadedModel> model);
-	//! Snapshot for a predict: shared ownership, nullptr if not loaded.
-	shared_ptr<LoadedModel> Snapshot(const string &key) const;
-	//! Unload one model: marks evicted + drops from the map. Returns false if
-	//! the key was not loaded. The session is freed when the last snapshot
-	//! holder releases.
+	//! Register a freshly created model under `key` (tabfm_load / predict).
+	//! Sessions are cached per (key, device, precision) — S6 measured 18–27 s
+	//! of pure rebuild per device alternation under the old one-slot-per-key
+	//! design, so cpu and GPU sessions of one model now coexist. Replacing an
+	//! existing entry with the SAME (device, precision) marks the old one
+	//! evicted first. `max_sessions` caps the total across all models
+	//! (0 = uncapped); when exceeded, the oldest-registered other entry is
+	//! evicted — multi-GB sessions must never accumulate behind the user's
+	//! back.
+	void Register(const string &key, shared_ptr<LoadedModel> model, idx_t max_sessions = 0);
+	//! Snapshot for a predict: the entry built for exactly this device and
+	//! precision ("" = a CPU session; the gpu_precision setting does not shape
+	//! those). nullptr if not loaded in that configuration.
+	shared_ptr<LoadedModel> Snapshot(const string &key, const string &device_id, const string &precision) const;
+	//! Every loaded configuration of `key`, sorted by (device, precision) —
+	//! tabfm_models() reports one row per entry.
+	vector<shared_ptr<LoadedModel>> SnapshotsFor(const string &key) const;
+	//! Unload one model: marks EVERY device/precision entry evicted + drops
+	//! them. One name reaches everything — a per-device unload would leave
+	//! sessions a targeted tabfm_unload could not free. Returns false if the
+	//! key was not loaded at all.
 	bool Unload(const string &key);
 	//! Unload everything; returns the number of models dropped.
 	idx_t UnloadAll();
@@ -146,7 +194,10 @@ public:
 
 private:
 	mutable mutex lock;
-	map<string, shared_ptr<LoadedModel>> models;
+	//! cache_key -> (device_id + '\x1f' + precision) -> session. Two levels so
+	//! Unload(key) frees every configuration by construction.
+	map<string, map<string, shared_ptr<LoadedModel>>> models;
+	idx_t next_sequence = 0;
 	map<string, unique_ptr<mutex>> device_mutexes;
 	map<string, ModelSpec> registered_specs;
 	//! "<model_key>|<device>|<T>x<H>" -> observed resident-memory growth.

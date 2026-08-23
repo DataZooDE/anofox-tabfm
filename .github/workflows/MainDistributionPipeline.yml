@@ -27,8 +27,12 @@ jobs:
       # (cmake/ort.cmake); enable the "ort-vcpkg" manifest feature to build the
       # vcpkg port instead (S05 decision: both paths wired, prebuilt default).
       # Exclude WASM/musl (NFR-C1: explicitly out — ORT + multi-GB inference),
-      # MinGW (vcpkg OpenSSL build issues, house pattern).
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl
+      # MinGW (vcpkg OpenSSL build issues, house pattern), and osx_amd64:
+      # ONNX Runtime published its last macOS x86_64 / universal2 archive at
+      # v1.23.2, so there is nothing to link Intel macOS against at the version
+      # this project needs. cmake/ort.cmake fails with that explanation if the
+      # arch is requested anyway.
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
 
   duckdb-v1_5_5-smoke-test:
     name: Smoke test (v1.5.5)
@@ -37,7 +41,7 @@ jobs:
     with:
       duckdb_version: v1.5.5
       extension_name: anofox_tabfm
-      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl'
+      exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64'
 
   duckdb-v1_5_5-deploy:
     name: Deploy extension binaries (v1.5.5)
@@ -59,6 +63,6 @@ jobs:
     with:
       duckdb_version: v1.5.5
       extension_name: anofox_tabfm
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl
+      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}
       deploy_versioned: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}

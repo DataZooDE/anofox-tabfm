@@ -184,6 +184,11 @@ struct TabFMSessionConfig {
 	//! Empty = no declared contract (skip — the built-in x/y/... contract).
 	vector<string> contract_inputs;
 	vector<string> contract_outputs;
+	//! SET anofox_tabfm_ep_path — directory holding backend-plugin / ORT
+	//! provider-EP shared libraries (docs/DYNAMIC_BACKENDS.md). Read for the
+	//! cuda device: CreateSession registers libonnxruntime_providers_cuda.so
+	//! from here at runtime instead of requiring a cuda-flavor build.
+	string ep_path;
 };
 
 //! Opaque engine session (pimpl over Ort::Session; keeps ORT headers out of

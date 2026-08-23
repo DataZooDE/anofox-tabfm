@@ -4,7 +4,7 @@
 -- the mean squared error (and RMSE / MAE) of the predicted tip entirely in SQL.
 --
 -- Run:  duckdb :memory: < examples/regression_tips.sql
--- Needs: real regression weights downloaded (CALL tabfm_download('regression'))
+-- Needs: real regression weights downloaded (CALL tabfm_download('regression', model := 'tabfm-v1'))
 --        (built-in model 'tabfm-v1' — no manifest file needed).
 
 INSTALL httpfs; LOAD httpfs;

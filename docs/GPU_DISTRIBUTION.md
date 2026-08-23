@@ -58,6 +58,11 @@ flavors are not published yet, so build one from source with TABFM_FLAVOR=cuda
 Released cpu builds: SET custom_extension_repository = 'https://get.anofox.com'
 ```
 
+> That wording is historical. Device resolution now accepts `cuda` and
+> `rocm` on every build, because a plugin can serve them; the message you
+> get today names the model or the missing plugin instead. See
+> `docs/DYNAMIC_BACKENDS.md`.
+
 Costs nothing and misleads nobody. Its weakness is that "build from source"
 means building ONNX Runtime's dependencies too, which is a real afternoon.
 
@@ -76,6 +81,16 @@ Sketch:
 CALL tabfm_download_runtime('cuda');   -- fetches the ORT GPU libs into the cache
 SET anofox_tabfm_device = 'cuda';
 ```
+
+> **This shipped, though not by the route sketched below.** The user-facing
+> shape above is exactly what landed; what changed is the mechanism. Loading
+> ORT's CUDA provider into the extension's own ORT turned out to be impossible
+> in the build that ships (a statically linked ORT interposes the provider's
+> symbols and corrupts the heap), so CUDA runs in a standalone backend plugin
+> carrying its own shared ORT-GPU runtime instead. The open questions below are
+> kept as the record of how that was established — see
+> `docs/DYNAMIC_BACKENDS.md`, "Phase 3, resolved: CUDA is a plugin, exactly
+> like ROCm", for the design that exists.
 
 Open questions, in the order they need answering:
 

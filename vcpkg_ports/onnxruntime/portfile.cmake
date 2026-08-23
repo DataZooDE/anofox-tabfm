@@ -11,12 +11,10 @@ vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO microsoft/onnxruntime
     REF "v${VERSION}"
-    SHA512 373c51575ada457b8aead5d195a5f3eba62fb747b6370a2a9889fff875c40ea30af8fd49104d58cc86f79247410e829086b0979f37ca8635c6dd34960e9cc424
+    SHA512 9ea05f5279fc93fd243a967f3664aaabe9216f6e3ce9358ead662653984476e9cb0cb950947f31f8602541224c946a3ceac91d7c1990ffe2b8314d61361c300f
     PATCHES
-        use-cxx20-on-linux.patch # abseil's std::strong_ordering aliases need C++20
-        add-missing-cstdint.patch # uint32_t without <cstdint>; needed from GCC 13 on
-        fix-cmake.patch # .framework install, external library workarounds(abseil-cpp, eigen3)
-        fix-cmake-cuda.patch
+        fix-cmake.patch # .framework install, re2 -pthread override (WASM)
+        fix-cmake-cuda.patch # vcpkg-provided cudnn_frontend/cutlass instead of ORT's own FetchContent
 )
 
 find_program(PROTOC NAMES protoc PATHS "${CURRENT_HOST_INSTALLED_DIR}/tools/protobuf" REQUIRED NO_DEFAULT_PATH NO_CMAKE_PATH)

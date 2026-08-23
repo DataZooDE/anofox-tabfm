@@ -434,6 +434,12 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
 		bind->context.mxr_source = setting.ToString();
 	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
+		bind->context.ep_path = ExpandUserHome(setting.ToString());
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_max_sessions", setting) && !setting.IsNull()) {
+		bind->context.max_sessions = BigIntValue::Get(setting.DefaultCastAs(LogicalType::BIGINT));
+	}
 
 	// once per query: bind runs once, update/finalize run per group/row
 	PostHogTelemetry::Instance().RecordFunctionCall(fname);

@@ -11,7 +11,7 @@
 -- Needs, once:
 --   CALL tabfm_download('classification', model := 'mitra');  -- ~303 MB (ungated)
 --   SET anofox_tabfm_accept_hf_license = true;                -- TabFM is gated
---   -- TabFM's 6.56 GB weights: CALL tabfm_download('classification');
+--   -- TabFM's 6.56 GB weights: CALL tabfm_download('classification', model := 'tabfm-v1');
 
 INSTALL httpfs; LOAD httpfs;
 LOAD anofox_tabfm;

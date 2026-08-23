@@ -33,24 +33,91 @@ shared_ptr<TabFMState> TabFMState::Get(ClientContext &context) {
 	return ObjectCache::GetObjectCache(context).GetOrCreate<TabFMState>(OBJECT_CACHE_KEY);
 }
 
-void TabFMState::Register(const string &key, shared_ptr<LoadedModel> model) {
+namespace {
+//! Inner-map key: a session is identified by what shaped it. '\x1f' cannot
+//! appear in a device id or a precision name, so the join is unambiguous.
+string SessionKey(const string &device_id, const string &precision) {
+	return device_id + '\x1f' + precision;
+}
+} // anonymous namespace
+
+void TabFMState::Register(const string &key, shared_ptr<LoadedModel> model, idx_t max_sessions) {
 	lock_guard<mutex> guard(lock);
-	auto entry = models.find(key);
-	if (entry != models.end()) {
-		// Replacement: the old session dies when its last snapshot releases.
+	auto session_key = SessionKey(model->device_id, model->precision);
+	auto &sessions = models[key];
+	auto entry = sessions.find(session_key);
+	if (entry != sessions.end()) {
+		// Same-configuration replacement: the old session dies when its last
+		// snapshot releases.
 		entry->second->evicted = true;
 	}
 	model->model_key = key;
-	models[key] = std::move(model);
+	model->sequence = ++next_sequence;
+	sessions[session_key] = std::move(model);
+
+	if (max_sessions == 0) {
+		return;
+	}
+	// Cap the TOTAL loaded sessions (all models, all configurations): evict
+	// oldest-first until under the cap, never the entry just registered.
+	// Multi-GB sessions must not accumulate behind the user's back now that
+	// one model can hold several.
+	while (true) {
+		idx_t total = 0;
+		for (auto &m : models) {
+			total += m.second.size();
+		}
+		if (total <= max_sessions) {
+			return;
+		}
+		map<string, map<string, shared_ptr<LoadedModel>>>::iterator oldest_model = models.end();
+		map<string, shared_ptr<LoadedModel>>::iterator oldest_session;
+		idx_t oldest_sequence = next_sequence + 1;
+		for (auto m = models.begin(); m != models.end(); ++m) {
+			for (auto sess = m->second.begin(); sess != m->second.end(); ++sess) {
+				if (sess->second->sequence < oldest_sequence) {
+					oldest_sequence = sess->second->sequence;
+					oldest_model = m;
+					oldest_session = sess;
+				}
+			}
+		}
+		if (oldest_model == models.end() || oldest_sequence == next_sequence) {
+			return; // only the fresh entry remains; the cap cannot evict it
+		}
+		oldest_session->second->evicted = true;
+		oldest_model->second.erase(oldest_session);
+		if (oldest_model->second.empty()) {
+			models.erase(oldest_model);
+		}
+	}
 }
 
-shared_ptr<LoadedModel> TabFMState::Snapshot(const string &key) const {
+shared_ptr<LoadedModel> TabFMState::Snapshot(const string &key, const string &device_id,
+                                             const string &precision) const {
 	lock_guard<mutex> guard(lock);
 	auto entry = models.find(key);
 	if (entry == models.end()) {
 		return nullptr;
 	}
-	return entry->second;
+	auto session = entry->second.find(SessionKey(device_id, precision));
+	if (session == entry->second.end()) {
+		return nullptr;
+	}
+	return session->second;
+}
+
+vector<shared_ptr<LoadedModel>> TabFMState::SnapshotsFor(const string &key) const {
+	lock_guard<mutex> guard(lock);
+	vector<shared_ptr<LoadedModel>> result;
+	auto entry = models.find(key);
+	if (entry == models.end()) {
+		return result;
+	}
+	for (auto &session : entry->second) { // std::map iterates sorted
+		result.push_back(session.second);
+	}
+	return result;
 }
 
 bool TabFMState::Unload(const string &key) {
@@ -59,10 +126,13 @@ bool TabFMState::Unload(const string &key) {
 	if (entry == models.end()) {
 		return false;
 	}
-	// Mark evicted, then drop our reference. In-flight predicts holding a
-	// snapshot keep the session alive until they release (HLD §6: no torn
-	// sessions); the ORT session is destroyed with the last shared_ptr.
-	entry->second->evicted = true;
+	// Mark every configuration evicted, then drop our references. In-flight
+	// predicts holding a snapshot keep their session alive until they release
+	// (HLD §6: no torn sessions); each ORT session is destroyed with its last
+	// shared_ptr. All-or-nothing so one name reaches everything.
+	for (auto &session : entry->second) {
+		session.second->evicted = true;
+	}
 	models.erase(entry);
 	return true;
 }
@@ -71,7 +141,9 @@ idx_t TabFMState::UnloadAll() {
 	lock_guard<mutex> guard(lock);
 	const idx_t count = models.size();
 	for (auto &entry : models) {
-		entry.second->evicted = true;
+		for (auto &session : entry.second) {
+			session.second->evicted = true;
+		}
 	}
 	models.clear();
 	return count;
@@ -82,7 +154,7 @@ vector<string> TabFMState::LoadedKeys() const {
 	vector<string> keys;
 	keys.reserve(models.size());
 	for (auto &entry : models) {
-		keys.push_back(entry.first); // std::map iterates sorted
+		keys.push_back(entry.first); // one per model key; std::map iterates sorted
 	}
 	return keys;
 }
