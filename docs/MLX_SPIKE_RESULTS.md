@@ -525,3 +525,65 @@ need a feed those graphs accept, and the two SKIPPED need the interpreter to
 stream weights rather than materialize them twice in Python. Stated as
 inconclusive rather than passed, because an exact match against a constant
 reference is exactly what a completely broken interpreter also produces.
+
+---
+
+## All-model verification — 12/13 graphs, against real weights
+
+`uv run python -m mlx_spike.sm5_all_models --shapes 70x3x60`
+
+| model | classification | regression |
+|---|---|---|
+| tabfm-v1 | not tested (no cached weights) | **PASS** — real 6.6 GB, in situ |
+| mitra | **PASS** real | **PASS** real |
+| tabpfn-v2 | **PASS** real | **PASS** real |
+| tabpfn-v2-5 | **PASS** real | **PASS** real |
+| tabpfn-v3 | **PASS** real | **PASS** (synth: see below) |
+| tabicl-v2 | **PASS** real | **PASS** real |
+| orion-bix | **PASS** real | n/a |
+
+Getting here required fixing three things, and each was a bug in the *harness*
+that had been masquerading as backend behaviour:
+
+1. **The single_eval_pos family takes a SHORTER y.** TabPFN, TabICL and Orion
+   declare `y` with its own dim (`y [1, s94]` against `x [1, s27, s53]`) and
+   infer the train/test split from that length; only tabfm-v1 and mitra take
+   `train_size` as a scalar with a full-length y. Feeding the first family a
+   full-length y padded with the −100 sentinel made them read every row as
+   context and return a **constant** — which the degeneracy guard caught as
+   INCONCLUSIVE rather than reporting the exact-match-on-a-flat-reference as a
+   pass. Without that guard this would have read as 3 more green rows.
+2. **Regression outputs are unbounded.** `tabicl_regression` "failed" at
+   1.869e-04 absolute — on outputs spanning 15.4, i.e. 1.2e-05 relative. The
+   1e-4 bound is meaningful for post-softmax probabilities and meaningless for
+   a regression head; it is now scaled by the reference's own range. This is
+   the same mistake as the S-M2 tolerance finding, made a second time in a new
+   place.
+3. **tabfm-v1 could not be staged at all.** Its 6.6 GB does not survive being
+   copied to a temp dir on top of the copies ORT and MLX each make. The engine
+   already lays the cache out as graph-beside-weights, so that layout is now
+   used in place, and the largest model became testable — 1.317e-05 on real
+   weights, which is also the unified-memory answer the plan wanted.
+
+Two gaps stated rather than hidden:
+
+- **tabfm-v1 classification** is untested: only the regression checkpoint is
+  cached locally. It is the same graph family as the regression one that passes.
+- **tabpfn-v3 regression** runs on synthesized weights because its released
+  checkpoint cannot be converted — it carries no `FullSupportBarDistribution
+  criterion.borders`, so `convert_weights.py` cannot build the point-estimate
+  head. That is upstream of this work.
+
+### A pre-existing bug found on the way
+
+`tools/export_tabpfn/convert_weights.py` accepted `--arch=v3`, fell through its
+if/else into the **v2** branch, wrote v2 weights to the v2 path, and printed
+`tensor-map keys: 129 | present: 129 | missing: 0` — indistinguishable from
+success. Anyone following `docs/REAL_MODELS.md` (which lists tabpfn-v3 as
+"ckpt→safetensors convert required") would have been running v2 believing it
+was v3. Fixed, and an unrecognised `--arch` now refuses instead of falling
+through.
+
+Also worth recording for anyone testing locally: **these checkpoints need a
+one-time conversion before they work on ANY backend, cpu included.** The MLX
+work did not create that requirement, it just ran into it first.

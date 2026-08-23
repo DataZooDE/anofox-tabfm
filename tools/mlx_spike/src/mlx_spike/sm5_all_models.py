@@ -82,13 +82,26 @@ def _signature(graph_path: Path) -> list[str]:
 
 
 def _feeds(inputs: list[str], t: int, h: int, s: int, seed: int = 1234):
-    """The engine's tensor contract. Models split into two families: one takes
-    train_size + d as scalars, the other reads the split from y's -100 sentinel
-    alone. The signature says which, so it is detected rather than assumed."""
+    """The engine's tensor contract. Two families, and the difference is in
+    Y'S LENGTH, not in a sentinel:
+
+      train_size-scalar (tabfm-v1, mitra): y is [1, T], one slot per row, with
+        train_size saying where the context ends.
+      single_eval_pos (TabPFN, TabICL, Orion): y is [1, TRAIN] -- the graph
+        declares a separate dim for it (`y [1, s94]` against `x [1, s27, s53]`)
+        and infers the split from that length alone.
+
+    Feeding the second family a full-length y makes it read every row as
+    context, and the model then returns a CONSTANT -- which looks like a
+    backend bug and is really a malformed input. Detected from the signature
+    rather than assumed."""
     rng = np.random.default_rng(seed)
     x = rng.standard_normal((1, t, h)).astype(np.float32)
-    y = np.full((1, t), -100.0, dtype=np.float32)
-    y[0, :s] = rng.integers(0, 3, s).astype(np.float32)
+    if "train_size" in inputs:
+        y = np.full((1, t), -100.0, dtype=np.float32)
+        y[0, :s] = rng.integers(0, 3, s).astype(np.float32)
+    else:
+        y = rng.integers(0, 3, s).astype(np.float32)[None, :]
     feeds = {"x": x, "y": y}
     if "train_size" in inputs:
         feeds["train_size"] = np.array([s], dtype=np.int64)
@@ -136,6 +149,10 @@ def main() -> int:
     limit = int(args.skip_larger_than_gb * 2**30)
     graphs = []
     for nbytes, g in sized:
+        w = REAL_WEIGHTS.get(g.stem)
+        if w is not None and (w.parent / g.name).exists():
+            graphs.append(g)   # in-situ: no staging, so size is irrelevant
+            continue
         if nbytes > limit:
             _mark(f"{g.stem}_VERDICT", f"SKIPPED ({nbytes / 2**30:.1f} GB of initializers "
                                        f"> --skip-larger-than-gb {args.skip_larger_than_gb})")
@@ -165,6 +182,42 @@ def main() -> int:
                 arrays = {k: (v * args.synth_scale).astype(v.dtype)
                           if v.dtype.kind == "f" else v
                           for k, v in arrays.items()}
+            # Fast path: when the real weights already sit next to a copy of
+            # this graph -- which is exactly how the engine lays out the cache
+            # -- nothing needs staging. That is what makes tabfm-v1 testable at
+            # all: materializing its 6.6 GB into a temp dir, on top of the copy
+            # ORT and MLX each make, does not fit on a 16 GB machine.
+            insitu = weights.parent / graph_path.name if use_real else None
+            if insitu is not None and insitu.exists():
+                _mark(f"{stem}_INSITU", insitu)
+                sess = ort.InferenceSession(str(insitu), providers=["CPUExecutionProvider"])
+                interp = OnnxMlxGraph(insitu, weights_path=weights)
+                worst, ref_range = None, 0.0
+                for (t, h, sp) in shapes:
+                    feeds, train_size = _feeds(inputs, t, h, sp)
+                    ref = sess.run(["logits"], feeds)[0]
+                    t0 = time.perf_counter()
+                    got = interp.run(feeds)["logits"]
+                    dt = time.perf_counter() - t0
+                    c = compare(ref[:, train_size:, :], got[:, train_size:, :])
+                    worst = c if worst is None or c.prob_max_abs > worst.prob_max_abs else worst
+                    spread = float(np.ptp(ref[:, train_size:, :]))
+                    ref_range = max(ref_range, spread)
+                    if spread < 1e-9:
+                        degenerate_cases.append(f"{stem}@{t}x{h}x{sp}")
+                    _mark(f"{stem}_{t}x{h}x{sp}",
+                          f"real-insitu {c.describe()} ref_spread={spread:.3e} ms={dt * 1000:.0f}")
+                if any(c.startswith(stem + "@") for c in degenerate_cases):
+                    inconclusive.append(stem)
+                    _mark(f"{stem}_VERDICT", "INCONCLUSIVE (reference output is constant)")
+                else:
+                    scale = max(ref_range, 1.0)
+                    ok = (worst.max_abs <= 1e-4 * scale) if "regression" in stem \
+                        else (worst.argmax_agreement == 1.0 and worst.prob_max_abs <= 1e-4)
+                    (passed if ok else failed).append(stem)
+                    _mark(f"{stem}_VERDICT", "PASS" if ok else "FAIL")
+                continue
+
             with tempfile.TemporaryDirectory() as tmp:
                 # materialize_external_data returns the DIRECTORY it staged
                 # into (it is written to be handed to the plugin as
@@ -174,7 +227,7 @@ def main() -> int:
                 sess = ort.InferenceSession(str(staged), providers=["CPUExecutionProvider"])
                 interp = OnnxMlxGraph(staged)
 
-                worst = None
+                worst, ref_range = None, 0.0
                 for (t, h, s) in shapes:
                     feeds, train_size = _feeds(inputs, t, h, s)
                     ref = sess.run(["logits"], feeds)[0]
@@ -190,6 +243,7 @@ def main() -> int:
                     # collapse mitra's logits into [-0.036, 0.040].
                     q = ref[:, train_size:, :]
                     spread = float(np.ptp(q))
+                    ref_range = max(ref_range, spread)
                     degenerate = spread < 1e-9
                     _mark(f"{stem}_{t}x{h}x{s}",
                           f"{'real' if use_real else 'synth'} {c.describe()} "
@@ -204,7 +258,17 @@ def main() -> int:
                     inconclusive.append(stem)
                     _mark(f"{stem}_VERDICT", "INCONCLUSIVE (reference output is constant)")
                 else:
-                    ok = worst.argmax_agreement == 1.0 and worst.prob_max_abs <= 1e-4
+                    # Classification outputs are compared after softmax and are
+                    # bounded in [0, 1], so 1e-4 absolute is meaningful. A
+                    # REGRESSION output is unbounded -- tabicl's spans ~15 --
+                    # and holding it to the same absolute bound fails a backend
+                    # for fp32 dust. Scale the bound to the reference's range.
+                    if "regression" in stem:
+                        scale = max(ref_range, 1.0)
+                        ok = worst.max_abs <= 1e-4 * scale
+                        _mark(f"{stem}_BAR", f"regression: logit_max_abs <= 1e-4 x range({scale:.3g})")
+                    else:
+                        ok = worst.argmax_agreement == 1.0 and worst.prob_max_abs <= 1e-4
                     (passed if ok else failed).append(stem)
                     _mark(f"{stem}_VERDICT", "PASS" if ok else "FAIL")
         except UnsupportedOp as exc:
