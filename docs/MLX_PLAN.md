@@ -13,8 +13,12 @@ Written 2026-08-22, before any code. Everything below that is not marked
 GPU-hardening work earned that rule (three of its plan's claims died on
 contact with hardware).
 
-> **Status — see `docs/MLX_SPIKE_RESULTS.md` for the verdicts.** S-M1, S-M2 and
-> S-M4 are executed on an M3; S-M3 is next. Three of this plan's hypotheses
+> **Status: M1 SHIPPED.** All spikes executed on an M3, and
+> `SET anofox_tabfm_device='mlx'` now runs **every model CPU runs**, verified
+> through SQL against the CPU path (1.0 label agreement on all six
+> classification models; regression max diff ≤ 6.5e-05). Route 3 — the ONNX
+> interpreter — is what ships; the mitra hand-port is retained as its fast path
+> and independent oracle. Verdicts in `docs/MLX_SPIKE_RESULTS.md`. Three of this plan's hypotheses
 > died on contact, exactly as the paragraph above anticipated, and the sections
 > below are left as written so the corrections stay legible:
 >

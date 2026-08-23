@@ -17,8 +17,10 @@ LOAD anofox_tabfm
 # the hardware harness (tools/gpu_test) and the post-release end-to-end;
 # what stays pinned here is the network-free declaration surface below.
 
-# An unknown backend is refused with the accepted set.
+# An unknown backend is refused with the accepted set. 'mlx' joined it when the
+# Apple backend shipped (docs/MLX_PLAN.md); like the GPU plugins it fetches a
+# plugin only -- MLX's runtime is installed on the machine, not shipped by us.
 statement error
 CALL tabfm_download_runtime('tpu')
 ----
-<REGEX>:.*unknown backend 'tpu'.*expected 'cuda' or 'rocm'.*
+<REGEX>:.*unknown backend 'tpu'.*expected 'cuda', 'rocm' or 'mlx'.*

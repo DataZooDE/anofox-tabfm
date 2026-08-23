@@ -94,6 +94,58 @@ jobs:
             cuda_plugin.sha256
           if-no-files-found: error
 
+  mlx-plugin:
+    name: MLX plugin (Apple Silicon; links libmlx/libmlxc, no ORT)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MLX
+        # The plugin links Apple's runtime, which is installed on the machine
+        # rather than shipped by us. mlx-c is the C API; mlx is the engine.
+        run: brew install mlx mlx-c
+
+      - name: Build the plugin
+        # Three sources, and no libonnx/libprotobuf: the plugin parses the ONNX
+        # wire format itself (src/tabfm_onnx_reader.cpp) so a separately
+        # distributed .dylib is not coupled to protobuf's ABI.
+        run: |
+          clang++ -O2 -std=c++17 -shared -fPIC -fvisibility=hidden \
+            -o libanofox_tabfm_mlx_plugin.dylib \
+            src/tabfm_mlx_plugin.cpp src/tabfm_mlx_graph.cpp src/tabfm_onnx_reader.cpp \
+            -Isrc/include -I"$(brew --prefix)/include" \
+            -L"$(brew --prefix)/lib" -lmlxc -lmlx
+
+      - name: Sanity - one exported symbol, and only the expected dependencies
+        run: |
+          nm -gU libanofox_tabfm_mlx_plugin.dylib | grep -q "_TabFMGetPluginApi" \
+            || { echo "ABI symbol missing"; exit 1; }
+          # -fvisibility=hidden means the entry point should be the ONLY export.
+          test "$(nm -gU libanofox_tabfm_mlx_plugin.dylib | wc -l)" -eq 1 \
+            || { echo "unexpected extra exports:"; nm -gU libanofox_tabfm_mlx_plugin.dylib; exit 1; }
+          otool -L libanofox_tabfm_mlx_plugin.dylib
+          # Guard the design decision, not just the build: if libonnx or
+          # libprotobuf ever appear here, the dependency-light property is gone.
+          ! otool -L libanofox_tabfm_mlx_plugin.dylib | grep -qE "libonnx|libprotobuf" \
+            || { echo "plugin linked onnx/protobuf; see tabfm_onnx_reader.hpp"; exit 1; }
+          shasum -a 256 libanofox_tabfm_mlx_plugin.dylib | tee mlx_plugin.sha256
+
+      # A GitHub macOS runner has Apple Silicon but no model cache, so this
+      # proves the artifact RESOLVES and refuses cleanly -- the same contract
+      # the CUDA and MIGraphX jobs assert on GPU-less machines.
+      - name: Load check - dlopen answers and create fails gracefully
+        run: |
+          cc -O2 -o plugin_load_check tools/gpu_test/plugin_load_check.c
+          ./plugin_load_check ./libanofox_tabfm_mlx_plugin.dylib
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: anofox-tabfm-mlx-plugin
+          path: |
+            libanofox_tabfm_mlx_plugin.dylib
+            mlx_plugin.sha256
+          if-no-files-found: error
+
   migraphx-plugin:
     name: MIGraphX plugin (links libmigraphx_c only)
     runs-on: ubuntu-22.04
@@ -143,7 +195,7 @@ jobs:
   publish:
     name: Attach plugins to the release (tags only)
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [cuda-plugin, migraphx-plugin]
+    needs: [cuda-plugin, migraphx-plugin, mlx-plugin]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/download-artifact@v4
@@ -156,5 +208,6 @@ jobs:
           gh release upload "${GITHUB_REF_NAME}" \
             libanofox_tabfm_cuda_plugin.so \
             libanofox_tabfm_migraphx_plugin.so \
-            cuda_plugin.sha256 migraphx_plugin.sha256 \
+            libanofox_tabfm_mlx_plugin.dylib \
+            cuda_plugin.sha256 migraphx_plugin.sha256 mlx_plugin.sha256 \
             --repo "${GITHUB_REPOSITORY}" --clobber

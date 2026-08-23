@@ -587,7 +587,23 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 		}
 		return true;
 	}
-	error = "tabfm_download_runtime: unknown backend '" + backend + "' — expected 'cuda' or 'rocm'.";
+	if (backend == "mlx") {
+		// Unlike cuda, no runtime comes with it: the MLX plugin links Apple's
+		// own libmlx/libmlxc, which are installed on the machine rather than
+		// shipped by us (brew install mlx mlx-c), and it needs no ORT at all --
+		// it executes the ONNX graph itself. So this fetches the plugin alone.
+		out.plugin_name = "libanofox_tabfm_mlx_plugin.dylib";
+		out.plugin_url = PluginReleaseUrl(out.plugin_name);
+		if (out.plugin_url.empty()) {
+			error = "tabfm_download_runtime: no plugin-carrying release is pinned in this build yet. The MLX "
+			        "plugin is built by the anofox_tabfm_mlx_plugin CMake target on an arm64 Mac with MLX "
+			        "installed (brew install mlx mlx-c) — place libanofox_tabfm_mlx_plugin.dylib in the "
+			        "anofox_tabfm_ep_path directory.";
+			return false;
+		}
+		return true;
+	}
+	error = "tabfm_download_runtime: unknown backend '" + backend + "' — expected 'cuda', 'rocm' or 'mlx'.";
 	return false;
 }
 
@@ -614,7 +630,8 @@ unique_ptr<FunctionData> DownloadRuntimeBind(ClientContext &context, TableFuncti
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_download_runtime");
 
 	if (input.inputs.empty() || input.inputs[0].IsNull()) {
-		throw InvalidInputException("tabfm_download_runtime: backend cannot be NULL — expected 'cuda' or 'rocm'");
+		throw InvalidInputException(
+		    "tabfm_download_runtime: backend cannot be NULL — expected 'cuda', 'rocm' or 'mlx'");
 	}
 	auto result = make_uniq<DownloadRuntimeBindData>();
 	result->backend = StringUtil::Lower(StringValue::Get(input.inputs[0]));
@@ -1532,7 +1549,7 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	RegisterSet(loader, "anofox_tabfm_download_runtime", "tabfm_download_runtime", {{LogicalType::VARCHAR}},
 	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, DownloadRuntimeBind), DownloadRuntimeInit,
 	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, DownloadRuntimeExecute),
-	            "Download an ONNX Runtime execution-provider plugin library ('cuda') into the directory named by SET "
+	            "Download a backend plugin library ('cuda', 'rocm' or 'mlx') into the directory named by SET "
 	            "anofox_tabfm_ep_path (default: the cache dir's 'runtime' subdirectory), so that device can be "
 	            "driven without a matching compile-time flavor build. Returns one row per extracted file (file, "
 	            "bytes, status).",

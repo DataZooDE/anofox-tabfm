@@ -63,11 +63,16 @@ standalone plugins the extension `dlopen`s at runtime through
 
 - `src/tabfm_migraphx_plugin.cpp` — drives MIGraphX directly, no ORT involved
 - `src/tabfm_cuda_plugin.cpp` — links its own shared ORT-GPU distribution
+- `src/tabfm_mlx_plugin.cpp` — Apple MLX; runs the shipped ONNX graph itself
+  via `src/tabfm_mlx_graph.cpp` (+ `tabfm_onnx_reader.cpp`, a minimal
+  wire-format parser so the plugin needs no libonnx/libprotobuf). mitra also
+  has a hand-ported forward, kept as the fast path and as an independent
+  oracle for the interpreter. macOS/arm64 only; see `docs/MLX_PLAN.md`.
 
 So every build discovers GPUs (`tabfm_devices()` probes NVML and the KFD sysfs
 topology in all flavors — neither needs a vendor SDK) and every build accepts
-`SET anofox_tabfm_device='cuda'|'rocm'`; `SET anofox_tabfm_ep_path` says where
-the plugin lives. CoreML is the exception and stays flavor-gated, being an
+`SET anofox_tabfm_device='cuda'|'rocm'|'mlx'`; `SET anofox_tabfm_ep_path` says
+where the plugin lives. CoreML is the exception and stays flavor-gated, being an
 in-process ORT EP. GPU code paths must never be *required* for the cpu build —
 that constraint is about what is LINKED, which is unchanged.
 
