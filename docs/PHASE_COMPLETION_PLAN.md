@@ -140,7 +140,14 @@ decision lands.
 
 The readiness review named five gaps; state after closure:
 
-1. **Distribution** — `TABFM_PLUGIN_RELEASE_TAG` pinned to `v2026.08.22`
+1. **Distribution** ✅ **closed 2026-08-23**: #35 merged, `v2026.08.22`
+   tagged on main, all three plugins (cuda, migraphx, **mlx**) published as
+   release assets, and B3 verified end to end with ZERO hand-staging on both
+   Linux GPUs — stock official CLI + the tag's artifact + nothing but
+   `CALL tabfm_download_runtime(...)`: CUDA `SERVED=cuda:0` (RTX 4090) and
+   ROCm `SERVED=rocm:0` (gfx1201), 90/90 non-null predictions each. The MLX
+   dylib publishes too; its self-service check runs on a Mac
+   (`tabfm_download_runtime('mlx')`). Originally: pinned to `v2026.08.22`
    *before* the tag exists (self-referential release). Remaining: merge #35,
    cut the tag on main, then the zero-staging end-to-end (B3).
 2. **CUDA concurrency** ✅ `a_concurrency` on a 4090: 0 mismatches,
