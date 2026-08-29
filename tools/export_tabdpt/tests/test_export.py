@@ -124,9 +124,40 @@ def test_frozen_scale_patch_is_algebraically_upstream():
     assert torch.allclose(upstream, patched, atol=1e-6), (upstream - patched).abs().max()
 
 
+WEIGHTS = pathlib.Path.home() / ".cache/anofox-tabfm/Layer6__TabDPT@main/model.safetensors"
+
+
 def test_real_config_matches_published_checkpoint():
     """Skipped unless the real weights are cached; a dims drift is silent."""
-    weights = pathlib.Path.home() / ".cache/anofox-tabfm/Layer6__TabDPT@main/model.safetensors"
-    if not weights.exists():
+    if not WEIGHTS.exists():
         pytest.skip("real TabDPT weights not cached")
-    configs.assert_matches_checkpoint(str(weights))  # raises SystemExit on drift
+    configs.assert_matches_checkpoint(str(WEIGHTS))  # raises SystemExit on drift
+
+
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_committed_map_covers_the_published_safetensors(task):
+    """The claim the C++ header-sha constant cannot make on its own.
+
+    `ExpectedWeightsHeaderShaFor("tabdpt", ...)` is a constant compared against a
+    constant: it would keep passing if Layer 6 republished the checkpoint with a
+    different tensor layout, while the ext graph's baked offsets silently indexed
+    the wrong tensors. Checking the real file is what actually pins it.
+    """
+    import hashlib
+
+    if not WEIGHTS.exists():
+        pytest.skip("real TabDPT weights not cached")
+
+    with open(WEIGHTS, "rb") as f:
+        n = int.from_bytes(f.read(8), "little")
+        raw = f.read(n)
+    header = json.loads(raw)
+    have = set(header) - {"__metadata__"}
+
+    tmap = json.loads((RESOURCES / f"tensor_map_tabdpt_{task}.json").read_text())
+    want = set(tmap["initializers"].values())
+    assert not (want - have), sorted(want - have)[:5]
+
+    # Both tasks read the SAME file, so both must agree with the one baked sha.
+    assert hashlib.sha256(raw).hexdigest() == (
+        "0959127002658b64f981ea233be8f1efec3dade6384a4fe637c75400a41a9a78")

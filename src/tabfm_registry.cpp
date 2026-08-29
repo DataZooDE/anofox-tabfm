@@ -269,6 +269,12 @@ static const char *const BUILTIN_TABICL = R"json({
 //
 // max_features is a hard 128: the export wrapper pads x up to the model's fixed
 // num_features, so a wider table would make that pad negative.
+//
+// max_classes is 16, the checkpoint's actual head width (cfg.model
+// max_num_classes), NOT the catalog's usual 10. The engine reads this ceiling
+// straight off the registry entry (`resolved.max_classes` in tabfm_engine.cpp),
+// so declaring 10 here would refuse an 11-16 class task that the graph is
+// perfectly able to serve.
 // Orion-MSP (Lexsi Labs, MIT) — the sibling of orion-bix, and like it
 // CLASSIFICATION ONLY (upstream ships sklearn/classifier.py and no regressor).
 //
@@ -323,7 +329,7 @@ static const char *const BUILTIN_TABDPT = R"json({
   "capabilities": ["classify", "regress"],
   "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
                       "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
-  "size_regime": {"max_rows": 100000, "max_features": 128, "max_classes": 10}
+  "size_regime": {"max_rows": 100000, "max_features": 128, "max_classes": 16}
 })json";
 
 static const char *const BUILTIN_ORION_BIX = R"json({

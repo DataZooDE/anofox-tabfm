@@ -10,16 +10,33 @@
 #              complement: it runs the ACTUAL published checkpoints and asserts
 #              they are actually good at a learnable task.
 #
-#              It is opt-in because the weights are gated, non-commercial and
-#              ~40-50 MB each, so CI must not fetch them (and the licence wall
-#              forbids committing them). Enable with:
+#              It is opt-in because most of these weights are gated,
+#              non-commercial and 40-250 MB each, so CI must not fetch them (and
+#              the licence wall forbids committing them).
 #
-#                CALL tabfm_download('classification', model := 'tabpfn-v2-5-real');
+#              Every model asserted below needs its weights staged first — a
+#              missing artifact fails as "no downloaded weights", which looks
+#              nothing like the accuracy regression this file exists to catch.
+#              The full set:
+#
+#                # TabPFN 2.5 (the baseline the -real entry is compared against),
+#                # 2.5-real and 2.6 — all Prior Labs .ckpt, so all need the
+#                # one-time converter. --variant=real writes to <task>-real/ so it
+#                # cannot overwrite the default checkpoint of the same repo.
 #                cd tools/export_tabpfn
-#                uv run python convert_weights.py classification --arch=v2.5 --variant=real
-#                uv run python convert_weights.py regression     --arch=v2.5 --variant=real
-#                uv run python convert_weights.py classification --arch=v2.6
-#                uv run python convert_weights.py regression     --arch=v2.6
+#                for t in classification regression; do
+#                  uv run python convert_weights.py $t --arch=v2.5
+#                  uv run python convert_weights.py $t --arch=v2.5 --variant=real
+#                  uv run python convert_weights.py $t --arch=v2.6
+#                done
+#
+#                # Orion-MSP: .ckpt too, classification only.
+#                cd ../export_orion_msp && uv run python convert_weights.py
+#
+#                # TabDPT needs NO converter — Layer 6 publish safetensors whose
+#                # keys are already the model's namespace. One file, both tasks:
+#                CALL tabfm_download('classification', model := 'tabdpt');
+#
 #                TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
 # group: [anofox_tabfm]
 

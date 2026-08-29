@@ -196,11 +196,21 @@ class ExportWrapper(torch.nn.Module):
         # does before the forward. Computed unconditionally so the two branches
         # below cannot read an unbound value; for classification `y` holds dense
         # class ids and y_src is left untouched, so this costs a mean/std that
-        # is then discarded. std is guarded the way upstream's normalize_data
-        # is, so a constant target cannot divide by zero.
+        # is then discarded.
+        #
+        # The epsilon is ADDITIVE and must stay that way: upstream's
+        # normalize_data is `std = maskstd(...) + 1e-6`. Guarding instead with
+        # "if std is tiny, use 1.0" agrees with upstream on ordinary data but
+        # diverges badly on a CONSTANT training target, where upstream's std is
+        # ~1e-6 and predictions collapse to the mean, while a std of 1.0 lets the
+        # bar-distribution output through at full scale — a silent wrong answer
+        # on exactly the degenerate input the guard exists for.
+        #
+        # `maskstd` divides by (num - 1), i.e. the unbiased estimator, which is
+        # what torch's .std() computes by default; y reaches us NaN-free (the
+        # engine imputes), so the mask in upstream's version is all-true here.
         mean_y = y.mean(dim=1, keepdim=True)
-        std_y = y.std(dim=1, keepdim=True)
-        std_y = torch.where(std_y > 1e-8, std_y, torch.ones_like(std_y))
+        std_y = y.std(dim=1, keepdim=True) + 1e-6
         y_src = y if self.task == "classification" else (y - mean_y) / std_y
 
         # num_features is documented upstream as unused and slated for removal;

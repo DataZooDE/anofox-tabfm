@@ -39,10 +39,15 @@ tabdpt	apache-2.0	true
 
 # max_features is a hard cap, not a soft one: the exported graph pads x up to the
 # model's fixed num_features (128), so a wider table cannot be served at all.
+#
+# max_classes is 16 rather than the catalog's usual 10 because that is the
+# checkpoint's real head width, and the engine takes its class ceiling straight
+# from this entry — declaring 10 would refuse an 11-16 class task the graph can
+# serve perfectly well.
 query III
 SELECT max_rows, max_features, max_classes FROM tabfm_list_models() WHERE model = 'tabdpt'
 ----
-100000	128	10
+100000	128	16
 
 # --- the fixture model (real forward pass, offline) ----------------------------
 
