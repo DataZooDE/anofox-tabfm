@@ -99,10 +99,69 @@ R"(
           FROM query(
             CASE WHEN test IS NULL
                  THEN 'FROM ' || data
+                 -- The guard below runs BEFORE this union, because the union is
+                 -- what destroys the evidence: UNION ALL BY NAME fills a column
+                 -- missing from one side with NULL rather than failing, so a
+                 -- column present on only one relation becomes an all-NULL
+                 -- feature on the other and the prediction quietly degrades to
+                 -- roughly chance. Measured on real weights, every model in the
+                 -- catalog fell to 0.27-0.58 on a task where they otherwise
+                 -- score 0.92-0.98, and nothing raised.
                  ELSE 'SELECT * FROM (FROM ' || data || ') UNION ALL BY NAME '
                       || 'SELECT *, NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
             END)
         ) anofox_tabfm_row
+        -- Feature-column contract for the train/test form. Both column lists are
+        -- read from the relations THEMSELVES (struct_keys of one row), so this
+        -- sees them before the union above flattens them together. `error()` is
+        -- evaluated lazily inside CASE, so the matched case costs nothing beyond
+        -- reading one row from each side. An empty relation yields NULL here and
+        -- the check is skipped -- harmless, since it scores no rows anyway.
+        , (SELECT CASE
+             WHEN test IS NULL THEN true
+             WHEN __anofox_ctx_only IS NULL OR __anofox_test_only IS NULL THEN true
+             WHEN len(__anofox_ctx_only) = 0 AND len(__anofox_test_only) = 0 THEN true
+             ELSE error(
+               'anofox_tabfm: the context relation and the `test` relation must expose the same feature '
+               || 'columns, but '
+               -- Every branch needs an ELSE: a CASE with no ELSE yields NULL,
+               -- '...' || NULL is NULL, and error(NULL) does not raise -- the
+               -- guard would then evaluate to NULL and WHERE NULL would drop
+               -- every row, turning this check into the very silent-wrong-answer
+               -- it exists to prevent.
+               || CASE WHEN len(__anofox_ctx_only) > 0
+                       THEN 'only in the context relation: ' || array_to_string(__anofox_ctx_only, ', ')
+                       ELSE '' END
+               || CASE WHEN len(__anofox_ctx_only) > 0 AND len(__anofox_test_only) > 0 THEN '; ' ELSE '' END
+               || CASE WHEN len(__anofox_test_only) > 0
+                       THEN 'only in the `test` relation: ' || array_to_string(__anofox_test_only, ', ')
+                       ELSE '' END
+               || '. A column on one side only is filled with NULL on the other, which silently degrades the '
+               || 'prediction instead of failing. Drop the column, add it to the other relation, or name the '
+               || 'shared columns explicitly with features := [...].')
+           END AS __anofox_feature_guard
+           FROM (
+             SELECT
+               list_filter(__c, lambda c: lcase(c) <> lcase(target)
+                                          AND NOT list_contains(list_transform(__t, lambda x: lcase(x)), lcase(c))
+                                          AND (features IS NULL
+                                               OR list_contains(list_transform(features, lambda f: lcase(f)),
+                                                                lcase(c)))) AS __anofox_ctx_only,
+               list_filter(__t, lambda c: lcase(c) <> lcase(target)
+                                          AND NOT list_contains(list_transform(__c, lambda x: lcase(x)), lcase(c))
+                                          AND (features IS NULL
+                                               OR list_contains(list_transform(features, lambda f: lcase(f)),
+                                                                lcase(c)))) AS __anofox_test_only
+             FROM (
+               SELECT
+                 (SELECT struct_keys(r) FROM (SELECT r FROM query('FROM ' || data) r LIMIT 1)) AS __c,
+                 (SELECT struct_keys(r) FROM (SELECT r FROM query('FROM ' || COALESCE(test, data)) r LIMIT 1)) AS __t
+             )
+           )) __anofox_guard
+        -- Referenced, not merely joined: an unreferenced cross join is pruned by
+        -- the optimizer and the error() would never be reached. The guard is
+        -- true whenever the contract holds, so this filters nothing.
+        WHERE __anofox_feature_guard
       )
     ) WHERE (test IS NULL) OR (NOT is_training)
 )",
@@ -139,10 +198,69 @@ R"(
           FROM query(
             CASE WHEN test IS NULL
                  THEN 'FROM ' || data
+                 -- The guard below runs BEFORE this union, because the union is
+                 -- what destroys the evidence: UNION ALL BY NAME fills a column
+                 -- missing from one side with NULL rather than failing, so a
+                 -- column present on only one relation becomes an all-NULL
+                 -- feature on the other and the prediction quietly degrades to
+                 -- roughly chance. Measured on real weights, every model in the
+                 -- catalog fell to 0.27-0.58 on a task where they otherwise
+                 -- score 0.92-0.98, and nothing raised.
                  ELSE 'SELECT * FROM (FROM ' || data || ') UNION ALL BY NAME '
                       || 'SELECT *, NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
             END)
         ) anofox_tabfm_row
+        -- Feature-column contract for the train/test form. Both column lists are
+        -- read from the relations THEMSELVES (struct_keys of one row), so this
+        -- sees them before the union above flattens them together. `error()` is
+        -- evaluated lazily inside CASE, so the matched case costs nothing beyond
+        -- reading one row from each side. An empty relation yields NULL here and
+        -- the check is skipped -- harmless, since it scores no rows anyway.
+        , (SELECT CASE
+             WHEN test IS NULL THEN true
+             WHEN __anofox_ctx_only IS NULL OR __anofox_test_only IS NULL THEN true
+             WHEN len(__anofox_ctx_only) = 0 AND len(__anofox_test_only) = 0 THEN true
+             ELSE error(
+               'anofox_tabfm: the context relation and the `test` relation must expose the same feature '
+               || 'columns, but '
+               -- Every branch needs an ELSE: a CASE with no ELSE yields NULL,
+               -- '...' || NULL is NULL, and error(NULL) does not raise -- the
+               -- guard would then evaluate to NULL and WHERE NULL would drop
+               -- every row, turning this check into the very silent-wrong-answer
+               -- it exists to prevent.
+               || CASE WHEN len(__anofox_ctx_only) > 0
+                       THEN 'only in the context relation: ' || array_to_string(__anofox_ctx_only, ', ')
+                       ELSE '' END
+               || CASE WHEN len(__anofox_ctx_only) > 0 AND len(__anofox_test_only) > 0 THEN '; ' ELSE '' END
+               || CASE WHEN len(__anofox_test_only) > 0
+                       THEN 'only in the `test` relation: ' || array_to_string(__anofox_test_only, ', ')
+                       ELSE '' END
+               || '. A column on one side only is filled with NULL on the other, which silently degrades the '
+               || 'prediction instead of failing. Drop the column, add it to the other relation, or name the '
+               || 'shared columns explicitly with features := [...].')
+           END AS __anofox_feature_guard
+           FROM (
+             SELECT
+               list_filter(__c, lambda c: lcase(c) <> lcase(target)
+                                          AND NOT list_contains(list_transform(__t, lambda x: lcase(x)), lcase(c))
+                                          AND (features IS NULL
+                                               OR list_contains(list_transform(features, lambda f: lcase(f)),
+                                                                lcase(c)))) AS __anofox_ctx_only,
+               list_filter(__t, lambda c: lcase(c) <> lcase(target)
+                                          AND NOT list_contains(list_transform(__c, lambda x: lcase(x)), lcase(c))
+                                          AND (features IS NULL
+                                               OR list_contains(list_transform(features, lambda f: lcase(f)),
+                                                                lcase(c)))) AS __anofox_test_only
+             FROM (
+               SELECT
+                 (SELECT struct_keys(r) FROM (SELECT r FROM query('FROM ' || data) r LIMIT 1)) AS __c,
+                 (SELECT struct_keys(r) FROM (SELECT r FROM query('FROM ' || COALESCE(test, data)) r LIMIT 1)) AS __t
+             )
+           )) __anofox_guard
+        -- Referenced, not merely joined: an unreferenced cross join is pruned by
+        -- the optimizer and the error() would never be reached. The guard is
+        -- true whenever the contract holds, so this filters nothing.
+        WHERE __anofox_feature_guard
       )
     ) WHERE (test IS NULL) OR (NOT is_training)
 )",
