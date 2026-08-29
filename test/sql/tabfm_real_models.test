@@ -1,0 +1,153 @@
+# name: test/sql/tabfm_real_models.test
+# description: REAL-WEIGHT tests for the models onboarded from the TabArena
+#              v0.1.4 board (RealTabPFN-2.5 and TabPFN-2.6), plus the 2.5 entry
+#              they are compared against.
+#
+#              Every other *.test here runs the committed random-init fixtures:
+#              that proves the graph loads and the engine drives it, but a
+#              random-init model cannot tell a correct weight mapping from a
+#              scrambled one — it predicts noise either way. This file is the
+#              complement: it runs the ACTUAL published checkpoints and asserts
+#              they are actually good at a learnable task.
+#
+#              It is opt-in because the weights are gated, non-commercial and
+#              ~40-50 MB each, so CI must not fetch them (and the licence wall
+#              forbids committing them). Enable with:
+#
+#                CALL tabfm_download('classification', model := 'tabpfn-v2-5-real');
+#                cd tools/export_tabpfn
+#                uv run python convert_weights.py classification --arch=v2.5 --variant=real
+#                uv run python convert_weights.py regression     --arch=v2.5 --variant=real
+#                uv run python convert_weights.py classification --arch=v2.6
+#                uv run python convert_weights.py regression     --arch=v2.6
+#                TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+require-env TABFM_REAL_WEIGHTS
+
+statement ok
+LOAD anofox_tabfm
+
+# The 2.5 line and 2.6 are non-commercial + gated: without this every query
+# below fails on the licence gate rather than on model quality.
+statement ok
+SET anofox_tabfm_accept_hf_license = true
+
+# A learnable, deterministic task. Hash-split rather than positionally split:
+# a positional split of a periodic series puts context and query in different
+# phase regions and drives accuracy to chance for reasons that have nothing to
+# do with the weights (the lesson recorded in tools/gpu_test/scenarios).
+statement ok
+CREATE TABLE base AS
+SELECT i AS row_id,
+       sin(i * 0.11) f1, cos(i * 0.07) f2, (i % 13) / 13.0 f3, ln(1 + (i % 31)) f4,
+       CASE WHEN sin(i * 0.11) + 0.5 * cos(i * 0.07) >  0.3 THEN 'a'
+            WHEN sin(i * 0.11) + 0.5 * cos(i * 0.07) > -0.3 THEN 'b' ELSE 'c' END AS y,
+       sin(i * 0.11) * 5 + cos(i * 0.07) * 2 AS tgt
+FROM range(240) t(i);
+
+# The context tables carry ONLY the four features plus their own label, and the
+# query table carries the same four features plus row_id (to join truth back).
+# Selecting `*` into the context instead would hand it a feature the query table
+# does not have — `tgt` in the classification case — and the prediction silently
+# degrades to roughly chance rather than erroring. That mismatch is exactly what
+# an accuracy floor is here to catch, so the tables are built explicitly.
+statement ok
+CREATE TABLE ctx_cls AS SELECT f1, f2, f3, f4, y FROM base WHERE hash(row_id) % 100 < 70;
+
+statement ok
+CREATE TABLE ctx_reg AS SELECT f1, f2, f3, f4, tgt FROM base WHERE hash(row_id) % 100 < 70;
+
+statement ok
+CREATE TABLE qry AS SELECT row_id, f1, f2, f3, f4 FROM base WHERE hash(row_id) % 100 >= 70;
+
+statement ok
+CREATE TABLE truth AS SELECT row_id, y, tgt FROM base WHERE hash(row_id) % 100 >= 70;
+
+# --- RealTabPFN-2.5 -----------------------------------------------------------
+#
+# The load-bearing assertion for WS1: this entry reuses 2.5's bundled graph and
+# tensor map, and its weights come from a DIFFERENT checkpoint in the SAME HF
+# repo. If the cache paths collided, or the real checkpoint did not populate the
+# 2.5 tensor map, the model would still "run" — it would just predict badly.
+# Only an accuracy floor catches that, which is the whole point of this file.
+
+statement ok
+CREATE TABLE c_real25 AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'tabpfn-v2-5-real');
+
+query I
+SELECT count(*) FROM c_real25 WHERE yhat IS NULL
+----
+0
+
+# A correctly-wired real checkpoint scores far above chance (3 classes ⇒ ~0.33).
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_real25 c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_real25 AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'tabpfn-v2-5-real');
+
+# R^2 well above zero. A scrambled tensor mapping lands at or below 0 here.
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.80
+FROM r_real25 r JOIN truth t USING (row_id)
+----
+true
+
+# --- TabPFN-2.6 ---------------------------------------------------------------
+
+statement ok
+CREATE TABLE c_26 AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'tabpfn-v2-6');
+
+query I
+SELECT count(*) FROM c_26 WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_26 c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_26 AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'tabpfn-v2-6');
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.80
+FROM r_26 r JOIN truth t USING (row_id)
+----
+true
+
+# --- the two 2.5 checkpoints are genuinely DIFFERENT weights -------------------
+#
+# 2.5 and 2.5-real share a graph and a tensor map, so a cache-path collision (or
+# a copy-pasted URL) would leave both entries serving the SAME bytes and every
+# assertion above would still pass. Predictions from continued pre-training on
+# real data must not be identical to the synthetic-only ones.
+#
+# The comparison is on REGRESSION output, not class labels: two good models
+# agree on nearly every label of an easy 3-class task, so a label-difference
+# check would be flaky. Continuous point estimates from different weights
+# effectively never coincide to the bit.
+
+statement ok
+CREATE TABLE r_25 AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'tabpfn-v2-5');
+
+query I
+SELECT max(abs(a.yhat - b.yhat)) > 1e-6
+FROM r_25 a JOIN r_real25 b USING (row_id)
+----
+true

@@ -1,8 +1,8 @@
-"""Build the random-init CI fixture for test/fixtures/tabpfn{,25,3}/ (both tasks).
+"""Build the random-init CI fixture for test/fixtures/tabpfn{,25,26,3}/ (both tasks).
 
-Pass ``--arch=v2.5`` or ``--arch=v3`` to build the 2.5 / 3 fixture into
-test/fixtures/tabpfn25/ or test/fixtures/tabpfn3/; the default (v2) writes
-test/fixtures/tabpfn/ exactly as before.
+Pass ``--arch=v2.5``, ``--arch=v2.6`` or ``--arch=v3`` to build that generation's
+fixture into test/fixtures/tabpfn25/, tabpfn26/ or tabpfn3/; the default (v2)
+writes test/fixtures/tabpfn/ exactly as before.
 
 Per task: weight-free graph + tiny random safetensors (checkpoint-namespace
 keys, _pos_base excluded/inline) + tensor map + golden_<task>.json parity slice.
@@ -20,21 +20,29 @@ from export_tabpfn import configs, export
 from export_tabpfn.tabpfn_patched import build_random_model, ExportWrapper
 
 SEED = 0
+# Exact match on the value, not substring sniffing. The old form tested
+# `"2.5" in a` then `"3" in a`, which had no room for a fourth generation and
+# would have quietly handed "--arch=v2.6" the v2 fixture directory.
+ARCHES = {"v2": "tabpfn", "v2.5": "tabpfn25", "v2.6": "tabpfn26", "v3": "tabpfn3"}
+
+
 def _arch_from_argv() -> str:
     for a in sys.argv[1:]:
         if a.startswith("--arch"):
-            if "2.5" in a:
-                return "v2.5"
-            if "3" in a:
-                return "v3"
+            value = a.split("=", 1)[1] if "=" in a else ""
+            if value not in ARCHES:
+                raise SystemExit(
+                    f"unknown --arch {value!r}; expected one of {sorted(ARCHES)}")
+            return value
     return "v2"
 
 
 ARCH = _arch_from_argv()
-SLUG = {"v2": "tabpfn", "v2.5": "tabpfn25", "v3": "tabpfn3"}[ARCH]
+SLUG = ARCHES[ARCH]
 OUT = pathlib.Path(__file__).resolve().parents[2] / "test" / "fixtures" / SLUG
 OUT.mkdir(parents=True, exist_ok=True)
-cfg = {"v2": configs.fixture, "v2.5": configs.fixture25, "v3": configs.fixture3}[ARCH]()
+cfg = {"v2": configs.fixture, "v2.5": configs.fixture25,
+       "v2.6": configs.fixture26, "v3": configs.fixture3}[ARCH]()
 MAXC = cfg.max_classes
 T, H, N = cfg.example
 

@@ -23,6 +23,8 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; needs the ckpt→safetensors convert (native reader rejects opcode 0x65); upstream ships no regressor |
 | **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
 | **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; ckpt→safetensors convert required |
+| **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes** |
+| **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
 
 ### TabPFN-3 — done
 
@@ -47,6 +49,98 @@ uv run python make_fixture.py --arch=v3           # regenerate the CI fixture
 
 Offline fixture: `test/sql/tabfm_tabpfn3.test`.
 
+### RealTabPFN-2.5 — done
+
+`Prior-Labs/tabpfn_2_5` ships more than the `_default` checkpoint the
+`tabpfn-v2-5` entry uses. `tabpfn-v2.5-{classifier,regressor}-v2.5_real.ckpt` is
+the same architecture continued-pre-trained on real tabular data, and TabArena
+v0.1.4 ranks it (1600 Elo) above TabICLv2. It ships as its own catalog entry
+because the two checkpoints score differently and users pick between them by
+name.
+
+It is the cheapest onboarding in the catalog so far, and deliberately so:
+
+- **Everything graph-shaped is reused.** Both checkpoints carry an identical
+  `config` block and an identical state_dict signature (154 clf / 121 reg
+  tensors — same names, shapes, dtypes; only the values differ). A safetensors
+  JSON header is a function of names/shapes/dtypes, so converting either
+  checkpoint yields a **byte-identical header** — verified against the real
+  weights. The entry therefore reuses `graph_tabpfn25_*`,
+  `tensor_map_tabpfn25_*` and `graph_ext_tabpfn25_*` verbatim and embeds **no
+  new bytes**. `ExpectedWeightsHeaderShaFor` returns the same two shas for both
+  ids, and `test_tabfm_model_spec.cpp` pins that so a divergent future
+  checkpoint fails loudly instead of mis-indexing the ext graph's baked offsets.
+- **The cache path is NOT shared.** `WeightsManifest::CacheSlug` keys on the HF
+  *repo*, and both checkpoints live in `Prior-Labs/tabpfn_2_5`. Identical
+  `files[].path` values would make the two entries download over each other and
+  silently serve the wrong weights, so the real entry uses
+  `classification-real/` and `regression-real/`.
+
+```bash
+cd tools/export_tabpfn
+uv run python convert_weights.py classification --arch=v2.5 --variant=real
+uv run python convert_weights.py regression     --arch=v2.5 --variant=real
+```
+
+Offline fixture: `test/sql/tabfm_tabpfn25_real.test` (shares the tabpfn25
+fixture — sharing is the point). Real-weight behaviour:
+`test/sql/tabfm_real_models.test`.
+
+### TabPFN-2.6 — done
+
+Released alongside the 2.5 line and **#2 single model on TabArena v0.1.4**
+(1624 Elo, behind only TabPFN-3). A 2.5-*line* architecture: same
+emsize/nhead/features-per-group/thinking-row layout, and — the part that decides
+the export — it still carries `pre_generated_column_embeddings`
+(2000 × emsize//4), so `prepare_model_for_export` takes the same non-v2 branch
+as 2.5.
+
+It needed **no new export patches at all**; registering `"v2.6"` in
+`tabpfn_patched.ARCHES` was the whole change. What actually differs is
+`layernorm_type="rmsnorm"` and a deeper per-layer parameterisation — 322 clf /
+324 reg mapped initializers against 2.5's 250 / 192 — which is why it gets its
+own graphs rather than sharing 2.5's the way `tabpfn-v2-5-real` does.
+
+2.6 also widens the documented regime to ≤50 000 samples / ≤2000 features
+(2.5: 10 000 / 500), reflected in its `size_regime`.
+
+```bash
+cd tools/export_tabpfn
+uv run export_tabpfn --task classification --config real26 --out ../../resources
+uv run python make_fixture.py --arch=v2.6          # regenerate the CI fixture
+uv run python convert_weights.py classification --arch=v2.6
+```
+
+Offline fixture: `test/sql/tabfm_tabpfn26.test`.
+
+### Testing against real weights
+
+Every `test/sql/tabfm_<model>.test` runs the committed random-init fixture:
+that proves the graph loads and the engine drives it, but a random-init model
+predicts noise whether or not the tensor mapping is correct, so it cannot tell a
+right wiring from a scrambled one.
+
+`test/sql/tabfm_real_models.test` is the complement — it runs the **actual
+published checkpoints** and asserts they are good at a learnable task
+(accuracy ≥ 0.90, R² ≥ 0.80). It is gated behind `require-env
+TABFM_REAL_WEIGHTS` because the weights are gated, non-commercial and ~40–50 MB
+each, so CI must not fetch them and the licence wall forbids committing them.
+
+```bash
+TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
+```
+
+Measured on that split: `tabpfn-v2-5-real` 0.984, `tabpfn-v2-6` 0.984,
+`tabpfn-v2-5` 0.969, `mitra` 0.938, `tabicl-v2` 0.922 — the two newly onboarded
+models lead, matching their TabArena order.
+
+One trap worth recording, because it cost a debugging round: the context table
+and the test table must expose the **same feature columns**. Building the
+context with `SELECT *` gives it a column the query table lacks (`tgt`), and the
+prediction then degrades to roughly chance *without raising* — every model in
+the catalog scored 0.27–0.58 until the tables were matched, at which point they
+all jumped to 0.92–0.98.
+
 ### Capabilities per model
 
 `tabfm_generate` and `tabfm_impute` (see `docs/GENERATE.md`) are built on the
@@ -59,6 +153,8 @@ regress capabilities above — there is no separate per-model work.
 | `mitra` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2-5` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabpfn-v2-5-real` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabpfn-v2-6` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v3` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabicl-v2` | ✅ | ✅ | ✅ | ✅ all columns |
 | `orion-bix` | ✅ | ✗ | ✅ | categorical columns only |

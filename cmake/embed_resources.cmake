@@ -39,6 +39,8 @@ set(_tabfm_inputs
     "graph_ext_tabpfn_regression.onnx"
     "graph_ext_tabpfn25_classification.onnx"
     "graph_ext_tabpfn25_regression.onnx"
+    "graph_ext_tabpfn26_classification.onnx"
+    "graph_ext_tabpfn26_regression.onnx"
     "graph_ext_tabpfn3_classification.onnx"
     "graph_ext_tabpfn3_regression.onnx"
     "graph_ext_tabicl_classification.onnx"
@@ -57,6 +59,12 @@ set(_tabfm_inputs
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
     "graph_tabpfn25_classification.onnx"
     "graph_tabpfn25_regression.onnx"
+    # TabPFN-2.6 (Prior Labs, non-commercial) — its own graphs AND maps: the 2.6
+    # architecture maps 322/324 initializers where 2.5 maps 250/192.
+    "graph_tabpfn26_classification.onnx"
+    "graph_tabpfn26_regression.onnx"
+    "tensor_map_tabpfn26_classification.json"
+    "tensor_map_tabpfn26_regression.json"
     "tensor_map_tabpfn25_classification.json"
     "tensor_map_tabpfn25_regression.json"
     # Orion-BiX (MIT) — classification only, no regression graph upstream.

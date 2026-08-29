@@ -1,0 +1,66 @@
+{
+  "command": [
+    "export_tabpfn",
+    "--task",
+    "classification",
+    "--config",
+    "real26",
+    "--out",
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-tabfm/dc2a44ba-2f5c-46a7-b447-4670fa6bc767/scratchpad/real26"
+  ],
+  "task": "classification",
+  "config": "real26",
+  "arch": "v2.6",
+  "model_kwargs": {
+    "emsize": 192,
+    "nlayers": 24,
+    "nhead": 3,
+    "features_per_group": 3,
+    "num_thinking_rows": 64,
+    "encoder_mlp_hidden_dim": 1024,
+    "layernorm_type": "rmsnorm",
+    "layernorm_elementwise_affine": true,
+    "encoder_type": "linear"
+  },
+  "n_out": 10,
+  "n_params": 10732042,
+  "seed": 0,
+  "opset": 18,
+  "example_input_THN": [
+    16,
+    6,
+    10
+  ],
+  "graph_bytes": 1491604,
+  "n_initializers_mapped": 322,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 8.940696716308594e-08,
+    "tol": 0.001,
+    "argmax_all_agree": true,
+    "shapes": [
+      {
+        "T": 32,
+        "H": 12,
+        "train": 20,
+        "max_abs_delta_test_rows": 8.940696716308594e-08,
+        "argmax_agree": true,
+        "ort_ms": 579.9384117126465
+      }
+    ]
+  },
+  "input_signature": {
+    "x": "f32[1,T,H]",
+    "y": "f32[1,N] dense train labels 0..C-1 (N=train_size)"
+  },
+  "output_signature": {
+    "logits": "f32[1,T,C] class logits on rows >= N"
+  },
+  "regression_contract": null,
+  "versions": {
+    "torch": "2.13.0+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0"
+  }
+}

@@ -118,3 +118,41 @@ TEST_CASE("registry: a registered id shadows a built-in of the same id", "[tabfm
 	REQUIRE_FALSE(reg.Get("mitra").source_dir.empty());
 	REQUIRE(reg.Get("mitra").HasCapability("classify"));
 }
+
+TEST_CASE("registry: RealTabPFN-2.5 is a sibling entry that cannot clobber 2.5's cache",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("tabpfn-v2-5"));
+	REQUIRE(reg.Has("tabpfn-v2-5-real"));
+
+	auto &base = reg.Get("tabpfn-v2-5");
+	auto &real = reg.Get("tabpfn-v2-5-real");
+
+	// Same licence line — 2.5-real is the same release under the same terms.
+	REQUIRE(real.license.id == base.license.id);
+	REQUIRE(real.license.commercial == false);
+	REQUIRE(real.license.gate_setting == "accept_hf_license");
+	REQUIRE(real.HasCapability("classify"));
+	REQUIRE(real.HasCapability("regress"));
+	// Same architecture ⇒ same preprocessing profile and the same bundled graph.
+	REQUIRE(real.preprocessing_profile == base.preprocessing_profile);
+
+	// The cache slug is keyed by HF REPO (WeightsManifest::CacheSlug), and both
+	// checkpoints live in Prior-Labs/tabpfn_2_5. Sharing files[].path would make
+	// the two entries download over each other's weights and silently serve the
+	// wrong checkpoint — the failure this assertion exists to prevent.
+	REQUIRE(real.tasks.at(TabFMTask::CLASSIFICATION).files[0].path !=
+	        base.tasks.at(TabFMTask::CLASSIFICATION).files[0].path);
+	REQUIRE(real.tasks.at(TabFMTask::REGRESSION).files[0].path !=
+	        base.tasks.at(TabFMTask::REGRESSION).files[0].path);
+	// ... while still pointing at the same repo (so this is a real collision risk,
+	// not one avoided by accident).
+	REQUIRE(real.tasks.at(TabFMTask::CLASSIFICATION).repo ==
+	        base.tasks.at(TabFMTask::CLASSIFICATION).repo);
+	// The URLs must differ too: same path + same repo but a different URL would
+	// still collide; different path + same URL would download the default twice.
+	REQUIRE(real.tasks.at(TabFMTask::CLASSIFICATION).files[0].url !=
+	        base.tasks.at(TabFMTask::CLASSIFICATION).files[0].url);
+	REQUIRE(real.tasks.at(TabFMTask::REGRESSION).files[0].url !=
+	        base.tasks.at(TabFMTask::REGRESSION).files[0].url);
+}

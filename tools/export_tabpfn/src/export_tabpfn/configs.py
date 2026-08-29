@@ -156,10 +156,58 @@ def real25(task: str = "classification") -> ExportConfig:
     )
 
 
+# --- TabPFN-2.6 ---------------------------------------------------------------
+#
+# Transcribed from the released checkpoints' own `config` blocks
+# (Prior-Labs/tabpfn_2_6 :: tabpfn-v2.6-{classifier,regressor}-v2.6_default.ckpt).
+# Unlike 2.5 — whose two heads differ in DEPTH (24 vs 18 layers) — 2.6 ships both
+# heads at 24 layers and they differ only in `encoder_type`, so the split below
+# is thinner than `_REAL25_*`. The genuinely new field is
+# `layernorm_type="rmsnorm"`; everything else matches the 2.5 line, which is why
+# 2.6 exports through the same patch surface (see tabpfn_patched.ARCHES).
+#
+# 2.6 also raises the supported regime to <=50k samples / <=2000 features, and
+# its `pre_generated_column_embeddings` table is 2000 rows wide to match.
+_REAL26_COMMON = dict(
+    emsize=192, nlayers=24, nhead=3, features_per_group=3,
+    num_thinking_rows=64, encoder_mlp_hidden_dim=1024,
+    layernorm_type="rmsnorm", layernorm_elementwise_affine=True,
+)
+_REAL26_CLF = dict(_REAL26_COMMON, encoder_type="linear")
+_REAL26_REG = dict(_REAL26_COMMON, encoder_type="mlp")
+# Tiny 2.6-shaped dims for the committed CI fixture. rmsnorm is kept — it is the
+# one thing that distinguishes 2.6's graph from 2.5's, so a fixture without it
+# would not exercise what the 2.6 export is actually for.
+_FIXTURE26_KWARGS = dict(
+    emsize=32, nlayers=2, nhead=2, features_per_group=3,
+    num_thinking_rows=4, encoder_type="linear",
+    layernorm_type="rmsnorm", layernorm_elementwise_affine=True,
+)
+
+
+def fixture26() -> ExportConfig:
+    return ExportConfig(
+        name="fixture26", model_kwargs=dict(_FIXTURE26_KWARGS), arch="v2.6",
+        max_classes=4, num_buckets=16,
+        example=(12, 5, 8), parity_shapes=((40, 7, 30), (16, 9, 6)),
+    )
+
+
+def real26(task: str = "classification") -> ExportConfig:
+    kwargs = _REAL26_REG if task == "regression" else _REAL26_CLF
+    return ExportConfig(
+        name="real26", model_kwargs=dict(kwargs), arch="v2.6",
+        max_classes=10, num_buckets=5000,
+        example=(16, 6, 10), parity_shapes=((32, 12, 20),),
+    )
+
+
 def get(name: str, task: str = "classification") -> ExportConfig:
     if name == "real25":
         return real25(task)
+    if name == "real26":
+        return real26(task)
     if name == "real3":
         return real3(task)
     return {"tiny": tiny, "fixture": fixture, "real": real, "fixture25": fixture25,
-            "fixture3": fixture3}[name]()
+            "fixture26": fixture26, "fixture3": fixture3}[name]()

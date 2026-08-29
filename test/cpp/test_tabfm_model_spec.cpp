@@ -314,6 +314,38 @@ TEST_CASE("model_spec: the whole catalog has (model, task) header hashes for ext
 	        "92cf58d84bf968d6e5de90f7ccc29c0d1e79e8f0e9a04c7e0ab66274185d061c");
 }
 
+TEST_CASE("model_spec: RealTabPFN-2.5 shares 2.5's bundled graphs and header shas", "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// `tabpfn-v2-5-real` is the real-data continued pre-training of 2.5, NOT a
+	// new architecture: both checkpoints in Prior-Labs/tabpfn_2_5 carry an
+	// identical `config` block and an identical state_dict signature (154 clf /
+	// 121 reg tensors — same names, shapes, dtypes; only the VALUES differ).
+	// Because a safetensors JSON header is a function of names/shapes/dtypes and
+	// not of values, converting either checkpoint yields a byte-identical header
+	// — verified against the real weights, which is why the entry embeds no new
+	// bytes and reuses 2.5's graph, tensor map and CUDA ext graph verbatim.
+	//
+	// These REQUIREs are the tripwire for that reuse: if a future 2.5-real
+	// checkpoint ever diverges, the ext graph's baked offsets would index the
+	// wrong tensors, and this is what must fail first.
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "ext", "classification") ==
+	        BundledGpuGraphId("tabpfn-v2-5", "ext", "classification"));
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "ext", "regression") ==
+	        BundledGpuGraphId("tabpfn-v2-5", "ext", "regression"));
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "ext", "classification") == "graph_ext_tabpfn25_classification");
+
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5-real", "classification") ==
+	        ExpectedWeightsHeaderShaFor("tabpfn-v2-5", "classification"));
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5-real", "regression") ==
+	        ExpectedWeightsHeaderShaFor("tabpfn-v2-5", "regression"));
+	// Spelled out, so the shared value is pinned on both sides of the alias.
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5-real", "classification") ==
+	        "b230477af81d4ac5bff856b2f9dcc281d5b9a04d659a5dee335553f0f49897ea");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5-real", "regression") ==
+	        "8865ee281d0172e31e1a03d1d43057ac8e69b88a27b2ce0a93ee77b865f45737");
+}
+
 TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the registry ids", "[tabfm][model_spec]") {
 	using duckdb::anofox::BundledGpuGraphId;
 	// Registry ids (tabpfn-v2, tabicl-v2, ...) differ from the resource file
