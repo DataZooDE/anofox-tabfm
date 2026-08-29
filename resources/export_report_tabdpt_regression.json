@@ -1,0 +1,10 @@
+{
+  "model": "tabdpt",
+  "task": "regression",
+  "config": "real",
+  "torch": "2.12.1+cpu",
+  "n_params": 63507472,
+  "n_mapped": 647,
+  "graph_bytes": 682968,
+  "command": "/home/jr/Projects/datazoo/anofox-tabfm/tools/export_tabdpt/.venv/bin/export_tabdpt --task regression --config real --weights /tmp/claude-1000/-home-jr-Projects-datazoo-anofox-tabfm/dc2a44ba-2f5c-46a7-b447-4670fa6bc767/scratchpad/tabdpt1_2.safetensors --out /tmp/claude-1000/-home-jr-Projects-datazoo-anofox-tabfm/dc2a44ba-2f5c-46a7-b447-4670fa6bc767/scratchpad/realdpt"
+}

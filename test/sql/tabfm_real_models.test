@@ -130,6 +130,38 @@ FROM r_26 r JOIN truth t USING (row_id)
 ----
 true
 
+# --- TabDPT -------------------------------------------------------------------
+#
+# Apache-2.0 and ungated, so no licence acceptance is involved here. This is also
+# the only entry whose two tasks read the SAME cached file, and the only one with
+# no ckpt->safetensors conversion step: if the published safetensors did not
+# populate the committed tensor map, these two assertions are what would notice.
+
+statement ok
+CREATE TABLE c_dpt AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'tabdpt');
+
+query I
+SELECT count(*) FROM c_dpt WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_dpt c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_dpt AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'tabdpt');
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.80
+FROM r_dpt r JOIN truth t USING (row_id)
+----
+true
+
 # --- the two 2.5 checkpoints are genuinely DIFFERENT weights -------------------
 #
 # 2.5 and 2.5-real share a graph and a tensor map, so a cache-path collision (or

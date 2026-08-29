@@ -346,6 +346,23 @@ TEST_CASE("model_spec: RealTabPFN-2.5 shares 2.5's bundled graphs and header sha
 	        "8865ee281d0172e31e1a03d1d43057ac8e69b88a27b2ce0a93ee77b865f45737");
 }
 
+TEST_CASE("model_spec: TabDPT's two tasks share a header sha and the plain stem",
+          "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// The registry id IS the resource stem here, so no mapping entry is needed --
+	// asserted so a future rename does not silently fall back to the id.
+	REQUIRE(BundledGpuGraphId("tabdpt", "ext", "classification") == "graph_ext_tabdpt_classification");
+	REQUIRE(BundledGpuGraphId("tabdpt", "ext", "regression") == "graph_ext_tabdpt_regression");
+
+	// Both tasks index the SAME downloaded safetensors (one checkpoint, one
+	// head), so the header sha is necessarily identical -- not a copy-paste.
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt", "classification") ==
+	        "0959127002658b64f981ea233be8f1efec3dade6384a4fe637c75400a41a9a78");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt", "regression") ==
+	        ExpectedWeightsHeaderShaFor("tabdpt", "classification"));
+}
+
 TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the registry ids", "[tabfm][model_spec]") {
 	using duckdb::anofox::BundledGpuGraphId;
 	// Registry ids (tabpfn-v2, tabicl-v2, ...) differ from the resource file

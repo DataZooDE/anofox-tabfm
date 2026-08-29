@@ -46,6 +46,8 @@ set(_tabfm_inputs
     "graph_ext_tabicl_classification.onnx"
     "graph_ext_tabicl_regression.onnx"
     "graph_ext_orion_bix_classification.onnx"
+    "graph_ext_tabdpt_classification.onnx"
+    "graph_ext_tabdpt_regression.onnx"
     "graph_tabpfn_classification.onnx"
     "graph_tabpfn_regression.onnx"
     "graph_tabicl_classification.onnx"
@@ -70,6 +72,11 @@ set(_tabfm_inputs
     # Orion-BiX (MIT) — classification only, no regression graph upstream.
     "graph_orion_bix_classification.onnx"
     "tensor_map_orion_bix_classification.json"
+    # TabDPT (Layer 6 AI, Apache-2.0) — both tasks off one checkpoint.
+    "graph_tabdpt_classification.onnx"
+    "graph_tabdpt_regression.onnx"
+    "tensor_map_tabdpt_classification.json"
+    "tensor_map_tabdpt_regression.json"
     # TabPFN-3 (Prior Labs, non-commercial) — a different architecture again:
     # distribution-embedding + feature-aggregation stacks with RoPE positions.
     "graph_tabpfn3_classification.onnx"

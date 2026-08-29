@@ -1,0 +1,90 @@
+{
+  "schema_version": 2,
+  "id": "tabdpt-fixture",
+  "display_name": "TabDPT CI fixture (random init, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "apache-2.0",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "tabdpt_v1_raw",
+  "weights": {
+    "classification": {
+      "repo": "local:test/fixtures/tabdpt",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model.safetensors",
+          "bytes": 84032,
+          "sha256": "ff1f39f34a734b05d4c630b2083227c61cecaf38a63b5374cce2c217b04104f6"
+        }
+      ]
+    },
+    "regression": {
+      "repo": "local:test/fixtures/tabdpt",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model.safetensors",
+          "bytes": 84032,
+          "sha256": "ff1f39f34a734b05d4c630b2083227c61cecaf38a63b5374cce2c217b04104f6"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_tabdpt_classification.onnx",
+    "regression": "graph_tabdpt_regression.onnx",
+    "tensor_map": {
+      "classification": "tensor_map_tabdpt_classification.json",
+      "regression": "tensor_map_tabdpt_regression.json"
+    }
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 16,
+    "max_classes": 4
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init TabDPT fixture (Apache-2.0 architecture, our weights). H is DYNAMIC up to num_features (the wrapper pads to it); y carries train labels only (length=train_size); no cat_mask/d/train_size inputs. ONE safetensors serves BOTH tasks \u2014 TabDPT's single head emits class logits and regression bins side by side, so the two graphs map the same tensors."
+}

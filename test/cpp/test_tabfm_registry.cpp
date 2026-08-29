@@ -156,3 +156,35 @@ TEST_CASE("registry: RealTabPFN-2.5 is a sibling entry that cannot clobber 2.5's
 	REQUIRE(real.tasks.at(TabFMTask::REGRESSION).files[0].url !=
 	        base.tasks.at(TabFMTask::REGRESSION).files[0].url);
 }
+
+
+TEST_CASE("registry: TabDPT is commercially clean and shares one file across tasks",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("tabdpt"));
+	auto &spec = reg.Get("tabdpt");
+
+	// Apache-2.0 and ungated. Alongside mitra this is the catalog's only
+	// permissively-licensed entry that does BOTH tasks, which is the main reason
+	// it was worth onboarding.
+	REQUIRE(spec.license.id == "apache-2.0");
+	REQUIRE(spec.license.commercial == true);
+	REQUIRE(spec.license.gate_setting.empty());
+	REQUIRE(spec.HasCapability("classify"));
+	REQUIRE(spec.HasCapability("regress"));
+
+	// One checkpoint, one head: class logits followed by regression bins. Both
+	// tasks therefore point at the SAME cached file, so a user pays one download
+	// rather than two. This is the exact opposite of tabpfn-v2-5 vs -real, where
+	// a shared path would silently serve the wrong weights -- there the repo is
+	// shared and the checkpoints differ; here it is literally one checkpoint.
+	auto &clf = spec.tasks.at(TabFMTask::CLASSIFICATION);
+	auto &reg_task = spec.tasks.at(TabFMTask::REGRESSION);
+	REQUIRE(clf.repo == reg_task.repo);
+	REQUIRE(clf.files[0].path == reg_task.files[0].path);
+	REQUIRE(clf.files[0].url == reg_task.files[0].url);
+
+	// Layer 6 publish safetensors, so there is no .ckpt to convert -- the file
+	// the manifest names is the one the engine injects.
+	REQUIRE(clf.files[0].path == "model.safetensors");
+}

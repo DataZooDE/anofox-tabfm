@@ -294,6 +294,13 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 			return "d792dd9433bdf78773eddcd4bda3e0e49550aec0a2df1a0bfa36afebf320e8ae";
 		}
 	}
+	// TabDPT: ONE checkpoint serves both tasks, so both share a header sha --
+	// they index the same downloaded file, unlike every other entry here.
+	if (model == "tabdpt") {
+		if (task_name == "classification" || task_name == "regression") {
+			return "0959127002658b64f981ea233be8f1efec3dade6384a4fe637c75400a41a9a78";
+		}
+	}
 	if (model == "orion-bix" && task_name == "classification") {
 		return "c2b7ff39add2b0c1c2d3ddabbaf413e8c15f433b620f3091f0562f376255d166";
 	}

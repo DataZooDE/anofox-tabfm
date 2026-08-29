@@ -24,6 +24,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
 | **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; ckpt→safetensors convert required |
 | **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes** |
+| **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
 | **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
 
 ### TabPFN-3 — done
@@ -113,6 +114,71 @@ uv run python convert_weights.py classification --arch=v2.6
 
 Offline fixture: `test/sql/tabfm_tabpfn26.test`.
 
+### TabDPT — done (and the deferral was wrong)
+
+`docs/MULTI_MODEL_PLAN.md` §3 deferred TabDPT behind a hypothetical
+`RetrievalOnnxBackend`. That premise does not survive contact with the code:
+**retrieval is not part of the model.** `TabDPTEstimator` defaults to
+`context_reduction="subsample"` and only reaches for FAISS when the caller asks;
+either way the reduction lives in the sklearn wrapper and merely chooses *which
+context rows to hand over*. The model itself takes the whole context and derives
+the split from the label length:
+
+```
+TabDPTModel.forward(x_src[B, T, F], y_src[B, n_ctx], num_features)
+eval_pos = y_src.shape[0]
+```
+
+That is exactly the engine's `single_eval_pos` family. TabDPT therefore needed
+**no engine change** — only an exporter (`tools/export_tabdpt`).
+
+It is worth having beyond the rank (1459 Elo): with Mitra it is one of only two
+built-ins that are both permissively licensed **and** capable of both tasks.
+
+Two firsts for the catalog:
+
+- **No `convert_weights.py`.** Layer 6 publish the checkpoint as safetensors
+  (`Layer6/TabDPT :: tabdpt1_2.safetensors`, Apache-2.0, ungated) whose keys are
+  already the model's state_dict namespace, so the downloaded file is injected
+  as-is against the committed tensor map. All 647 initializers map exactly.
+- **Both tasks share one weights file.** TabDPT has a single head whose output is
+  class logits followed by regression bins, so the two graphs map the same
+  tensors and both tasks declare the same `files[].path` — one 254 MB download
+  serves both, and `ExpectedWeightsHeaderShaFor` returns the same sha for both
+  because it is literally the same file. (Contrast `tabpfn-v2-5` vs `-real`,
+  where a shared path would have been a *bug*: same repo, different checkpoints.)
+
+The exporter absorbs the estimator's share of the work so the graph is
+self-contained: feature padding to the model's fixed `num_features`, the
+train-prefix target standardisation and its inverse, and the bar-distribution
+point estimate. Hence `tabdpt_v1_raw` (raw-in / raw-out), like TabPFN's.
+
+Two upstream constructs needed patching, both found by the export failing:
+
+1. **The attention scale.** Upstream passes a context-length-dependent
+   temperature to SDPA as `scale=`, which must be a concrete Python float;
+   `eval_pos` is symbolic for us, so `torch.export` tried to guard on an unbacked
+   symbol. Since SDPA computes `softmax(scale · qkᵀ)v`, folding beta into `q` and
+   leaving the default scale is the identical function and fully traceable.
+2. **`torch.as_tensor(eval_pos)`** in `get_scale_param` silently *baked the
+   context length into a constant*. The export still succeeded — and produced a
+   graph whose `y` input was pinned to the tracing example's length, which ORT
+   rejects on the first real call with a different context size.
+   `torch.ones(eval_pos).sum()` builds the same value without specializing.
+
+`max_features` is a hard 128: the wrapper pads `x` up to the model's fixed width,
+so a wider table would make that pad negative.
+
+```bash
+cd tools/export_tabdpt
+uv run export_tabdpt --task classification --config real \
+    --weights ~/.cache/anofox-tabfm/Layer6__TabDPT@main/model.safetensors \
+    --out ../../resources
+uv run make_tabdpt_fixture ../../test/fixtures/tabdpt
+```
+
+Offline fixture: `test/sql/tabfm_tabdpt.test`.
+
 ### Testing against real weights
 
 Every `test/sql/tabfm_<model>.test` runs the committed random-init fixture:
@@ -130,9 +196,12 @@ each, so CI must not fetch them and the licence wall forbids committing them.
 TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
 ```
 
-Measured on that split: `tabpfn-v2-5-real` 0.984, `tabpfn-v2-6` 0.984,
-`tabpfn-v2-5` 0.969, `mitra` 0.938, `tabicl-v2` 0.922 — the two newly onboarded
-models lead, matching their TabArena order.
+Measured on that split (accuracy): `tabpfn-v2-5-real` 0.984, `tabpfn-v2-6`
+0.984, `tabpfn-v2-5` 0.969, `tabdpt` 0.953, `mitra` 0.938, `tabicl-v2` 0.922 —
+the newly onboarded models lead, matching their TabArena order. Regression R² is
+0.9999 for all three new entries, which is the assertion that actually exercises
+each one's point-estimate decode (bar-distribution mean plus the target
+de-standardisation each graph bakes in).
 
 One trap worth recording, because it cost a debugging round: the context table
 and the test table must expose the **same feature columns**. Building the
@@ -155,6 +224,7 @@ regress capabilities above — there is no separate per-model work.
 | `tabpfn-v2-5` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2-5-real` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2-6` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabdpt` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v3` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabicl-v2` | ✅ | ✅ | ✅ | ✅ all columns |
 | `orion-bix` | ✅ | ✗ | ✅ | categorical columns only |
