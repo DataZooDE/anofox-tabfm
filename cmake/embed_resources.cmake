@@ -39,11 +39,16 @@ set(_tabfm_inputs
     "graph_ext_tabpfn_regression.onnx"
     "graph_ext_tabpfn25_classification.onnx"
     "graph_ext_tabpfn25_regression.onnx"
+    "graph_ext_tabpfn26_classification.onnx"
+    "graph_ext_tabpfn26_regression.onnx"
     "graph_ext_tabpfn3_classification.onnx"
     "graph_ext_tabpfn3_regression.onnx"
     "graph_ext_tabicl_classification.onnx"
     "graph_ext_tabicl_regression.onnx"
     "graph_ext_orion_bix_classification.onnx"
+    "graph_ext_orion_msp_classification.onnx"
+    "graph_ext_tabdpt_classification.onnx"
+    "graph_ext_tabdpt_regression.onnx"
     "graph_tabpfn_classification.onnx"
     "graph_tabpfn_regression.onnx"
     "graph_tabicl_classification.onnx"
@@ -57,11 +62,25 @@ set(_tabfm_inputs
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
     "graph_tabpfn25_classification.onnx"
     "graph_tabpfn25_regression.onnx"
+    # TabPFN-2.6 (Prior Labs, non-commercial) — its own graphs AND maps: the 2.6
+    # architecture maps 322/324 initializers where 2.5 maps 250/192.
+    "graph_tabpfn26_classification.onnx"
+    "graph_tabpfn26_regression.onnx"
+    "tensor_map_tabpfn26_classification.json"
+    "tensor_map_tabpfn26_regression.json"
     "tensor_map_tabpfn25_classification.json"
     "tensor_map_tabpfn25_regression.json"
     # Orion-BiX (MIT) — classification only, no regression graph upstream.
     "graph_orion_bix_classification.onnx"
     "tensor_map_orion_bix_classification.json"
+    # Orion-MSP (MIT) — classification only, like its Orion-BiX sibling.
+    "graph_orion_msp_classification.onnx"
+    "tensor_map_orion_msp_classification.json"
+    # TabDPT (Layer 6 AI, Apache-2.0) — both tasks off one checkpoint.
+    "graph_tabdpt_classification.onnx"
+    "graph_tabdpt_regression.onnx"
+    "tensor_map_tabdpt_classification.json"
+    "tensor_map_tabdpt_regression.json"
     # TabPFN-3 (Prior Labs, non-commercial) — a different architecture again:
     # distribution-embedding + feature-aggregation stacks with RoPE positions.
     "graph_tabpfn3_classification.onnx"

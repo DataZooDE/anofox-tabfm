@@ -314,8 +314,58 @@ TEST_CASE("model_spec: the whole catalog has (model, task) header hashes for ext
 	        "92cf58d84bf968d6e5de90f7ccc29c0d1e79e8f0e9a04c7e0ab66274185d061c");
 }
 
+TEST_CASE("model_spec: RealTabPFN-2.5 shares 2.5's bundled graphs and header shas", "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// `tabpfn-v2-5-real` is the real-data continued pre-training of 2.5, NOT a
+	// new architecture: both checkpoints in Prior-Labs/tabpfn_2_5 carry an
+	// identical `config` block and an identical state_dict signature (154 clf /
+	// 121 reg tensors — same names, shapes, dtypes; only the VALUES differ).
+	// Because a safetensors JSON header is a function of names/shapes/dtypes and
+	// not of values, converting either checkpoint yields a byte-identical header
+	// — verified against the real weights, which is why the entry embeds no new
+	// bytes and reuses 2.5's graph, tensor map and CUDA ext graph verbatim.
+	//
+	// These REQUIREs are the tripwire for that reuse: if a future 2.5-real
+	// checkpoint ever diverges, the ext graph's baked offsets would index the
+	// wrong tensors, and this is what must fail first.
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "ext", "classification") ==
+	        BundledGpuGraphId("tabpfn-v2-5", "ext", "classification"));
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "ext", "regression") ==
+	        BundledGpuGraphId("tabpfn-v2-5", "ext", "regression"));
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "ext", "classification") == "graph_ext_tabpfn25_classification");
+
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5-real", "classification") ==
+	        ExpectedWeightsHeaderShaFor("tabpfn-v2-5", "classification"));
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5-real", "regression") ==
+	        ExpectedWeightsHeaderShaFor("tabpfn-v2-5", "regression"));
+	// Spelled out, so the shared value is pinned on both sides of the alias.
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5-real", "classification") ==
+	        "b230477af81d4ac5bff856b2f9dcc281d5b9a04d659a5dee335553f0f49897ea");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5-real", "regression") ==
+	        "8865ee281d0172e31e1a03d1d43057ac8e69b88a27b2ce0a93ee77b865f45737");
+}
+
+TEST_CASE("model_spec: TabDPT's two tasks share a header sha and the plain stem",
+          "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// The registry id IS the resource stem here, so no mapping entry is needed --
+	// asserted so a future rename does not silently fall back to the id.
+	REQUIRE(BundledGpuGraphId("tabdpt", "ext", "classification") == "graph_ext_tabdpt_classification");
+	REQUIRE(BundledGpuGraphId("tabdpt", "ext", "regression") == "graph_ext_tabdpt_regression");
+
+	// Both tasks index the SAME downloaded safetensors (one checkpoint, one
+	// head), so the header sha is necessarily identical -- not a copy-paste.
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt", "classification") ==
+	        "0959127002658b64f981ea233be8f1efec3dade6384a4fe637c75400a41a9a78");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt", "regression") ==
+	        ExpectedWeightsHeaderShaFor("tabdpt", "classification"));
+}
+
 TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the registry ids", "[tabfm][model_spec]") {
 	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
 	// Registry ids (tabpfn-v2, tabicl-v2, ...) differ from the resource file
 	// stems (tabpfn, tabicl, ...) — the id function owns that mapping so the
 	// engine never string-mangles.
@@ -324,6 +374,14 @@ TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the regis
 	REQUIRE(BundledGpuGraphId("tabpfn-v3", "ext", "classification") == "graph_ext_tabpfn3_classification");
 	REQUIRE(BundledGpuGraphId("tabicl-v2", "ext", "regression") == "graph_ext_tabicl_regression");
 	REQUIRE(BundledGpuGraphId("orion-bix", "ext", "classification") == "graph_ext_orion_bix_classification");
+	// orion-msp is a separate stem, NOT a fallback onto orion-bix's graphs: the
+	// two are different architectures that happen to share a vendor and licence.
+	REQUIRE(BundledGpuGraphId("orion-msp", "ext", "classification") == "graph_ext_orion_msp_classification");
+	REQUIRE(BundledGpuGraphId("orion-msp", "ext", "classification") !=
+	        BundledGpuGraphId("orion-bix", "ext", "classification"));
+	REQUIRE(ExpectedWeightsHeaderShaFor("orion-msp", "classification") ==
+	        "bf066b3de2beea6875035790027ed9ada6cc6b43a33709cde42312f28be89fe7");
+	REQUIRE(ExpectedWeightsHeaderShaFor("orion-msp", "regression") == "");
 }
 
 TEST_CASE("model_spec: listing accepts a converted sibling for a missing .ckpt", "[tabfm][model_spec]") {

@@ -118,3 +118,103 @@ TEST_CASE("registry: a registered id shadows a built-in of the same id", "[tabfm
 	REQUIRE_FALSE(reg.Get("mitra").source_dir.empty());
 	REQUIRE(reg.Get("mitra").HasCapability("classify"));
 }
+
+TEST_CASE("registry: RealTabPFN-2.5 is a sibling entry that cannot clobber 2.5's cache",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("tabpfn-v2-5"));
+	REQUIRE(reg.Has("tabpfn-v2-5-real"));
+
+	auto &base = reg.Get("tabpfn-v2-5");
+	auto &real = reg.Get("tabpfn-v2-5-real");
+
+	// Same licence line — 2.5-real is the same release under the same terms.
+	REQUIRE(real.license.id == base.license.id);
+	REQUIRE(real.license.commercial == false);
+	REQUIRE(real.license.gate_setting == "accept_hf_license");
+	REQUIRE(real.HasCapability("classify"));
+	REQUIRE(real.HasCapability("regress"));
+	// Same architecture ⇒ same preprocessing profile and the same bundled graph.
+	REQUIRE(real.preprocessing_profile == base.preprocessing_profile);
+
+	// The cache slug is keyed by HF REPO (WeightsManifest::CacheSlug), and both
+	// checkpoints live in Prior-Labs/tabpfn_2_5. Sharing files[].path would make
+	// the two entries download over each other's weights and silently serve the
+	// wrong checkpoint — the failure this assertion exists to prevent.
+	REQUIRE(real.tasks.at(TabFMTask::CLASSIFICATION).files[0].path !=
+	        base.tasks.at(TabFMTask::CLASSIFICATION).files[0].path);
+	REQUIRE(real.tasks.at(TabFMTask::REGRESSION).files[0].path !=
+	        base.tasks.at(TabFMTask::REGRESSION).files[0].path);
+	// ... while still pointing at the same repo (so this is a real collision risk,
+	// not one avoided by accident).
+	REQUIRE(real.tasks.at(TabFMTask::CLASSIFICATION).repo ==
+	        base.tasks.at(TabFMTask::CLASSIFICATION).repo);
+	// The URLs must differ too: same path + same repo but a different URL would
+	// still collide; different path + same URL would download the default twice.
+	REQUIRE(real.tasks.at(TabFMTask::CLASSIFICATION).files[0].url !=
+	        base.tasks.at(TabFMTask::CLASSIFICATION).files[0].url);
+	REQUIRE(real.tasks.at(TabFMTask::REGRESSION).files[0].url !=
+	        base.tasks.at(TabFMTask::REGRESSION).files[0].url);
+}
+
+
+TEST_CASE("registry: TabDPT is commercially clean and shares one file across tasks",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("tabdpt"));
+	auto &spec = reg.Get("tabdpt");
+
+	// Apache-2.0 and ungated. Alongside mitra this is the catalog's only
+	// permissively-licensed entry that does BOTH tasks, which is the main reason
+	// it was worth onboarding.
+	REQUIRE(spec.license.id == "apache-2.0");
+	REQUIRE(spec.license.commercial == true);
+	REQUIRE(spec.license.gate_setting.empty());
+	REQUIRE(spec.HasCapability("classify"));
+	REQUIRE(spec.HasCapability("regress"));
+
+	// One checkpoint, one head: class logits followed by regression bins. Both
+	// tasks therefore point at the SAME cached file, so a user pays one download
+	// rather than two. This is the exact opposite of tabpfn-v2-5 vs -real, where
+	// a shared path would silently serve the wrong weights -- there the repo is
+	// shared and the checkpoints differ; here it is literally one checkpoint.
+	auto &clf = spec.tasks.at(TabFMTask::CLASSIFICATION);
+	auto &reg_task = spec.tasks.at(TabFMTask::REGRESSION);
+	REQUIRE(clf.repo == reg_task.repo);
+	REQUIRE(clf.files[0].path == reg_task.files[0].path);
+	REQUIRE(clf.files[0].url == reg_task.files[0].url);
+
+	// Layer 6 publish safetensors, so there is no .ckpt to convert -- the file
+	// the manifest names is the one the engine injects.
+	REQUIRE(clf.files[0].path == "model.safetensors");
+}
+
+
+TEST_CASE("registry: Orion-MSP is classify-only alongside its Orion-BiX sibling",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("orion-msp"));
+	auto &msp = reg.Get("orion-msp");
+
+	// MIT and ungated. With orion-bix, mitra and tabdpt this is the
+	// commercially-clean half of the catalog.
+	REQUIRE(msp.license.id == "mit");
+	REQUIRE(msp.license.commercial == true);
+	REQUIRE(msp.license.gate_setting.empty());
+
+	// Upstream ships sklearn/classifier.py and no regressor, so the capability
+	// gate must actually deny regression rather than let the engine try.
+	REQUIRE(msp.HasCapability("classify"));
+	REQUIRE_FALSE(msp.HasCapability("regress"));
+	REQUIRE(msp.HasTask(TabFMTask::CLASSIFICATION));
+	REQUIRE_FALSE(msp.HasTask(TabFMTask::REGRESSION));
+
+	// Sibling, not alias: same vendor and licence, different checkpoint, and it
+	// must not have inherited orion-bix's weights URL.
+	auto &bix = reg.Get("orion-bix");
+	REQUIRE(msp.license.id == bix.license.id);
+	REQUIRE(msp.tasks.at(TabFMTask::CLASSIFICATION).files[0].url !=
+	        bix.tasks.at(TabFMTask::CLASSIFICATION).files[0].url);
+	REQUIRE(msp.tasks.at(TabFMTask::CLASSIFICATION).repo !=
+	        bix.tasks.at(TabFMTask::CLASSIFICATION).repo);
+}

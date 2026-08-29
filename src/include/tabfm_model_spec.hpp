@@ -236,14 +236,20 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 	string stem = model;
 	if (model == "tabpfn-v2") {
 		stem = "tabpfn";
-	} else if (model == "tabpfn-v2-5") {
+	} else if (model == "tabpfn-v2-5" || model == "tabpfn-v2-5-real") {
+		// RealTabPFN-2.5 is the same architecture as 2.5 (identical config and
+		// state_dict signature), so it reuses 2.5's bundled graphs outright.
 		stem = "tabpfn25";
+	} else if (model == "tabpfn-v2-6") {
+		stem = "tabpfn26";
 	} else if (model == "tabpfn-v3") {
 		stem = "tabpfn3";
 	} else if (model == "tabicl-v2") {
 		stem = "tabicl";
 	} else if (model == "orion-bix") {
 		stem = "orion_bix";
+	} else if (model == "orion-msp") {
+		stem = "orion_msp";
 	}
 	return "graph_" + kind + "_" + stem + "_" + task_name;
 }
@@ -290,15 +296,36 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 			return "d792dd9433bdf78773eddcd4bda3e0e49550aec0a2df1a0bfa36afebf320e8ae";
 		}
 	}
+	// TabDPT: ONE checkpoint serves both tasks, so both share a header sha --
+	// they index the same downloaded file, unlike every other entry here.
+	if (model == "tabdpt") {
+		if (task_name == "classification" || task_name == "regression") {
+			return "0959127002658b64f981ea233be8f1efec3dade6384a4fe637c75400a41a9a78";
+		}
+	}
+	if (model == "orion-msp" && task_name == "classification") {
+		return "bf066b3de2beea6875035790027ed9ada6cc6b43a33709cde42312f28be89fe7";
+	}
 	if (model == "orion-bix" && task_name == "classification") {
 		return "c2b7ff39add2b0c1c2d3ddabbaf413e8c15f433b620f3091f0562f376255d166";
 	}
-	if (model == "tabpfn-v2-5") {
+	// 2.5 and 2.5-real share these: same tensor names/shapes/dtypes ⇒ the
+	// safetensors JSON header (and so the baked ext-graph offsets) is
+	// byte-identical for both checkpoints. Verified against the real weights.
+	if (model == "tabpfn-v2-5" || model == "tabpfn-v2-5-real") {
 		if (task_name == "classification") {
 			return "b230477af81d4ac5bff856b2f9dcc281d5b9a04d659a5dee335553f0f49897ea";
 		}
 		if (task_name == "regression") {
 			return "8865ee281d0172e31e1a03d1d43057ac8e69b88a27b2ce0a93ee77b865f45737";
+		}
+	}
+	if (model == "tabpfn-v2-6") {
+		if (task_name == "classification") {
+			return "dcd4d003d5fb2aa43e7e7dff2080b129e8a35fe3e08e6447289aeebab8d9223a";
+		}
+		if (task_name == "regression") {
+			return "fd3f3e255b0d91f7ed6c9d0e9700c39a8797937cb06f0b1c65b239a39113ed25";
 		}
 	}
 	if (model == "tabpfn-v3") {

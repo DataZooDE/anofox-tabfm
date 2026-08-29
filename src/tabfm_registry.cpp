@@ -130,6 +130,90 @@ static const char *const BUILTIN_TABPFN3 = R"json({
   "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
 })json";
 
+// RealTabPFN-2.5: the SAME 2.5 architecture, continued pre-training on real
+// tabular data (TabArena v0.1.4 ranks it above TabICLv2). It ships as its own
+// catalog entry rather than a flag on `tabpfn-v2-5` because the two score
+// differently and users pick between them by name.
+//
+// Everything graph-shaped is REUSED from 2.5 — same bundled graph, same tensor
+// map, same ext-graph header sha — because the two checkpoints have identical
+// `config` blocks and identical state_dict signatures (154 clf / 121 reg
+// tensors: same names, shapes, dtypes; only the values differ). A safetensors
+// JSON header is a function of names/shapes/dtypes, so converting either
+// checkpoint yields a byte-identical header. Verified against the real weights;
+// test_tabfm_model_spec.cpp pins it so a divergent future checkpoint fails loud.
+//
+// What is NOT shared is the cache path. `CacheSlug` keys on the HF REPO, and
+// both checkpoints live in Prior-Labs/tabpfn_2_5 — so identical files[].path
+// values would make the two entries download over each other and silently serve
+// the wrong weights. Hence the `-real` task directories, which
+// tools/export_tabpfn/convert_weights.py --variant=real writes to.
+static const char *const BUILTIN_TABPFN25_REAL = R"json({
+  "schema_version": 2, "id": "tabpfn-v2-5-real", "display_name": "RealTabPFN 2.5 (Prior Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "tabpfn-2.5-license-v1.1", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "RealTabPFN-2.5 by Prior Labs GmbH (TabPFN-2.5 continued pre-training on real data). Weights are research/internal-evaluation only — NO commercial or production use. Contact sales@priorlabs.ai for a commercial license."},
+  "preprocessing_profile": "tabpfn_v2_5_raw",
+  "weights": {
+    "classification": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "main",
+      "files": [{"path": "classification-real/model.ckpt", "bytes": 42929707,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/main/tabpfn-v2.5-classifier-v2.5_real.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "main",
+      "files": [{"path": "regression-real/model.ckpt", "bytes": 40831868,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/main/tabpfn-v2.5-regressor-v2.5_real.ckpt"}]}
+  },
+  "graph": {"classification": "graph_tabpfn25_classification", "regression": "graph_tabpfn25_regression",
+    "tensor_map": {"classification": "tensor_map_tabpfn25_classification.json",
+                   "regression": "tensor_map_tabpfn25_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+})json";
+
+// TabPFN-2.6 (Prior Labs). A 2.5-LINE architecture — same emsize/nhead/
+// features_per_group/thinking-row layout and the same pre-generated
+// column-embedding table — so it exports through the 2.5 patch surface with NO
+// new patches (tools/export_tabpfn --config real26; parity 8.9e-08
+// classification / 1.4e-06 regression). What changed is layernorm_type="rmsnorm"
+// and a deeper per-layer parameterisation: 322 clf / 324 reg mapped
+// initializers against 2.5's 250 / 192, which is why it needs its own graphs.
+//
+// Unlike 2.5 (24-layer classifier, 18-layer regressor) both 2.6 heads are 24
+// layers and differ only in encoder_type, but they still get per-task graphs and
+// per-task tensor maps like every other model here.
+//
+// Licensing matches the rest of the post-v2 Prior Labs line: tabpfn-2.6-license
+// -v1.0 permits testing/evaluation/internal benchmarking only, and the HF repo
+// is gated — so commercial:false + accept_hf_license.
+//
+// The size regime is genuinely wider than 2.5's: Prior Labs document <=50k
+// samples and <=2000 features (2.5: 10k / 500).
+static const char *const BUILTIN_TABPFN26 = R"json({
+  "schema_version": 2, "id": "tabpfn-v2-6", "display_name": "TabPFN 2.6 (Prior Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "tabpfn-2.6-license-v1.0", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "TabPFN-2.6 by Prior Labs GmbH. Weights are testing/evaluation/internal-benchmarking only — NO commercial or production use. Contact sales@priorlabs.ai for a commercial license."},
+  "preprocessing_profile": "tabpfn_v2_6_raw",
+  "weights": {
+    "classification": {"repo": "Prior-Labs/tabpfn_2_6", "revision": "main",
+      "files": [{"path": "classification/model.ckpt", "bytes": 43044699,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/main/tabpfn-v2.6-classifier-v2.6_default.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_2_6", "revision": "main",
+      "files": [{"path": "regression/model.ckpt", "bytes": 51955328,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/main/tabpfn-v2.6-regressor-v2.6_default.ckpt"}]}
+  },
+  "graph": {"classification": "graph_tabpfn26_classification", "regression": "graph_tabpfn26_regression",
+    "tensor_map": {"classification": "tensor_map_tabpfn26_classification.json",
+                   "regression": "tensor_map_tabpfn26_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 50000, "max_features": 2000, "max_classes": 10}
+})json";
+
 static const char *const BUILTIN_TABICL = R"json({
   "schema_version": 2, "id": "tabicl-v2", "display_name": "TabICL v2 (soda-inria)",
   "family": "icl-transformer",
@@ -159,6 +243,95 @@ static const char *const BUILTIN_TABICL = R"json({
 // Unlike TabPFN/TabICL it does NOT normalize internally — its sklearn wrapper
 // standardizes externally — hence a "_minimal" (engine-standardizes) profile
 // rather than a "_raw" one.
+// TabDPT (Layer 6 AI), 1459 Elo on the TabArena v0.1.4 board and the catalog's
+// second permissively-licensed model with BOTH tasks (Apache-2.0, ungated).
+//
+// docs/MULTI_MODEL_PLAN.md deferred TabDPT behind a hypothetical
+// `RetrievalOnnxBackend`. That premise was wrong: retrieval is not part of the
+// model. TabDPTEstimator defaults to context_reduction="subsample" and only
+// reaches for FAISS on request; either way the reduction lives in the sklearn
+// wrapper and merely picks WHICH context rows to hand over. TabDPTModel.forward
+// takes the whole context and derives the split from the label length
+// (`eval_pos = y_src.shape[0]`) — precisely the engine's single_eval_pos family.
+// So it needed no engine change at all, only an exporter (tools/export_tabdpt).
+//
+// It is also the first built-in with NO ckpt->safetensors conversion step:
+// Layer 6 publish safetensors whose keys are already the model's state_dict
+// namespace, so the downloaded file is injected as-is against the committed
+// tensor map.
+//
+// BOTH TASKS SHARE ONE WEIGHTS FILE. TabDPT has a single head whose output is
+// class logits followed by regression bins, so the two graphs map the same 647
+// initializers and both tasks declare the SAME files[].path — one 254 MB
+// download serves both, and ExpectedWeightsHeaderShaFor returns the same sha
+// for both tasks because it is literally the same file. (Contrast tabpfn-v2-5
+// vs -real, where a shared path would have been a BUG; here it is the point.)
+//
+// max_features is a hard 128: the export wrapper pads x up to the model's fixed
+// num_features, so a wider table would make that pad negative.
+//
+// max_classes is 16, the checkpoint's actual head width (cfg.model
+// max_num_classes), NOT the catalog's usual 10. The engine reads this ceiling
+// straight off the registry entry (`resolved.max_classes` in tabfm_engine.cpp),
+// so declaring 10 here would refuse an 11-16 class task that the graph is
+// perfectly able to serve.
+// Orion-MSP (Lexsi Labs, MIT) — the sibling of orion-bix, and like it
+// CLASSIFICATION ONLY (upstream ships sklearn/classifier.py and no regressor).
+//
+// Two things about the RELEASED checkpoint are narrower than the paper, and
+// tools/export_orion_msp asserts both so a future release cannot silently change
+// the traced architecture: `row_scales = (1,)` (the "multi-scale" row stage
+// ships with a SINGLE scale) and `perc_num_latents = 0` (Perceiver memory off).
+//
+// `row_num_random = 2` IS live, and it is the interesting part. Upstream redraws
+// the BigBird random attention links with `torch.randperm` on EVERY forward, so
+// upstream inference is not deterministic and the mask cannot be traced. The
+// exporter freezes one seeded draw into a table and slices it — deterministic
+// across runs and machines, structurally faithful (each non-special query keeps
+// exactly `num_random` extra links), but reproducing ONE particular upstream
+// draw rather than any specific one. See docs/REAL_MODELS.md.
+static const char *const BUILTIN_ORION_MSP = R"json({
+  "schema_version": 2, "id": "orion-msp", "display_name": "Orion-MSP v1.5 (Lexsi Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "mit", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "Orion-MSP by Lexsi Labs, MIT. Checkpoint: HF Lexsi/Orion-MSP."},
+  "preprocessing_profile": "orion_msp_v1_minimal",
+  "weights": {
+    "classification": {"repo": "Lexsi/Orion-MSP", "revision": "main",
+      "files": [{"path": "classification/model.ckpt", "bytes": 335545028,
+                 "url": "https://huggingface.co/Lexsi/Orion-MSP/resolve/main/OrionMSP-classifier-v1.5-202603.ckpt"}]}
+  },
+  "graph": {"classification": "graph_orion_msp_classification",
+    "tensor_map": {"classification": "tensor_map_orion_msp_classification.json"}},
+  "capabilities": ["classify"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 100000, "max_features": 512, "max_classes": 10}
+})json";
+
+static const char *const BUILTIN_TABDPT = R"json({
+  "schema_version": 2, "id": "tabdpt", "display_name": "TabDPT v1.2 (Layer 6 AI)",
+  "family": "icl-transformer",
+  "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "TabDPT by Layer 6 AI, Apache-2.0. Checkpoint: HF Layer6/TabDPT (tabdpt1_2.safetensors)."},
+  "preprocessing_profile": "tabdpt_v1_raw",
+  "weights": {
+    "classification": {"repo": "Layer6/TabDPT", "revision": "main",
+      "files": [{"path": "model.safetensors", "bytes": 254098072,
+                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/main/tabdpt1_2.safetensors"}]},
+    "regression": {"repo": "Layer6/TabDPT", "revision": "main",
+      "files": [{"path": "model.safetensors", "bytes": 254098072,
+                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/main/tabdpt1_2.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabdpt_classification", "regression": "graph_tabdpt_regression",
+    "tensor_map": {"classification": "tensor_map_tabdpt_classification.json",
+                   "regression": "tensor_map_tabdpt_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 100000, "max_features": 128, "max_classes": 16}
+})json";
+
 static const char *const BUILTIN_ORION_BIX = R"json({
   "schema_version": 2, "id": "orion-bix", "display_name": "Orion-BiX v1.1 (Lexsi Labs)",
   "family": "icl-transformer",
@@ -200,9 +373,13 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_MITRA, "(built-in mitra)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN, "(built-in tabpfn-v2)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN25, "(built-in tabpfn-v2-5)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABPFN25_REAL, "(built-in tabpfn-v2-5-real)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABPFN26, "(built-in tabpfn-v2-6)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN3, "(built-in tabpfn-v3)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABICL, "(built-in tabicl-v2)"));
 	specs.push_back(ParseModelSpec(BUILTIN_ORION_BIX, "(built-in orion-bix)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABDPT, "(built-in tabdpt)"));
+	specs.push_back(ParseModelSpec(BUILTIN_ORION_MSP, "(built-in orion-msp)"));
 	return specs;
 }
 

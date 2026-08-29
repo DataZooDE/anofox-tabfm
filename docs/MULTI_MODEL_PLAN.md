@@ -36,6 +36,17 @@ The proposal's premise checks out against the code:
    (`impute`/`anomaly`/`generate`/`embed`, which need TabPFN v2). No shipped model
    supports them; building the surface now is dead code. The **capability flag +
    gating** is the only foundation needed now.
+
+   > **Superseded — TabDPT shipped, and the backend was never needed.** The
+   > premise here was wrong: retrieval is not part of the model.
+   > `TabDPTEstimator` defaults to `context_reduction="subsample"` and only
+   > reaches for FAISS when the caller asks; either way the reduction happens in
+   > the sklearn wrapper and merely chooses *which context rows to hand over*.
+   > `TabDPTModel.forward` takes the whole context and derives the split from
+   > `eval_pos = y_src.shape[0]` — the engine's existing `single_eval_pos`
+   > family. `tabdpt` is a built-in as of the TabArena onboarding round; it
+   > needed an exporter (`tools/export_tabdpt`) and no engine change at all.
+   > See `docs/REAL_MODELS.md`.
 4. **PROVE multi-model with a second _real_ fixture model, not a mock.** Following
    the committed S06 CI-fixture pattern (random-init weights + weight-free graph),
    a second fixture model is a *genuine* model in the registry: real v2 manifest,
@@ -99,8 +110,11 @@ still does, unknown-model + unsupported-task errors.
 ## Deferred / rejected (tracked, not built)
 - **Real Mitra** → offline export spike (INTEGRATION-CHECKLIST B/C/D). `mitra.json`
   stays in research until the spike yields real graphs + parity.
-- **Extra tasks (TabPFN v2), retrieval backend (TabDPT)** → later stages on this
-  seam; capability flags reserve the surface.
+- **Extra tasks (TabPFN v2)** → later stages on this seam; capability flags
+  reserve the surface.
+- ~~**retrieval backend (TabDPT)**~~ → not required. TabDPT is a shipped built-in
+  and maps onto the existing `single_eval_pos` contract; see the note under
+  judgement call #3.
 - **SidecarBackend** → rejected (see judgement call #1).
 
 ## Review checkpoints (codex + antigravity)

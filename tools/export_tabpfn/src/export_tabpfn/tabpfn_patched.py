@@ -46,6 +46,7 @@ import torch
 
 import tabpfn.architectures.tabpfn_v2 as v2mod
 import tabpfn.architectures.tabpfn_v2_5 as v25mod
+import tabpfn.architectures.tabpfn_v2_6 as v26mod
 import tabpfn.architectures.tabpfn_v3 as v3mod
 from tabpfn.architectures.tabpfn_v2 import TabPFNV2Config, get_architecture
 from tabpfn.preprocessing.torch import ops as opsmod
@@ -75,6 +76,19 @@ ARCHES = {
     # it does share is the multiclass target-range guard — byte-for-byte the same
     # `(y > self.n_out - 1).any()` branch as 2.5 — which `_freeze_in_train_mode`
     # neutralizes. Verified: a fixture-dims v3 model dynamo-exports to ONNX.
+    # TabPFN-2.6 (Prior Labs). A 2.5-LINE architecture, not a v3 one: same
+    # emsize/nhead/features_per_group/thinking-row layout, and — the part that
+    # matters for export — it still carries `pre_generated_column_embeddings`
+    # (2000 x emsize//4), so `prepare_model_for_export` takes the same non-v2
+    # branch as 2.5 and needs no new patch. What actually changed is
+    # `layernorm_type="rmsnorm"` and a deeper per-layer parameterisation (322
+    # clf / 325 reg tensors vs 2.5's 154 / 121), both of which are ordinary
+    # weights and trace without help.
+    "v2.6": {
+        "module": v26mod,
+        "config": v26mod.TabPFNV2p6Config,
+        "get_architecture": v26mod.get_architecture,
+    },
     "v3": {
         "module": v3mod,
         "config": v3mod.TabPFNV3Config,

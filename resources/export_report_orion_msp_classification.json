@@ -1,0 +1,115 @@
+{
+  "command": [
+    "export_orion_msp",
+    "--config",
+    "real",
+    "--out",
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-tabfm/dc2a44ba-2f5c-46a7-b447-4670fa6bc767/scratchpad/realmsp"
+  ],
+  "task": "classification",
+  "config": "real",
+  "model_kwargs": {
+    "max_classes": 10,
+    "embed_dim": 128,
+    "features_per_group": 2,
+    "feature_pos_emb": "subspace",
+    "col_num_blocks": 3,
+    "col_nhead": 4,
+    "col_num_inds": 128,
+    "row_num_blocks": 9,
+    "row_nhead": 8,
+    "row_num_cls": 4,
+    "row_num_global": 4,
+    "row_num_random": 2,
+    "row_window": 500,
+    "row_scales": [
+      1
+    ],
+    "row_group_mode": "pma",
+    "row_rope_base": 100000.0,
+    "scale_combine_method": "enhanced_attention",
+    "icl_num_blocks": 12,
+    "icl_nhead": 4,
+    "ff_factor": 2,
+    "num_memory_heads": 4,
+    "num_thinking_tokens": 4,
+    "perc_layers": 2,
+    "perc_num_latents": 0,
+    "use_memory_gating": true,
+    "dropout": 0.0,
+    "activation": "gelu",
+    "norm_first": true
+  },
+  "n_params": 27896722,
+  "seed": 0,
+  "opset": 18,
+  "upstream": {
+    "repo": "https://github.com/Lexsi-Labs/Orion-MSP",
+    "rev": "060d34606f56c591c47e0b6cbe971e5f5035f33e",
+    "license": "MIT",
+    "checkpoint": "Lexsi/Orion-MSP :: Orion-MSP-v1.1.ckpt"
+  },
+  "input_signature": {
+    "x": "[1,T,H] f32",
+    "y": "[1,S] f32 (S=train_size, train labels only)"
+  },
+  "output": {
+    "logits": "[1,T,C] class logits, C=max_classes"
+  },
+  "H_dynamic": true,
+  "train_size": "runtime (implicit = len(y))",
+  "cat_mask": "omitted (no categorical path)",
+  "d": "omitted (engine pads features; d-path uses boolean-mask indexing)",
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_train": [
+    "train",
+    2,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    2,
+    512
+  ],
+  "example_THS": [
+    20,
+    8,
+    12
+  ],
+  "graph_bytes": 1875239,
+  "n_initializers_mapped": 357,
+  "unmatched_small_inline": [
+    "m.row_interactor.lifted_tensor_0"
+  ],
+  "parity": {
+    "ok": true,
+    "worst": 3.5762786865234375e-07,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 16,
+        "H": 4,
+        "train": 10,
+        "max_abs_delta_test_rows": 3.5762786865234375e-07,
+        "ort_ms": 145.75791358947754
+      },
+      {
+        "T": 60,
+        "H": 20,
+        "train": 40,
+        "max_abs_delta_test_rows": 3.5762786865234375e-07,
+        "ort_ms": 313.5521411895752
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.29.0",
+    "onnxscript": "0.7.1"
+  }
+}

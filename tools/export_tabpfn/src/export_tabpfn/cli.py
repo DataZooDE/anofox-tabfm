@@ -18,21 +18,32 @@ import time
 from export_tabpfn import configs, export
 from export_tabpfn.tabpfn_patched import build_random_model
 
+# Architecture -> resource stem. The stems are load-bearing: they are what
+# cmake/embed_resources.cmake embeds and what BundledGpuGraphId() in
+# src/include/tabfm_model_spec.hpp maps each registry id onto. A missing entry
+# must raise, never fall back to another generation's stem.
+ARCH_SLUGS = {"v2": "tabpfn", "v2.5": "tabpfn25", "v2.6": "tabpfn26", "v3": "tabpfn3"}
+
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="export_tabpfn")
     ap.add_argument("--task", required=True,
                     choices=["classification", "regression"])
     ap.add_argument("--config", required=True,
-                    choices=["tiny", "fixture", "real", "fixture25", "real25"])
+                    choices=["tiny", "fixture", "real", "fixture25", "real25",
+                             "fixture26", "real26", "fixture3", "real3"])
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
     args = ap.parse_args(argv)
 
     cfg = configs.get(args.config, task=args.task)
-    # 2.5 graphs/maps get their own names so both generations can ship side by side.
-    slug = "tabpfn25" if cfg.arch == "v2.5" else "tabpfn"
+    # Each generation's graphs/maps get their own resource stem so they can ship
+    # side by side. Keyed off cfg.arch rather than the config name, and looked up
+    # rather than chained: the old `"tabpfn25" if arch == "v2.5" else "tabpfn"`
+    # form silently gave v3 the v2 stem, so a `--config real3` export would have
+    # overwritten the v2 graph while reporting success.
+    slug = ARCH_SLUGS[cfg.arch]
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     graph_path = out / f"graph_{slug}_{args.task}.onnx"

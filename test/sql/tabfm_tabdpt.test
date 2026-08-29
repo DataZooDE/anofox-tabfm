@@ -1,0 +1,108 @@
+# name: test/sql/tabfm_tabdpt.test
+# description: TabDPT v1.2 (Layer 6 AI) — 1459 Elo on the TabArena v0.1.4 board
+#              and, with Mitra, one of only two built-ins that are BOTH
+#              permissively licensed and capable of both tasks.
+#
+#              docs/MULTI_MODEL_PLAN.md deferred TabDPT behind a hypothetical
+#              RetrievalOnnxBackend. That premise was wrong: retrieval lives in
+#              upstream's sklearn wrapper (context_reduction, default
+#              "subsample") and only chooses WHICH context rows to pass.
+#              TabDPTModel.forward takes the whole context and derives the split
+#              from len(y) — the engine's existing single_eval_pos family — so
+#              onboarding it needed an exporter and no engine change.
+#
+#              Two things here are firsts for the catalog and are asserted
+#              below: it needs NO ckpt->safetensors conversion (Layer 6 publish
+#              safetensors directly), and its two tasks SHARE one weights file
+#              (a single head emits class logits followed by regression bins).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# --- the built-in catalog entry ------------------------------------------------
+
+query TTT
+SELECT model, family, capabilities FROM tabfm_list_models() WHERE model = 'tabdpt'
+----
+tabdpt	icl-transformer	classify, regress
+
+# Apache-2.0 and ungated — no licence gate, unlike the Prior Labs line.
+query TTT
+SELECT model, license, commercial FROM tabfm_list_models() WHERE model = 'tabdpt'
+----
+tabdpt	apache-2.0	true
+
+# max_features is a hard cap, not a soft one: the exported graph pads x up to the
+# model's fixed num_features (128), so a wider table cannot be served at all.
+#
+# max_classes is 16 rather than the catalog's usual 10 because that is the
+# checkpoint's real head width, and the engine takes its class ceiling straight
+# from this entry — declaring 10 would refuse an 11-16 class task the graph can
+# serve perfectly well.
+query III
+SELECT max_rows, max_features, max_classes FROM tabfm_list_models() WHERE model = 'tabdpt'
+----
+100000	128	16
+
+# --- the fixture model (real forward pass, offline) ----------------------------
+
+# ONE safetensors for both tasks — the registration names the same file twice.
+# Every other fixture here needs a per-task weights file.
+statement ok
+CALL tabfm_register_model(
+  id := 'tabdpt-fixture', base_dir := 'test/fixtures/tabdpt',
+  classification_graph := 'graph_tabdpt_classification.onnx',
+  regression_graph := 'graph_tabdpt_regression.onnx',
+  classification_weights := 'model.safetensors',
+  regression_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_tabdpt_classification.json',
+  regression_tensor_map := 'tensor_map_tabdpt_regression.json',
+  license := 'apache-2.0', commercial := true,
+  preprocessing_profile := 'tabdpt_v1_raw',
+  max_rows := 4096, max_features := 16, max_classes := 4)
+
+query TTT
+SELECT model, family, capabilities FROM tabfm_list_models() WHERE model = 'tabdpt-fixture'
+----
+tabdpt-fixture	icl-transformer	classify, regress
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,0.1,'c0'),(1.5,0.2,0.3,'c1'),(2.5,-1.0,0.5,'c2'),
+  (0.2,0.8,0.7,'c0'),(1.1,0.4,0.2,'c1'),(3.0,-0.5,0.9,'c2'),
+  (0.9,1.2,0.6,'c0'),(2.1,0.1,0.4,'c1'),
+  (1.3,0.3,0.35,NULL),(2.4,-0.2,0.55,NULL))
+  v(f1,f2,f3,label);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2'))
+FROM tabfm_classify('t', 'label', model := 'tabdpt-fixture')
+----
+10	0
+
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabdpt-fixture') WHERE yhat IS NULL
+----
+0
+
+# Regression runs off the SAME weights: the graph slices the bin half of the
+# head, takes the bar-distribution mean and undoes the train-prefix target
+# standardization in-graph, so the output is a raw-space point estimate.
+statement ok
+CREATE TABLE r AS SELECT * FROM (VALUES
+  (0.5,1.0,0.1,1.2),(1.5,0.2,0.3,2.4),(2.5,-1.0,0.5,3.1),
+  (0.2,0.8,0.7,0.9),(1.1,0.4,0.2,1.8),(3.0,-0.5,0.9,3.6),
+  (0.9,1.2,0.6,1.1),(2.1,0.1,0.4,2.7),
+  (1.3,0.3,0.35,NULL),(2.4,-0.2,0.55,NULL))
+  v(f1,f2,f3,target);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_regress('r', 'target', model := 'tabdpt-fixture')
+----
+10	0
