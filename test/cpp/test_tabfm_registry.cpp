@@ -188,3 +188,33 @@ TEST_CASE("registry: TabDPT is commercially clean and shares one file across tas
 	// the manifest names is the one the engine injects.
 	REQUIRE(clf.files[0].path == "model.safetensors");
 }
+
+
+TEST_CASE("registry: Orion-MSP is classify-only alongside its Orion-BiX sibling",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("orion-msp"));
+	auto &msp = reg.Get("orion-msp");
+
+	// MIT and ungated. With orion-bix, mitra and tabdpt this is the
+	// commercially-clean half of the catalog.
+	REQUIRE(msp.license.id == "mit");
+	REQUIRE(msp.license.commercial == true);
+	REQUIRE(msp.license.gate_setting.empty());
+
+	// Upstream ships sklearn/classifier.py and no regressor, so the capability
+	// gate must actually deny regression rather than let the engine try.
+	REQUIRE(msp.HasCapability("classify"));
+	REQUIRE_FALSE(msp.HasCapability("regress"));
+	REQUIRE(msp.HasTask(TabFMTask::CLASSIFICATION));
+	REQUIRE_FALSE(msp.HasTask(TabFMTask::REGRESSION));
+
+	// Sibling, not alias: same vendor and licence, different checkpoint, and it
+	// must not have inherited orion-bix's weights URL.
+	auto &bix = reg.Get("orion-bix");
+	REQUIRE(msp.license.id == bix.license.id);
+	REQUIRE(msp.tasks.at(TabFMTask::CLASSIFICATION).files[0].url !=
+	        bix.tasks.at(TabFMTask::CLASSIFICATION).files[0].url);
+	REQUIRE(msp.tasks.at(TabFMTask::CLASSIFICATION).repo !=
+	        bix.tasks.at(TabFMTask::CLASSIFICATION).repo);
+}

@@ -365,6 +365,7 @@ TEST_CASE("model_spec: TabDPT's two tasks share a header sha and the plain stem"
 
 TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the registry ids", "[tabfm][model_spec]") {
 	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
 	// Registry ids (tabpfn-v2, tabicl-v2, ...) differ from the resource file
 	// stems (tabpfn, tabicl, ...) — the id function owns that mapping so the
 	// engine never string-mangles.
@@ -373,6 +374,14 @@ TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the regis
 	REQUIRE(BundledGpuGraphId("tabpfn-v3", "ext", "classification") == "graph_ext_tabpfn3_classification");
 	REQUIRE(BundledGpuGraphId("tabicl-v2", "ext", "regression") == "graph_ext_tabicl_regression");
 	REQUIRE(BundledGpuGraphId("orion-bix", "ext", "classification") == "graph_ext_orion_bix_classification");
+	// orion-msp is a separate stem, NOT a fallback onto orion-bix's graphs: the
+	// two are different architectures that happen to share a vendor and licence.
+	REQUIRE(BundledGpuGraphId("orion-msp", "ext", "classification") == "graph_ext_orion_msp_classification");
+	REQUIRE(BundledGpuGraphId("orion-msp", "ext", "classification") !=
+	        BundledGpuGraphId("orion-bix", "ext", "classification"));
+	REQUIRE(ExpectedWeightsHeaderShaFor("orion-msp", "classification") ==
+	        "bf066b3de2beea6875035790027ed9ada6cc6b43a33709cde42312f28be89fe7");
+	REQUIRE(ExpectedWeightsHeaderShaFor("orion-msp", "regression") == "");
 }
 
 TEST_CASE("model_spec: listing accepts a converted sibling for a missing .ckpt", "[tabfm][model_spec]") {

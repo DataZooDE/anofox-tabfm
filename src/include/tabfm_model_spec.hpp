@@ -248,6 +248,8 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 		stem = "tabicl";
 	} else if (model == "orion-bix") {
 		stem = "orion_bix";
+	} else if (model == "orion-msp") {
+		stem = "orion_msp";
 	}
 	return "graph_" + kind + "_" + stem + "_" + task_name;
 }
@@ -300,6 +302,9 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 		if (task_name == "classification" || task_name == "regression") {
 			return "0959127002658b64f981ea233be8f1efec3dade6384a4fe637c75400a41a9a78";
 		}
+	}
+	if (model == "orion-msp" && task_name == "classification") {
+		return "bf066b3de2beea6875035790027ed9ada6cc6b43a33709cde42312f28be89fe7";
 	}
 	if (model == "orion-bix" && task_name == "classification") {
 		return "c2b7ff39add2b0c1c2d3ddabbaf413e8c15f433b620f3091f0562f376255d166";

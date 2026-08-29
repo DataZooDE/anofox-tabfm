@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "id": "orion-bix-fixture",
+  "display_name": "Orion-MSP CI fixture (random init, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "mit",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "orion_msp_v1_minimal",
+  "weights": {
+    "classification": {
+      "repo": "local:test/fixtures/orion_msp",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model_classification.safetensors",
+          "bytes": 86108,
+          "sha256": "210d68afe80f51add0294463fa73475a3d4e82d3364eff32f62b2e136913fb68"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_orion_msp_classification.onnx",
+    "tensor_map": "tensor_map_orion_msp_classification.json"
+  },
+  "capabilities": [
+    "classify"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 3
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init Orion-MSP fixture (MIT architecture, our weights). H is DYNAMIC; y carries train labels only (length=train_size); no cat_mask/d/train_size inputs. CLASSIFICATION ONLY \u2014 upstream ships no regression head. safetensors keys carry the released checkpoint's '_orig_mod.' prefix so one tensor map serves fixture and real weights."
+}

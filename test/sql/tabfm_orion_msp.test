@@ -1,0 +1,91 @@
+# name: test/sql/tabfm_orion_msp.test
+# description: Orion-MSP v1.5 (Lexsi Labs, MIT) — the sibling of orion-bix and,
+#              like it, CLASSIFICATION ONLY: upstream ships sklearn/classifier.py
+#              and no regressor, so tabfm_regress must raise the actionable
+#              unsupported-task error rather than guess.
+#
+#              The interesting part is the attention mask. The released
+#              checkpoint sets row_num_random = 2, and upstream redraws those
+#              BigBird links with torch.randperm on EVERY forward — so upstream
+#              inference is not deterministic and the mask is not traceable. The
+#              exporter freezes one seeded draw and slices it, which makes this
+#              model's predictions STABLE across runs. That stability is what the
+#              repeat-query assertion below actually checks.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# --- the built-in catalog entry ------------------------------------------------
+
+query TTT
+SELECT model, family, capabilities FROM tabfm_list_models() WHERE model = 'orion-msp'
+----
+orion-msp	icl-transformer	classify
+
+# MIT and ungated, like orion-bix — both are commercially clean.
+query TTT
+SELECT model, license, commercial FROM tabfm_list_models()
+WHERE model IN ('orion-bix', 'orion-msp') ORDER BY model
+----
+orion-bix	mit	true
+orion-msp	mit	true
+
+# --- the fixture model (real forward pass, offline) ----------------------------
+
+statement ok
+CALL tabfm_register_model(
+  id := 'orion-msp-fixture', base_dir := 'test/fixtures/orion_msp',
+  classification_graph := 'graph_orion_msp_classification.onnx',
+  classification_weights := 'model_classification.safetensors',
+  classification_tensor_map := 'tensor_map_orion_msp_classification.json',
+  license := 'mit', commercial := true,
+  preprocessing_profile := 'orion_msp_v1_minimal',
+  max_rows := 4096, max_features := 64, max_classes := 3)
+
+query TTT
+SELECT model, family, capabilities FROM tabfm_list_models() WHERE model = 'orion-msp-fixture'
+----
+orion-msp-fixture	icl-transformer	classify
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,0.1,'c0'),(1.5,0.2,0.3,'c1'),(2.5,-1.0,0.5,'c2'),
+  (0.2,0.8,0.7,'c0'),(1.1,0.4,0.2,'c1'),(3.0,-0.5,0.9,'c2'),
+  (0.9,1.2,0.6,'c0'),(2.1,0.1,0.4,'c1'),
+  (1.3,0.3,0.35,NULL),(2.4,-0.2,0.55,NULL))
+  v(f1,f2,f3,label);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2'))
+FROM tabfm_classify('t', 'label', model := 'orion-msp-fixture')
+----
+10	0
+
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'orion-msp-fixture') WHERE yhat IS NULL
+----
+0
+
+# The frozen mask makes repeated scoring identical. With upstream's per-call
+# randperm this would be flaky, which is exactly why the mask is frozen.
+query I
+SELECT count(*) FROM (
+  SELECT a.yhat AS l, b.yhat AS r
+  FROM (SELECT row_number() OVER () i, yhat FROM tabfm_classify('t', 'label', model := 'orion-msp-fixture')) a
+  JOIN (SELECT row_number() OVER () i, yhat FROM tabfm_classify('t', 'label', model := 'orion-msp-fixture')) b
+    USING (i)
+) d WHERE l IS DISTINCT FROM r
+----
+0
+
+# --- capability gating is real, not hypothetical -------------------------------
+
+statement error
+SELECT * FROM tabfm_regress('t', 'f1', model := 'orion-msp-fixture')
+----
+regress

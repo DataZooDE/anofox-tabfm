@@ -162,6 +162,37 @@ FROM r_dpt r JOIN truth t USING (row_id)
 ----
 true
 
+# --- Orion-MSP ----------------------------------------------------------------
+#
+# Classification only. The frozen attention mask is the thing worth checking on
+# REAL weights: upstream redraws those links every forward, so if the freeze had
+# not taken, this model would score differently on each run and the repeat check
+# below would flake rather than fail cleanly.
+
+statement ok
+CREATE TABLE c_msp AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'orion-msp');
+
+query I
+SELECT count(*) FROM c_msp WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_msp c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.85
+----
+true
+
+# Deterministic across runs, with the real checkpoint's row_num_random = 2 live.
+query I
+SELECT count(*) FROM c_msp a
+JOIN (SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'orion-msp')) b
+  USING (row_id)
+WHERE a.yhat IS DISTINCT FROM b.yhat
+----
+0
+
 # --- the two 2.5 checkpoints are genuinely DIFFERENT weights -------------------
 #
 # 2.5 and 2.5-real share a graph and a tensor map, so a cache-path collision (or

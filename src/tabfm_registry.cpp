@@ -269,6 +269,40 @@ static const char *const BUILTIN_TABICL = R"json({
 //
 // max_features is a hard 128: the export wrapper pads x up to the model's fixed
 // num_features, so a wider table would make that pad negative.
+// Orion-MSP (Lexsi Labs, MIT) — the sibling of orion-bix, and like it
+// CLASSIFICATION ONLY (upstream ships sklearn/classifier.py and no regressor).
+//
+// Two things about the RELEASED checkpoint are narrower than the paper, and
+// tools/export_orion_msp asserts both so a future release cannot silently change
+// the traced architecture: `row_scales = (1,)` (the "multi-scale" row stage
+// ships with a SINGLE scale) and `perc_num_latents = 0` (Perceiver memory off).
+//
+// `row_num_random = 2` IS live, and it is the interesting part. Upstream redraws
+// the BigBird random attention links with `torch.randperm` on EVERY forward, so
+// upstream inference is not deterministic and the mask cannot be traced. The
+// exporter freezes one seeded draw into a table and slices it — deterministic
+// across runs and machines, structurally faithful (each non-special query keeps
+// exactly `num_random` extra links), but reproducing ONE particular upstream
+// draw rather than any specific one. See docs/REAL_MODELS.md.
+static const char *const BUILTIN_ORION_MSP = R"json({
+  "schema_version": 2, "id": "orion-msp", "display_name": "Orion-MSP v1.5 (Lexsi Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "mit", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "Orion-MSP by Lexsi Labs, MIT. Checkpoint: HF Lexsi/Orion-MSP."},
+  "preprocessing_profile": "orion_msp_v1_minimal",
+  "weights": {
+    "classification": {"repo": "Lexsi/Orion-MSP", "revision": "main",
+      "files": [{"path": "classification/model.ckpt", "bytes": 335545028,
+                 "url": "https://huggingface.co/Lexsi/Orion-MSP/resolve/main/OrionMSP-classifier-v1.5-202603.ckpt"}]}
+  },
+  "graph": {"classification": "graph_orion_msp_classification",
+    "tensor_map": {"classification": "tensor_map_orion_msp_classification.json"}},
+  "capabilities": ["classify"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 100000, "max_features": 512, "max_classes": 10}
+})json";
+
 static const char *const BUILTIN_TABDPT = R"json({
   "schema_version": 2, "id": "tabdpt", "display_name": "TabDPT v1.2 (Layer 6 AI)",
   "family": "icl-transformer",
@@ -339,6 +373,7 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_TABICL, "(built-in tabicl-v2)"));
 	specs.push_back(ParseModelSpec(BUILTIN_ORION_BIX, "(built-in orion-bix)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABDPT, "(built-in tabdpt)"));
+	specs.push_back(ParseModelSpec(BUILTIN_ORION_MSP, "(built-in orion-msp)"));
 	return specs;
 }
 

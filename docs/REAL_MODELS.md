@@ -24,6 +24,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
 | **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; ckpt→safetensors convert required |
 | **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes** |
+| **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); ckpt→safetensors convert required |
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
 | **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
 
@@ -179,6 +180,74 @@ uv run make_tabdpt_fixture ../../test/fixtures/tabdpt
 
 Offline fixture: `test/sql/tabfm_tabdpt.test`.
 
+### Orion-MSP — done, with one deliberate deviation
+
+The sibling of `orion-bix` (same vendor, same MIT licence, same
+classification-only shape — upstream ships `sklearn/classifier.py` and no
+regressor). Not on the TabArena board, so unlike the other three additions its
+accuracy claim is vendor-reported; it earns its place by being commercially
+clean rather than by rank.
+
+Two things about the released `OrionMSP-classifier-v1.5` checkpoint are narrower
+than the paper, and `configs.assert_shipped_path` fails loudly on either
+changing:
+
+- `row_scales = (1,)` — the "multi-scale" row interaction ships with a **single**
+  scale; the 1/4/16 hierarchy is not what the published weights use.
+- `perc_num_latents = 0` — the Perceiver memory is disabled.
+
+**The deviation.** `row_num_random = 2` IS live, and upstream builds those
+BigBird links with a Python loop over a tensor plus a `torch.randperm` on *every
+forward*:
+
+```python
+for i in rng_idx:
+    choices = torch.randperm(L - num_special)[:num_random] + num_special
+    mask[i, choices] = 0.0
+```
+
+That is untraceable once `L` is symbolic, and it means **upstream inference is
+non-deterministic** — the same table scored twice gets two different masks. The
+exporter freezes one seeded draw into a `[MAX_L, MAX_L]` score table and takes
+the top-`num_random` per row, slicing by the runtime `L` — the same treatment
+`tools/export_tabpfn` gives TabPFN's runtime `randn` column-embedding table.
+
+The result is deterministic (better than upstream) and structurally faithful:
+each non-special query keeps exactly `num_random` extra links. It costs ~1 MB of
+inline constant in each graph (`MAX_L = 512`, f32), which is why Orion-MSP's
+graphs are larger than its parameter count suggests; upstream leaves a
+table-free alternative in a comment (`(i + 1 + arange(num_random)) % ...`) that
+would trade that megabyte for a strided rather than random link pattern. But it reproduces
+*one particular* upstream draw rather than any specific one, so export parity is
+measured against upstream **with the same patch installed** — comparing against
+unpatched upstream would be comparing two different random masks and would mean
+nothing. `test/sql/tabfm_orion_msp.test` asserts the resulting stability by
+scoring the same table twice and requiring identical labels.
+
+**An upstream bug found on the way.** `_build_block_sparse_mask` also computes a
+sliding window that never takes effect:
+
+```python
+local = (dist <= window).to(mask.dtype) * 0.0          # all zeros
+mask  = torch.where(mask.isfinite(), mask, local + float("-inf"))   # no-op
+```
+
+`x * 0.0` is zero regardless of `dist`, so `local + -inf` is `-inf` everywhere
+and the `where` changes nothing. The effective upstream mask is specials +
+random links + diagonal. The frozen mask **reproduces that**, deliberately:
+honouring the window would "fix" the architecture out from under weights that
+were trained without it (measured at L=24 / num_special=8 / window=3 it opens 14
+keys per query where upstream opens 11).
+
+```bash
+cd tools/export_orion_msp
+uv run export_orion_msp --config real --out ../../resources
+uv run python convert_weights.py          # verifies the map covers the ckpt 1:1
+uv run make_orion_msp_fixture ../../test/fixtures/orion_msp
+```
+
+Offline fixture: `test/sql/tabfm_orion_msp.test`.
+
 ### Testing against real weights
 
 Every `test/sql/tabfm_<model>.test` runs the committed random-init fixture:
@@ -225,6 +294,7 @@ regress capabilities above — there is no separate per-model work.
 | `tabpfn-v2-5-real` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2-6` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabdpt` | ✅ | ✅ | ✅ | ✅ all columns |
+| `orion-msp` | ✅ | ✗ | ✅ | categorical columns only |
 | `tabpfn-v3` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabicl-v2` | ✅ | ✅ | ✅ | ✅ all columns |
 | `orion-bix` | ✅ | ✗ | ✅ | categorical columns only |

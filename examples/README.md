@@ -61,7 +61,7 @@ a signature change breaks the build rather than the docs.
 
 Every model here is **built in** — `tabfm-v1`, `mitra`, `tabpfn-v2`,
 `tabpfn-v2-5`, `tabpfn-v2-5-real`, `tabpfn-v2-6`, `tabpfn-v3`, `tabicl-v2`,
-`orion-bix` and `tabdpt` are usable by name (`model := '<id>'`) with no manifest file;
+`orion-bix`, `orion-msp` and `tabdpt` are usable by name (`model := '<id>'`) with no manifest file;
 `tabfm_list_models()` lists them. The weight-free graphs ship inside the extension; the weights are the
 user's own download (license-clean). To register your *own* model in SQL, see
 `CALL tabfm_register_model(...)`.

@@ -6,11 +6,11 @@ classification and regression become a single SQL statement. No Python, no
 training loop, no MLOps: the model reads your labelled rows as context and
 predicts the rest.
 
-**Ten models are built in and selectable by name** — `mitra` (AWS AutoGluon,
+**Eleven models are built in and selectable by name** — `mitra` (AWS AutoGluon,
 Apache-2.0), `tabdpt` (Layer 6 AI, Apache-2.0), `tabpfn-v2`, `tabpfn-v2-5`,
 `tabpfn-v2-5-real`, `tabpfn-v2-6` and `tabpfn-v3` (Prior Labs), `tabicl-v2`
-(Inria), `orion-bix` (Lexsi Labs, MIT), and `tabfm-v1` (Google TabFM) — and you
-can register your own entirely in SQL. Everything is
+(Inria), `orion-bix` and `orion-msp` (Lexsi Labs, MIT), and `tabfm-v1` (Google
+TabFM) — and you can register your own entirely in SQL. Everything is
 operated in SQL: no manifest file, no config.
 
 ---
@@ -220,7 +220,7 @@ Runnable samples: [`examples/generate_synthetic.sql`](examples/generate_syntheti
 ## Multiple models (the registry)
 
 `anofox_tabfm` is one entrypoint for many **tabular foundation models** — "TabFM"
-is the *category*, not a single model. Ten models are **built in** and usable by
+is the *category*, not a single model. Eleven models are **built in** and usable by
 name with no config, no manifest file:
 
 ```sql
@@ -235,6 +235,7 @@ SELECT * FROM tabfm_list_models();          -- the registry: every known model
 | `tabicl-v2` | Inria | BSD-3-Clause | `true` |
 | `orion-bix` | Lexsi Labs | MIT | `true` (classify only) |
 | `tabdpt` | Layer 6 AI | Apache-2.0 | `true` |
+| `orion-msp` | Lexsi Labs | MIT | `true` (classify only) |
 | `tabpfn-v2-5` | Prior Labs | TabPFN-2.5 (non-commercial, gated) | `false` |
 | `tabpfn-v2-5-real` | Prior Labs | TabPFN-2.5 (non-commercial, gated) | `false` |
 | `tabpfn-v2-6` | Prior Labs | TabPFN-2.6 (non-commercial, gated) | `false` |
