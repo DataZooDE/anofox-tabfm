@@ -383,13 +383,20 @@ surfaces (`tabfm_predict_by` / `_agg` / `_win`) — planned on the same engine.
 
 ## Flavors (CPU / GPU)
 
-One codebase, four builds (`TABFM_FLAVOR`): `cpu` (default, community-extension
-eligible), `cuda` (NVIDIA), `rocm` (AMD via a **direct MIGraphX backend** —
-ONNX Runtime's MIGraphX EP can't load the >2 GB model, so ROCm bypasses it and
-drives libMIGraphX directly, with a compiled-program `.mxr` cache), and `coreml`
-(Apple Silicon via ONNX Runtime's CoreML EP — same macOS archive as `cpu`, GPU/ANE
-where the graph is supported, CPU fallback otherwise). GPU builds
-link no vendor runtime — CUDA/cuDNN or ROCm resolve from your system, and
+**A GPU is not a build.** The published artifact is the `cpu` flavor on every
+platform, and each accelerator is a plugin it loads at runtime: `cuda`
+(NVIDIA, via its own ONNX Runtime GPU distribution), `rocm` (AMD via a
+**direct MIGraphX backend** — ONNX Runtime's MIGraphX EP can't load the >2 GB
+model, so ROCm bypasses it and drives libMIGraphX directly, with a
+compiled-program `.mxr` cache), and `mlx` (Apple Silicon, running the shipped
+ONNX graph itself). `CALL tabfm_accelerate()` fetches the right one.
+
+`TABFM_FLAVOR` still selects which ONNX Runtime gets linked for a source
+build, and remains the mechanism for `coreml` alone — which is
+[dropped](docs/DYNAMIC_BACKENDS.md#phase-4--coreml--dropped-2026-09-19), since
+MLX supersedes it on the only platform it targets.
+
+No vendor runtime is linked — CUDA/cuDNN or ROCm resolve from your system, and
 `tabfm_devices()` reports what was found. GPU dtype is set by
 `anofox_tabfm_gpu_precision` (default `fp32` — strict CPU parity; faster modes are opt-in).
 
@@ -418,7 +425,7 @@ the DuckDB community repository.
 | CPU | Linux x64/arm64, macOS **arm64**, Windows x64 | all 7 built-ins | CI suites + install-smoke with inference on every platform |
 | CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | **all 7 built-ins** | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max |
 | ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1 + mitra (train_size-scalar family) | RX 9070 XT: parity, concurrency, user workflow |
-| CoreML | — | — | out of scope by decision (docs/PHASE_COMPLETION_PLAN.md) |
+| CoreML | — | — | **dropped** — MLX supersedes it on Apple Silicon ([why](docs/DYNAMIC_BACKENDS.md#phase-4--coreml--dropped-2026-09-19)) |
 | MLX (plugin) | macOS arm64 (Apple Silicon) | every model CPU serves (6 verified through SQL; tabfm-v1 via the graph harness) | Apple M3: 10 model×task pairs cpu-compared (0 disagreements), 4000-row stress, device/precision alternation |
 
 macOS is **arm64 only**: ONNX Runtime published its last macOS x86_64 /
