@@ -94,13 +94,39 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| (populated by roadmapper) | — | Pending |
+| CMET-01 | Phase 1 | Pending |
+| CMET-02 | Phase 1 | Pending |
+| CMET-03 | Phase 1 | Pending |
+| CMET-04 | Phase 1 | Pending |
+| CMET-05 | Phase 1 | Pending |
+| CMET-06 | Phase 1 | Pending |
+| RMET-01 | Phase 1 | Pending |
+| RMET-02 | Phase 1 | Pending |
+| RMET-03 | Phase 1 | Pending |
+| RMET-04 | Phase 1 | Pending |
+| CV-01 | Phase 1 | Pending |
+| CV-02 | Phase 1 | Pending |
+| CV-03 | Phase 1 | Pending |
+| CV-04 | Phase 1 | Pending |
+| MGEN-01 | Phase 2 | Pending |
+| MGEN-02 | Phase 2 | Pending |
+| MGEN-03 | Phase 2 | Pending |
+| RDIST-01 | Phase 2 | Pending |
+| RDIST-02 | Phase 2 | Pending |
+| MODL-01 | Phase 2 | Pending |
+| MODL-02 | Phase 2 | Pending |
+| MODL-03 | Phase 2 | Pending |
+| MODL-04 | Phase 2 | Pending |
+| PSR-01 | Phase 3 | Pending |
+| PSR-02 | Phase 3 | Pending |
+| PSR-03 | Phase 3 | Pending |
+| PSR-04 | Phase 3 | Pending |
+| CMP-01 | Phase 3 | Pending |
 
 **Coverage:**
-- v1 requirements: 26 total
-- Mapped to phases: 0 (pending roadmap)
-- Unmapped: 26 ⚠️
-
+- v1 requirements: 28 total (enumerated IDs; the earlier "26" header count was stale)
+- Mapped to phases: 28 (Phase 1: 14, Phase 2: 9, Phase 3: 5)
+- Unmapped: 0 ✓
 ---
 *Requirements defined: 2026-09-19*
 *Last updated: 2026-09-19 after initial definition*
