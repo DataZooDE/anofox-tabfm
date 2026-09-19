@@ -842,6 +842,49 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 // migraphx-ready graph (external-data + Shape-rewrite) directly and compiles
 // per shape-bucket (cached to .mxr). Engages only when the resolved device is
 // a rocm GPU and a bundled migraphx graph + matching weights exist; nullptr
+//! Servability for a resolved model on a backend: the pure predicate in
+//! tabfm_model_spec.hpp plus the one fact only the filesystem can answer —
+//! whether the directory a BUNDLED graph must be staged into is even there.
+//!
+//! Deliberately existence, not writability. Answering "can I write here?"
+//! honestly means attempting a write, and this runs on the capability path
+//! that tabfm_backends() and device resolution call for every (model, device)
+//! pair — creating and deleting probe files across the catalog to answer a
+//! question staging itself answers a moment later. So a read-only directory
+//! is still caught at staging, where it throws for an explicit request; what
+//! this rules out cheaply is the case where the directory is absent
+//! altogether. The distinct reason string exists because reporting either as
+//! "no graph" would send the user to register one, which would not help.
+GpuServabilityResult GpuServabilityFor(FileSystem &fs, const ResolvedModel &resolved, const string &backend,
+                                       const string &task_name, bool model_provides_graph, bool bundled_graph_exists,
+                                       bool bundled_header_matches, const string &precision) {
+	GpuServabilityInputs in;
+	in.backend = backend;
+	in.model = resolved.manifest.model;
+	in.task_name = task_name;
+	in.model_provides_graph = model_provides_graph;
+	in.bundled_graph_exists = bundled_graph_exists;
+	in.bundled_header_matches = bundled_header_matches;
+	in.precision = precision;
+	// Only a bundled graph needs staging; a model-provided one runs where it
+	// already is, so do not fail it on someone else's directory.
+	in.weights_dir_stageable = true;
+	if (!model_provides_graph && bundled_graph_exists && bundled_header_matches) {
+		const auto weights_dir = DirName(resolved.weights_path);
+		in.weights_dir_stageable = weights_dir.empty() || fs.DirectoryExists(weights_dir);
+	}
+	return EvaluateGpuServability(in);
+}
+
+//! Wrap a servability reason as the user-facing refusal for an explicitly
+//! requested device. Keeps the "here is the device, here is why, here is the
+//! way out" shape every §5 error has.
+string GpuRefusalMessage(const string &device, const string &reason) {
+	return "anofox_tabfm: device '" + device + "' was requested, but " + reason +
+	       ". SET anofox_tabfm_device='cpu' to run this model on the CPU, or SELECT * FROM tabfm_backends() to see "
+	       "which devices can serve it.";
+}
+
 // => fall back to the CPU/ORT path (no migraphx graph shipped for this task).
 //
 // Past the point where a migraphx graph is confirmed to exist for a resolved
@@ -861,17 +904,30 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "migraphx", task_name));
 	const bool bundled_matches =
 	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
+	// One predicate, shared with tabfm_backends() and with device resolution,
+	// so a refusal here and the matrix a user queries cannot disagree.
+	auto servability = GpuServabilityFor(fs, resolved, "rocm", task_name, !resolved.migraphx_graph_path.empty(),
+	                                     graph.data != nullptr, bundled_matches, ctx.gpu_precision);
+	if (!servability.supported) {
+		// Explicitly-requested ROCm + no runnable graph is an error here, with
+		// the real cause; declining silently used to surface a downstream
+		// message blaming ep_path (found running the examples on GPU hardware).
+		if (IsExplicitGpuRequest(ctx.device, "rocm")) {
+			throw InvalidInputException(GpuRefusalMessage("rocm", servability.reason));
+		}
+		return nullptr;
+	}
 	string graph_path;
 	string weights_dir;
-	switch (SelectGpuGraph(!resolved.migraphx_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
-	case GpuGraphSource::MODEL_PROVIDED:
+	if (servability.source == GpuGraphSource::MODEL_PROVIDED) {
 		graph_path = resolved.migraphx_graph_path;
 		weights_dir = DirName(graph_path); // external data sits beside the graph
-		break;
-	case GpuGraphSource::BUNDLED: {
+	} else {
 		weights_dir = DirName(resolved.weights_path);
 		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "migraphx", task_name) + ".onnx");
 		if (!StageBundledGraph(fs, graph, graph_path)) {
+			// Servability said the directory was writable; if staging still
+			// failed the cause is not one a capability check can predict.
 			if (IsExplicitGpuRequest(ctx.device, "rocm")) {
 				throw IOException("anofox_tabfm: device 'rocm' needs the bundled GPU graph staged beside the "
 				                  "weights, but '" + graph_path + "' could not be written (read-only weights "
@@ -879,17 +935,6 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 			}
 			return nullptr;
 		}
-		break;
-	}
-	case GpuGraphSource::NONE:
-		// Explicitly-requested ROCm + no runnable graph is an error here, with
-		// the real cause; declining silently used to surface a downstream
-		// message blaming ep_path (found running the examples on GPU hardware).
-		if (IsExplicitGpuRequest(ctx.device, "rocm")) {
-			throw InvalidInputException(
-			    NoGpuGraphMessage("rocm", resolved.manifest.model, task_name, "migraphx_graph"));
-		}
-		return nullptr;
 	}
 	const auto mxr_dir = fs.JoinPath(ctx.cache_dir, "migraphx");
 
@@ -943,14 +988,22 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
 	const bool bundled_matches =
 	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
+	auto servability = GpuServabilityFor(fs, resolved, "cuda", task_name, !resolved.ext_graph_path.empty(),
+	                                     graph.data != nullptr, bundled_matches, ctx.gpu_precision);
+	if (!servability.supported) {
+		// Same contract as the ROCm branch above: an explicit 'cuda' with no
+		// runnable graph names the model and the fix, never ep_path.
+		if (IsExplicitGpuRequest(ctx.device, "cuda")) {
+			throw InvalidInputException(GpuRefusalMessage("cuda", servability.reason));
+		}
+		return nullptr;
+	}
 	string graph_path;
 	string weights_dir;
-	switch (SelectGpuGraph(!resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
-	case GpuGraphSource::MODEL_PROVIDED:
+	if (servability.source == GpuGraphSource::MODEL_PROVIDED) {
 		graph_path = resolved.ext_graph_path;
 		weights_dir = DirName(graph_path); // external data sits beside the graph
-		break;
-	case GpuGraphSource::BUNDLED: {
+	} else {
 		weights_dir = DirName(resolved.weights_path);
 		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
 		if (!StageBundledGraph(fs, graph, graph_path)) {
@@ -961,15 +1014,6 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 			}
 			return nullptr;
 		}
-		break;
-	}
-	case GpuGraphSource::NONE:
-		// Same contract as the ROCm branch above: an explicit 'cuda' with no
-		// runnable graph names the model and the fix, never ep_path.
-		if (IsExplicitGpuRequest(ctx.device, "cuda")) {
-			throw InvalidInputException(NoGpuGraphMessage("cuda", resolved.manifest.model, task_name, "ext_graph"));
-		}
-		return nullptr;
 	}
 
 	if (ctx.ep_path.empty()) {

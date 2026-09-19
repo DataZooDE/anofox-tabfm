@@ -224,6 +224,118 @@ inline string NoGpuGraphMessage(const string &device, const string &model, const
 	       graph_kind + " := '<graph.onnx>' (CALL tabfm_register_model), or SET anofox_tabfm_device='cpu'.";
 }
 
+//===----------------------------------------------------------------------===//
+// GPU servability — can THIS model run on THIS device, and if not, why?
+//
+// The answer used to be an inline conjunction inside TryMIGraphXBackend and
+// again inside TryCudaBackend: does the model provide a graph, is one bundled,
+// does its header match, is the weights directory writable. Three consumers
+// need that answer and only one of them is dispatch — the refusal messages
+// need the REASON, tabfm_backends() needs the whole matrix, and a per-model
+// 'auto' needs it before committing to a device. Written beside dispatch, each
+// would be a second source of truth that drifts on the first change.
+//
+// Pure by construction: the caller does the filesystem work and passes the
+// booleans in. That keeps every combination testable without a model on disk,
+// including the ones no developer machine can produce.
+//===----------------------------------------------------------------------===//
+
+//! Numeric modes each backend actually implements. A mode either happens or
+//! errors — never a silent fp32 run under another name (GPU_HARDENING_PLAN P2),
+//! so asking for one a backend lacks makes the model unservable there rather
+//! than quietly approximate.
+inline bool BackendSupportsPrecision(const string &backend, const string &precision) {
+	if (precision.empty() || precision == "fp32") {
+		return true; // every backend's reference mode
+	}
+	if (backend == "cuda") {
+		// tf32 is Ampere+ tensor-core rounding; bf16/fp16 are MIGraphX
+		// quantize modes with no CUDA equivalent here.
+		return precision == "tf32";
+	}
+	if (backend == "rocm" || backend == "migraphx" || backend == "mlx") {
+		// tf32 is CUDA's mode and has no Metal or MIGraphX equivalent.
+		return precision == "bf16" || precision == "fp16";
+	}
+	return false;
+}
+
+struct GpuServabilityInputs {
+	//! "cuda" | "rocm" | "mlx"
+	string backend;
+	string model;
+	string task_name;
+	//! The model registered its own graph for this backend's kind.
+	bool model_provides_graph = false;
+	//! A graph for this (model, backend, task) is embedded in the binary.
+	bool bundled_graph_exists = false;
+	//! ...and the downloaded weights match the header its offsets were baked
+	//! against. A bundled graph without this is not usable.
+	bool bundled_header_matches = false;
+	//! A BUNDLED graph must be staged beside the weights before it can run, so
+	//! a missing (or unwritable) weights directory makes it unservable — a
+	//! distinct failure from having no graph, and one the user fixes
+	//! differently. Callers set this from whatever they can cheaply establish;
+	//! staging still reports the rest.
+	bool weights_dir_stageable = true;
+	//! anofox_tabfm_gpu_precision as it would be applied here.
+	string precision;
+};
+
+struct GpuServabilityResult {
+	bool supported = false;
+	//! "" when supported; otherwise a sentence naming the blocker and the fix.
+	string reason;
+	GpuGraphSource source = GpuGraphSource::NONE;
+};
+
+//! The graph-kind name a model registers for a backend, as it appears in
+//! CALL tabfm_register_model (…_ext_graph / …_migraphx_graph).
+inline string GpuGraphKindFor(const string &backend) {
+	return (backend == "rocm" || backend == "migraphx") ? "migraphx_graph" : "ext_graph";
+}
+
+inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &in) {
+	GpuServabilityResult out;
+	if (!BackendSupportsPrecision(in.backend, in.precision)) {
+		out.reason = "anofox_tabfm_gpu_precision='" + in.precision + "' is not implemented on the '" + in.backend +
+		             "' backend" +
+		             (in.backend == "cuda" ? " (fp32 or tf32; bf16/fp16 are MIGraphX modes)"
+		                                   : " (fp32, bf16 or fp16; tf32 is a CUDA tensor-core mode)");
+		return out;
+	}
+	out.source = SelectGpuGraph(in.model_provides_graph, in.bundled_graph_exists, in.bundled_header_matches);
+	switch (out.source) {
+	case GpuGraphSource::MODEL_PROVIDED:
+		out.supported = true;
+		return out;
+	case GpuGraphSource::BUNDLED:
+		if (!in.weights_dir_stageable) {
+			out.reason = "the bundled GPU graph must be staged beside the weights, but that directory is missing "
+			             "or not writable — create it and make it writable, or register the model with " +
+			             in.task_name + "_" + GpuGraphKindFor(in.backend) + " := '<graph.onnx>'";
+			return out;
+		}
+		out.supported = true;
+		return out;
+	case GpuGraphSource::NONE:
+	default:
+		// The dominant case, and the one worth being precise about: nine of
+		// eleven catalog models have no MIGraphX graph because their context
+		// split is positional, which a fixed-shape compile cannot bucket
+		// (docs/ROCM_SINGLE_EVAL_POS.md).
+		out.reason = "model '" + in.model + "' has no " + in.backend + "-servable graph for task '" + in.task_name +
+		             "': it declares no " + GpuGraphKindFor(in.backend) +
+		             (in.bundled_graph_exists ? " and the bundled GPU graph does not match its weights"
+		                                      : " and none is bundled for it");
+		if (in.backend == "rocm" && !in.bundled_graph_exists) {
+			out.reason += " (MIGraphX compiles per fixed shape; models that read the train/test split from y's "
+			              "length cannot be bucketed — see docs/ROCM_SINGLE_EVAL_POS.md)";
+		}
+		return out;
+	}
+}
+
 //! Embedded-resource id of a bundled GPU graph (kind = "ext" | "migraphx").
 //! tabfm-v1 keeps its unqualified pre-multi-model ids; every other model is
 //! model-qualified so the same task can bundle one graph per model.
