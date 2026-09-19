@@ -1,0 +1,98 @@
+# name: test/sql/tabfm_feature_mismatch.test
+# description: The context relation and the `test` relation must expose the SAME
+#              feature columns.
+#
+#              The train/test macro unions the two with UNION ALL BY NAME, which
+#              fills a missing column with NULL rather than failing. So a column
+#              present on only one side becomes an all-NULL feature on the other,
+#              and the prediction degrades to roughly chance WITHOUT raising —
+#              measured on real weights, every model in the catalog fell to
+#              0.27-0.58 on a task where they otherwise score 0.92-0.98.
+#
+#              That is the worst failure shape this codebase has: a plausible
+#              wrong answer. It gets an actionable error, like every other
+#              contract violation (SQL-API §5).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'mismatch-fixture', base_dir := 'test/fixtures/tabdpt',
+  classification_graph := 'graph_tabdpt_classification.onnx',
+  regression_graph := 'graph_tabdpt_regression.onnx',
+  classification_weights := 'model.safetensors',
+  regression_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_tabdpt_classification.json',
+  regression_tensor_map := 'tensor_map_tabdpt_regression.json',
+  license := 'apache-2.0', commercial := true,
+  preprocessing_profile := 'tabdpt_v1_raw',
+  max_rows := 4096, max_features := 16, max_classes := 4)
+
+statement ok
+CREATE TABLE ctx AS SELECT * FROM (VALUES
+  (0.5,1.0,'c0'),(1.5,0.2,'c1'),(2.5,-1.0,'c2'),(0.2,0.8,'c0'),
+  (1.1,0.4,'c1'),(3.0,-0.5,'c2'),(0.9,1.2,'c0'),(2.1,0.1,'c1'))
+  v(f1,f2,label);
+
+statement ok
+CREATE TABLE qry AS SELECT * FROM (VALUES (0.9,1.2),(2.1,0.1)) v(f1,f2);
+
+# --- the matched case still works (the fix must not break the normal path) -----
+
+query I
+SELECT count(*) FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'mismatch-fixture')
+----
+2
+
+# --- a column only the CONTEXT has ---------------------------------------------
+
+statement ok
+CREATE TABLE ctx_extra AS SELECT *, 9.9 AS extra FROM ctx;
+
+statement error
+SELECT * FROM tabfm_classify('ctx_extra', 'label', test := 'qry', model := 'mismatch-fixture')
+----
+extra
+
+# --- a column only the TEST relation has ---------------------------------------
+
+statement ok
+CREATE TABLE qry_extra AS SELECT *, 1.1 AS surplus FROM qry;
+
+statement error
+SELECT * FROM tabfm_classify('ctx', 'label', test := 'qry_extra', model := 'mismatch-fixture')
+----
+surplus
+
+# --- regression takes the same path --------------------------------------------
+
+statement ok
+CREATE TABLE rctx AS SELECT * FROM (VALUES
+  (0.5,1.0,1.2),(1.5,0.2,2.4),(2.5,-1.0,3.1),(0.2,0.8,0.9),
+  (1.1,0.4,1.8),(3.0,-0.5,3.6),(0.9,1.2,1.1),(2.1,0.1,2.7))
+  v(f1,f2,target);
+
+statement ok
+CREATE TABLE rctx_extra AS SELECT *, 9.9 AS extra FROM rctx;
+
+statement error
+SELECT * FROM tabfm_regress('rctx_extra', 'target', test := 'qry', model := 'mismatch-fixture')
+----
+extra
+
+# --- the escape hatch: features := [...] pins the feature set explicitly --------
+#
+# Naming the shared columns is the documented way to proceed when the relations
+# genuinely differ, so it must keep working after the guard lands.
+
+query I
+SELECT count(*) FROM tabfm_classify('ctx_extra', 'label', test := 'qry',
+                                    features := ['f1','f2'], model := 'mismatch-fixture')
+----
+2

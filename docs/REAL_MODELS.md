@@ -272,12 +272,29 @@ the newly onboarded models lead, matching their TabArena order. Regression R² i
 each one's point-estimate decode (bar-distribution mean plus the target
 de-standardisation each graph bakes in).
 
-One trap worth recording, because it cost a debugging round: the context table
-and the test table must expose the **same feature columns**. Building the
-context with `SELECT *` gives it a column the query table lacks (`tgt`), and the
-prediction then degrades to roughly chance *without raising* — every model in
-the catalog scored 0.27–0.58 until the tables were matched, at which point they
-all jumped to 0.92–0.98.
+This is also what surfaced the feature-column contract. The context relation and
+the test relation must expose the **same feature columns**: building the context
+with `SELECT *` gives it a column the query table lacks (`tgt`), and because the
+train/test macro unions the two with `UNION ALL BY NAME`, the missing column is
+filled with NULL rather than rejected. Every model in the catalog scored
+0.27–0.58 until the tables were matched, at which point they all jumped to
+0.92–0.98 — and **nothing raised**.
+
+That is now an error rather than a quiet wrong answer:
+
+```
+anofox_tabfm: the context relation and the `test` relation must expose the same
+feature columns, but only in the context relation: tgt. A column on one side
+only is filled with NULL on the other, which silently degrades the prediction
+instead of failing. Drop the column, add it to the other relation, or name the
+shared columns explicitly with features := [...].
+```
+
+The check runs *before* the union, because the union is what destroys the
+evidence; it ignores the target (which by construction exists only on the
+context side) and, when `features := [...]` is given, compares only the columns
+named there — pinning the shared columns is the documented way to proceed when
+the relations genuinely differ. See `test/sql/tabfm_feature_mismatch.test`.
 
 ### Capabilities per model
 
