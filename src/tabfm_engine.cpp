@@ -29,6 +29,7 @@
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_plugin_backend.hpp"
+#include "tabfm_plugin_artifacts.hpp"
 #include "tabfm_state.hpp"
 
 #include "duckdb/common/file_system.hpp"
@@ -897,7 +898,7 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 		    "anofox_tabfm: device 'rocm' was resolved but no backend plugin directory is configured. SET "
 		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_migraphx_plugin.so.");
 	}
-	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_migraphx_plugin.so");
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, PluginFileName("rocm"));
 
 	TabFMPluginCreateParams params {};
 	params.graph_path = graph_path.c_str();
@@ -977,7 +978,7 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_cuda_plugin.so (CALL "
 		    "tabfm_download_runtime('cuda') to fetch it).");
 	}
-	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_cuda_plugin.so");
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, PluginFileName("cuda"));
 
 	TabFMPluginCreateParams params {};
 	params.graph_path = graph_path.c_str();
@@ -1055,7 +1056,7 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_mlx_plugin.dylib (CALL "
 		    "tabfm_download_runtime('mlx') to fetch it).");
 	}
-	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_mlx_plugin.dylib");
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, PluginFileName("mlx"));
 
 	// `arch` is backend-defined (see tabfm_plugin_abi.h): the GPU plugins read a
 	// compute architecture there, but MLX's hardware needs no such selector. It

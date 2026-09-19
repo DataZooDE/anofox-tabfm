@@ -5,6 +5,7 @@
 #include "tabfm_registry.hpp"
 #include "tabfm_state.hpp"
 #include "tabfm_weights.hpp"
+#include "tabfm_plugin_artifacts.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -523,22 +524,11 @@ struct RuntimeArtifact {
 	string plugin_url;
 };
 
-//! The release tag whose assets carry the built plugins. "" until the first
-//! plugin-carrying release is cut; bumped per release thereafter. Kept empty
-//! rather than guessed so download errors say "not published yet" instead of
-//! 404-ing at a URL that never existed.
-// v2026.08.22 is the first plugin-carrying release (Track B of
-// docs/PHASE_COMPLETION_PLAN.md): gpu_plugins.yml attaches both plugins +
-// sha256s to it on tag push. Pinned BEFORE the tag is cut so the release
-// contains code that points at itself.
-constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "v2026.08.22";
-
+//! The release tag and url shape now live in tabfm_plugin_artifacts.hpp, so
+//! dispatch and download cannot disagree about which release a plugin is
+//! fetched from or what it is called.
 string PluginReleaseUrl(const string &asset) {
-	if (string(TABFM_PLUGIN_RELEASE_TAG).empty()) {
-		return "";
-	}
-	return string("https://github.com/DataZooDE/anofox-tabfm/releases/download/") + TABFM_PLUGIN_RELEASE_TAG + "/" +
-	       asset;
+	return PluginReleaseAssetUrl(asset, TABFM_PLUGIN_RELEASE_TAG);
 }
 
 //! Currently the only published, verified source: onnxruntime-gpu 1.29.0's
@@ -548,6 +538,15 @@ string PluginReleaseUrl(const string &asset) {
 //! other ORT versions are not offered yet (no reason they couldn't be, just
 //! not measured — extend this map when they are).
 bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string &error) {
+	// Refuse before downloading anything. Windows discovers NVIDIA cards
+	// through NVML like any other platform, so asking for 'cuda' there is
+	// reasonable -- but the wheel below is manylinux and no Windows plugin is
+	// built, so without this the request walked a 475 MB download and ended at
+	// a missing library. Same for rocm off Linux and mlx off Apple Silicon.
+	error = UnsupportedPluginPlatform(backend, HostPluginOs(), HostPluginArch());
+	if (!error.empty()) {
+		return false;
+	}
 	if (backend == "cuda") {
 		out.wheel_url = "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/"
 		                "_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.29/"
@@ -562,12 +561,12 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 		                   {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so"},
 		                   {"onnxruntime/capi/libonnxruntime_providers_shared.so",
 		                    "libonnxruntime_providers_shared.so"}};
-		out.plugin_name = "libanofox_tabfm_cuda_plugin.so";
+		out.plugin_name = PluginFileName("cuda");
 		out.plugin_url = PluginReleaseUrl(out.plugin_name);
 		return true;
 	}
 	if (backend == "rocm") {
-		out.plugin_name = "libanofox_tabfm_migraphx_plugin.so";
+		out.plugin_name = PluginFileName("rocm");
 		out.plugin_url = PluginReleaseUrl(out.plugin_name);
 		return true;
 	}
@@ -576,11 +575,13 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 		// own libmlx/libmlxc, which are installed on the machine rather than
 		// shipped by us (brew install mlx mlx-c), and it needs no ORT at all --
 		// it executes the ONNX graph itself. So this fetches the plugin alone.
-		out.plugin_name = "libanofox_tabfm_mlx_plugin.dylib";
+		out.plugin_name = PluginFileName("mlx");
 		out.plugin_url = PluginReleaseUrl(out.plugin_name);
 		return true;
 	}
-	error = "tabfm_download_runtime: unknown backend '" + backend + "' — expected 'cuda', 'rocm' or 'mlx'.";
+	// Unreachable: UnsupportedPluginPlatform above rejects an unknown backend
+	// by name before any of the per-backend branches are considered.
+	error = UnsupportedPluginPlatform(backend, HostPluginOs(), HostPluginArch());
 	return false;
 }
 
