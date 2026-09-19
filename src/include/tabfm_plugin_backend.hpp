@@ -41,7 +41,7 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 //!
 //! Never throws: a missing or unreadable file is a false, not an error --
 //! callers use it to decide, not to report.
-bool PluginLoadable(const string &library_path);
+bool PluginLoadable(const string &library_path, string *error = nullptr);
 
 } // namespace anofox
 } // namespace duckdb

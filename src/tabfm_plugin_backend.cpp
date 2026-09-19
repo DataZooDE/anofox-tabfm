@@ -165,17 +165,34 @@ private:
 
 } // namespace
 
-bool PluginLoadable(const string &library_path) {
+bool PluginLoadable(const string &library_path, string *error) {
+	auto set_error = [&](string message) {
+		if (error) {
+			*error = std::move(message);
+		}
+	};
 	auto library = OpenLibrary(library_path);
 	if (!library) {
+		// The loader's own text is the useful part and is usually specific:
+		// a plugin present but unloadable almost always names the dependency
+		// that is missing (libmigraphx_c.so, a CUDA runtime), which is a
+		// different problem from the file not being there and has a different
+		// fix. Reporting only "not loadable" would hide it.
+		set_error(LibraryError());
 		return false;
 	}
 	auto entry = reinterpret_cast<TabFMGetPluginApiFn>(LibrarySymbol(library, TABFM_PLUGIN_ENTRY_SYMBOL));
 	if (!entry) {
 		CloseLibrary(library);
+		set_error("the library exports no " + string(TABFM_PLUGIN_ENTRY_SYMBOL) +
+		          " — a file with the right name but the wrong contents");
 		return false;
 	}
 	const TabFMPluginApi *api = entry();
+	if (api && api->abi_version != TABFM_PLUGIN_ABI_VERSION) {
+		set_error("built against plugin ABI version " + std::to_string(api->abi_version) + ", but this build speaks " +
+		          std::to_string(TABFM_PLUGIN_ABI_VERSION));
+	}
 	// Same ordering rule as LoadPluginBackend: abi_version is the only field
 	// safe to read before it has been checked.
 	const bool ok = api && api->abi_version == TABFM_PLUGIN_ABI_VERSION;

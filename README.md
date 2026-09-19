@@ -435,12 +435,33 @@ bucketed compilation (y's length is the train/test split) — CUDA serves them.
 not a separate build of the extension: fetch it, then select the device.
 
 ```sql
+CALL tabfm_accelerate();   -- finds the card, fetches its plugin, verifies it loads
+-- then reconnect, and that is it: anofox_tabfm_device defaults to 'auto',
+-- which now routes each model to the best device IT can be served on.
+```
+
+It reports what it did as `(step, status, detail)` rows, including what is
+still ahead of you (MIGraphX's first-shape compile, MLX's `brew install mlx
+mlx-c`). Re-running it re-verifies without re-downloading.
+
+To see the routing — and the reason for every model that stays on the CPU:
+
+```sql
+SELECT * FROM tabfm_backends() WHERE NOT supported;
+-- and confirm what actually served a query, rather than trusting the answers:
+SELECT model, device FROM tabfm_models() WHERE loaded;
+```
+
+The manual equivalent, if you want to place things yourself:
+
+```sql
 CALL tabfm_download_runtime('cuda');    -- plugin + ORT GPU runtime, into the cache dir
 SET anofox_tabfm_device  = 'cuda';      -- or 'rocm', or 'mlx' on Apple Silicon
 -- anofox_tabfm_ep_path is only needed to override where the plugin lives
--- confirm it is really being used, rather than trusting the answers:
-SELECT model, device FROM tabfm_models() WHERE loaded;
 ```
+
+Naming a device explicitly is a hard request: if it cannot be served it
+errors, rather than quietly running on the CPU.
 
 `tabfm_download_runtime` fetches the plugin itself, and for CUDA the ONNX
 Runtime GPU libraries it loads alongside it. The plugins are published as
