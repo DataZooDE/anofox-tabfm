@@ -569,13 +569,6 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 	if (backend == "rocm") {
 		out.plugin_name = "libanofox_tabfm_migraphx_plugin.so";
 		out.plugin_url = PluginReleaseUrl(out.plugin_name);
-		if (out.plugin_url.empty()) {
-			error = "tabfm_download_runtime: no plugin-carrying release is pinned in this build yet. The MIGraphX "
-			        "plugin is built by CI (workflow 'GPU backend plugins', artifact "
-			        "anofox-tabfm-migraphx-plugin) and by the anofox_tabfm_migraphx_plugin CMake target — place "
-			        "libanofox_tabfm_migraphx_plugin.so in the anofox_tabfm_ep_path directory.";
-			return false;
-		}
 		return true;
 	}
 	if (backend == "mlx") {
@@ -585,13 +578,6 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 		// it executes the ONNX graph itself. So this fetches the plugin alone.
 		out.plugin_name = "libanofox_tabfm_mlx_plugin.dylib";
 		out.plugin_url = PluginReleaseUrl(out.plugin_name);
-		if (out.plugin_url.empty()) {
-			error = "tabfm_download_runtime: no plugin-carrying release is pinned in this build yet. The MLX "
-			        "plugin is built by the anofox_tabfm_mlx_plugin CMake target on an arm64 Mac with MLX "
-			        "installed (brew install mlx mlx-c) — place libanofox_tabfm_mlx_plugin.dylib in the "
-			        "anofox_tabfm_ep_path directory.";
-			return false;
-		}
 		return true;
 	}
 	error = "tabfm_download_runtime: unknown backend '" + backend + "' — expected 'cuda', 'rocm' or 'mlx'.";

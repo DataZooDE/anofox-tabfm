@@ -407,6 +407,44 @@ TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices
 			REQUIRE(message.find("ext.anofox.com") == string::npos);
 			REQUIRE(message.find("get.anofox.com") != string::npos);
 			REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
+			// The plugins ARE published (v2026.08.22 onward carries all three),
+			// and TABFM_FLAVOR cannot build one — flavor stopped driving GPU
+			// execution when the plugin ABI took over. This message may only
+			// name the flavor for coreml, which really is compiled in, and must
+			// never send a cuda/rocm/mlx user to a source build instead of to
+			// tabfm_download_runtime.
+			REQUIRE(message.find("not published yet") == string::npos);
+			REQUIRE(message.find("TABFM_FLAVOR=cuda") == string::npos);
+			REQUIRE(message.find("TABFM_FLAVOR=rocm") == string::npos);
+			REQUIRE(message.find("TABFM_FLAVOR=mlx") == string::npos);
+			// mlx is the accelerator that actually works on this hardware, and
+			// it is one call away — say so rather than leaving cpu as the only
+			// exit.
+			REQUIRE(message.find("tabfm_download_runtime('mlx')") != string::npos);
+		}
+	}
+
+	SECTION("coreml hardware present but not carried names coreml's own remedy") {
+		// The other !carried branch. Reachable only for coreml: `carried` is
+		// hardcoded true for cuda/rocm/mlx, since each is a dlopen'd plugin
+		// every build can host. So this message must talk about coreml's
+		// compiled-in EP, not about unpublished GPU runtimes.
+		TabFMDeviceInfo coreml0;
+		coreml0.device_id = "coreml:0";
+		coreml0.ep = "CoreMLExecutionProvider";
+		coreml0.name = "Apple M3";
+		coreml0.usable = true;
+		vector<TabFMDeviceInfo> devices {cpu, coreml0};
+		try {
+			ResolveDevice("coreml", devices, false, false, false);
+			FAIL("expected an exception");
+		} catch (std::exception &error) {
+			string message = error.what();
+			// names the hardware it found, so the user knows the probe worked
+			REQUIRE(message.find("Apple M3") != string::npos);
+			REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
+			REQUIRE(message.find("not published yet") == string::npos);
+			REQUIRE(message.find("docs/rocm-build.md") == string::npos);
 		}
 	}
 

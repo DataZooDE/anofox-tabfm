@@ -432,25 +432,27 @@ its model coverage matches CPU's. The single_eval_pos models (TabPFN/TabICL/Orio
 bucketed compilation (y's length is the train/test split) — CUDA serves them.
 
 **Using a GPU.** A GPU backend is a plugin the extension `dlopen`s at runtime,
-not a separate build of the extension: point `anofox_tabfm_ep_path` at the
-directory holding it and select the device.
+not a separate build of the extension: fetch it, then select the device.
 
 ```sql
-CALL tabfm_download_runtime('cuda');    -- fetch the ORT GPU runtime into that directory
-SET anofox_tabfm_ep_path = '/path/to/plugin/dir';
+CALL tabfm_download_runtime('cuda');    -- plugin + ORT GPU runtime, into the cache dir
 SET anofox_tabfm_device  = 'cuda';      -- or 'rocm', or 'mlx' on Apple Silicon
+-- anofox_tabfm_ep_path is only needed to override where the plugin lives
 -- confirm it is really being used, rather than trusting the answers:
 SELECT model, device FROM tabfm_models() WHERE loaded;
 ```
 
-The plugins themselves are **not published yet**, so today you build the one
-you need from source (`src/tabfm_cuda_plugin.cpp`,
+`tabfm_download_runtime` fetches the plugin itself, and for CUDA the ONNX
+Runtime GPU libraries it loads alongside it. The plugins are published as
+release assets and are verified against the extension's plugin ABI version on
+load, so a mismatched pair refuses rather than misbehaves.
+
+You can still build one from source (`src/tabfm_cuda_plugin.cpp`,
 `src/tabfm_migraphx_plugin.cpp`, `src/tabfm_mlx_plugin.cpp` — the last needs
 `brew install mlx mlx-c` and builds via the `anofox_tabfm_mlx_plugin` CMake
-target; see [`docs/rocm-build.md`](docs/rocm-build.md)
-for the ROCm toolchain and [`docs/DYNAMIC_BACKENDS.md`](docs/DYNAMIC_BACKENDS.md)
-for how the two fit together). `tabfm_download_runtime('cuda')` fetches the
-ONNX Runtime GPU libraries the CUDA plugin needs, not the plugin itself.
+target; see [`docs/rocm-build.md`](docs/rocm-build.md) for the ROCm toolchain
+and [`docs/DYNAMIC_BACKENDS.md`](docs/DYNAMIC_BACKENDS.md) for how the pieces
+fit together).
 
 **Any build can host the CUDA plugin now.** Earlier, a host that loaded a
 *shared* `libonnxruntime.so` (the local `make debug` build) shadowed the

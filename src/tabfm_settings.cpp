@@ -169,8 +169,10 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 
 	config.AddExtensionOption("anofox_tabfm_ep_path",
 	                          "Directory holding the GPU backend plugins (libanofox_tabfm_cuda_plugin.so, "
-	                          "libanofox_tabfm_migraphx_plugin.so) and the runtime libraries they load alongside "
-	                          "themselves. CALL tabfm_download_runtime('cuda') populates it.",
+	                          "libanofox_tabfm_migraphx_plugin.so, libanofox_tabfm_mlx_plugin.dylib) and the "
+	                          "runtime libraries they load alongside themselves. Defaults to the 'runtime' "
+	                          "subdirectory of anofox_tabfm_cache_dir, which is where CALL "
+	                          "tabfm_download_runtime(...) puts them — set this only to point somewhere else.",
 	                          LogicalType::VARCHAR, Value(""));
 
 	config.AddExtensionOption(

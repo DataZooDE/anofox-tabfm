@@ -11,3 +11,6 @@ vcpkg_installed/
 __pycache__/
 *.onnx.data
 build-*/
+
+# agent-crew run artifacts (local review records)
+.crew/
