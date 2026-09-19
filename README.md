@@ -443,8 +443,8 @@ not a separate build of the extension: fetch it, then select the device.
 
 ```sql
 CALL tabfm_accelerate();   -- finds the card, fetches its plugin, verifies it loads
--- then reconnect, and that is it: anofox_tabfm_device defaults to 'auto',
--- which now routes each model to the best device IT can be served on.
+-- that is it: anofox_tabfm_device defaults to 'auto', which now routes each
+-- model to the best device IT can be served on, in this session.
 ```
 
 It reports what it did as `(step, status, detail)` rows, including what is

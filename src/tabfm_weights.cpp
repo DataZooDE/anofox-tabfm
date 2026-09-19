@@ -794,6 +794,9 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 	}
 	state.done = true;
 	auto files = PerformRuntimeDownload(context, bind);
+	// A plugin that has just arrived must be visible to this session's device
+	// resolution, not only to the next process.
+	BumpPluginProbeGeneration();
 	idx_t out = 0;
 	for (auto &file : files) {
 		output.SetValue(0, out, Value(file.path));
@@ -976,17 +979,17 @@ void AccelerateExecute(ClientContext &context, TableFunctionInput &data, DataChu
 			const auto plugin_path = fs.JoinPath(bind.ep_path, PluginFileName(bind.backend));
 			string load_error;
 			if (PluginLoadable(plugin_path, &load_error)) {
+				// Make it live NOW. Device resolution and plugin presence are
+				// memoized process-wide, so without this an embedded user
+				// (Python, JDBC) would keep getting the CPU for the life of the
+				// process no matter how many connections they opened -- and
+				// "reconnect", which this used to advise, cannot fix that.
+				BumpPluginProbeGeneration();
 				add("verify", "ok", plugin_path + " loads and matches this build's plugin ABI");
 				add("device", "ready",
-				    "anofox_tabfm_device='auto' will now use '" + bind.backend +
-				        "' for every model that backend can serve — SELECT * FROM tabfm_backends() shows which, "
-				        "and why not for the rest.");
-				// Stated plainly because it is the one surprising part: device
-				// resolution is memoized per process, and invalidating it would
-				// mean invalidating what DeviceMutex keys on (issue #42).
-				add("next", "reconnect",
-				    "reconnect (or open a new connection) before this takes effect — device resolution is cached "
-				    "for the life of the connection.");
+				    "anofox_tabfm_device='auto' now uses '" + bind.backend +
+				        "' for every model that backend can serve, in this session — SELECT * FROM "
+				        "tabfm_backends() shows which, and why not for the rest.");
 			} else {
 				// Name the real cause. "not usable" covers a missing file, a
 				// wrong file, an ABI mismatch and -- much the most common
@@ -1336,6 +1339,15 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", setting) && !setting.IsNull()) {
 		precision = StringUtil::Lower(setting.ToString());
 	}
+	// Where dispatch would look for the plugins. Consulted below, because a
+	// lane whose plugin is not installed is one 'auto' declines -- and a
+	// capability relation that promises a device dispatch refuses is worse than
+	// no relation at all, since every refusal message sends users here.
+	string ep_setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
+		ep_setting = setting.ToString();
+	}
+	const auto ep_path = ResolveEpPath(ep_setting, cache_dir);
 
 	// Real hardware, not a static matrix: a device absent from this machine
 	// gets no row at all, so the relation never implies a card is there.
@@ -1411,6 +1423,19 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				auto verdict = EvaluateGpuServability(in);
 				row.supported = verdict.supported;
 				row.reason = verdict.reason;
+				// Plugin presence is checked AFTER servability, and only when
+				// the model would otherwise run. Both can be true at once --
+				// tabdpt on ROCm has no MIGraphX graph AND no plugin installed
+				// -- and reporting the plugin there would invite the user to
+				// install one and then be disappointed, because the structural
+				// reason is the permanent one. So: say what cannot change
+				// first, and only offer the fix that would actually work.
+				if (row.supported && (row.backend == "cuda" || row.backend == "rocm" || row.backend == "mlx") &&
+				    !PluginAvailableCached(ep_path, row.backend)) {
+					row.supported = false;
+					row.reason = "this model can run on '" + row.backend + "', but its backend plugin is not "
+					             "installed at " + ep_path + " — CALL tabfm_accelerate() to fetch and verify it";
+				}
 				// ...but only when the missing weights are what is actually
 				// blocking it. A precision the backend cannot run is a knowable,
 				// permanent NO, and downloading weights will not change it --

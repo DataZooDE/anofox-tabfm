@@ -296,6 +296,24 @@ inline string BackendOfDeviceId(const string &device_id) {
 	return colon == string::npos ? device_id : device_id.substr(0, colon);
 }
 
+//! What to do when a previously-resolved device id is no longer in the device
+//! list. Pure so both outcomes are testable without hardware.
+//!
+//! The device list is re-probed per dispatch while the resolution is memoized,
+//! so the two can disagree: a card is removed, a driver reloads, or an NVML
+//! probe hiccups. Returning "use the CPU" there is only acceptable when the
+//! user never asked for that device. When they DID ask -- explicitly -- serving
+//! the CPU instead is precisely the silent fallback IsExplicitGpuRequest
+//! exists to forbid, and it would be invisible: every Try*Backend gate is a
+//! StartsWith on the device id, so a fabricated cpu row makes all three decline
+//! and the ORT CPU path pick the work up without a word.
+inline bool VanishedDeviceMustThrow(const string &resolved_id, const string &device_setting) {
+	if (resolved_id == "cpu") {
+		return false; // the CPU row is always present; nothing vanished
+	}
+	return IsExplicitGpuRequest(device_setting, BackendOfDeviceId(resolved_id));
+}
+
 //! The graph-kind name a model registers for a backend, as it appears in
 //! CALL tabfm_register_model (…_ext_graph / …_migraphx_graph).
 inline string GpuGraphKindFor(const string &backend) {

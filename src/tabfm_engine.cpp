@@ -43,6 +43,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <atomic>
 #include <fstream>
 
 #ifndef _WIN32
@@ -54,6 +55,14 @@
 
 namespace duckdb {
 namespace anofox {
+
+//! Bumped when a plugin is fetched or verified, so both memos below answer
+//! afresh without any entry being erased underneath a live reference.
+std::atomic<uint64_t> g_plugin_probe_generation {0};
+
+void BumpPluginProbeGeneration() {
+	g_plugin_probe_generation.fetch_add(1);
+}
 
 namespace {
 
@@ -806,9 +815,23 @@ TabFMDeviceInfo DeviceInfoFor(FileSystem &fs, const ResolvedModel &resolved, con
 			return device;
 		}
 	}
-	// The resolved id always comes from this same list, so a miss means the
-	// topology changed underneath us; the CPU row is the safe answer and is
-	// always present.
+	// The id came from this same list once, so a miss means the topology
+	// changed underneath us -- a card removed, a driver reloaded, an NVML probe
+	// that failed this time. What to do about it depends entirely on whether
+	// the user asked for that device by name.
+	if (VanishedDeviceMustThrow(id, ctx.device)) {
+		throw InvalidInputException(
+		    "anofox_tabfm: device '" + ctx.device + "' resolved to '" + id +
+		    "' earlier in this process, but it is no longer among the discovered devices — the card or its driver "
+		    "may have gone away. Check SELECT * FROM tabfm_devices(); and restart the process to re-probe, or SET "
+		    "anofox_tabfm_device='cpu'.");
+	}
+	// Under 'auto' the user asked for "whatever works", and the CPU does.
+	for (auto &device : devices) {
+		if (device.device_id == "cpu") {
+			return device;
+		}
+	}
 	TabFMDeviceInfo cpu;
 	cpu.device_id = "cpu";
 	cpu.ep = "CPUExecutionProvider";
@@ -1185,25 +1208,6 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 //! trade -- the alternative is invalidating a process-wide memo that
 //! DeviceMutex also keys on, which is the area issue #42 was about.
 //! tabfm_accelerate() says so in its output.
-bool PluginAvailableCached(const string &ep_path, const string &backend) {
-	static mutex memo_lock;
-	static map<string, bool> memo;
-	const string key = ep_path + "\x1f" + backend;
-	{
-		lock_guard<mutex> guard(memo_lock);
-		auto entry = memo.find(key);
-		if (entry != memo.end()) {
-			return entry->second;
-		}
-	}
-	bool available = false;
-	if (!ep_path.empty()) {
-		auto fs = FileSystem::CreateLocal();
-		available = PluginLoadable(fs->JoinPath(ep_path, PluginFileName(backend)));
-	}
-	lock_guard<mutex> guard(memo_lock);
-	return memo.emplace(key, available).first->second;
-}
 
 //! Resolve the device for THIS model, not merely for this session.
 //!
@@ -1279,8 +1283,13 @@ string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, cons
 const string &ResolvedDeviceCached(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx) {
 	static mutex memo_lock;
 	static map<string, string> memo;
-	const string key = ctx.device + "\x1f" + resolved.manifest.model + "\x1f" +
-	                   TabFMTaskName(resolved.manifest.task) + "\x1f" + ctx.gpu_precision + "\x1f" + ctx.ep_path;
+	// The generation leads, so a freshly installed plugin invalidates every
+	// prior answer at once (see BumpPluginProbeGeneration).
+	const string key = std::to_string(g_plugin_probe_generation.load()) + "\x1f" + ctx.device + "\x1f" +
+	                   resolved.manifest.model + "\x1f" + TabFMTaskName(resolved.manifest.task) + "\x1f" +
+	                   ctx.gpu_precision + "\x1f" + ctx.ep_path + "\x1f" + ctx.cache_dir + "\x1f" +
+	                   resolved.ext_graph_path + "\x1f" + resolved.migraphx_graph_path + "\x1f" +
+	                   resolved.weights_path + "\x1f" + (ctx.context_cache ? "1" : "0");
 	{
 		lock_guard<mutex> guard(memo_lock);
 		auto entry = memo.find(key);
@@ -1879,6 +1888,31 @@ private:
 };
 
 } // anonymous namespace
+
+// Defined with external linkage (declared in tabfm_predict.hpp) so
+// tabfm_backends() consults the SAME memo dispatch does -- a capability
+// relation that disagrees with dispatch about whether a lane exists is worse
+// than none, because every refusal message points users at it.
+bool PluginAvailableCached(const string &ep_path, const string &backend) {
+	static mutex memo_lock;
+	static map<string, bool> memo;
+	const string key =
+	    std::to_string(g_plugin_probe_generation.load()) + "\x1f" + ep_path + "\x1f" + backend;
+	{
+		lock_guard<mutex> guard(memo_lock);
+		auto entry = memo.find(key);
+		if (entry != memo.end()) {
+			return entry->second;
+		}
+	}
+	bool available = false;
+	if (!ep_path.empty()) {
+		auto fs = FileSystem::CreateLocal();
+		available = PluginLoadable(fs->JoinPath(ep_path, PluginFileName(backend)));
+	}
+	lock_guard<mutex> guard(memo_lock);
+	return memo.emplace(key, available).first->second;
+}
 
 bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task) {
 	const string expected = ExpectedWeightsHeaderShaFor(model, TabFMTaskName(task));

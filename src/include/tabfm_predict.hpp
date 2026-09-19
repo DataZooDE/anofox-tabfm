@@ -150,6 +150,28 @@ inline string ResolveEpPath(const string &setting_value, const string &cache_dir
 //! must ask the identical question dispatch asks, not a lookalike.
 bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task);
 
+//! Bump the plugin-probe generation, invalidating every memoized device
+//! resolution and plugin-presence answer.
+//!
+//! Both memos are process-global, so "open a new connection" does NOT refresh
+//! them: an embedded user (Python, JDBC) who predicted before installing a
+//! plugin would keep getting the CPU for the life of the process, however many
+//! connections they opened. Telling them to reconnect would have been advice
+//! that cannot work.
+//!
+//! Implemented as a generation counter folded into the memo KEYS rather than by
+//! erasing entries: ResolvedDeviceCached hands out a reference into its map
+//! which LoadOrGetSession holds across a whole call, so removing nodes could
+//! dangle it. Superseded entries are simply never looked up again; there are a
+//! handful of them and they are small.
+void BumpPluginProbeGeneration();
+
+//! Is the plugin for `backend` present at `ep_path` and of an ABI we speak?
+//! Memoized per (ep_path, backend); defined in tabfm_engine.cpp. Shared so the
+//! capability matrix and device resolution cannot disagree about whether a
+//! lane is installed.
+bool PluginAvailableCached(const string &ep_path, const string &backend);
+
 //! Settings + DB handle captured at bind (finalize has no ClientContext).
 //! DatabaseInstance is a complete type via duckdb.hpp above.
 struct PredictContext {

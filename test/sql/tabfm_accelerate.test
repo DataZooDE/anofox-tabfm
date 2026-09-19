@@ -9,10 +9,15 @@ require anofox_tabfm
 statement ok
 LOAD anofox_tabfm
 
-# Point it somewhere empty and offline: no hardware path may depend on the
-# developer's cache, and nothing here may attempt a download that CI cannot do.
+# __TEST_DIR__ is the sqllogictest scratch directory, cleaned up by the runner.
+# A RELATIVE path here was worse than untidy: on any host with a usable
+# accelerator, AccelerateBind picks a backend and the download path then
+# CreateDirectoriesRecursive's it in the working directory and reaches for
+# GitHub — so the test littered the repo root and tried to download, eight
+# times over. It left __tabfm_accelerate_test_dir__ behind, invisible to
+# `git status` only because git does not track empty directories.
 statement ok
-SET anofox_tabfm_ep_path = '__tabfm_accelerate_test_dir__';
+SET anofox_tabfm_ep_path = '__TEST_DIR__/tabfm_accelerate_ep';
 
 # It always reports, and always reports the two things a user needs to know:
 # what hardware was found, and what happens now.

@@ -535,3 +535,39 @@ TEST_CASE("servability: the graph kind matches what tabfm_register_model accepts
 	REQUIRE(GpuGraphKindFor("rocm") == "migraphx_graph");
 	REQUIRE(GpuGraphKindFor("migraphx") == "migraphx_graph");
 }
+
+//===----------------------------------------------------------------------===//
+// A device that resolved once and is then gone
+//
+// Device resolution is memoized while the device list is re-probed per
+// dispatch, so the two can disagree: a card is pulled, a driver reloads, an
+// NVML probe fails this time. What to do about it depends entirely on whether
+// the user named that device.
+//===----------------------------------------------------------------------===//
+
+TEST_CASE("servability: a vanished device the user ASKED for must raise, never become CPU",
+          "[tabfm][model_spec][servability]") {
+	// The regression this encodes: the first version of DeviceInfoFor
+	// synthesized a cpu row on a miss. Every Try*Backend gate is a StartsWith
+	// on the device id, so all three then declined and the ORT CPU path picked
+	// the work up silently — an explicit 'cuda' served on the CPU with nothing
+	// printed, which is exactly what IsExplicitGpuRequest exists to forbid.
+	REQUIRE(VanishedDeviceMustThrow("cuda:0", "cuda"));
+	REQUIRE(VanishedDeviceMustThrow("rocm:0", "rocm"));
+	REQUIRE(VanishedDeviceMustThrow("rocm:0", "migraphx")); // documented alias
+	REQUIRE(VanishedDeviceMustThrow("mlx:0", "mlx"));
+}
+
+TEST_CASE("servability: under 'auto' a vanished device falls to the CPU, which is what was asked for",
+          "[tabfm][model_spec][servability]") {
+	// 'auto' means "whatever works", and the CPU does. Raising here would turn
+	// a working install into a failing one the moment a card misbehaved.
+	REQUIRE(!VanishedDeviceMustThrow("cuda:0", "auto"));
+	REQUIRE(!VanishedDeviceMustThrow("rocm:0", "auto"));
+	// The CPU row is always present, so nothing can have vanished.
+	REQUIRE(!VanishedDeviceMustThrow("cpu", "cpu"));
+	REQUIRE(!VanishedDeviceMustThrow("cpu", "auto"));
+	// A device explicitly requested by a DIFFERENT name is not this user's
+	// explicit request either.
+	REQUIRE(!VanishedDeviceMustThrow("cuda:0", "rocm"));
+}

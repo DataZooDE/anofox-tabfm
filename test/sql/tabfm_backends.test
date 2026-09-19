@@ -138,9 +138,17 @@ WHERE backend IN ('rocm', 'mlx') AND supported IS NULL;
 ----
 0
 
+# Restricted to devices that are actually usable AND whose plugin is present:
+# a card the driver lists but MIGraphX will not claim, or a lane with no
+# plugin installed, is refused for THAT reason before precision is ever
+# considered — so counting those rows would fail the test on an AMD box off
+# the allowlist, which is a perfectly normal machine.
 query I
-SELECT count(*) FROM tabfm_backends()
-WHERE backend IN ('rocm', 'mlx') AND reason NOT LIKE '%tf32%';
+SELECT count(*) FROM tabfm_backends() b
+JOIN tabfm_devices() d ON d.device_id = b.device
+WHERE b.backend IN ('rocm', 'mlx') AND d.usable
+  AND b.reason NOT LIKE '%not installed%'
+  AND b.reason NOT LIKE '%tf32%';
 ----
 0
 
