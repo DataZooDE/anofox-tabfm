@@ -100,6 +100,51 @@ struct TabFMPredictResult {
 // variant soft-NULLs).
 //===----------------------------------------------------------------------===//
 
+//! Expand a leading '~' against the user's home directory. Shared by every
+//! setting that names a directory a human types (cache_dir, ep_path) so they
+//! cannot disagree about what "~/x" means. Falls back to the filesystem's own
+//! home when HOME is unset (a service account, a Windows shell) rather than
+//! handing the caller a literal '~' it would then try to mkdir.
+inline string ExpandHomeDirectory(const string &path) {
+	if (path.empty() || path[0] != '~') {
+		return path;
+	}
+	const char *home = std::getenv("HOME");
+	string home_dir = home ? string(home) : FileSystem::CreateLocal()->GetHomeDirectory();
+	return home_dir + path.substr(1);
+}
+
+//! The documented default for anofox_tabfm_cache_dir, used when the setting is
+//! blank so ep_path resolution never builds a path off an empty root.
+static constexpr const char *TABFM_DEFAULT_CACHE_DIR = "~/.cache/anofox-tabfm";
+
+//! Directory holding the backend plugins, resolved from the raw
+//! anofox_tabfm_ep_path setting and the resolved cache directory.
+//!
+//! tabfm_download_runtime has always written the plugin into
+//! <cache_dir>/runtime, but the predict bind paths used to read the setting
+//! raw, and dispatch throws on an empty ep_path. So downloading a plugin and
+//! then predicting failed until the user *also* issued a SET naming the
+//! directory the download had just picked for them — a step that could only
+//! ever be typed correctly by someone who already knew the answer.
+//!
+//! Defaulting here makes the SET an override. Both sides must call this: if
+//! only one did, downloads and dispatch would disagree about where the plugin
+//! lives, which is the same failure wearing a different message.
+inline string ResolveEpPath(const string &setting_value, const string &cache_dir) {
+	string trimmed = setting_value;
+	StringUtil::Trim(trimmed);
+	if (!trimmed.empty()) {
+		return ExpandHomeDirectory(trimmed);
+	}
+	string root = cache_dir;
+	StringUtil::Trim(root);
+	if (root.empty()) {
+		root = TABFM_DEFAULT_CACHE_DIR;
+	}
+	return ExpandHomeDirectory(root) + "/runtime";
+}
+
 //! Settings + DB handle captured at bind (finalize has no ClientContext).
 //! DatabaseInstance is a complete type via duckdb.hpp above.
 struct PredictContext {

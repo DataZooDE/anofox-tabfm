@@ -126,15 +126,6 @@ struct WeightsManifest {
 	}
 };
 
-string ExpandHomeDirectory(const string &path) {
-	if (path.empty() || path[0] != '~') {
-		return path;
-	}
-	const char *home = std::getenv("HOME");
-	string home_dir = home ? string(home) : FileSystem::CreateLocal()->GetHomeDirectory();
-	return home_dir + path.substr(1);
-}
-
 string GetCacheDir(ClientContext &context) {
 	Value value;
 	string dir = "~/.cache/anofox-tabfm";
@@ -642,12 +633,12 @@ unique_ptr<FunctionData> DownloadRuntimeBind(ClientContext &context, TableFuncti
 	}
 
 	result->cache_dir = GetCacheDir(context);
-	result->ep_path = result->cache_dir + "/runtime";
 	Value setting;
-	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull() &&
-	    !setting.ToString().empty()) {
-		result->ep_path = ExpandHomeDirectory(setting.ToString());
+	string ep_setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
+		ep_setting = setting.ToString();
 	}
+	result->ep_path = ResolveEpPath(ep_setting, result->cache_dir);
 
 	names = {"file", "bytes", "status"};
 	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::VARCHAR};

@@ -276,17 +276,6 @@ void CheckMemoryCeiling(const PredictBindData &bind) {
 	}
 }
 
-string ExpandUserHome(const string &path) {
-	if (path.empty() || path[0] != '~') {
-		return path;
-	}
-	const char *home = std::getenv("HOME");
-	if (!home) {
-		return path;
-	}
-	return string(home) + path.substr(1);
-}
-
 unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFunction &function,
                                              vector<unique_ptr<Expression>> &arguments, const string &fname,
                                              bool is_window) {
@@ -417,7 +406,7 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 		bind->context.default_model = setting.ToString();
 	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_cache_dir", setting) && !setting.IsNull()) {
-		bind->context.cache_dir = ExpandUserHome(setting.ToString());
+		bind->context.cache_dir = ExpandHomeDirectory(setting.ToString());
 	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_device", setting) && !setting.IsNull()) {
 		bind->context.device = setting.ToString();
@@ -434,9 +423,13 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
 		bind->context.mxr_source = setting.ToString();
 	}
+	// ep_path defaults to where tabfm_download_runtime puts the plugin, so a
+	// download is usable without a second SET naming the same directory.
+	string ep_setting;
 	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
-		bind->context.ep_path = ExpandUserHome(setting.ToString());
+		ep_setting = setting.ToString();
 	}
+	bind->context.ep_path = ResolveEpPath(ep_setting, bind->context.cache_dir);
 	if (context.TryGetCurrentSetting("anofox_tabfm_max_sessions", setting) && !setting.IsNull()) {
 		bind->context.max_sessions = BigIntValue::Get(setting.DefaultCastAs(LogicalType::BIGINT));
 	}
