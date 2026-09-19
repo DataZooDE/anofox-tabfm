@@ -35,6 +35,32 @@ SELECT count(*) FROM tabfm_backends() WHERE NOT supported AND reason IS NULL;
 ----
 0
 
+# 'supported' is tri-state, and NULL means "not knowable yet" rather than "no".
+# A bundled GPU graph is only usable if its baked external-data offsets match
+# the weights, so before the weights are downloaded there is nothing to check
+# against. Reporting false there told a user with a working GPU that every one
+# of their models was unsupported.
+#
+# An unknown row must therefore still explain itself, and must say what would
+# resolve it.
+query I
+SELECT count(*) FROM tabfm_backends() WHERE supported IS NULL AND reason IS NULL;
+----
+0
+
+query I
+SELECT count(*) FROM tabfm_backends()
+WHERE supported IS NULL AND reason NOT LIKE '%tabfm_download%';
+----
+0
+
+# The CPU never lands in the unknown state: it needs no bundled GPU graph, so
+# its answer does not depend on anything being downloaded first.
+query I
+SELECT count(*) FROM tabfm_backends() WHERE device = 'cpu' AND supported IS NOT TRUE;
+----
+0
+
 # Rows are real discovered hardware, never a static matrix: every device here
 # must also appear in tabfm_devices(). A row for a card this machine does not
 # have would tell the user to expect an accelerator that is not there.

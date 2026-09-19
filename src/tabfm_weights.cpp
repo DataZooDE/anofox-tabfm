@@ -1293,7 +1293,18 @@ struct BackendsRow {
 	string task;
 	string device;
 	string backend;
+	//! Tri-state on purpose. A bundled GPU graph is only usable if its baked
+	//! external-data offsets match the weights -- so with the weights not yet
+	//! downloaded the honest answer is not "no", it is "not knowable yet".
+	//!
+	//! Reporting false there was actively misleading, and running this on a
+	//! fresh GPU box is what showed it: every one of the 20 model x task rows
+	//! read supported=false on a working RTX 3070, purely because no weights
+	//! had been fetched. The reason column said so, but the boolean is what a
+	//! user reads, and "false" across the board on a new install says "this
+	//! GPU is useless to you".
 	bool supported = false;
+	bool known = true;
 	string reason;
 };
 
@@ -1401,8 +1412,11 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				row.supported = verdict.supported;
 				row.reason = verdict.reason;
 				if (!row.supported && !in.model_provides_graph && in.bundled_graph_exists && !downloaded) {
+					// Not "no" -- "ask again once the weights exist".
+					row.known = false;
 					row.reason = "the weights are not downloaded, so the bundled GPU graph cannot be matched to "
-					             "them yet — CALL tabfm_download('" + task_name + "') first";
+					             "them yet — CALL tabfm_download('" + task_name + "', model := '" + spec.id +
+					             "') first, then ask again";
 				}
 				state->rows.push_back(std::move(row));
 			}
@@ -1420,7 +1434,7 @@ void BackendsExecute(ClientContext &, TableFunctionInput &data, DataChunk &outpu
 		output.SetValue(1, out, Value(r.task));
 		output.SetValue(2, out, Value(r.device));
 		output.SetValue(3, out, Value(r.backend));
-		output.SetValue(4, out, Value::BOOLEAN(r.supported));
+		output.SetValue(4, out, r.known ? Value::BOOLEAN(r.supported) : Value(LogicalType::BOOLEAN));
 		output.SetValue(5, out, r.reason.empty() ? Value(LogicalType::VARCHAR) : Value(r.reason));
 		out++;
 	}
@@ -1958,7 +1972,8 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, BackendsExecute),
 	            "Which discovered device can serve which model, and the reason when one cannot (model, task, "
 	            "device, backend, supported, reason). Built on the same servability predicate dispatch uses, so "
-	            "it cannot promise what a predict would refuse.",
+	            "it cannot promise what a predict would refuse. 'supported' is NULL when the answer is not yet "
+	            "knowable — a bundled GPU graph cannot be matched against weights that have not been downloaded.",
 	            "SELECT * FROM tabfm_backends() WHERE NOT supported;");
 	// CALL tabfm_load(task);
 	RegisterSet(loader, "anofox_tabfm_load", "tabfm_load", {{LogicalType::VARCHAR}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, LoadBind), LifecycleInit,
