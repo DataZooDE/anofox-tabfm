@@ -1,0 +1,11 @@
+# LeakSanitizer suppressions for `make test_*` (debug/reldebug builds).
+#
+# ONNX Runtime leaks a small fixed allocation from its own static
+# initialization that no extension code can reach or free: the stack is
+# entirely inside libonnxruntime, below any tabfm frame. It is constant-size
+# (14 bytes, 1 allocation) and does not grow with the number of sessions, so
+# it cannot mask a real leak in this extension's session lifecycle.
+#
+# Scope deliberately narrow: only allocations whose stack names the ORT
+# library. A leak in tabfm code still fails the run, which is the point.
+leak:libonnxruntime

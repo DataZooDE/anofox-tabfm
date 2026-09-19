@@ -20,6 +20,17 @@
 
 #include <cstring>
 
+// Is this translation unit built with AddressSanitizer? GCC defines the macro
+// directly; Clang answers through __has_feature. Used only to drop
+// RTLD_DEEPBIND below, which the sanitizer runtime cannot tolerate.
+#if defined(__SANITIZE_ADDRESS__)
+#define TABFM_SANITIZER_BUILD 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define TABFM_SANITIZER_BUILD 1
+#endif
+#endif
+
 #ifndef _WIN32
 #include <dlfcn.h>
 #else
@@ -51,8 +62,18 @@ LibraryHandle OpenLibrary(const string &path) {
 	// plugin-freed via free_output), which is the classic DEEPBIND hazard.
 	// glibc-only: macOS has no RTLD_DEEPBIND (and needs none — Mach-O
 	// two-level namespaces bind each image to the library it linked against).
+	//
+	// Exception, sanitizer builds only: RTLD_DEEPBIND is incompatible with the
+	// ASan/LSan runtime, which aborts the process on the dlopen rather than
+	// failing it (google/sanitizers#611). That abort killed the whole `make
+	// test_debug` C++ stage at the first plugin test, taking every later case
+	// with it — so a debug build could not run the plugin tests at all, which
+	// is exactly where plugin changes need testing. Dropping the flag under a
+	// sanitizer costs nothing real: DEEPBIND isolates a plugin's own ORT/HIP
+	// runtime from the host's, and the sanitizer build loads the weight-free
+	// fixture plugin, which has no such runtime to isolate.
 	int flags = RTLD_NOW | RTLD_LOCAL;
-#ifdef RTLD_DEEPBIND
+#if defined(RTLD_DEEPBIND) && !defined(TABFM_SANITIZER_BUILD)
 	flags |= RTLD_DEEPBIND;
 #endif
 	return dlopen(path.c_str(), flags);
