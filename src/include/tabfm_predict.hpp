@@ -145,6 +145,11 @@ inline string ResolveEpPath(const string &setting_value, const string &cache_dir
 	return ExpandHomeDirectory(root) + "/runtime";
 }
 
+//! Does the bundled GPU graph's baked external-data offsets match THESE
+//! weights? Defined in tabfm_engine.cpp; declared here because tabfm_backends()
+//! must ask the identical question dispatch asks, not a lookalike.
+bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task);
+
 //! Settings + DB handle captured at bind (finalize has no ClientContext).
 //! DatabaseInstance is a complete type via duckdb.hpp above.
 struct PredictContext {

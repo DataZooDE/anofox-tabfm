@@ -6,6 +6,8 @@
 #include "tabfm_state.hpp"
 #include "tabfm_weights.hpp"
 #include "tabfm_plugin_artifacts.hpp"
+#include "tabfm_bundled_resources.hpp"
+#include "tabfm_ort_engine.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -1032,6 +1034,171 @@ void ListModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 }
 
 //===--------------------------------------------------------------------===//
+// tabfm_backends() — which device can serve which model, and why not
+//
+// The question "can model X run on device Y" had no answer short of trying it
+// and reading the error. That is a bad way to learn that nine of eleven models
+// cannot run on ROCm, and an impossible way to learn it for a model you have
+// not downloaded yet.
+//
+// A SEPARATE relation from tabfm_models() on purpose: that one is a *state*
+// relation (loaded, device, bytes) which every tools/gpu_test scenario filters
+// with WHERE loaded, and which their max(device) SERVED_BY assertions depend
+// on. This is a *capability* relation -- model x task x discovered device,
+// including rows that were never loaded -- so folding the two would change
+// tabfm_models()'s cardinality and quietly weaken the harness that protects
+// the no-silent-fallback doctrine.
+//
+// Every row comes from EvaluateGpuServability, the same predicate dispatch
+// consults, so the matrix cannot promise what dispatch will refuse.
+//===--------------------------------------------------------------------===//
+
+struct BackendsRow {
+	string model;
+	string task;
+	string device;
+	string backend;
+	bool supported = false;
+	string reason;
+};
+
+struct BackendsGlobalState : public GlobalTableFunctionState {
+	vector<BackendsRow> rows;
+	idx_t next = 0;
+	idx_t MaxThreads() const override {
+		return 1;
+	}
+};
+
+unique_ptr<FunctionData> BackendsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
+                                      vector<string> &names) {
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_backends");
+	names = {"model", "task", "device", "backend", "supported", "reason"};
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                LogicalType::VARCHAR, LogicalType::BOOLEAN, LogicalType::VARCHAR};
+	return make_uniq<ModelsBindData>();
+}
+
+//! The backend name a discovered device id maps to ("rocm:0" -> "rocm").
+string BackendOfDevice(const string &device_id) {
+	auto colon = device_id.find(':');
+	return colon == string::npos ? device_id : device_id.substr(0, colon);
+}
+
+unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableFunctionInitInput &) {
+	auto state = make_uniq<BackendsGlobalState>();
+	auto registry = ModelRegistry::Build(TabFMState::Get(context)->RegisteredSpecs());
+	auto &fs = FileSystem::GetFileSystem(context);
+	auto cache_dir = GetCacheDir(context);
+
+	string precision = "fp32";
+	Value setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", setting) && !setting.IsNull()) {
+		precision = StringUtil::Lower(setting.ToString());
+	}
+
+	// Real hardware, not a static matrix: a device absent from this machine
+	// gets no row at all, so the relation never implies a card is there.
+	auto devices = DiscoverDevices();
+
+	for (auto &kv : registry.Models()) {
+		const auto &spec = kv.second;
+		for (auto &task_kv : spec.tasks) {
+			const auto task = task_kv.first;
+			const auto &artifacts = task_kv.second;
+			const string task_name = TabFMTaskName(task);
+
+			// Whether the weights are on disk decides whether the bundled
+			// graph's header can be checked at all.
+			auto wm = WeightsFromSpec(spec, task);
+			const auto base = cache_dir + "/" + wm.CacheSlug(wm.revision);
+			const bool downloaded = TaskWeightsComplete(fs, base, wm.files);
+
+			for (auto &device : devices) {
+				BackendsRow row;
+				row.model = spec.id;
+				row.task = task_name;
+				row.device = device.device_id;
+				row.backend = BackendOfDevice(device.device_id);
+				if (row.backend == "cpu") {
+					// Every model runs on the CPU -- that is the floor the
+					// whole extension rests on.
+					row.supported = true;
+					state->rows.push_back(std::move(row));
+					continue;
+				}
+				if (!device.usable) {
+					row.reason = "the device was discovered but is not usable on this machine — see SELECT * FROM "
+					             "tabfm_devices() for its driver state";
+					state->rows.push_back(std::move(row));
+					continue;
+				}
+				const bool is_rocm = row.backend == "rocm";
+				const string kind = is_rocm ? "migraphx" : "ext";
+				const string &model_graph = is_rocm ? artifacts.migraphx_graph : artifacts.ext_graph;
+				auto bundled = GetBundledResource(BundledGpuGraphId(spec.id, kind, task_name));
+
+				GpuServabilityInputs in;
+				in.backend = row.backend;
+				in.model = spec.id;
+				in.task_name = task_name;
+				in.precision = precision;
+				in.model_provides_graph = !model_graph.empty();
+				in.bundled_graph_exists = bundled.data != nullptr;
+				// A bundled graph's offsets are baked against one weights
+				// header, so without the weights there is nothing to compare
+				// and the honest answer is "not yet", not "no".
+				// The weights file is NOT simply <slug>/model.safetensors: a
+				// model's declared paths may sit in a per-task subdirectory
+				// (tabfm-v1 keeps classification/ and regression/ side by
+				// side), and several models declare a .ckpt whose converted
+				// model.safetensors sits beside it. Hand-building the path got
+				// this wrong and reported tabfm-v1 -- which IS ROCm-servable --
+				// as having no graph. Walk the declared files through the same
+				// converter rule the engine uses instead; WeightsHeaderMatches
+				// itself ignores anything not named model.safetensors.
+				if (downloaded) {
+					for (auto &f : wm.files) {
+						const auto declared = base + "/" + f.path;
+						const auto actual =
+						    ListableArtifactPath(declared, [&](const string &c) { return fs.FileExists(c); });
+						if (!actual.empty() && WeightsHeaderMatches(fs, actual, spec.id, task)) {
+							in.bundled_header_matches = true;
+							break;
+						}
+					}
+				}
+				auto verdict = EvaluateGpuServability(in);
+				row.supported = verdict.supported;
+				row.reason = verdict.reason;
+				if (!row.supported && !in.model_provides_graph && in.bundled_graph_exists && !downloaded) {
+					row.reason = "the weights are not downloaded, so the bundled GPU graph cannot be matched to "
+					             "them yet — CALL tabfm_download('" + task_name + "') first";
+				}
+				state->rows.push_back(std::move(row));
+			}
+		}
+	}
+	return std::move(state);
+}
+
+void BackendsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<BackendsGlobalState>();
+	idx_t out = 0;
+	while (state.next < state.rows.size() && out < STANDARD_VECTOR_SIZE) {
+		auto &r = state.rows[state.next++];
+		output.SetValue(0, out, Value(r.model));
+		output.SetValue(1, out, Value(r.task));
+		output.SetValue(2, out, Value(r.device));
+		output.SetValue(3, out, Value(r.backend));
+		output.SetValue(4, out, Value::BOOLEAN(r.supported));
+		output.SetValue(5, out, r.reason.empty() ? Value(LogicalType::VARCHAR) : Value(r.reason));
+		out++;
+	}
+	output.SetCardinality(out);
+}
+
+//===--------------------------------------------------------------------===//
 // tabfm_load(task) / tabfm_unload([task]) — status-row surface
 //===--------------------------------------------------------------------===//
 
@@ -1548,6 +1715,14 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            "List the TabFM models known to the local cache (model, task, revision, path, bytes, loaded, "
 	            "license).",
 	            "SELECT * FROM tabfm_models();");
+	// SELECT * FROM tabfm_backends();
+	RegisterSet(loader, "anofox_tabfm_backends", "tabfm_backends", {{}},
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, BackendsBind), BackendsInit,
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, BackendsExecute),
+	            "Which discovered device can serve which model, and the reason when one cannot (model, task, "
+	            "device, backend, supported, reason). Built on the same servability predicate dispatch uses, so "
+	            "it cannot promise what a predict would refuse.",
+	            "SELECT * FROM tabfm_backends() WHERE NOT supported;");
 	// CALL tabfm_load(task);
 	RegisterSet(loader, "anofox_tabfm_load", "tabfm_load", {{LogicalType::VARCHAR}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, LoadBind), LifecycleInit,
 	            LifecycleExecute,

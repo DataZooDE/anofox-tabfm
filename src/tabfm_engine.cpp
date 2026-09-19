@@ -760,20 +760,10 @@ bool ReadWeightsHeaderBytes(FileSystem &fs, const string &path, string &header) 
 // The (model, task)-keyed hash table lives in tabfm_model_spec.hpp
 // (ExpectedWeightsHeaderShaFor) beside the bundled-id naming, since GPU graph
 // selection is a model-spec concern shared by three backends.
-bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task) {
-	const string expected = ExpectedWeightsHeaderShaFor(model, TabFMTaskName(task));
-	if (expected.empty()) {
-		return false;
-	}
-	if (StringUtil::Split(weights_path, "/").back() != "model.safetensors") {
-		return false;
-	}
-	string header;
-	if (!ReadWeightsHeaderBytes(fs, weights_path, header)) {
-		return false;
-	}
-	return Sha256Hex(const_data_ptr_cast(header.data()), header.size()) == expected;
-}
+// WeightsHeaderMatches is defined just past this anonymous namespace: it is
+// declared in tabfm_predict.hpp so tabfm_backends() asks dispatch's exact
+// question rather than a lookalike, and an anonymous-namespace copy here would
+// make every call in this file ambiguous between the two.
 
 // Stage a bundled graph next to the weights (idempotent by size) so external-data
 // "model.safetensors" resolves. Returns false if it cannot be written.
@@ -1760,6 +1750,21 @@ private:
 };
 
 } // anonymous namespace
+
+bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task) {
+	const string expected = ExpectedWeightsHeaderShaFor(model, TabFMTaskName(task));
+	if (expected.empty()) {
+		return false;
+	}
+	if (StringUtil::Split(weights_path, "/").back() != "model.safetensors") {
+		return false;
+	}
+	string header;
+	if (!ReadWeightsHeaderBytes(fs, weights_path, header)) {
+		return false;
+	}
+	return Sha256Hex(const_data_ptr_cast(header.data()), header.size()) == expected;
+}
 
 PredictEngine &GetPredictEngine() {
 	static TabFMRealEngine engine;
