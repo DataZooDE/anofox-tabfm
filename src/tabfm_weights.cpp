@@ -1411,7 +1411,15 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				auto verdict = EvaluateGpuServability(in);
 				row.supported = verdict.supported;
 				row.reason = verdict.reason;
-				if (!row.supported && !in.model_provides_graph && in.bundled_graph_exists && !downloaded) {
+				// ...but only when the missing weights are what is actually
+				// blocking it. A precision the backend cannot run is a knowable,
+				// permanent NO, and downloading weights will not change it --
+				// yet the first version of this override replaced that reason
+				// too, so asking for tf32 on MLX (a CUDA tensor-core mode with
+				// no Metal equivalent) reported "the weights are not
+				// downloaded". Found on the M3: a wrong answer AND wrong advice.
+				if (!row.supported && BackendSupportsPrecision(row.backend, precision) &&
+				    !in.model_provides_graph && in.bundled_graph_exists && !downloaded) {
 					// Not "no" -- "ask again once the weights exist".
 					row.known = false;
 					row.reason = "the weights are not downloaded, so the bundled GPU graph cannot be matched to "

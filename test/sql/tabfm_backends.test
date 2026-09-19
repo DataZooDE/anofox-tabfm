@@ -119,3 +119,30 @@ FROM tabfm_backends()
 WHERE backend = 'rocm' AND model = 'tabdpt' AND NOT supported;
 ----
 true
+
+# A precision the backend cannot run is a knowable, permanent NO — downloading
+# weights will not change it — so it must never be reported as the unknown
+# state, and its reason must survive.
+#
+# Regression: the first tri-state version applied the "weights not downloaded"
+# override to ANY unsupported row, so on a fresh cache `SET
+# anofox_tabfm_gpu_precision='tf32'` reported MLX as "weights are not
+# downloaded". Wrong answer and wrong advice: tf32 is a CUDA tensor-core mode
+# with no Metal equivalent, and no download fixes it. Found on an M3.
+statement ok
+SET anofox_tabfm_gpu_precision = 'tf32';
+
+query I
+SELECT count(*) FROM tabfm_backends()
+WHERE backend IN ('rocm', 'mlx') AND supported IS NULL;
+----
+0
+
+query I
+SELECT count(*) FROM tabfm_backends()
+WHERE backend IN ('rocm', 'mlx') AND reason NOT LIKE '%tf32%';
+----
+0
+
+statement ok
+SET anofox_tabfm_gpu_precision = 'fp32';
