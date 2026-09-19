@@ -289,6 +289,13 @@ struct GpuServabilityResult {
 	GpuGraphSource source = GpuGraphSource::NONE;
 };
 
+//! The backend family a discovered device id belongs to ("rocm:0" -> "rocm").
+//! Device ids carry an ordinal; every capability question is about the family.
+inline string BackendOfDeviceId(const string &device_id) {
+	auto colon = device_id.find(':');
+	return colon == string::npos ? device_id : device_id.substr(0, colon);
+}
+
 //! The graph-kind name a model registers for a backend, as it appears in
 //! CALL tabfm_register_model (…_ext_graph / …_migraphx_graph).
 inline string GpuGraphKindFor(const string &backend) {

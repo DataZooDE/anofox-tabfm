@@ -789,6 +789,33 @@ bool StageBundledGraph(FileSystem &fs, const BundledResource &graph, const strin
 // exists for the task AND the downloaded safetensors header matches exactly
 // (else the baked offsets could be wrong -> fall back to injection). Returns
 // nullptr to signal "fall back".
+// Defined further down, where the per-model 'auto' logic lives; declared here
+// because every dispatch branch below must agree with it. Re-resolving with
+// ResolveDevice(ctx.device, ...) instead would answer a DIFFERENT question --
+// the session-wide one -- so under 'auto' the session would be built for one
+// device while dispatch looked for another, and no GPU branch would ever fire.
+const string &ResolvedDeviceCached(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx);
+
+//! The discovered device row this (model, task) resolves to. One lookup so no
+//! branch can disagree with the session cache about which device it is on.
+TabFMDeviceInfo DeviceInfoFor(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx,
+                              const vector<TabFMDeviceInfo> &devices) {
+	const string &id = ResolvedDeviceCached(fs, resolved, ctx);
+	for (auto &device : devices) {
+		if (device.device_id == id) {
+			return device;
+		}
+	}
+	// The resolved id always comes from this same list, so a miss means the
+	// topology changed underneath us; the CPU row is the safe answer and is
+	// always present.
+	TabFMDeviceInfo cpu;
+	cpu.device_id = "cpu";
+	cpu.ep = "CPUExecutionProvider";
+	cpu.usable = true;
+	return cpu;
+}
+
 shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                                const PredictContext &ctx) {
 	if (std::getenv("TABFM_DISABLE_EXTERNAL_DATA")) {
@@ -811,7 +838,7 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 	config.intra_op_threads = MaxValue<int64_t>(1, ctx.threads);
 	config.prepack = ctx.cpu_prepack;
 	auto devices = DiscoverDevices();
-	auto device = ResolveDevice(ctx.device, devices);
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
 	config.device_id = device.device_id;
 	config.device_ordinal = device.device_ordinal;
 	config.model_tag = task_name;
@@ -884,7 +911,7 @@ string GpuRefusalMessage(const string &device, const string &reason) {
 shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                            const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
-	auto device = ResolveDevice(ctx.device, devices);
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
 	if (!StringUtil::StartsWith(device.device_id, "rocm")) {
 		return nullptr; // not the GPU path (cpu / cuda handled by the ORT backend)
 	}
@@ -968,7 +995,7 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                        const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
-	auto device = ResolveDevice(ctx.device, devices);
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
 	if (!StringUtil::StartsWith(device.device_id, "cuda")) {
 		return nullptr; // not the CUDA path (cpu handled by the ORT backend, rocm above)
 	}
@@ -1047,7 +1074,7 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                       const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
-	auto device = ResolveDevice(ctx.device, devices);
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
 	if (!StringUtil::StartsWith(device.device_id, "mlx")) {
 		return nullptr; // not the MLX path
 	}
@@ -1148,12 +1175,115 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 // belongs to the machine, not to a DuckDB instance, and two instances in one
 // process should agree about it. It is deliberately NOT used by `tabfm_devices()`,
 // so that diagnostic keeps probing live hardware.
-const string &ResolvedDeviceCached(const string &setting) {
+//! Is the plugin for `backend` present at `ep_path` and of an ABI we speak?
+//! Memoized per (ep_path, backend): the answer is a property of the
+//! filesystem, and the probe dlopens a library that is deliberately never
+//! unloaded, so asking once per predict would map it repeatedly.
+//!
+//! A consequence worth stating plainly: fetching a plugin mid-session does not
+//! change what 'auto' does until the next connection. That is the deliberate
+//! trade -- the alternative is invalidating a process-wide memo that
+//! DeviceMutex also keys on, which is the area issue #42 was about.
+//! tabfm_accelerate() says so in its output.
+bool PluginAvailableCached(const string &ep_path, const string &backend) {
 	static mutex memo_lock;
-	static map<string, string> memo;
+	static map<string, bool> memo;
+	const string key = ep_path + "\x1f" + backend;
 	{
 		lock_guard<mutex> guard(memo_lock);
-		auto entry = memo.find(setting);
+		auto entry = memo.find(key);
+		if (entry != memo.end()) {
+			return entry->second;
+		}
+	}
+	bool available = false;
+	if (!ep_path.empty()) {
+		auto fs = FileSystem::CreateLocal();
+		available = PluginLoadable(fs->JoinPath(ep_path, PluginFileName(backend)));
+	}
+	lock_guard<mutex> guard(memo_lock);
+	return memo.emplace(key, available).first->second;
+}
+
+//! Resolve the device for THIS model, not merely for this session.
+//!
+//! An explicit request is unchanged: ResolveDevice decides, and every
+//! downstream refusal stays a hard error via IsExplicitGpuRequest.
+//!
+//! 'auto' is where this differs, and the difference is the point. The old
+//! 'auto' could only ever pick a lane the compiled FLAVOR carried, so on the
+//! released cpu-flavor builds it was always cpu -- a user with a card and a
+//! plugin installed still got the CPU, on every platform. Making it pick a GPU
+//! session-wide would have been worse than useless: the codebase's
+//! anti-silent-fallback contract is enforced by IsExplicitGpuRequest, a string
+//! compare on the raw setting, whose asymmetry is deliberate -- an explicit
+//! request hard-errors where 'auto' declines quietly. So the moment 'auto'
+//! resolved to rocm, the nine catalog models with no MIGraphX graph would have
+//! been served on the CPU with nothing said.
+//!
+//! Resolving per (model, task) dissolves that rather than negotiating with it.
+//! 'auto' only ever names a device this model can actually be served on, so
+//! there is no fallback event left to report: tabfm-v1 goes to rocm and tabdpt
+//! goes to cpu in the same session, each because that is the best device that
+//! model supports. IsExplicitGpuRequest is untouched.
+string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx) {
+	auto devices = DiscoverDevices();
+	if (StringUtil::Lower(ctx.device) != "auto") {
+		return ResolveDevice(ctx.device, devices).device_id;
+	}
+	const string task_name = TabFMTaskName(resolved.manifest.task);
+	for (auto &device : devices) {
+		if (device.device_id == "cpu" || !device.usable) {
+			continue;
+		}
+		const string backend = BackendOfDeviceId(device.device_id);
+		// coreml is an in-process ORT provider, not a plugin, and is unverified
+		// (docs/DYNAMIC_BACKENDS.md). 'auto' does not reach for it.
+		if (backend != "cuda" && backend != "rocm" && backend != "mlx") {
+			continue;
+		}
+		// Is the lane even here? Cheap, local, and never create(): a plugin
+		// that is absent simply means this lane is not a candidate, which
+		// cannot turn a working CPU install into a failing one.
+		if (!PluginAvailableCached(ctx.ep_path, backend)) {
+			continue;
+		}
+		const bool is_rocm = backend == "rocm";
+		const string kind = is_rocm ? "migraphx" : "ext";
+		const string &model_graph = is_rocm ? resolved.migraphx_graph_path : resolved.ext_graph_path;
+		auto bundled = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, kind, task_name));
+		auto verdict = GpuServabilityFor(fs, resolved, backend, task_name, !model_graph.empty(),
+		                                 bundled.data != nullptr,
+		                                 bundled.data && WeightsHeaderMatches(fs, resolved.weights_path,
+		                                                                      resolved.manifest.model,
+		                                                                      resolved.manifest.task),
+		                                 ctx.gpu_precision);
+		if (verdict.supported) {
+			return device.device_id;
+		}
+	}
+	return "cpu";
+}
+
+// Memoized because the fix has to work on the hot path: `DiscoverDevices()`
+// dlopens NVML and calls nvmlInit on every invocation, which is fine once per
+// session load and not fine once per forward pass.
+//
+// The key carries everything the answer depends on. It used to be the setting
+// alone, which was correct only while resolution was a pure function of the
+// machine. It is now also a function of the MODEL (a per-model 'auto'), the
+// PRECISION (a mode the backend cannot run makes it unservable there) and
+// EP_PATH (whether the lane's plugin is present) -- and ep_path is a
+// per-connection setting, so leaving it out would let two databases in one
+// process inherit whichever raced first.
+const string &ResolvedDeviceCached(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx) {
+	static mutex memo_lock;
+	static map<string, string> memo;
+	const string key = ctx.device + "\x1f" + resolved.manifest.model + "\x1f" +
+	                   TabFMTaskName(resolved.manifest.task) + "\x1f" + ctx.gpu_precision + "\x1f" + ctx.ep_path;
+	{
+		lock_guard<mutex> guard(memo_lock);
+		auto entry = memo.find(key);
 		if (entry != memo.end()) {
 			return entry->second;
 		}
@@ -1162,10 +1292,9 @@ const string &ResolvedDeviceCached(const string &setting) {
 	// lock across that would serialize unrelated first-time resolutions behind it.
 	// Two connections racing here compute the same answer, so the re-lookup on the
 	// way back in is a correctness no-op rather than a guard.
-	auto devices = DiscoverDevices();
-	auto resolved = ResolveDevice(setting, devices);
+	auto device_id = ResolveDeviceForModel(fs, resolved, ctx);
 	lock_guard<mutex> guard(memo_lock);
-	return memo.emplace(setting, resolved.device_id).first->second;
+	return memo.emplace(key, std::move(device_id)).first->second;
 }
 
 // Build (or reuse) the ORT session for `resolved` and return a snapshot of the
@@ -1192,7 +1321,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	// quietly becomes CPU" outcome the tier-4 contract in
 	// docs/DYNAMIC_BACKENDS.md exists to rule out, and it is invisible without
 	// looking at tabfm_models().device.
-	const string &wanted_device = ResolvedDeviceCached(ctx.device);
+	const string &wanted_device = ResolvedDeviceCached(fs, resolved, ctx);
 	// gpu_precision only shapes GPU sessions; for CPU it is "" so flipping the
 	// setting does not rebuild a session it never influenced.
 	const string wanted_precision = SessionPrecisionFor(wanted_device, ctx.gpu_precision);
@@ -1377,7 +1506,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	config.intra_op_threads = MaxValue<int64_t>(1, ctx.threads);
 	config.prepack = ctx.cpu_prepack;
 	auto devices = DiscoverDevices();
-	auto device = ResolveDevice(ctx.device, devices);
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
 	config.device_id = device.device_id;
 	config.device_ordinal = device.device_ordinal;
 	config.model_tag = TabFMTaskName(resolved.manifest.task);
@@ -1638,7 +1767,7 @@ public:
 		auto state = TabFMState::Get(*in.ctx.db);
 		TabFMRunOutput out;
 		{
-			lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(in.ctx.device)));
+			lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(*fs, resolved, in.ctx)));
 			auto model = LoadOrGetSession(*fs, *state, resolved, in.ctx);
 			auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
 
@@ -1781,7 +1910,7 @@ void TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows,
 	// Loads/caches the backend (registered in state) and warms the shape-bucket:
 	// on ROCm this is the expensive MIGraphX compile + .mxr cache; on CPU/CUDA the
 	// no-op default just leaves the freshly-built ORT session warm.
-	lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(ctx.device)));
+	lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(*fs, resolved, ctx)));
 	auto model = LoadOrGetSession(*fs, *state, resolved, ctx);
 	auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
 	backend->Precompile(rows, features);

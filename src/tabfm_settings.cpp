@@ -162,9 +162,12 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
 
 	config.AddExtensionOption("anofox_tabfm_device",
-	                          "Execution device: auto|cpu|cuda|rocm|coreml|mlx ('migraphx' alias). cuda, rocm and mlx "
-	                          "run in dlopen'd plugins and are explicit opt-ins ('auto' never selects them); coreml "
-	                          "is flavor-gated and errors helpfully where the build does not carry it.",
+	                          "Execution device: auto|cpu|cuda|rocm|coreml|mlx ('migraphx' alias). 'auto' resolves "
+	                          "per model: it picks the best device that model can actually be served on (its plugin "
+	                          "present and a graph available), else the CPU — so it never promises an accelerator a "
+	                          "model cannot use. SELECT * FROM tabfm_backends() shows the choice and the reason. "
+	                          "Naming a device explicitly is a hard request: it errors rather than falling back. "
+	                          "coreml is flavor-gated and 'auto' does not reach for it.",
 	                          LogicalType::VARCHAR, Value("auto"), ValidateDevice);
 
 	config.AddExtensionOption("anofox_tabfm_ep_path",

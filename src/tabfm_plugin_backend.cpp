@@ -165,6 +165,31 @@ private:
 
 } // namespace
 
+bool PluginLoadable(const string &library_path) {
+	auto library = OpenLibrary(library_path);
+	if (!library) {
+		return false;
+	}
+	auto entry = reinterpret_cast<TabFMGetPluginApiFn>(LibrarySymbol(library, TABFM_PLUGIN_ENTRY_SYMBOL));
+	if (!entry) {
+		CloseLibrary(library);
+		return false;
+	}
+	const TabFMPluginApi *api = entry();
+	// Same ordering rule as LoadPluginBackend: abi_version is the only field
+	// safe to read before it has been checked.
+	const bool ok = api && api->abi_version == TABFM_PLUGIN_ABI_VERSION;
+	// Deliberately NOT unloaded on success: this library is about to be opened
+	// for real by LoadPluginBackend, and a GPU plugin that has been mapped once
+	// must not be unmapped underneath the driver context it may already have
+	// registered. On failure nothing was initialised, so closing is safe and
+	// keeps a probe of a wrong file from pinning it.
+	if (!ok) {
+		CloseLibrary(library);
+	}
+	return ok;
+}
+
 unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const TabFMPluginCreateParams &params) {
 	auto library = OpenLibrary(library_path);
 	if (!library) {

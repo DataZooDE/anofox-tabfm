@@ -1079,12 +1079,6 @@ unique_ptr<FunctionData> BackendsBind(ClientContext &, TableFunctionBindInput &,
 	return make_uniq<ModelsBindData>();
 }
 
-//! The backend name a discovered device id maps to ("rocm:0" -> "rocm").
-string BackendOfDevice(const string &device_id) {
-	auto colon = device_id.find(':');
-	return colon == string::npos ? device_id : device_id.substr(0, colon);
-}
-
 unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableFunctionInitInput &) {
 	auto state = make_uniq<BackendsGlobalState>();
 	auto registry = ModelRegistry::Build(TabFMState::Get(context)->RegisteredSpecs());
@@ -1119,7 +1113,7 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				row.model = spec.id;
 				row.task = task_name;
 				row.device = device.device_id;
-				row.backend = BackendOfDevice(device.device_id);
+				row.backend = BackendOfDeviceId(device.device_id);
 				if (row.backend == "cpu") {
 					// Every model runs on the CPU -- that is the floor the
 					// whole extension rests on.

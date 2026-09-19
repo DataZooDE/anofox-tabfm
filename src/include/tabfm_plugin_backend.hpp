@@ -28,5 +28,20 @@ namespace anofox {
 //! shutdown into a crash in an unrelated destructor.
 unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const TabFMPluginCreateParams &params);
 
+//! Can this library be loaded as a plugin of an ABI we speak? Loads it and
+//! checks the entry point and abi_version -- and deliberately stops there,
+//! never calling create().
+//!
+//! That boundary is the whole point. create() reaches the driver: it can take
+//! minutes (a MIGraphX shape compile), demand a runtime that is not installed,
+//! or fail on a card that is busy. This answers the cheap question 'is the
+//! lane here at all', which is what device selection needs before it commits;
+//! whether THIS model can actually be served is a separate question with a
+//! separate answer (EvaluateGpuServability).
+//!
+//! Never throws: a missing or unreadable file is a false, not an error --
+//! callers use it to decide, not to report.
+bool PluginLoadable(const string &library_path);
+
 } // namespace anofox
 } // namespace duckdb
