@@ -39,8 +39,17 @@ import urllib.request
 from pathlib import Path
 
 API = "https://rest.runpod.io/v1"
-# CUDA 12.4 + python 3.11; sshd starts when PUBLIC_KEY is set.
-DEFAULT_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+# CUDA 12.8 + python 3.11; sshd starts when PUBLIC_KEY is set.
+#
+# NOT 12.4, which this default used to be and which is known not to work for
+# the thing this harness exists to test: the CUDA-12 ONNX Runtime provider
+# fails on a 12.4 image with `undefined symbol: cudaLibraryGetKernel, version
+# libcudart.so.12` -- that symbol needs a newer CUDA 12 minor than the image
+# ships. Recorded in docs/DYNAMIC_BACKENDS.md ("RunPod-verified" findings 1-2),
+# discovered by renting a pod and watching it fail, and then left in place as
+# the default so the next person rented a pod and watched it fail too.
+# README pins the floor at CUDA userspace >= 12.5.
+DEFAULT_IMAGE = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
 GRAPHQL = "https://api.runpod.io/graphql"
 # An EP-level graph bug reproduces on any CUDA device, and these graphs are tiny
 # with synthesized weights (~110 MB), so the cheapest card that exists will do.
