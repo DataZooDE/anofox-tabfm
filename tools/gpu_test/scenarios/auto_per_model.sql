@@ -46,8 +46,14 @@ SELECT 'AUTO_IS_PER_MODEL=' ||
 --    capability row calls unsupported.
 SELECT 'AUTO_NEVER_UNSUPPORTED=' || (count(*) = 0)::VARCHAR
 FROM tabfm_models() m
-JOIN tabfm_backends() b ON b.model = m.model AND b.device = m.device
-WHERE m.loaded AND NOT b.supported;
+-- Join on TASK as well. Without it a loaded mitra/classification matched the
+-- mitra/REGRESSION capability row too, whose weights were never downloaded --
+-- so the invariant reported a violation that had not happened. Caught on CUDA,
+-- where only the classification weights had been fetched; it passes locally
+-- only because the fixture model has a single task.
+JOIN tabfm_backends() b
+  ON b.model = m.model AND b.task = m.task AND b.device = m.device
+WHERE m.loaded AND b.supported IS NOT TRUE;
 
 -- 5. And the reason is queryable rather than folklore.
 SELECT 'TABDPT_REASON=' || coalesce(max(reason), 'NONE')

@@ -277,6 +277,13 @@ def main() -> int:
                     help="comma-separated onnxruntime-gpu versions to sweep")
     ap.add_argument("--timeout", type=int, default=900, help="seconds to wait for the pod")
     ap.add_argument("--keep", action="store_true", help="do NOT terminate the pod (debugging; costs money)")
+    ap.add_argument("--secure", action="store_true",
+                    help="rent only from RunPod's own datacenters, never the COMMUNITY tier. Community hosts are "
+                         "other people's machines with whatever nvidia-container-toolkit setup they happen to "
+                         "have: seen twice on different hosts, nvidia-smi works and every /dev/nvidia* node is "
+                         "present, but cudaGetDeviceCount returns 999 and /dev/nvidia-uvm is owned by "
+                         "nobody:nogroup -- the host uid/gid is not mapped into the container's user namespace, "
+                         "so CUDA enumerates the device and then cannot initialise it. Costs more per hour.")
     ap.add_argument("--volume-id", help="attach this persistent network volume at /workspace (S7: uploads, "
                                         "toolchains and build trees survive across pods)")
     ap.add_argument("--create-volume", type=int, metavar="GB",
@@ -372,7 +379,7 @@ def main() -> int:
     # volume attached the cloud is forced to SECURE and the datacenter to the
     # volume's, so the inner loop degenerates to one attempt per GPU type.
     for price, gpu_id, vram in candidates:
-        for cloud in (("SECURE",) if volume else ("COMMUNITY", "SECURE")):
+        for cloud in (("SECURE",) if (volume or args.secure) else ("COMMUNITY", "SECURE")):
             try:
                 pod = call("POST", "/pods", key, _pod_spec(args, [gpu_id], cloud, pub, volume))
                 tag = f"${price}/hr" if price is not None else "?"
