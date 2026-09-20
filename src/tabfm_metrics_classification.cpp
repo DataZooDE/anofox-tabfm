@@ -51,7 +51,8 @@ void AccuracyStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
 }
 
 // Update — UnifiedVectorFormat NULL-skip (01-PATTERNS.md "NULL skip in Update")
-void AccuracyUpdate(Vector inputs[], AggregateInputData &, idx_t count, Vector &state_vector, idx_t) {
+// Signature: (inputs, aggr_input_data, input_count [discarded], states, row_count)
+void AccuracyUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector, idx_t count) {
 	UnifiedVectorFormat sdata, actual_data, predicted_data;
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);

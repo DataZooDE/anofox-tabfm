@@ -1,0 +1,79 @@
+# name: test/sql/tabfm_metrics_classification.test
+# description: tabfm_accuracy golden values (tools/golden/generate_metric_fixtures.py),
+#              NULL-skip semantics, empty-input NULL, and alias parity.
+#              Golden values match sklearn accuracy_score on the 3-class fixture.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# --- 3-class fixture ---
+# actual:    ['cat', 'dog', 'cat']
+# predicted: ['cat', 'cat', 'cat']
+# correct: rows 1 and 3  =>  2/3 = 0.666667 (sklearn: accuracy_score = 0.6666666...)
+
+statement ok
+CREATE TABLE preds AS SELECT * FROM (VALUES
+  ('cat', 'cat'),
+  ('dog', 'cat'),
+  ('cat', 'cat')
+) v(actual, predicted);
+
+# Golden value: 2/3 correct = 0.666667 (rounded to 6 dp, matching sklearn)
+query I
+SELECT round(tabfm_accuracy(actual, predicted), 6) FROM preds
+----
+0.666667
+
+# Alias parity: anofox_tabfm_accuracy must return the same value
+query I
+SELECT round(anofox_tabfm_accuracy(actual, predicted), 6) FROM preds
+----
+0.666667
+
+# Alias parity check: both agree on the same row
+query I
+SELECT (round(tabfm_accuracy(actual, predicted), 6) = round(anofox_tabfm_accuracy(actual, predicted), 6))::VARCHAR FROM preds
+----
+true
+
+# --- NULL-skip semantics ---
+# Row with NULL actual is skipped; row with NULL predicted is skipped.
+# Valid pairs: ('cat','cat') and ('dog','dog') => 2/2 = 1.0
+
+statement ok
+CREATE TABLE preds_with_nulls AS SELECT * FROM (VALUES
+  ('cat', 'cat'),
+  (NULL, 'cat'),
+  ('dog', 'dog'),
+  ('cat', NULL)
+) v(actual, predicted);
+
+query I
+SELECT round(tabfm_accuracy(actual, predicted), 6) FROM preds_with_nulls
+----
+1.0
+
+# --- Empty / all-NULL input returns NULL ---
+
+statement ok
+CREATE TABLE preds_empty AS SELECT * FROM (VALUES
+  (NULL, NULL),
+  (NULL, NULL)
+) v(actual, predicted);
+
+query I
+SELECT tabfm_accuracy(actual, predicted) IS NULL FROM preds_empty
+----
+true
+
+# Empty table (zero rows) also returns NULL
+statement ok
+CREATE TABLE preds_zero AS SELECT * FROM preds WHERE 1=0;
+
+query I
+SELECT tabfm_accuracy(actual, predicted) IS NULL FROM preds_zero
+----
+true
