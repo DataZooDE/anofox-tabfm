@@ -189,8 +189,12 @@ R"(
                -- Note: closing ')' is INSIDE the SQL string literal (before the closing '''').
                '''' ||
                '(SELECT * FROM (SELECT *, (hash(' || CAST(row_key AS VARCHAR)
-               || ', ' || CAST(CAST(seed AS BIGINT) AS VARCHAR)
-               || ') % ' || CAST(CAST(k AS BIGINT) AS VARCHAR)
+               -- Emit CAST(seed AS BIGINT) in generated SQL to match tabfm_fold_assign
+               -- which uses CAST(seed AS BIGINT) — DuckDB hash() is type-sensitive and
+               -- hash(x,42::INTEGER) != hash(x,42::BIGINT) in general (WR-02).
+               || ', CAST(' || CAST(CAST(seed AS BIGINT) AS VARCHAR) || ' AS BIGINT)'
+               -- Emit CAST(k AS UBIGINT) to match fold_assign's modulo expression.
+               || ') % CAST(' || CAST(CAST(k AS BIGINT) AS VARCHAR) || ' AS UBIGINT)'
                || ')::INTEGER AS _cv_fold_id FROM (FROM ' || CAST(data AS VARCHAR) || '))'
                || ' WHERE _cv_fold_id <> ' || CAST(f AS VARCHAR) || ')' ||
                '''' ||
@@ -204,8 +208,8 @@ R"(
                '''' ||
                '(SELECT * EXCLUDE ("' || replace(CAST(target AS VARCHAR), '"', '""')
                || '") FROM (SELECT *, (hash(' || CAST(row_key AS VARCHAR)
-               || ', ' || CAST(CAST(seed AS BIGINT) AS VARCHAR)
-               || ') % ' || CAST(CAST(k AS BIGINT) AS VARCHAR)
+               || ', CAST(' || CAST(CAST(seed AS BIGINT) AS VARCHAR) || ' AS BIGINT)'
+               || ') % CAST(' || CAST(CAST(k AS BIGINT) AS VARCHAR) || ' AS UBIGINT)'
                || ')::INTEGER AS _cv_fold_id FROM (FROM ' || CAST(data AS VARCHAR) || '))'
                || ' WHERE _cv_fold_id = ' || CAST(f AS VARCHAR) || ')' ||
                '''' ||
@@ -216,8 +220,8 @@ R"(
                ' SELECT (' || CAST(row_key AS VARCHAR) || ') AS __cv_rk,'
                ' "' || replace(CAST(target AS VARCHAR), '"', '""') || '" AS __cv_actual'
                ' FROM (SELECT *, (hash(' || CAST(row_key AS VARCHAR)
-               || ', ' || CAST(CAST(seed AS BIGINT) AS VARCHAR)
-               || ') % ' || CAST(CAST(k AS BIGINT) AS VARCHAR)
+               || ', CAST(' || CAST(CAST(seed AS BIGINT) AS VARCHAR) || ' AS BIGINT)'
+               || ') % CAST(' || CAST(CAST(k AS BIGINT) AS VARCHAR) || ' AS UBIGINT)'
                || ')::INTEGER AS _cv_fold_id FROM (FROM ' || CAST(data AS VARCHAR) || '))'
                || ' WHERE _cv_fold_id = ' || CAST(f AS VARCHAR) || ''
                ') orig ON p.' || CAST(row_key AS VARCHAR) || ' = orig.__cv_rk)'
