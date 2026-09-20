@@ -60,6 +60,35 @@ CMET-05: tabfm_confusion_matrix
 CMET-06: tabfm_ece
   3-row proba fixture (same as log-loss):
     All argmax correct -> ECE = 0.333333
+Golden values used in test/sql/tabfm_metrics_regression.test
+-------------------------------------------------------------------
+
+RMET-01: tabfm_rmse
+  Fixture: 5-row regression
+    actual    = [1.0, 2.0, 3.0, 4.0, 5.0]
+    predicted = [1.1, 2.2, 2.9, 3.8, 5.5]
+    residuals = [0.1, 0.2, 0.1, 0.2, 0.5]
+    rmse      = sqrt((0.01+0.04+0.01+0.04+0.25)/5) = 0.264575
+
+RMET-02: tabfm_mae
+  Same 5-row fixture.
+  mae = (0.1+0.2+0.1+0.2+0.5)/5 = 0.22
+
+RMET-03: tabfm_r2
+  Same 5-row fixture.
+  r2 = 1 - SS_res/SS_tot = 0.965
+  Constant-target edge cases (sklearn convention):
+    - all actual=5.0, predicted=5.0 → 1.0
+    - all actual=5.0, predicted imperfect → 0.0
+
+RMET-04: tabfm_mape, tabfm_medae
+  Same 5-row fixture (no zero actuals).
+  MAPE (dimensionless ratio, not %) = 0.076667
+  Zero-actual skip fixture: actual=[0.0,1.0,2.0], predicted=[0.5,1.5,2.5]
+    Non-zero rows: (1.0,1.5),(2.0,2.5) → MAPE = (0.5 + 0.25)/2 = 0.375
+  MedAE N=5: sorted residuals=[0.1,0.1,0.2,0.2,0.5] → median=0.2
+  MedAE N=4: actual=[1.0,2.0,3.0,4.0], predicted=[1.1,2.2,2.9,3.8]
+    sorted residuals=[0.1,0.1,0.2,0.2] → median=(0.1+0.2)/2=0.15
 """
 
 import math
