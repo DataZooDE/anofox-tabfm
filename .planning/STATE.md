@@ -1,11 +1,18 @@
 ---
-gsd_state_version: '1.0'
-status: planning
+gsd_state_version: "1.0"
+current_phase: 01
+current_phase_name: Evaluation Metrics + Cross-Validation
+status: executing
+stopped_at: "Completed 01-01: scaffold wired, tabfm_accuracy tracer shipped (CMET-01), 3 commits"
+last_updated: "2026-09-20T20:45:16.616Z"
+last_activity: 2026-09-20
+last_activity_desc: Phase 01 execution started
+state_head: 1cf2fb6125a6ffdab938db143f8500507ddd2cf8
 progress:
   total_phases: 3
   completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_plans: 4
+  completed_plans: 1
   percent: 0
 ---
 
@@ -16,20 +23,21 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-19)
 
 **Core value:** Users can trust and compare tabular-foundation-model predictions directly in SQL — computing standard metrics and cross-validation on their own data, across more than one model family — without leaving DuckDB.
-**Current focus:** Phase 1 — Evaluation Metrics + Cross-Validation
+**Current focus:** Phase 01 — Evaluation Metrics + Cross-Validation
 
 ## Current Position
 
-Phase: 1 of 3 (Evaluation Metrics + Cross-Validation)
-Plan: 0 of TBD in current phase
-Status: Ready to plan
-Last activity: 2026-09-19 — Roadmap created (3 coarse phases, 28 v1 requirements mapped)
+Phase: 01 (Evaluation Metrics + Cross-Validation) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-09-20 — Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
 **Velocity:**
+
 - Total plans completed: 0
 - Average duration: — min
 - Total execution time: 0.0 hours
@@ -41,10 +49,16 @@ Progress: [░░░░░░░░░░] 0%
 | - | - | - | - |
 
 **Recent Trend:**
+
 - Last 5 plans: —
 - Trend: —
 
 *Updated after each plan completion*
+**Per-Plan Metrics:**
+
+| Plan | Duration | Tasks | Files |
+|------|----------|-------|-------|
+| Phase 01 P01 | 10 | 2 tasks | 15 files |
 
 ## Accumulated Context
 
@@ -56,6 +70,8 @@ Recent decisions affecting current work:
 - Roadmap: Evaluation framework ships before adding models (measure quality before comparing).
 - Roadmap: Coarse granularity — research's 5 suggested phases merged into 3 (registry + distribution decode + onboarding folded into one model-seam phase).
 - Roadmap: Hard dependency gate — PSR-* (Phase 3) blocked on RDIST-* + MODL-01 + MGEN-* (Phase 2); point metrics + CV (Phase 1) unblocked.
+- [Phase 01]: Golden values hard-coded in .test files; generate_metric_fixtures.py traces sklearn origin but is not a build artifact — CI reproducibility without sklearn runtime dependency
+- [Phase 01]: FunctionDescription required for all tabfm_*/anofox_tabfm_* registered functions per tabfm_function_docs.test contract
 
 ### Pending Todos
 
@@ -77,6 +93,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-19
-Stopped at: ROADMAP.md and STATE.md written; REQUIREMENTS.md traceability updated
+Last session: 2026-09-20T20:45:16.601Z
+Stopped at: Completed 01-01: scaffold wired, tabfm_accuracy tracer shipped (CMET-01), 3 commits
 Resume file: None

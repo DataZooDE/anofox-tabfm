@@ -11,7 +11,7 @@ columns) and must stay cpu-flavor-clean and weight-free.
 
 ### Classification Metrics
 
-- [ ] **CMET-01**: User can compute classification accuracy over `(actual, predicted)` columns via a SQL aggregate
+- [x] **CMET-01**: User can compute classification accuracy over `(actual, predicted)` columns via a SQL aggregate
 - [ ] **CMET-02**: User can compute precision, recall, and F1 with an explicit averaging mode (micro / macro / weighted) — no silent default
 - [ ] **CMET-03**: User can compute log-loss (cross-entropy) from a per-class probability MAP, with probability clipping to avoid infinities
 - [ ] **CMET-04**: User can compute ROC-AUC with an explicit multiclass averaging mode and correct tie handling (rank-sum form)
@@ -94,7 +94,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CMET-01 | Phase 1 | Pending |
+| CMET-01 | Phase 1 | Complete |
 | CMET-02 | Phase 1 | Pending |
 | CMET-03 | Phase 1 | Pending |
 | CMET-04 | Phase 1 | Pending |
@@ -124,9 +124,11 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CMP-01 | Phase 3 | Pending |
 
 **Coverage:**
+
 - v1 requirements: 28 total (enumerated IDs; the earlier "26" header count was stale)
 - Mapped to phases: 28 (Phase 1: 14, Phase 2: 9, Phase 3: 5)
 - Unmapped: 0 ✓
+
 ---
 *Requirements defined: 2026-09-19*
 *Last updated: 2026-09-19 after initial definition*
