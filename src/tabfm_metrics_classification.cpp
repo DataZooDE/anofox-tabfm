@@ -94,10 +94,12 @@ void AccuracyUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_
 		auto &state = *states[sidx];
 		state.total++;
 
-		// Compare as strings so the aggregate works on ANY type pair
-		auto actual_val    = inputs[0].GetValue(i);
-		auto predicted_val = inputs[1].GetValue(i);
-		if (actual_val.ToString() == predicted_val.ToString()) {
+		// Compare as string_t directly (zero allocation) so the aggregate works on
+		// ANY type pair. Using raw UnifiedVectorFormat data avoids the per-row
+		// Value heap allocation from GetValue(i) (WR-03).
+		auto *actual_raw    = UnifiedVectorFormat::GetData<string_t>(actual_data);
+		auto *predicted_raw = UnifiedVectorFormat::GetData<string_t>(predicted_data);
+		if (actual_raw[aidx] == predicted_raw[pidx]) {
 			state.correct++;
 		}
 	}
@@ -273,8 +275,12 @@ void F1Update(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector
 		}
 		auto &class_map = *slot.data;
 
-		std::string actual_str    = inputs[0].GetValue(i).ToString();
-		std::string predicted_str = inputs[1].GetValue(i).ToString();
+		// Use raw string_t pointers from UnifiedVectorFormat to avoid per-row
+		// Value heap allocation from GetValue(i) (WR-03).
+		auto *actual_raw    = UnifiedVectorFormat::GetData<string_t>(actual_data);
+		auto *predicted_raw = UnifiedVectorFormat::GetData<string_t>(predicted_data);
+		std::string actual_str    = actual_raw[aidx].GetString();
+		std::string predicted_str = predicted_raw[pidx].GetString();
 
 		// Ensure both class entries exist before modifying them
 		class_map[actual_str];    // default-insert if missing
@@ -335,8 +341,14 @@ void F1Finalize(Vector &state_vector, AggregateInputData &aggr_input, Vector &re
 			metric   = bd.metric;
 		}
 		if (avg_mode.empty()) {
-			FlatVector::SetNull(result, i + offset, true);
-			continue;
+			// Non-constant avg expression was not resolved at bind time. Throw an
+			// actionable error rather than silently returning NULL (SQL-API §5).
+			std::string fn_name = (metric == 'p') ? "tabfm_precision"
+			                    : (metric == 'r') ? "tabfm_recall"
+			                                      : "tabfm_f1";
+			throw InvalidInputException(
+			    "%s: 'avg' is required — pass avg := 'micro', 'macro', or 'weighted'",
+			    fn_name.c_str());
 		}
 
 		auto  &class_map = *slot.data;
@@ -723,8 +735,10 @@ void AUCFinalize(Vector &state_vector, AggregateInputData &aggr_input, Vector &r
 			avg_mode = aggr_input.bind_data->Cast<AUCBindData>().avg;
 		}
 		if (avg_mode.empty()) {
-			FlatVector::SetNull(result, i + offset, true);
-			continue;
+			// Non-constant avg expression was not resolved at bind time. Throw an
+			// actionable error rather than silently returning NULL (SQL-API §5).
+			throw InvalidInputException(
+			    "tabfm_roc_auc: 'avg' is required — pass avg := 'ovr' or 'ovo'");
 		}
 
 		auto &class_map = *slot.data;
