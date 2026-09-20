@@ -20,10 +20,10 @@ columns) and must stay cpu-flavor-clean and weight-free.
 
 ### Regression Metrics
 
-- [ ] **RMET-01**: User can compute RMSE over `(actual, predicted)` via a SQL aggregate
-- [ ] **RMET-02**: User can compute MAE over `(actual, predicted)`
-- [ ] **RMET-03**: User can compute R² over `(actual, predicted)`, handling the constant-target edge case
-- [ ] **RMET-04**: User can compute MAPE and median absolute error, handling zero actuals
+- [x] **RMET-01**: User can compute RMSE over `(actual, predicted)` via a SQL aggregate
+- [x] **RMET-02**: User can compute MAE over `(actual, predicted)`
+- [x] **RMET-03**: User can compute R² over `(actual, predicted)`, handling the constant-target edge case
+- [x] **RMET-04**: User can compute MAPE and median absolute error, handling zero actuals
 
 ### Cross-Validation
 
@@ -100,10 +100,10 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CMET-04 | Phase 1 | Complete |
 | CMET-05 | Phase 1 | Complete |
 | CMET-06 | Phase 1 | Complete |
-| RMET-01 | Phase 1 | Pending |
-| RMET-02 | Phase 1 | Pending |
-| RMET-03 | Phase 1 | Pending |
-| RMET-04 | Phase 1 | Pending |
+| RMET-01 | Phase 1 | Complete |
+| RMET-02 | Phase 1 | Complete |
+| RMET-03 | Phase 1 | Complete |
+| RMET-04 | Phase 1 | Complete |
 | CV-01 | Phase 1 | Pending |
 | CV-02 | Phase 1 | Pending |
 | CV-03 | Phase 1 | Pending |

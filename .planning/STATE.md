@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 01
 current_phase_name: Evaluation Metrics + Cross-Validation
 status: executing
-stopped_at: "Completed 01-02: CMET-02..06 classification metrics, 2 commits"
-last_updated: "2026-09-20T21:07:00.220Z"
+stopped_at: "Completed 01-03: RMET-01..04 regression metrics, 2 commits"
+last_updated: "2026-09-20T21:19:55.612Z"
 last_activity: 2026-09-20
 last_activity_desc: Phase 01 execution started
-state_head: da1650a39eb6a917d9ea4f1b07d88ff4adcf0bb3
+state_head: b7b68e3dff3c39a8a9a4e7c9b559e3be8ef07e13
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 4
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-19)
 ## Current Position
 
 Phase: 01 (Evaluation Metrics + Cross-Validation) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Last activity: 2026-09-20 — Phase 01 execution started
 
@@ -60,6 +60,7 @@ Progress: [░░░░░░░░░░] 0%
 |------|----------|-------|-------|
 | Phase 01 P01 | 10 | 2 tasks | 15 files |
 | Phase 01 P02 | 18 | 3 tasks | 4 files |
+| Phase 01 P03 | 11 | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,9 @@ Recent decisions affecting current work:
 - [Phase 01]: FunctionDescription required for all tabfm_*/anofox_tabfm_* registered functions per tabfm_function_docs.test contract
 - [Phase 01]: Required avg enforced via 2-arg overload that always throws at bind — no silent default for F1/precision/recall/ROC-AUC
 - [Phase 01]: tabfm_confusion_matrix implemented as TABLE MACRO (not C++ table function) wrapping GROUP BY with replace() identifier quoting
+- [Phase 01]: MAPE returned as dimensionless ratio matching sklearn.mean_absolute_percentage_error
+- [Phase 01]: R² constant-target guard uses |SS_tot|<1e-12 per sklearn convention; returns 1.0/0.0 never NaN/Inf
+- [Phase 01]: MedAE even-N returns mean of two middle residuals matching sklearn median_absolute_error
 
 ### Pending Todos
 
@@ -96,6 +100,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-20T21:07:00.204Z
-Stopped at: Completed 01-02: CMET-02..06 classification metrics, 2 commits
+Last session: 2026-09-20T21:19:55.596Z
+Stopped at: Completed 01-03: RMET-01..04 regression metrics, 2 commits
 Resume file: None
