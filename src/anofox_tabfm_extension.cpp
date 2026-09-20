@@ -116,6 +116,9 @@ static void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterDevicesFunctions(loader);
 	anofox::RegisterPredictAggFunction(loader);
 	anofox::RegisterPredictMacros(loader);
+	anofox::RegisterClassificationMetrics(loader);
+	anofox::RegisterRegressionMetrics(loader);
+	anofox::RegisterCrossValidateMacros(loader);
 }
 
 void AnofoxTabfmExtension::Load(ExtensionLoader &loader) {

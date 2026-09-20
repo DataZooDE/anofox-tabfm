@@ -1,8 +1,10 @@
 #pragma once
 
 #include "duckdb/main/extension/extension_loader.hpp"
+#include "duckdb/function/aggregate_function.hpp"
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
@@ -100,6 +102,32 @@ inline void RegisterTableFunctionSetWithAlias(ExtensionLoader &loader, TableFunc
 		alias_set.AddFunction(std::move(alias_func));
 	}
 	CreateTableFunctionInfo alias_info(std::move(alias_set));
+	alias_info.descriptions = std::move(descriptions);
+	alias_info.alias_of = func_set.name;
+	loader.RegisterFunction(alias_info);
+}
+
+// Helper to register an aggregate function set with an alias.
+// Pattern mirrors RegisterScalarFunctionSetWithAlias exactly: copy-then-rename
+// every overload so all metadata (bind, update, combine, finalize, state_destroy,
+// null handling) survives. The alias entry carries alias_of pointing back to the
+// primary name for catalog introspection.
+inline void RegisterAggregateFunctionSetWithAlias(ExtensionLoader &loader, AggregateFunctionSet func_set,
+                                                  const std::string &alias_name,
+                                                  vector<FunctionDescription> descriptions = {}) {
+	// Register primary with metadata
+	CreateAggregateFunctionInfo primary_info(func_set);
+	primary_info.descriptions = descriptions;
+	loader.RegisterFunction(primary_info);
+
+	// Register alias: copy-then-rename every overload so all metadata survives
+	AggregateFunctionSet alias_set(alias_name);
+	for (auto &func : func_set.functions) {
+		auto alias_func = func;
+		alias_func.name = alias_name;
+		alias_set.AddFunction(std::move(alias_func));
+	}
+	CreateAggregateFunctionInfo alias_info(std::move(alias_set));
 	alias_info.descriptions = std::move(descriptions);
 	alias_info.alias_of = func_set.name;
 	loader.RegisterFunction(alias_info);
