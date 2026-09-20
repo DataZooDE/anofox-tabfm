@@ -1,104 +1,111 @@
 ---
 phase: 01-evaluation-metrics-cross-validation
-fixed_at: 2026-09-21T00:30:00Z
+fixed_at: 2026-09-21T01:00:00Z
 review_path: .planning/phases/01-evaluation-metrics-cross-validation/01-REVIEW.md
-iteration: 1
-findings_in_scope: 6
-fixed: 5
-skipped: 1
-status: partial
+iteration: 2
+findings_in_scope: 2
+fixed: 2
+skipped: 0
+status: all_fixed
 ---
 
-# Phase 01: Code Review Fix Report
+# Phase 01: Code Review Fix Report (Iteration 2)
 
 **Fixed at:** 2026-09-21
 **Source review:** `.planning/phases/01-evaluation-metrics-cross-validation/01-REVIEW.md`
-**Iteration:** 1
+**Iteration:** 2
 
 **Summary:**
-- Findings in scope: 6 (2 critical, 4 warnings; info items excluded per fix_scope=critical_warning)
-- Fixed: 5 (CR-01, CR-02, WR-02, WR-03, WR-04)
-- Skipped: 1 (WR-01 — accepted as intentional deviation)
+- Findings in scope: 2 (1 Critical, 1 Warning)
+- Fixed: 2
+- Skipped: 0
 
-**Verification ran in:** isolated git worktree, built against the main checkout (cmake build system
-resolves sources from the main repo path). All three target SQL test files passed:
-`tabfm_metrics_classification.test` (54 assertions), `tabfm_metrics_regression.test` (28 assertions),
-`tabfm_crossval.test` (33 assertions). The pre-existing heap-use-after-free in `test_tabfm_crossval.cpp:251`
-(IN-03 related static DuckDB shared instance) was confirmed pre-existing and is NOT caused by these fixes.
+**Verification ran in:** isolated worktree `.claude/worktrees/rf-01-3745728-1789943765` on branch
+`gsd-reviewfix/01-3745728`. Build and test execution ran against the shared build tree at
+`build/debug/`. All affected test suites passed; a pre-existing ASAN heap-use-after-free in DuckDB's
+own `BlockAllocator::~BlockAllocator()` teardown is unrelated to any change in this phase and fires
+in every run including pre-fix ones.
+
+---
 
 ## Fixed Issues
 
-### CR-01: F1/Precision/Recall/ROC-AUC silently return NULL for non-constant `avg` expressions
+### CR-01: `AccuracyUpdate` reinterprets `ANY`-typed buffer as `string_t`
 
-**Files modified:** `src/tabfm_metrics_classification.cpp`
-**Commit:** 96ae060
-**Applied fix:** Replaced `FlatVector::SetNull` + `continue` in both `F1Finalize` and `AUCFinalize`
-when `avg_mode.empty()` with `throw InvalidInputException(...)` carrying an actionable message naming
-the fixing parameter and valid values. The `catch (...)` in `BindF1Metric` / `AUCBind` is retained
-(non-constant expressions cannot be evaluated at bind time). Tests that expect the exact error
-substring (`tabfm_f1: 'avg' is required`, `tabfm_precision: 'avg' is required`,
-`tabfm_recall: 'avg' is required`, `tabfm_roc_auc: 'avg' is required`) now pass.
+**Files modified:** `src/tabfm_metrics_classification.cpp`, `test/sql/tabfm_metrics_classification.test`
+**Commit:** `7876493`
+**Applied fix (Option A from review):**
 
-Note: WR-03 changes were included in this commit (same file).
+1. Changed `tabfm_accuracy` registration from `{LogicalType::ANY, LogicalType::ANY}` to
+   `{LogicalType::VARCHAR, LogicalType::VARCHAR}` (~line 1045 in `RegisterClassificationMetrics`).
+   DuckDB now inserts an implicit cast at bind time for any non-VARCHAR column (INTEGER, BIGINT,
+   DATE, etc.), so `AccuracyUpdate`'s `GetData<string_t>()` always sees a real `string_t` buffer
+   and never raw integer/float bytes.
 
-### CR-02: R² catastrophic cancellation for large-magnitude targets
+2. Hoisted the `GetData<string_t>()` pointer fetches outside the loop body (was being called
+   per-iteration as a no-op; also resolves IN-01 opportunistically).
 
-**Files modified:** `src/tabfm_metrics_regression.cpp`
-**Commit:** 2cf53c9
-**Applied fix:** Replaced the naive `sum_y2 - n*ybar^2` SS_tot formula with Welford's online
-variance algorithm (Knuth Vol. 2 §4.2.2). `R2State` struct changed from `{sum_y, sum_y2, sum_res, n}`
-to `{mean, M2, sum_res, n}`. `R2Update` uses the two-delta Welford update (`delta = a - mean_before`,
-`mean += delta/n`, `M2 += delta * delta_after`). `R2Combine` uses the Chan et al. parallel Welford
-formula. `R2Finalize` reads `ss_tot = state.M2` (exactly 0.0 for constant targets regardless of
-magnitude). This resolves both CR-02 (catastrophic cancellation) and WR-04 (threshold asymmetry)
-together.
+3. Updated the struct-level doc-comment to document the VARCHAR registration invariant and the
+   CR-01 safety guarantee.
 
-### WR-02: Hash seed type inconsistency in generated `tabfm_cross_validate` SQL
+4. Updated the registration comment to explain why `ANY` was rejected.
 
-**Files modified:** `src/tabfm_crossval.cpp`
-**Commit:** 9627231
-**Applied fix:** All three occurrences of the hash expression in the generated SQL now emit
-`CAST(seed AS BIGINT)` and `CAST(k AS UBIGINT)` explicitly (e.g. `hash(id, CAST(42 AS BIGINT)) %
-CAST(5 AS UBIGINT)`), matching the type casts in `tabfm_fold_assign`'s macro body. Previously the
-bare integer literal (e.g. `42`) was an `INTEGER` in the generated SQL while `fold_assign` used
-`BIGINT`, creating a silent fold-assignment mismatch when users compared the two outputs.
+5. Added a new test case to `test/sql/tabfm_metrics_classification.test` that passes INTEGER
+   columns to `tabfm_accuracy` and asserts the correct value, proving the implicit VARCHAR cast
+   is working and that the former string_t reinterpretation bug no longer occurs:
+   ```
+   -- actual=[1,2,1] INTEGER, predicted=[1,1,1] INTEGER => 2/3 correct => 0.666667
+   SELECT round(tabfm_accuracy(actual, predicted), 6) FROM preds_int
+   -- expected: 0.666667
+   ```
 
-### WR-03: `GetValue(i)` per-row heap allocation in hot comparison loops
+**Verification:**
+- Tier 1: re-read modified sections — fix present, surrounding code intact.
+- Tier 2: `make debug` succeeded — 0 new compilation errors.
+- `DATAZOO_DISABLE_TELEMETRY=1 ./build/debug/test/unittest test/sql/tabfm_metrics_classification.test`
+  — **54 assertions passed** (including the new INTEGER test).
+- `DATAZOO_DISABLE_TELEMETRY=1 ./build/debug/test/unittest "[tabfm]"`
+  — **1520 assertions in 77 test cases passed**.
 
-**Files modified:** `src/tabfm_metrics_classification.cpp`
-**Commit:** 96ae060 (same commit as CR-01)
-**Applied fix:** Replaced `inputs[x].GetValue(i).ToString()` in `AccuracyUpdate` and `F1Update`
-with direct `UnifiedVectorFormat::GetData<string_t>(actual_data)[aidx]` raw pointer access.
-`AccuracyUpdate` now uses `string_t::operator==` directly (no heap alloc, zero copy).
-`F1Update` uses `.GetString()` on the raw `string_t` to produce `std::string` for map lookups
-(one allocation per row instead of two). `AUCUpdate` and `ECEUpdate` iterate over MAP values
-using `MapValue::GetChildren` which requires a `Value` object; those were left unchanged as the
-API does not offer a zero-allocation MAP iterator.
+---
 
-### WR-04: `ss_res < 1e-12` threshold misclassifies near-perfect predictions as perfect
+### WR-01: Hash formula verification tests use uncast integer literals
 
-**Files modified:** `src/tabfm_metrics_regression.cpp`
-**Commit:** 2cf53c9 (same commit as CR-02)
-**Applied fix:** Replaced `(ss_res < 1e-12) ? 1.0 : 0.0` with `(ss_res == 0.0) ? 1.0 : 0.0`.
-`ss_res` is a sum of squared residuals; it is exactly 0.0 at the floating-point level only when
-all residuals are identically zero, making the exact equality check safe and correct. The Welford
-fix for CR-02 and this fix were applied in the same refactor.
+**Files modified:** `test/sql/tabfm_crossval.test`, `test/cpp/test_tabfm_crossval.cpp`
+**Commit:** `25ec200`
+**Applied fix:**
 
-## Skipped Issues
+1. `test/sql/tabfm_crossval.test` (~line 96): changed `(hash(id, 7) % 3)::INTEGER` to
+   `(hash(id, CAST(7 AS BIGINT)) % 3)::INTEGER` to match `tabfm_fold_assign`'s macro body
+   which uses `CAST(seed AS BIGINT)`.
 
-### WR-01: Telemetry fires at extension-load time for CV macros, not at per-use time
+2. `test/cpp/test_tabfm_crossval.cpp` (~line 115): changed `(hash(id, 42) % 4)::INTEGER`
+   to `(hash(id, CAST(42 AS BIGINT)) % 4)::INTEGER` for the same reason.
 
-**File:** `src/tabfm_crossval.cpp:302-313`
-**Reason:** Accepted as intentional documented deviation. The code comment at line 304 already
-acknowledges this limitation: "For macros, telemetry fires at load time via registration rather than
-per-bind (macros don't have a separate bind callback; see tabfm_macros.cpp pattern)." The
-`tabfm_macros.cpp` file uses the identical pattern for `tabfm_classify`/`tabfm_regress` macros.
-Changing this would require either (a) injecting a sentinel scalar function into the macro body
-(fragile and poorly tested), or (b) waiting for DuckDB to expose a macro bind callback. Neither
-approach is warranted for a warning-level finding.
+3. Added explanatory comments to both locations documenting that DuckDB's `hash()` is
+   type-sensitive (`hash(x, 42::INTEGER) != hash(x, 42::BIGINT)` in general).
+
+**Verification:**
+- Tier 1: re-read modified sections — fixes present, surrounding code intact.
+- `DATAZOO_DISABLE_TELEMETRY=1 ./build/debug/test/unittest test/sql/tabfm_crossval.test`
+  — **33 assertions passed**.
+- Full `[tabfm]` suite: 1520 assertions passed (see CR-01 above).
+
+---
+
+## Info Findings (not in fix scope for this iteration)
+
+### IN-01: `AccuracyUpdate` re-fetches `GetData` pointer on every loop iteration
+
+Resolved opportunistically as part of the CR-01 fix: the `GetData<string_t>()` calls were hoisted
+outside the loop in the same commit.
+
+### IN-02: R² registration comment states `|SS_tot| < 1e-12` but code now uses exact `== 0.0`
+
+Not in scope (Info severity). No change applied.
 
 ---
 
 _Fixed: 2026-09-21_
 _Fixer: Claude (gsd-code-fixer)_
-_Iteration: 1_
+_Iteration: 2_
