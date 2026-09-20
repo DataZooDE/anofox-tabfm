@@ -125,6 +125,49 @@ inline string UnsupportedPluginPlatform(const string &backend, const string &os,
 	return "tabfm_download_runtime: unknown backend '" + backend + "' — expected 'cuda', 'rocm' or 'mlx'.";
 }
 
+//! The release asset carrying a backend's sha256 sidecar. CI writes these with
+//! `sha256sum <files> | tee <base>_plugin.sha256`, so the name is keyed to the
+//! plugin's base name, not its full filename.
+inline string PluginSha256AssetName(const string &backend) {
+	return PluginBaseName(backend) + "_plugin.sha256";
+}
+
+//! Pull one file's digest out of a `sha256sum` sidecar. The CUDA sidecar covers
+//! two files (the plugin and its private ORT core), so the line must be matched
+//! by filename rather than assumed to be the first.
+//!
+//! Returns "" when the file is not listed — which callers must treat as a
+//! failure, not as "nothing to check": a sidecar that does not mention the file
+//! it is supposed to vouch for proves nothing about it.
+inline string Sha256FromSidecar(const string &sidecar, const string &file_name) {
+	size_t pos = 0;
+	while (pos < sidecar.size()) {
+		auto eol = sidecar.find('\n', pos);
+		const auto line = sidecar.substr(pos, eol == string::npos ? string::npos : eol - pos);
+		pos = eol == string::npos ? sidecar.size() : eol + 1;
+		// "<64 hex>  <name>" — the name may carry a path or a '*' binary marker.
+		auto space = line.find(' ');
+		if (space == string::npos || space != 64) {
+			continue;
+		}
+		auto named = line.substr(space);
+		while (!named.empty() && (named.front() == ' ' || named.front() == '*')) {
+			named.erase(named.begin());
+		}
+		while (!named.empty() && (named.back() == '\r' || named.back() == ' ')) {
+			named.pop_back();
+		}
+		auto slash = named.find_last_of("/\\");
+		if (slash != string::npos) {
+			named = named.substr(slash + 1);
+		}
+		if (named == file_name) {
+			return StringUtil::Lower(line.substr(0, 64));
+		}
+	}
+	return "";
+}
+
 //! Download URL for one of the pinned release's assets.
 inline string PluginReleaseAssetUrl(const string &asset, const string &release_tag) {
 	if (release_tag.empty()) {

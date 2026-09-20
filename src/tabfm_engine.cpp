@@ -730,19 +730,8 @@ shared_ptr<LoadedModel> RegisterBackend(TabFMState &state, const string &cache_k
 	return model;
 }
 
-string Sha256Hex(const_data_ptr_t data, idx_t len) {
-	unsigned char digest[EVP_MAX_MD_SIZE];
-	unsigned int n = 0;
-	EVP_Digest(data, len, digest, &n, EVP_sha256(), nullptr);
-	static const char *hex = "0123456789abcdef";
-	string out;
-	out.reserve(static_cast<size_t>(n) * 2);
-	for (unsigned int i = 0; i < n; i++) {
-		out.push_back(hex[digest[i] >> 4]);
-		out.push_back(hex[digest[i] & 0xf]);
-	}
-	return out;
-}
+// Sha256Hex is defined past this anonymous namespace: it is declared in
+// tabfm_predict.hpp so the plugin download can verify its published digest.
 
 // Read the safetensors JSON header bytes ([8, 8+header_len)). Returns false on
 // any I/O or sanity failure (caller falls back to injection).
@@ -916,6 +905,27 @@ GpuServabilityResult GpuServabilityFor(FileSystem &fs, const ResolvedModel &reso
 	return EvaluateGpuServability(in);
 }
 
+//! A failure AFTER a device was committed to, phrased for whoever chose it.
+//!
+//! These paths are reached when the cheap capability check passed and
+//! something later did not -- most often a bundled graph that could not be
+//! staged beside read-only weights. They stay hard errors under 'auto' as well
+//! as under an explicit request, because degrading here is the silent fallback
+//! the whole design forbids. What has to differ is the TEXT: telling someone
+//! who never typed a device name that "device 'mlx' was requested" is
+//! confusing, and pointing them at a graph registration will not fix a
+//! directory they cannot write.
+string GpuPostCommitFailure(const string &device, const string &device_setting, const string &model,
+                            const string &what_failed, const string &fix) {
+	const bool explicit_request = IsExplicitGpuRequest(device_setting, BackendOfDeviceId(device));
+	const string who = explicit_request
+	                       ? "device '" + device + "' was requested"
+	                       : "'auto' selected device '" + device + "' for model '" + model +
+	                             "', because that is the best device this model can be served on";
+	return "anofox_tabfm: " + who + ", but " + what_failed + ". " + fix +
+	       " Or SET anofox_tabfm_device='cpu' to run this model on the CPU.";
+}
+
 //! Wrap a servability reason as the user-facing refusal for an explicitly
 //! requested device. Keeps the "here is the device, here is why, here is the
 //! way out" shape every §5 error has.
@@ -968,12 +978,14 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 		if (!StageBundledGraph(fs, graph, graph_path)) {
 			// Servability said the directory was writable; if staging still
 			// failed the cause is not one a capability check can predict.
-			if (IsExplicitGpuRequest(ctx.device, "rocm")) {
-				throw IOException("anofox_tabfm: device 'rocm' needs the bundled GPU graph staged beside the "
-				                  "weights, but '" + graph_path + "' could not be written (read-only weights "
-				                  "directory?). Make the directory writable or SET anofox_tabfm_device='cpu'.");
-			}
-			return nullptr;
+			// Loud under 'auto' too: the capability check said this model was
+			// servable here, so falling back now would be the silent
+			// degradation the design forbids.
+			throw IOException(GpuPostCommitFailure(
+			    device.device_id, ctx.device, resolved.manifest.model,
+			    "the bundled GPU graph could not be staged beside the weights at '" + graph_path +
+			        "' (read-only weights directory?)",
+			    "Make that directory writable."));
 		}
 	}
 	const auto mxr_dir = fs.JoinPath(ctx.cache_dir, "migraphx");
@@ -1047,12 +1059,14 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 		weights_dir = DirName(resolved.weights_path);
 		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
 		if (!StageBundledGraph(fs, graph, graph_path)) {
-			if (IsExplicitGpuRequest(ctx.device, "cuda")) {
-				throw IOException("anofox_tabfm: device 'cuda' needs the bundled GPU graph staged beside the "
-				                  "weights, but '" + graph_path + "' could not be written (read-only weights "
-				                  "directory?). Make the directory writable or SET anofox_tabfm_device='cpu'.");
-			}
-			return nullptr;
+			// Loud under 'auto' too: the capability check said this model was
+			// servable here, so falling back now would be the silent
+			// degradation the design forbids.
+			throw IOException(GpuPostCommitFailure(
+			    device.device_id, ctx.device, resolved.manifest.model,
+			    "the bundled GPU graph could not be staged beside the weights at '" + graph_path +
+			        "' (read-only weights directory?)",
+			    "Make that directory writable."));
 		}
 	}
 
@@ -1129,10 +1143,20 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		graph_path.clear();
 		break;
 	}
-	// No graph and no hand-port means nothing to run. Explicit 'mlx' must say
-	// so rather than fall through to CPU -- the tier-4 contract.
+	// No graph and no hand-port means nothing to run, so this must say so
+	// rather than fall through to CPU -- the tier-4 contract. It used to be
+	// written as though only an explicit 'mlx' could reach it, which was true
+	// while 'auto' never resolved to mlx and is not any more: servability is
+	// checked before auto commits, but staging can still fail afterwards on a
+	// weights directory that is not writable.
 	if (graph_path.empty() && resolved.manifest.model != "mitra") {
-		throw InvalidInputException(NoGpuGraphMessage("mlx", resolved.manifest.model, task_name, "ext_graph"));
+		throw InvalidInputException(GpuPostCommitFailure(
+		    device.device_id, ctx.device, resolved.manifest.model,
+		    "no runnable graph for task '" + task_name +
+		        "' could be prepared — the bundled graph could not be staged beside the weights, or none matches "
+		        "them",
+		    "Make the weights directory writable, or register the model with " + task_name +
+		        "_ext_graph := '<graph.onnx>'."));
 	}
 	if (ctx.ep_path.empty()) {
 		throw InvalidInputException(
@@ -1888,6 +1912,20 @@ private:
 };
 
 } // anonymous namespace
+
+string Sha256Hex(const_data_ptr_t data, idx_t len) {
+	unsigned char digest[EVP_MAX_MD_SIZE];
+	unsigned int n = 0;
+	EVP_Digest(data, len, digest, &n, EVP_sha256(), nullptr);
+	static const char *hex = "0123456789abcdef";
+	string out;
+	out.reserve(static_cast<size_t>(n) * 2);
+	for (unsigned int i = 0; i < n; i++) {
+		out.push_back(hex[digest[i] >> 4]);
+		out.push_back(hex[digest[i] & 0xf]);
+	}
+	return out;
+}
 
 // Defined with external linkage (declared in tabfm_predict.hpp) so
 // tabfm_backends() consults the SAME memo dispatch does -- a capability

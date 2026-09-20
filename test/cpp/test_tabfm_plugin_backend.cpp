@@ -326,3 +326,55 @@ TEST_CASE("plugin_artifacts: this host resolves to a platform it knows", "[tabfm
 	// The filename used by dispatch and by the download must be the same one.
 	REQUIRE(PluginFileName("cuda") == PluginFileNameFor("cuda", os));
 }
+
+//===----------------------------------------------------------------------===//
+// Plugin integrity: the sha256 sidecar
+//===----------------------------------------------------------------------===//
+
+TEST_CASE("plugin_artifacts: the sidecar asset is named for the backend's base name",
+          "[tabfm][plugin_artifacts]") {
+	// CI writes `sha256sum <files> | tee <base>_plugin.sha256`.
+	REQUIRE(PluginSha256AssetName("cuda") == "cuda_plugin.sha256");
+	REQUIRE(PluginSha256AssetName("rocm") == "migraphx_plugin.sha256");
+	REQUIRE(PluginSha256AssetName("mlx") == "mlx_plugin.sha256");
+}
+
+TEST_CASE("plugin_artifacts: a digest is matched by FILENAME, not by position",
+          "[tabfm][plugin_artifacts]") {
+	// The real CUDA sidecar covers two files. Taking the first line would
+	// verify the plugin against the ORT core's digest and always fail — or,
+	// worse with the operands swapped, pass on the wrong file.
+	const string sidecar =
+	    "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  libanofox_tabfm_cuda_plugin.so\n"
+	    "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222  libanofoxort_gpu.so\n";
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_cuda_plugin.so") ==
+	        "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111");
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofoxort_gpu.so") ==
+	        "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222");
+}
+
+TEST_CASE("plugin_artifacts: a sidecar that does not mention the file vouches for nothing",
+          "[tabfm][plugin_artifacts]") {
+	// Must be empty, and callers must treat empty as a failure rather than as
+	// "no check required" — otherwise an attacker supplies a sidecar naming
+	// some other file and the verification silently passes.
+	const string sidecar =
+	    "cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333  some_other_file.so\n";
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_cuda_plugin.so").empty());
+	REQUIRE(Sha256FromSidecar("", "libanofox_tabfm_cuda_plugin.so").empty());
+	REQUIRE(Sha256FromSidecar("not a sidecar at all\n", "x.so").empty());
+}
+
+TEST_CASE("plugin_artifacts: sidecar parsing tolerates the formats sha256sum emits",
+          "[tabfm][plugin_artifacts]") {
+	const string hash = "dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444";
+	// binary marker
+	REQUIRE(Sha256FromSidecar(hash + " *plug.so\n", "plug.so") == hash);
+	// a leading path, as `sha256sum dir/file` writes it
+	REQUIRE(Sha256FromSidecar(hash + "  build/plug.so\n", "plug.so") == hash);
+	// CRLF, and no trailing newline
+	REQUIRE(Sha256FromSidecar(hash + "  plug.so\r\n", "plug.so") == hash);
+	REQUIRE(Sha256FromSidecar(hash + "  plug.so", "plug.so") == hash);
+	// uppercase digests compare equal to our lowercase hex
+	REQUIRE(Sha256FromSidecar(StringUtil::Upper(hash) + "  plug.so\n", "plug.so") == hash);
+}

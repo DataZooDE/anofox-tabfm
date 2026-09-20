@@ -642,6 +642,72 @@ struct RuntimeFileResult {
 	string status; // "cached" | "downloaded"
 };
 
+//! Check a downloaded plugin against the sha256 sidecar published next to it in
+//! the same release. Throws (and deletes the file) on any failure, so a bad
+//! artifact cannot be reached by the loader or trusted on a later run.
+void VerifyPluginDigest(ClientContext &context, FileSystem &fs, const string &backend, const string &plugin_path) {
+	const auto sidecar_url = PluginReleaseAssetUrl(PluginSha256AssetName(backend), TABFM_PLUGIN_RELEASE_TAG);
+	if (sidecar_url.empty()) {
+		return; // no pinned release: nothing published to check against
+	}
+	const auto sidecar_path = plugin_path + ".sha256";
+	DownloadItem sidecar_item;
+	sidecar_item.cache_path = sidecar_path;
+	sidecar_item.url = sidecar_url;
+	sidecar_item.bytes = -1;
+	string sidecar;
+	try {
+		if (!fs.FileExists(sidecar_path)) {
+			FetchFile(context, sidecar_item);
+		}
+		auto handle = fs.OpenFile(sidecar_path, FileFlags::FILE_FLAGS_READ);
+		const auto size = fs.GetFileSize(*handle);
+		sidecar.resize(size);
+		handle->Read(const_cast<char *>(sidecar.data()), size);
+	} catch (std::exception &ex) {
+		fs.TryRemoveFile(sidecar_path);
+		throw IOException("anofox_tabfm: could not fetch the published checksum for the '%s' backend plugin (%s): "
+		                  "%s. The plugin is native code this process will load, so it is not used unverified.",
+		                  backend, SanitizeUrl(sidecar_url), ex.what());
+	}
+
+	const auto file_name = plugin_path.substr(plugin_path.find_last_of("/\\") + 1);
+	const auto expected = Sha256FromSidecar(sidecar, file_name);
+	if (expected.empty()) {
+		fs.TryRemoveFile(sidecar_path);
+		throw IOException("anofox_tabfm: the published checksum file for the '%s' backend does not mention '%s', so "
+		                  "it vouches for nothing. Refusing to load it.",
+		                  backend, file_name);
+	}
+
+	string bytes;
+	{
+		auto handle = fs.OpenFile(plugin_path, FileFlags::FILE_FLAGS_READ);
+		const auto size = fs.GetFileSize(*handle);
+		bytes.resize(size);
+		idx_t read = 0;
+		while (read < size) {
+			auto got = handle->Read(const_cast<char *>(bytes.data()) + read, size - read);
+			if (got <= 0) {
+				break;
+			}
+			read += NumericCast<idx_t>(got);
+		}
+		bytes.resize(read);
+	}
+	const auto actual = Sha256Hex(const_data_ptr_cast(bytes.data()), bytes.size());
+	if (actual != expected) {
+		// Delete both: the plugin so it cannot be loaded, and the sidecar so
+		// the next attempt re-fetches rather than re-reading a stale pair.
+		fs.TryRemoveFile(plugin_path);
+		fs.TryRemoveFile(sidecar_path);
+		throw IOException("anofox_tabfm: the '%s' backend plugin does not match its published checksum (expected "
+		                  "%s, got %s). The download was corrupted or the file was replaced; it has been deleted. "
+		                  "Retry, and if it recurs please report it.",
+		                  backend, expected, actual);
+	}
+}
+
 //! Fetch a backend's plugin (and, for CUDA, the ORT GPU runtime beside it)
 //! into ep_path. Extracted from the table function so tabfm_accelerate() runs
 //! the identical code rather than a second copy that could drift about where
@@ -673,6 +739,13 @@ vector<RuntimeFileResult> PerformRuntimeDownload(ClientContext &context, const D
 	}
 
 	if (all_present) {
+		// Verify here too, not only after a fresh download. The "already
+		// present" decision above is existence-only, so without this a single
+		// corrupted or replaced plugin would be trusted for as long as it sat
+		// in the directory -- and this is the path every re-run takes.
+		if (!plugin_target.empty()) {
+			VerifyPluginDigest(context, fs, bind.backend, plugin_target);
+		}
 		for (auto &target : targets) {
 			auto handle = fs.OpenFile(target, FileFlags::FILE_FLAGS_READ);
 			results.push_back({target, NumericCast<int64_t>(fs.GetFileSize(*handle)), "cached"});
@@ -774,8 +847,23 @@ vector<RuntimeFileResult> PerformRuntimeDownload(ClientContext &context, const D
 		DownloadItem plugin_item;
 		plugin_item.cache_path = plugin_target;
 		plugin_item.url = bind.artifact.plugin_url;
-		plugin_item.bytes = -1; // release assets carry sha256 sidecars, not pinned sizes
+		plugin_item.bytes = -1; // pinned by digest below, not by size
 		FetchFile(context, plugin_item);
+	}
+	// Verify the published digest BEFORE anything dlopens these bytes.
+	//
+	// This is native code that the extension loads into its own process, and
+	// tabfm_accelerate() makes fetching it the default onboarding step, so
+	// "downloaded over HTTPS from a URL we built" is not sufficient on its own:
+	// it authenticates the host, not the artifact, and says nothing about a
+	// truncated transfer or a cache that was poisoned afterwards. The ABI check
+	// in the loader is version gating, not authenticity.
+	//
+	// Checked on cached hits too, not only fresh downloads, because the
+	// "already present" decision above is existence-only — without this a
+	// single corrupt file would be trusted for as long as it sat there.
+	if (!plugin_target.empty()) {
+		VerifyPluginDigest(context, fs, bind.backend, plugin_target);
 	}
 
 	for (auto &target : targets) {
@@ -1362,8 +1450,12 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 
 			// Whether the weights are on disk decides whether the bundled
 			// graph's header can be checked at all.
+			// A model registered from SQL keeps its weights where it was
+			// registered from, not under the cache slug. Reading only the slug
+			// reported such a model as "weights are not downloaded" while
+			// dispatch was serving it from disk perfectly well.
 			auto wm = WeightsFromSpec(spec, task);
-			const auto base = cache_dir + "/" + wm.CacheSlug(wm.revision);
+			const auto base = wm.source_dir.empty() ? cache_dir + "/" + wm.CacheSlug(wm.revision) : wm.source_dir;
 			const bool downloaded = TaskWeightsComplete(fs, base, wm.files);
 
 			for (auto &device : devices) {
@@ -1376,6 +1468,18 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 					// Every model runs on the CPU -- that is the floor the
 					// whole extension rests on.
 					row.supported = true;
+					state->rows.push_back(std::move(row));
+					continue;
+				}
+				if (row.backend == "coreml") {
+					// CoreML runs the ordinary in-process graph through ONNX
+					// Runtime's own provider -- it needs no bundled GPU graph,
+					// so the ext-graph predicate below says nothing useful
+					// about it. It is also dropped
+					// (docs/DYNAMIC_BACKENDS.md), so say that rather than
+					// implying a model problem.
+					row.reason = "coreml is not shipped — on Apple Silicon use 'mlx', which serves every model: "
+					             "CALL tabfm_accelerate()";
 					state->rows.push_back(std::move(row));
 					continue;
 				}

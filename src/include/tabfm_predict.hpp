@@ -150,6 +150,9 @@ inline string ResolveEpPath(const string &setting_value, const string &cache_dir
 //! must ask the identical question dispatch asks, not a lookalike.
 bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task);
 
+//! Lowercase hex SHA-256. Defined in tabfm_engine.cpp.
+string Sha256Hex(const_data_ptr_t data, idx_t len);
+
 //! Bump the plugin-probe generation, invalidating every memoized device
 //! resolution and plugin-presence answer.
 //!
