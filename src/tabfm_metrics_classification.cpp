@@ -51,7 +51,11 @@ namespace {
 //===----------------------------------------------------------------------===//
 // tabfm_accuracy — CMET-01
 //
-// Computes correct / total as DOUBLE over (actual ANY, predicted ANY) pairs.
+// Computes correct / total as DOUBLE over (actual VARCHAR, predicted VARCHAR).
+// Registered with VARCHAR inputs so DuckDB inserts an implicit cast at bind
+// time for non-VARCHAR columns (INTEGER, BIGINT, DATE, …); this guarantees the
+// raw GetData<string_t>() access in AccuracyUpdate is always reading real
+// string_t values, not reinterpreted integer/float bytes (CR-01).
 // NULL semantics: rows where actual OR predicted is NULL are skipped (not
 // counted in either numerator or denominator). Empty / all-NULL input returns
 // NULL (standard SQL aggregate NULL-on-empty). Alias: tabfm_accuracy.
@@ -81,6 +85,13 @@ void AccuracyUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_
 	inputs[1].ToUnifiedFormat(count, predicted_data);
 	auto states = reinterpret_cast<AccuracyState **>(sdata.data);
 
+	// Hoist data pointers outside the loop — GetData() is a single pointer-cast
+	// with no side effects, so calling it per-iteration was pure overhead (IN-01).
+	// Safe because the registration uses {VARCHAR, VARCHAR} (not ANY), so DuckDB
+	// guarantees the backing buffer holds string_t values (CR-01).
+	auto *actual_raw    = UnifiedVectorFormat::GetData<string_t>(actual_data);
+	auto *predicted_raw = UnifiedVectorFormat::GetData<string_t>(predicted_data);
+
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
 		idx_t aidx = actual_data.sel->get_index(i);
@@ -94,11 +105,9 @@ void AccuracyUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_
 		auto &state = *states[sidx];
 		state.total++;
 
-		// Compare as string_t directly (zero allocation) so the aggregate works on
-		// ANY type pair. Using raw UnifiedVectorFormat data avoids the per-row
-		// Value heap allocation from GetValue(i) (WR-03).
-		auto *actual_raw    = UnifiedVectorFormat::GetData<string_t>(actual_data);
-		auto *predicted_raw = UnifiedVectorFormat::GetData<string_t>(predicted_data);
+		// Compare string_t values directly (zero allocation); safe because the
+		// inputs are bound as VARCHAR (implicit cast inserted by DuckDB at bind
+		// time for non-VARCHAR columns such as INTEGER or DATE).
 		if (actual_raw[aidx] == predicted_raw[pidx]) {
 			state.correct++;
 		}
@@ -1026,12 +1035,17 @@ static unique_ptr<CreateMacroInfo> BuildConfusionMacroInfo(const std::string &na
 
 void RegisterClassificationMetrics(ExtensionLoader &loader) {
 	// --- tabfm_accuracy / anofox_tabfm_accuracy (CMET-01) ---
+	// Registered with {VARCHAR, VARCHAR} (not ANY) so DuckDB inserts an implicit
+	// cast at bind time for non-VARCHAR inputs (INTEGER, BIGINT, DATE, …).
+	// AccuracyUpdate reads the buffer via GetData<string_t>(), which is safe only
+	// when the backing buffer holds string_t; ANY would let integer columns reach
+	// the Update without casting, causing silent data corruption or a crash (CR-01).
 	{
 		AggregateFunctionSet set("anofox_tabfm_accuracy");
 		AggregateFunction fn("anofox_tabfm_accuracy",
-		                     {LogicalType::ANY, LogicalType::ANY}, LogicalType::DOUBLE, AccuracyStateSize,
-		                     AccuracyStateInit, AccuracyUpdate, AccuracyCombine, AccuracyFinalize,
-		                     /*simple_update=*/nullptr, AccuracyBind,
+		                     {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::DOUBLE,
+		                     AccuracyStateSize, AccuracyStateInit, AccuracyUpdate, AccuracyCombine,
+		                     AccuracyFinalize, /*simple_update=*/nullptr, AccuracyBind,
 		                     /*state_destroy=*/nullptr);
 		set.AddFunction(fn);
 		FunctionDescription fd;

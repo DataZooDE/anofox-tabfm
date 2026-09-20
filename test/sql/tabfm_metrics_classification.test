@@ -85,6 +85,25 @@ SELECT tabfm_accuracy(actual, predicted) IS NULL FROM preds_zero
 ----
 true
 
+# --- Non-VARCHAR (INTEGER) inputs: implicit cast to VARCHAR at bind time (CR-01) ---
+# DuckDB must insert an implicit cast when the registration is {VARCHAR, VARCHAR}.
+# Integer 1 casts to '1', integer 2 to '2'.
+# actual=[1,2,1], predicted=[1,1,1]  =>  correct rows: 1 and 3  =>  2/3 = 0.666667
+# This test gates the fix for CR-01: passing INTEGER columns must NOT crash or
+# silently reinterpret int32 bytes as string_t (which was the WR-03 regression).
+
+statement ok
+CREATE TABLE preds_int AS SELECT * FROM (VALUES
+  (1, 1),
+  (2, 1),
+  (1, 1)
+) v(actual, predicted);
+
+query I
+SELECT round(tabfm_accuracy(actual, predicted), 6) FROM preds_int
+----
+0.666667
+
 # ========================================================================
 # CMET-02: tabfm_f1 / tabfm_precision / tabfm_recall
 #
