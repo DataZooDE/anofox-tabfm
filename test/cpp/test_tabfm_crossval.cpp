@@ -109,10 +109,13 @@ TEST_CASE("tabfm_fold_assign: formula matches (hash(id,seed)%k)::INTEGER", "[tab
 
 	qry(con, "CREATE TABLE fa4 AS SELECT * FROM range(10) t(id)");
 
-	// Each row's fold_id must equal the explicit hash formula
+	// Each row's fold_id must equal the explicit hash formula.
+	// CAST(42 AS BIGINT) matches tabfm_fold_assign's macro body which uses
+	// hash(_cv_rk, CAST(seed AS BIGINT)). DuckDB hash() is type-sensitive so
+	// hash(x, 42::INTEGER) != hash(x, 42::BIGINT) in general (WR-01).
 	auto res = qry(con, R"(
 		SELECT count(*) FROM (
-		  SELECT id, fold_id, (hash(id, 42) % 4)::INTEGER AS expected
+		  SELECT id, fold_id, (hash(id, CAST(42 AS BIGINT)) % 4)::INTEGER AS expected
 		  FROM tabfm_fold_assign('fa4', 4, 'id', 42)
 		  WHERE fold_id <> expected
 		)

@@ -89,11 +89,14 @@ SELECT count(DISTINCT fold_id) FROM tabfm_fold_assign('cv_rows', 2, 'id', 42)
 2
 
 # --- Hash formula: explicit verification of (hash(id, seed) % k)::INTEGER ---
-# Row id=1, seed=7, k=3: fold_id must equal (hash(1, 7) % 3)::INTEGER
+# Row id=1, seed=7, k=3: fold_id must equal (hash(id, CAST(7 AS BIGINT)) % 3)::INTEGER
+# The BIGINT cast matches tabfm_fold_assign's macro body which uses
+# hash(_cv_rk, CAST(seed AS BIGINT)) — DuckDB hash() is type-sensitive so
+# hash(x, 7::INTEGER) != hash(x, 7::BIGINT) in general (WR-01).
 query I
 SELECT count(*) FROM (
   SELECT id, fold_id,
-    (hash(id, 7) % 3)::INTEGER AS expected_fold
+    (hash(id, CAST(7 AS BIGINT)) % 3)::INTEGER AS expected_fold
   FROM tabfm_fold_assign('cv_rows', 3, 'id', 7)
   WHERE fold_id <> expected_fold
 )
