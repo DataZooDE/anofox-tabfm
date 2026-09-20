@@ -138,7 +138,14 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		                     /*simple_update=*/nullptr, AccuracyBind,
 		                     /*state_destroy=*/nullptr);
 		set.AddFunction(fn);
-		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_accuracy");
+		FunctionDescription fd;
+		fd.description =
+		    "Compute classification accuracy: correct / total as DOUBLE over (actual, predicted) pairs. "
+		    "Rows where actual OR predicted is NULL are skipped (SQL aggregate NULL semantics). "
+		    "Returns NULL on empty or all-NULL input. Matches sklearn.metrics.accuracy_score(normalize=True).";
+		fd.examples = {"SELECT tabfm_accuracy(actual, predicted) FROM predictions;",
+		               "SELECT round(tabfm_accuracy(actual, predicted), 4) FROM predictions;"};
+		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_accuracy", {std::move(fd)});
 	}
 	// Further classification metrics (F1, log-loss, ROC-AUC, ECE,
 	// confusion matrix) registered here by plan 01-02.
