@@ -217,13 +217,24 @@ unique_ptr<FunctionData> MAEBind(ClientContext &, AggregateFunction &,
 //
 // Coefficient of determination R² = 1 - SS_res / SS_tot.
 //
-// Online state uses the computational form:
-//   SS_tot = sum_y2 - n * y_bar^2  (Welford-free; adequate for realistic N)
+// SS_tot is accumulated via Welford's online algorithm (Knuth Vol. 2 §4.2.2)
+// to avoid catastrophic cancellation from the naive sum_y2 - n*ybar^2 form.
+// For large-magnitude constant targets (e.g. all actual=5e7), the naive form
+// produces a small spurious positive ss_tot (IEEE rounding) that bypasses the
+// constant-target guard while ss_res is large, returning a wildly wrong R².
+// Welford accumulates M2 = Σ(actual - running_mean)^2 directly; M2 is exactly
+// 0.0 for a constant target regardless of magnitude.
+//
+// Parallel Combine uses the Chan et al. parallel Welford formula:
+//   combined_M2 = M2_A + M2_B + delta^2 * nA * nB / (nA + nB)
+//   where delta = mean_B - mean_A
 //
 // Constant-target convention (D: R² constant-target, sklearn-matching):
-//   When |SS_tot| < 1e-12 (target variance effectively zero):
-//     - SS_res == 0 (perfect prediction) → 1.0
-//     - SS_res > 0 (imperfect prediction) → 0.0
+//   When SS_tot == 0.0 (Welford M2 is exactly zero for constant targets):
+//     - SS_res == 0.0 (perfect prediction) → 1.0
+//     - SS_res > 0.0 (imperfect prediction) → 0.0
+//   ss_res == 0.0 is checked exactly: sum of squared residuals is 0 only when
+//   all residuals are identically 0 at the floating-point level.
 //   Never returns NaN or Inf on constant-target data (T-01-03-01).
 //
 // NULL semantics: rows where actual OR predicted is NULL are skipped.
@@ -232,8 +243,8 @@ unique_ptr<FunctionData> MAEBind(ClientContext &, AggregateFunction &,
 //===----------------------------------------------------------------------===//
 
 struct R2State {
-	double  sum_y;    // sum of actual
-	double  sum_y2;   // sum of actual^2
+	double  mean;     // running mean of actual values (Welford M)
+	double  M2;       // running Σ(actual - mean)^2  (Welford S) = SS_tot
 	double  sum_res;  // sum of (actual - predicted)^2
 	int64_t n;        // valid (non-NULL) pairs seen
 };
@@ -262,12 +273,17 @@ void R2Update(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector
 			continue;
 		}
 
-		auto &state   = *states[sidx];
+		auto  &state  = *states[sidx];
 		double a      = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
 		double p      = UnifiedVectorFormat::GetData<double>(predicted_data)[pidx];
 		double resid  = a - p;
-		state.sum_y  += a;
-		state.sum_y2 += a * a;
+
+		// Welford online update: accumulate SS_tot = M2 without catastrophic
+		// cancellation. Increment n AFTER computing delta (pre-update mean).
+		double delta   = a - state.mean;
+		state.mean    += delta / static_cast<double>(state.n + 1);
+		double delta2  = a - state.mean;
+		state.M2      += delta * delta2;
 		state.sum_res += resid * resid;
 		state.n++;
 	}
@@ -280,17 +296,28 @@ void R2Combine(Vector &source_vector, Vector &target_vector, AggregateInputData 
 	auto sources = reinterpret_cast<R2State **>(source_data.data);
 	auto targets = reinterpret_cast<R2State **>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
-		auto &src      = *sources[source_data.sel->get_index(i)];
-		auto &tgt      = *targets[target_data.sel->get_index(i)];
-		tgt.sum_y     += src.sum_y;
-		tgt.sum_y2    += src.sum_y2;
-		tgt.sum_res   += src.sum_res;
-		tgt.n         += src.n;
+		auto  &src = *sources[source_data.sel->get_index(i)];
+		auto  &tgt = *targets[target_data.sel->get_index(i)];
+		if (src.n == 0) {
+			continue;
+		}
+		if (tgt.n == 0) {
+			tgt = src;
+			continue;
+		}
+		// Chan et al. parallel Welford: merge two running M2 accumulators.
+		double combined_n = static_cast<double>(tgt.n + src.n);
+		double delta      = src.mean - tgt.mean;
+		tgt.M2           += src.M2 + delta * delta * (static_cast<double>(tgt.n) * static_cast<double>(src.n)) / combined_n;
+		tgt.mean         += delta * static_cast<double>(src.n) / combined_n;
+		tgt.sum_res      += src.sum_res;
+		tgt.n            += src.n;
 	}
 }
 
 // Finalize — R² = 1 - SS_res/SS_tot.
-// Guards SS_tot == 0: returns 1.0 (perfect) or 0.0 (imperfect) per sklearn convention.
+// SS_tot is the Welford M2 accumulator (exact, no cancellation).
+// Guards SS_tot == 0.0: constant-target convention per sklearn.
 // Never divides by zero (Pitfall 3 / T-01-03-01).
 void R2Finalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_t count,
                 idx_t offset) {
@@ -303,16 +330,15 @@ void R2Finalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_
 			FlatVector::SetNull(result, i + offset, true);
 			continue;
 		}
-		double n      = static_cast<double>(state.n);
-		double y_bar  = state.sum_y / n;
-		// Computational form: SS_tot = Σy² - n·ȳ²
-		double ss_tot = state.sum_y2 - n * y_bar * y_bar;
+		double ss_tot = state.M2;
 		double ss_res = state.sum_res;
 		double r2;
-		if (std::abs(ss_tot) < 1e-12) {
+		if (ss_tot == 0.0) {
 			// Constant-target convention (sklearn): return 1.0 iff perfect prediction,
-			// 0.0 otherwise. Never NaN or Inf (D: R² constant-target).
-			r2 = (ss_res < 1e-12) ? 1.0 : 0.0;
+			// 0.0 otherwise. ss_res is a sum of squared residuals and is exactly 0.0
+			// only when all (actual - predicted) products are identically zero at the
+			// floating-point level — using == 0.0 is safe here. Never NaN/Inf.
+			r2 = (ss_res == 0.0) ? 1.0 : 0.0;
 		} else {
 			r2 = 1.0 - ss_res / ss_tot;
 		}
