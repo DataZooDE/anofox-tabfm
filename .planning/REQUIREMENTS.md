@@ -27,10 +27,10 @@ columns) and must stay cpu-flavor-clean and weight-free.
 
 ### Cross-Validation
 
-- [ ] **CV-01**: User can assign rows to k deterministic folds via a documented, seedable rule
-- [ ] **CV-02**: User can run k-fold cross-validation via a SQL macro that trains on each fold's context and predicts its held-out rows using the leakage-safe two-table predict form
-- [ ] **CV-03**: CV returns per-fold and aggregate (mean ± std) metric results
-- [ ] **CV-04**: The macro quotes the target identifier safely (fixes the P1 interpolation bug at `tabfm_macros.cpp:91`)
+- [x] **CV-01**: User can assign rows to k deterministic folds via a documented, seedable rule
+- [x] **CV-02**: User can run k-fold cross-validation via a SQL macro that trains on each fold's context and predicts its held-out rows using the leakage-safe two-table predict form
+- [x] **CV-03**: CV returns per-fold and aggregate (mean ± std) metric results
+- [x] **CV-04**: The macro quotes the target identifier safely (fixes the P1 interpolation bug at `tabfm_macros.cpp:91`)
 
 ### Model Generalization
 
@@ -104,10 +104,10 @@ Which phases cover which requirements. Populated during roadmap creation.
 | RMET-02 | Phase 1 | Complete |
 | RMET-03 | Phase 1 | Complete |
 | RMET-04 | Phase 1 | Complete |
-| CV-01 | Phase 1 | Pending |
-| CV-02 | Phase 1 | Pending |
-| CV-03 | Phase 1 | Pending |
-| CV-04 | Phase 1 | Pending |
+| CV-01 | Phase 1 | Complete |
+| CV-02 | Phase 1 | Complete |
+| CV-03 | Phase 1 | Complete |
+| CV-04 | Phase 1 | Complete |
 | MGEN-01 | Phase 2 | Pending |
 | MGEN-02 | Phase 2 | Pending |
 | MGEN-03 | Phase 2 | Pending |

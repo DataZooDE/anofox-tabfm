@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 current_phase: 01
 current_phase_name: Evaluation Metrics + Cross-Validation
-status: executing
-stopped_at: "Completed 01-03: RMET-01..04 regression metrics, 2 commits"
-last_updated: "2026-09-20T21:19:55.612Z"
+status: verifying
+stopped_at: Completed 01-04-PLAN.md
+last_updated: "2026-09-20T22:06:50.942Z"
 last_activity: 2026-09-20
 last_activity_desc: Phase 01 execution started
-state_head: b7b68e3dff3c39a8a9a4e7c9b559e3be8ef07e13
+state_head: c34192ebe1ebbd114eb9ad4921fc8f4ad236c86c
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 4
-  completed_plans: 3
+  completed_plans: 4
   percent: 0
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-09-19)
 
 Phase: 01 (Evaluation Metrics + Cross-Validation) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-09-20 — Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
@@ -61,6 +61,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P01 | 10 | 2 tasks | 15 files |
 | Phase 01 P02 | 18 | 3 tasks | 4 files |
 | Phase 01 P03 | 11 | 3 tasks | 4 files |
+| Phase 01-evaluation-metrics-cross-validation P04 | multi-session (~600 minutes) | 4 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,9 @@ Recent decisions affecting current work:
 - [Phase 01]: MAPE returned as dimensionless ratio matching sklearn.mean_absolute_percentage_error
 - [Phase 01]: R² constant-target guard uses |SS_tot|<1e-12 per sklearn convention; returns 1.0/0.0 never NaN/Inf
 - [Phase 01]: MedAE even-N returns mean of two middle residuals matching sklearn median_absolute_error
+- [Phase 01]: CV macro uses JOIN-back on row_key to recover actual labels after tabfm_classify forces label=NULL in two-table form
+- [Phase 01]: tabfm_cross_validate uses list_transform(range(k), f -> sql_frag) + array_to_string for k-fold UNION ALL without C++ loop
+- [Phase 01]: SELECT * EXCLUDE target used in test subquery to prevent UNION ALL BY NAME duplicate column error in tabfm_classify body
 
 ### Pending Todos
 
@@ -100,6 +104,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-20T21:19:55.596Z
-Stopped at: Completed 01-03: RMET-01..04 regression metrics, 2 commits
+Last session: 2026-09-20T22:06:50.924Z
+Stopped at: Completed 01-04-PLAN.md
 Resume file: None
