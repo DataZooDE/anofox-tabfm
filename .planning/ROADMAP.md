@@ -21,7 +21,7 @@ phases are merged into three broad delivery boundaries.
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Evaluation Metrics + Cross-Validation** - Model-agnostic classification/regression metric aggregates and leakage-safe k-fold CV over `(actual, predicted[, proba])`
+- [x] **Phase 1: Evaluation Metrics + Cross-Validation** - Model-agnostic classification/regression metric aggregates and leakage-safe k-fold CV over `(actual, predicted[, proba])` (completed 2026-09-21)
 - [ ] **Phase 2: Model Generalization + Multi-Family Onboarding** - Preprocessing-profile registry, regression distribution output, TabPFN v2 + TabICL as first-class families
 - [ ] **Phase 3: Proper Scoring Rules + Cross-Model Comparison** - Distribution-gated CRPS / log-score / interval score and evaluation across model families on user tables
 
@@ -86,7 +86,7 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Evaluation Metrics + Cross-Validation | 4/4 | In Progress|  |
+| 1. Evaluation Metrics + Cross-Validation | 4/4 | Complete    | 2026-09-21 |
 | 2. Model Generalization + Multi-Family Onboarding | 0/TBD | Not started | - |
 | 3. Proper Scoring Rules + Cross-Model Comparison | 0/TBD | Not started | - |
 
