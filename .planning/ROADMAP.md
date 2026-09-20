@@ -37,7 +37,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. `tabfm_log_loss(actual, proba)` clips probabilities (no infinities) and `tabfm_ece(actual, proba)` computes Expected Calibration Error from the per-class MAP; `tabfm_confusion_matrix(actual, predicted)` returns a table-valued result
   4. Regression aggregates handle edge cases: `tabfm_r2` on a constant target and `tabfm_mape`/`tabfm_medae` on zero actuals return documented, non-crashing results
   5. `tabfm_cross_validate(...)` assigns rows to k deterministic seedable folds, trains each fold's context and predicts its held-out rows via the two-table (leakage-safe) predict form, returns per-fold and aggregate (mean ± std) results, and safely quotes the target identifier (fixes the P1 bug at `tabfm_macros.cpp:91`)
-**Plans**: TBD
+**Plans**: 4 plans
+- [ ] 01-01-PLAN.md — Scaffold wiring for all three modules + end-to-end accuracy tracer (CMET-01)
+- [ ] 01-02-PLAN.md — Classification metrics: precision/recall/F1, log-loss, ECE, ROC-AUC, confusion matrix (CMET-02..06)
+- [ ] 01-03-PLAN.md — Regression metrics: RMSE, MAE, R², MAPE, median absolute error (RMET-01..04)
+- [ ] 01-04-PLAN.md — Cross-validation: seedable folds, leakage-safe k-fold, per-fold+aggregate output, safe quoting, leakage test (CV-01..04)
 
 ### Phase 2: Model Generalization + Multi-Family Onboarding
 **Goal**: Users can load and predict with more than one foundation-model family — TabPFN v2 (with a native regression predictive distribution) and TabICL — each with its own preprocessing profile, weight-free fixture, and license gate.
@@ -71,7 +75,7 @@ Phases execute in numeric order: 1 → 2 → 3
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Evaluation Metrics + Cross-Validation | 0/TBD | Not started | - |
+| 1. Evaluation Metrics + Cross-Validation | 0/4 | Not started | - |
 | 2. Model Generalization + Multi-Family Onboarding | 0/TBD | Not started | - |
 | 3. Proper Scoring Rules + Cross-Model Comparison | 0/TBD | Not started | - |
 
