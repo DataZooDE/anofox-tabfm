@@ -1,0 +1,156 @@
+# name: test/sql/tabfm_backends.test
+# description: tabfm_backends() — which device can serve which model, and why not
+# group: [sql]
+
+require anofox_tabfm
+
+# The shape is the contract: a capability relation, one row per
+# (model, task, discovered device).
+query I
+SELECT count(*) > 0 FROM tabfm_backends();
+----
+true
+
+query IIIIII
+SELECT * FROM tabfm_backends() LIMIT 0;
+----
+
+# Every machine has a cpu row for every model+task, and the CPU always serves:
+# it is the floor the whole extension rests on, so a false here means a model
+# cannot run anywhere.
+query I
+SELECT count(*) FROM tabfm_backends() WHERE device = 'cpu' AND NOT supported;
+----
+0
+
+# A supported row never carries a reason, and an unsupported one always does.
+# Without this an empty reason could mean "fine" or "we did not say".
+query I
+SELECT count(*) FROM tabfm_backends() WHERE supported AND reason IS NOT NULL;
+----
+0
+
+query I
+SELECT count(*) FROM tabfm_backends() WHERE NOT supported AND reason IS NULL;
+----
+0
+
+# 'supported' is tri-state, and NULL means "not knowable yet" rather than "no".
+# A bundled GPU graph is only usable if its baked external-data offsets match
+# the weights, so before the weights are downloaded there is nothing to check
+# against. Reporting false there told a user with a working GPU that every one
+# of their models was unsupported.
+#
+# An unknown row must therefore still explain itself, and must say what would
+# resolve it.
+query I
+SELECT count(*) FROM tabfm_backends() WHERE supported IS NULL AND reason IS NULL;
+----
+0
+
+query I
+SELECT count(*) FROM tabfm_backends()
+WHERE supported IS NULL AND reason NOT LIKE '%tabfm_download%';
+----
+0
+
+# The CPU never lands in the unknown state: it needs no bundled GPU graph, so
+# its answer does not depend on anything being downloaded first.
+query I
+SELECT count(*) FROM tabfm_backends() WHERE device = 'cpu' AND supported IS NOT TRUE;
+----
+0
+
+# Rows are real discovered hardware, never a static matrix: every device here
+# must also appear in tabfm_devices(). A row for a card this machine does not
+# have would tell the user to expect an accelerator that is not there.
+query I
+SELECT count(*) FROM tabfm_backends() b
+WHERE NOT EXISTS (SELECT 1 FROM tabfm_devices() d WHERE d.device_id = b.device);
+----
+0
+
+# The backend column is the device family, so it groups rocm:0/rocm:1 together
+# and stays joinable against the device setting a user would SET.
+query I
+SELECT count(*) FROM tabfm_backends()
+WHERE backend NOT IN ('cpu', 'cuda', 'rocm', 'coreml', 'mlx');
+----
+0
+
+# Every model in the catalog is covered — a model missing from the matrix is
+# indistinguishable from one that cannot run, which is the confusion this
+# relation exists to end.
+query I
+SELECT count(*) FROM tabfm_list_models() m
+WHERE NOT EXISTS (SELECT 1 FROM tabfm_backends() b WHERE b.model = m.model);
+----
+0
+
+# The alias and the full name are the same function.
+query I
+SELECT count(*) = (SELECT count(*) FROM anofox_tabfm_backends()) FROM tabfm_backends();
+----
+true
+
+# The two models that CAN be served on ROCm must never be refused with the
+# structural "positional context split" reason — that reason means "no fixed
+# shape can be bucketed for this architecture", which is false for the
+# train_size-scalar family (tabfm-v1, mitra). They may still be unsupported
+# for a situational cause (weights not downloaded), so this asserts the REASON
+# rather than the verdict.
+#
+# Regression: the first version of this matrix built the weights path by hand
+# as <slug>/model.safetensors and so missed tabfm-v1, whose declared files sit
+# in a per-task subdirectory — reporting a ROCm-servable model as having no
+# graph at all.
+query I
+SELECT count(*) FROM tabfm_backends()
+WHERE backend = 'rocm' AND model IN ('tabfm-v1', 'mitra')
+  AND reason IS NOT NULL AND reason LIKE '%ROCM_SINGLE_EVAL_POS%';
+----
+0
+
+# ...and conversely the nine that genuinely cannot be bucketed must say so
+# rather than leaving the user to guess, whenever a rocm device is present.
+query I
+SELECT count(*) = 0 OR bool_and(reason LIKE '%ROCM_SINGLE_EVAL_POS%')
+FROM tabfm_backends()
+WHERE backend = 'rocm' AND model = 'tabdpt' AND NOT supported;
+----
+true
+
+# A precision the backend cannot run is a knowable, permanent NO — downloading
+# weights will not change it — so it must never be reported as the unknown
+# state, and its reason must survive.
+#
+# Regression: the first tri-state version applied the "weights not downloaded"
+# override to ANY unsupported row, so on a fresh cache `SET
+# anofox_tabfm_gpu_precision='tf32'` reported MLX as "weights are not
+# downloaded". Wrong answer and wrong advice: tf32 is a CUDA tensor-core mode
+# with no Metal equivalent, and no download fixes it. Found on an M3.
+statement ok
+SET anofox_tabfm_gpu_precision = 'tf32';
+
+query I
+SELECT count(*) FROM tabfm_backends()
+WHERE backend IN ('rocm', 'mlx') AND supported IS NULL;
+----
+0
+
+# Restricted to devices that are actually usable AND whose plugin is present:
+# a card the driver lists but MIGraphX will not claim, or a lane with no
+# plugin installed, is refused for THAT reason before precision is ever
+# considered — so counting those rows would fail the test on an AMD box off
+# the allowlist, which is a perfectly normal machine.
+query I
+SELECT count(*) FROM tabfm_backends() b
+JOIN tabfm_devices() d ON d.device_id = b.device
+WHERE b.backend IN ('rocm', 'mlx') AND d.usable
+  AND b.reason NOT LIKE '%not installed%'
+  AND b.reason NOT LIKE '%tf32%';
+----
+0
+
+statement ok
+SET anofox_tabfm_gpu_precision = 'fp32';

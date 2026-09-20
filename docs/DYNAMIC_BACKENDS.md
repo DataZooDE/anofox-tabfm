@@ -596,17 +596,42 @@ builds both from source, the resulting extension is confirmed statically
 linked (no `libonnxruntime.so` dependency), and the full suite passes against
 it (601 sqllogictest + 71,989 Catch2 assertions).
 
-### Phase 4 — CoreML
+### Phase 4 — CoreML — **dropped, 2026-09-19**
 
-**Not a missing capability — a build-source choice.** The official ORT 1.28
-`onnxruntime-osx-arm64` dylib *does* carry CoreML (8 CoreML internals and the
-`OrtSessionOptionsAppendExecutionProvider_CoreML` entry point). What we publish
-for macOS is the **vcpkg static** ORT, which does not. So phase 4 is: either
-build the vcpkg port with CoreML enabled, or take macOS from the prebuilt
-archive — not "rebuild ORT ourselves".
+**Decision: CoreML will not ship. MLX supersedes it on the only platform it
+targets.**
 
-Still lowest priority: no Apple hardware in the loop to verify against, so the
-equivalence suite could not confirm the answers match.
+The analysis below still holds — CoreML was never a missing capability, only a
+build-source choice — but the conclusion has changed, because the thing it
+would have delivered arrived by another route.
+
+CoreML exists to reach the GPU and ANE on Apple Silicon. The MLX backend now
+does that, and does it better on all three axes that matter here:
+
+* **Coverage.** CoreML is an ORT execution provider, so it runs what the graph
+  gives it and falls back to CPU per unsupported subgraph — silently, which is
+  the failure class this codebase spends the most effort ruling out. MLX runs
+  every model the CPU runs (`MlxSupportsModel` is unconditional; an
+  unimplemented op fails loudly, by name, at create time).
+* **Distribution.** CoreML is flavor-gated: it needs a macOS build with an ORT
+  that carries the EP, which means a second published macOS artifact and a
+  second thing for a user to choose. MLX is a plugin — `CALL
+  tabfm_accelerate()` fetches it and the same single artifact drives it.
+* **Verification.** The original blocker was "no Apple hardware in the loop".
+  That has been resolved for MLX (M3, 10 model×task pairs, cpu-compared, zero
+  disagreements). Spending that same scarce hardware time on a second Apple
+  backend with narrower coverage buys nothing.
+
+**What stays.** The code is not ripped out: `TABFM_FLAVOR=coreml` still builds,
+`ProbeCoreMLDevices` still reports a `coreml:0` row where the flavor carries
+it, and an explicit `SET anofox_tabfm_device='coreml'` still works on such a
+build. What changes is that it is not published, not verified, and **`auto`
+never selects it** — per-model `auto` considers cuda, rocm and mlx only.
+Asking for `coreml` on a build without it gets an error naming the flavor (and
+pointing at mlx), which is the one place the flavor advice is still correct.
+
+**What would reopen this.** A model whose graph MLX's interpreter cannot run
+but CoreML can, plus hardware time to verify it. Neither exists today.
 
 ## The equivalence suite
 

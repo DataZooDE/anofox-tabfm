@@ -5,6 +5,10 @@
 #include "tabfm_registry.hpp"
 #include "tabfm_state.hpp"
 #include "tabfm_weights.hpp"
+#include "tabfm_plugin_artifacts.hpp"
+#include "tabfm_plugin_backend.hpp"
+#include "tabfm_bundled_resources.hpp"
+#include "tabfm_ort_engine.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -125,15 +129,6 @@ struct WeightsManifest {
 		return base + "@" + effective_revision;
 	}
 };
-
-string ExpandHomeDirectory(const string &path) {
-	if (path.empty() || path[0] != '~') {
-		return path;
-	}
-	const char *home = std::getenv("HOME");
-	string home_dir = home ? string(home) : FileSystem::CreateLocal()->GetHomeDirectory();
-	return home_dir + path.substr(1);
-}
 
 string GetCacheDir(ClientContext &context) {
 	Value value;
@@ -532,22 +527,11 @@ struct RuntimeArtifact {
 	string plugin_url;
 };
 
-//! The release tag whose assets carry the built plugins. "" until the first
-//! plugin-carrying release is cut; bumped per release thereafter. Kept empty
-//! rather than guessed so download errors say "not published yet" instead of
-//! 404-ing at a URL that never existed.
-// v2026.08.22 is the first plugin-carrying release (Track B of
-// docs/PHASE_COMPLETION_PLAN.md): gpu_plugins.yml attaches both plugins +
-// sha256s to it on tag push. Pinned BEFORE the tag is cut so the release
-// contains code that points at itself.
-constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "v2026.08.22";
-
+//! The release tag and url shape now live in tabfm_plugin_artifacts.hpp, so
+//! dispatch and download cannot disagree about which release a plugin is
+//! fetched from or what it is called.
 string PluginReleaseUrl(const string &asset) {
-	if (string(TABFM_PLUGIN_RELEASE_TAG).empty()) {
-		return "";
-	}
-	return string("https://github.com/DataZooDE/anofox-tabfm/releases/download/") + TABFM_PLUGIN_RELEASE_TAG + "/" +
-	       asset;
+	return PluginReleaseAssetUrl(asset, TABFM_PLUGIN_RELEASE_TAG);
 }
 
 //! Currently the only published, verified source: onnxruntime-gpu 1.29.0's
@@ -557,6 +541,15 @@ string PluginReleaseUrl(const string &asset) {
 //! other ORT versions are not offered yet (no reason they couldn't be, just
 //! not measured — extend this map when they are).
 bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string &error) {
+	// Refuse before downloading anything. Windows discovers NVIDIA cards
+	// through NVML like any other platform, so asking for 'cuda' there is
+	// reasonable -- but the wheel below is manylinux and no Windows plugin is
+	// built, so without this the request walked a 475 MB download and ended at
+	// a missing library. Same for rocm off Linux and mlx off Apple Silicon.
+	error = UnsupportedPluginPlatform(backend, HostPluginOs(), HostPluginArch());
+	if (!error.empty()) {
+		return false;
+	}
 	if (backend == "cuda") {
 		out.wheel_url = "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/"
 		                "_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.29/"
@@ -571,20 +564,13 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 		                   {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so"},
 		                   {"onnxruntime/capi/libonnxruntime_providers_shared.so",
 		                    "libonnxruntime_providers_shared.so"}};
-		out.plugin_name = "libanofox_tabfm_cuda_plugin.so";
+		out.plugin_name = PluginFileName("cuda");
 		out.plugin_url = PluginReleaseUrl(out.plugin_name);
 		return true;
 	}
 	if (backend == "rocm") {
-		out.plugin_name = "libanofox_tabfm_migraphx_plugin.so";
+		out.plugin_name = PluginFileName("rocm");
 		out.plugin_url = PluginReleaseUrl(out.plugin_name);
-		if (out.plugin_url.empty()) {
-			error = "tabfm_download_runtime: no plugin-carrying release is pinned in this build yet. The MIGraphX "
-			        "plugin is built by CI (workflow 'GPU backend plugins', artifact "
-			        "anofox-tabfm-migraphx-plugin) and by the anofox_tabfm_migraphx_plugin CMake target — place "
-			        "libanofox_tabfm_migraphx_plugin.so in the anofox_tabfm_ep_path directory.";
-			return false;
-		}
 		return true;
 	}
 	if (backend == "mlx") {
@@ -592,18 +578,13 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 		// own libmlx/libmlxc, which are installed on the machine rather than
 		// shipped by us (brew install mlx mlx-c), and it needs no ORT at all --
 		// it executes the ONNX graph itself. So this fetches the plugin alone.
-		out.plugin_name = "libanofox_tabfm_mlx_plugin.dylib";
+		out.plugin_name = PluginFileName("mlx");
 		out.plugin_url = PluginReleaseUrl(out.plugin_name);
-		if (out.plugin_url.empty()) {
-			error = "tabfm_download_runtime: no plugin-carrying release is pinned in this build yet. The MLX "
-			        "plugin is built by the anofox_tabfm_mlx_plugin CMake target on an arm64 Mac with MLX "
-			        "installed (brew install mlx mlx-c) — place libanofox_tabfm_mlx_plugin.dylib in the "
-			        "anofox_tabfm_ep_path directory.";
-			return false;
-		}
 		return true;
 	}
-	error = "tabfm_download_runtime: unknown backend '" + backend + "' — expected 'cuda', 'rocm' or 'mlx'.";
+	// Unreachable: UnsupportedPluginPlatform above rejects an unknown backend
+	// by name before any of the per-backend branches are considered.
+	error = UnsupportedPluginPlatform(backend, HostPluginOs(), HostPluginArch());
 	return false;
 }
 
@@ -642,27 +623,97 @@ unique_ptr<FunctionData> DownloadRuntimeBind(ClientContext &context, TableFuncti
 	}
 
 	result->cache_dir = GetCacheDir(context);
-	result->ep_path = result->cache_dir + "/runtime";
 	Value setting;
-	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull() &&
-	    !setting.ToString().empty()) {
-		result->ep_path = ExpandHomeDirectory(setting.ToString());
+	string ep_setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
+		ep_setting = setting.ToString();
 	}
+	result->ep_path = ResolveEpPath(ep_setting, result->cache_dir);
 
 	names = {"file", "bytes", "status"};
 	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::VARCHAR};
 	return std::move(result);
 }
 
-void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
-	auto &bind = data.bind_data->Cast<DownloadRuntimeBindData>();
-	auto &state = data.global_state->Cast<DownloadRuntimeGlobalState>();
-	if (state.done) {
-		output.SetCardinality(0);
-		return;
-	}
-	state.done = true;
+//! One artifact the runtime download produced or found already in place.
+struct RuntimeFileResult {
+	string path;
+	int64_t bytes = 0;
+	string status; // "cached" | "downloaded"
+};
 
+//! Check a downloaded plugin against the sha256 sidecar published next to it in
+//! the same release. Throws (and deletes the file) on any failure, so a bad
+//! artifact cannot be reached by the loader or trusted on a later run.
+void VerifyPluginDigest(ClientContext &context, FileSystem &fs, const string &backend, const string &plugin_path) {
+	const auto sidecar_url = PluginReleaseAssetUrl(PluginSha256AssetName(backend), TABFM_PLUGIN_RELEASE_TAG);
+	if (sidecar_url.empty()) {
+		return; // no pinned release: nothing published to check against
+	}
+	const auto sidecar_path = plugin_path + ".sha256";
+	DownloadItem sidecar_item;
+	sidecar_item.cache_path = sidecar_path;
+	sidecar_item.url = sidecar_url;
+	sidecar_item.bytes = -1;
+	string sidecar;
+	try {
+		if (!fs.FileExists(sidecar_path)) {
+			FetchFile(context, sidecar_item);
+		}
+		auto handle = fs.OpenFile(sidecar_path, FileFlags::FILE_FLAGS_READ);
+		const auto size = fs.GetFileSize(*handle);
+		sidecar.resize(size);
+		handle->Read(const_cast<char *>(sidecar.data()), size);
+	} catch (std::exception &ex) {
+		fs.TryRemoveFile(sidecar_path);
+		throw IOException("anofox_tabfm: could not fetch the published checksum for the '%s' backend plugin (%s): "
+		                  "%s. The plugin is native code this process will load, so it is not used unverified.",
+		                  backend, SanitizeUrl(sidecar_url), ex.what());
+	}
+
+	const auto file_name = plugin_path.substr(plugin_path.find_last_of("/\\") + 1);
+	const auto expected = Sha256FromSidecar(sidecar, file_name);
+	if (expected.empty()) {
+		fs.TryRemoveFile(sidecar_path);
+		throw IOException("anofox_tabfm: the published checksum file for the '%s' backend does not mention '%s', so "
+		                  "it vouches for nothing. Refusing to load it.",
+		                  backend, file_name);
+	}
+
+	string bytes;
+	{
+		auto handle = fs.OpenFile(plugin_path, FileFlags::FILE_FLAGS_READ);
+		const auto size = fs.GetFileSize(*handle);
+		bytes.resize(size);
+		idx_t read = 0;
+		while (read < size) {
+			auto got = handle->Read(const_cast<char *>(bytes.data()) + read, size - read);
+			if (got <= 0) {
+				break;
+			}
+			read += NumericCast<idx_t>(got);
+		}
+		bytes.resize(read);
+	}
+	const auto actual = Sha256Hex(const_data_ptr_cast(bytes.data()), bytes.size());
+	if (actual != expected) {
+		// Delete both: the plugin so it cannot be loaded, and the sidecar so
+		// the next attempt re-fetches rather than re-reading a stale pair.
+		fs.TryRemoveFile(plugin_path);
+		fs.TryRemoveFile(sidecar_path);
+		throw IOException("anofox_tabfm: the '%s' backend plugin does not match its published checksum (expected "
+		                  "%s, got %s). The download was corrupted or the file was replaced; it has been deleted. "
+		                  "Retry, and if it recurs please report it.",
+		                  backend, expected, actual);
+	}
+}
+
+//! Fetch a backend's plugin (and, for CUDA, the ORT GPU runtime beside it)
+//! into ep_path. Extracted from the table function so tabfm_accelerate() runs
+//! the identical code rather than a second copy that could drift about where
+//! files land or when a partial run is resumed.
+vector<RuntimeFileResult> PerformRuntimeDownload(ClientContext &context, const DownloadRuntimeBindData &bind) {
+	vector<RuntimeFileResult> results;
 	auto &fs = FileSystem::GetFileSystem(context);
 	fs.CreateDirectoriesRecursive(bind.ep_path);
 
@@ -687,17 +738,19 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 		}
 	}
 
-	idx_t out = 0;
 	if (all_present) {
-		for (size_t i = 0; i < targets.size(); i++) {
-			auto handle = fs.OpenFile(targets[i], FileFlags::FILE_FLAGS_READ);
-			output.SetValue(0, out, Value(targets[i]));
-			output.SetValue(1, out, Value::BIGINT(NumericCast<int64_t>(fs.GetFileSize(*handle))));
-			output.SetValue(2, out, Value("cached"));
-			out++;
+		// Verify here too, not only after a fresh download. The "already
+		// present" decision above is existence-only, so without this a single
+		// corrupted or replaced plugin would be trusted for as long as it sat
+		// in the directory -- and this is the path every re-run takes.
+		if (!plugin_target.empty()) {
+			VerifyPluginDigest(context, fs, bind.backend, plugin_target);
 		}
-		output.SetCardinality(out);
-		return;
+		for (auto &target : targets) {
+			auto handle = fs.OpenFile(target, FileFlags::FILE_FLAGS_READ);
+			results.push_back({target, NumericCast<int64_t>(fs.GetFileSize(*handle)), "cached"});
+		}
+		return results;
 	}
 
 	// Whole-wheel download (FetchFile — same atomic .part-then-rename fetch
@@ -794,21 +847,274 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 		DownloadItem plugin_item;
 		plugin_item.cache_path = plugin_target;
 		plugin_item.url = bind.artifact.plugin_url;
-		plugin_item.bytes = -1; // release assets carry sha256 sidecars, not pinned sizes
+		plugin_item.bytes = -1; // pinned by digest below, not by size
 		FetchFile(context, plugin_item);
+	}
+	// Verify the published digest BEFORE anything dlopens these bytes.
+	//
+	// This is native code that the extension loads into its own process, and
+	// tabfm_accelerate() makes fetching it the default onboarding step, so
+	// "downloaded over HTTPS from a URL we built" is not sufficient on its own:
+	// it authenticates the host, not the artifact, and says nothing about a
+	// truncated transfer or a cache that was poisoned afterwards. The ABI check
+	// in the loader is version gating, not authenticity.
+	//
+	// Checked on cached hits too, not only fresh downloads, because the
+	// "already present" decision above is existence-only — without this a
+	// single corrupt file would be trusted for as long as it sat there.
+	if (!plugin_target.empty()) {
+		VerifyPluginDigest(context, fs, bind.backend, plugin_target);
 	}
 
 	for (auto &target : targets) {
 		auto handle = fs.OpenFile(target, FileFlags::FILE_FLAGS_READ);
-		output.SetValue(0, out, Value(target));
-		output.SetValue(1, out, Value::BIGINT(NumericCast<int64_t>(fs.GetFileSize(*handle))));
-		output.SetValue(2, out, Value("downloaded"));
+		results.push_back({target, NumericCast<int64_t>(fs.GetFileSize(*handle)), "downloaded"});
+	}
+	return results;
+}
+
+void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	auto &bind = data.bind_data->Cast<DownloadRuntimeBindData>();
+	auto &state = data.global_state->Cast<DownloadRuntimeGlobalState>();
+	if (state.done) {
+		output.SetCardinality(0);
+		return;
+	}
+	state.done = true;
+	auto files = PerformRuntimeDownload(context, bind);
+	// A plugin that has just arrived must be visible to this session's device
+	// resolution, not only to the next process.
+	BumpPluginProbeGeneration();
+	idx_t out = 0;
+	for (auto &file : files) {
+		output.SetValue(0, out, Value(file.path));
+		output.SetValue(1, out, Value::BIGINT(file.bytes));
+		output.SetValue(2, out, Value(file.status));
 		out++;
 	}
 	output.SetCardinality(out);
 }
 
 } // anonymous namespace
+
+//===--------------------------------------------------------------------===//
+// CALL tabfm_accelerate() — one call from "installed" to "using the GPU"
+//
+// The path used to be: know plugins exist, know which one this machine wants,
+// CALL tabfm_download_runtime('<that one>'), SET anofox_tabfm_ep_path, SET
+// anofox_tabfm_device. Four of those five steps are invisible to someone who
+// has not read the docs, and the first two cannot be guessed at all.
+//
+// Verification stops at loading the plugin and checking its ABI. It
+// deliberately does NOT run an inference: MIGraphX compiles per shape bucket
+// and the first compile is ~25 minutes, so an onboarding command that proved
+// itself by predicting would appear to hang and be killed as broken. The
+// cheap proof answers the question this command is responsible for -- is the
+// lane installed and speakable -- and per-model servability is then a query
+// away in tabfm_backends().
+//===--------------------------------------------------------------------===//
+
+//! Turn a download failure into one sentence a user can act on.
+//!
+//! Two problems with the raw text. DuckDB serializes a caught exception as
+//! JSON, so .what() arrives as {"exception_type":...} and fills the terminal
+//! with quoting. And the most likely failure here by far -- httpfs not loaded
+//! -- answers with a nine-line block about auto-installing extensions, which
+//! buries the two statements that fix it.
+string AccelerateFailureDetail(const string &raw) {
+	string message = raw;
+	// Unwrap DuckDB's JSON envelope when present.
+	const string key = "\"exception_message\":\"";
+	auto start = message.find(key);
+	if (start != string::npos) {
+		start += key.size();
+		auto end = message.find('"', start);
+		if (end != string::npos) {
+			message = message.substr(start, end - start);
+		}
+	}
+	if (message.find("httpfs") != string::npos) {
+		return "fetching the plugin needs the httpfs extension: INSTALL httpfs; LOAD httpfs; then CALL "
+		       "tabfm_accelerate() again.";
+	}
+	// Collapse the escaped newlines the envelope carries, so one row stays one
+	// line however it is rendered.
+	string flat;
+	for (size_t i = 0; i < message.size(); i++) {
+		if (message[i] == '\\' && i + 1 < message.size() && message[i + 1] == 'n') {
+			flat += ' ';
+			i++;
+		} else if (message[i] == '\n') {
+			flat += ' ';
+		} else {
+			flat += message[i];
+		}
+	}
+	return flat;
+}
+
+struct AccelerateRow {
+	string step;
+	string status;
+	string detail;
+};
+
+struct AccelerateBindData : public TableFunctionData {
+	string backend;     // "" when this machine has no accelerator we support
+	string device_name; // what discovery found
+	string ep_path;
+	string cache_dir;
+	string unsupported; // why, when backend is empty
+};
+
+struct AccelerateGlobalState : public GlobalTableFunctionState {
+	vector<AccelerateRow> rows;
+	idx_t next = 0;
+	bool ran = false;
+	idx_t MaxThreads() const override {
+		return 1;
+	}
+};
+
+unique_ptr<FunctionData> AccelerateBind(ClientContext &context, TableFunctionBindInput &,
+                                        vector<LogicalType> &return_types, vector<string> &names) {
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_accelerate");
+	auto result = make_uniq<AccelerateBindData>();
+	result->cache_dir = GetCacheDir(context);
+	Value setting;
+	string ep_setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
+		ep_setting = setting.ToString();
+	}
+	result->ep_path = ResolveEpPath(ep_setting, result->cache_dir);
+
+	// Pick from what is actually here, in the order a machine can have them.
+	// coreml is skipped on purpose: it is an in-process ORT provider needing a
+	// flavor build, not a plugin this can fetch.
+	for (auto &device : DiscoverDevices()) {
+		const auto backend = BackendOfDeviceId(device.device_id);
+		if (backend != "cuda" && backend != "rocm" && backend != "mlx") {
+			continue;
+		}
+		if (!device.usable) {
+			result->unsupported = "found " + device.name + " (" + device.device_id +
+			                      ") but it is not usable on this machine — see SELECT * FROM tabfm_devices()";
+			continue;
+		}
+		// Refuse a platform we publish nothing for BEFORE promising anything.
+		auto refusal = UnsupportedPluginPlatform(backend, HostPluginOs(), HostPluginArch());
+		if (!refusal.empty()) {
+			result->unsupported = refusal;
+			continue;
+		}
+		result->backend = backend;
+		result->device_name = device.name.empty() ? device.device_id : device.name;
+		break;
+	}
+	names = {"step", "status", "detail"};
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
+	return std::move(result);
+}
+
+unique_ptr<GlobalTableFunctionState> AccelerateInit(ClientContext &, TableFunctionInitInput &) {
+	return make_uniq<AccelerateGlobalState>();
+}
+
+void AccelerateExecute(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
+	auto &bind = data.bind_data->Cast<AccelerateBindData>();
+	auto &state = data.global_state->Cast<AccelerateGlobalState>();
+	if (!state.ran) {
+		state.ran = true;
+		auto &fs = FileSystem::GetFileSystem(context);
+		auto add = [&](string step, string status, string detail) {
+			state.rows.push_back({std::move(step), std::move(status), std::move(detail)});
+		};
+
+		if (bind.backend.empty()) {
+			add("hardware", "none",
+			    bind.unsupported.empty()
+			        ? "no supported accelerator was discovered — predictions run on the CPU, which every model "
+			          "supports. SELECT * FROM tabfm_devices() shows what was probed."
+			        : bind.unsupported);
+			add("device", "cpu", "SET anofox_tabfm_device stays 'auto', which resolves to the CPU here.");
+		} else {
+			add("hardware", "found", bind.device_name + " → '" + bind.backend + "' backend");
+
+			DownloadRuntimeBindData download;
+			download.backend = bind.backend;
+			download.ep_path = bind.ep_path;
+			download.cache_dir = bind.cache_dir;
+			string error;
+			if (!ResolveRuntimeArtifact(download.backend, download.artifact, error)) {
+				add("download", "failed", error);
+			} else {
+				int64_t fetched = 0;
+				int64_t cached = 0;
+				try {
+					for (auto &file : PerformRuntimeDownload(context, download)) {
+						(file.status == "cached" ? cached : fetched) += file.bytes;
+					}
+					add("download", fetched > 0 ? "downloaded" : "cached",
+					    bind.ep_path + " — " + std::to_string(fetched) + " bytes fetched, " +
+					        std::to_string(cached) + " bytes already present");
+				} catch (std::exception &ex) {
+					add("download", "failed", AccelerateFailureDetail(ex.what()));
+				}
+			}
+
+			// The proof: the plugin loads and speaks an ABI we know. No
+			// create(), no inference -- see the header comment.
+			const auto plugin_path = fs.JoinPath(bind.ep_path, PluginFileName(bind.backend));
+			string load_error;
+			if (PluginLoadable(plugin_path, &load_error)) {
+				// Make it live NOW. Device resolution and plugin presence are
+				// memoized process-wide, so without this an embedded user
+				// (Python, JDBC) would keep getting the CPU for the life of the
+				// process no matter how many connections they opened -- and
+				// "reconnect", which this used to advise, cannot fix that.
+				BumpPluginProbeGeneration();
+				add("verify", "ok", plugin_path + " loads and matches this build's plugin ABI");
+				add("device", "ready",
+				    "anofox_tabfm_device='auto' now uses '" + bind.backend +
+				        "' for every model that backend can serve, in this session — SELECT * FROM "
+				        "tabfm_backends() shows which, and why not for the rest.");
+			} else {
+				// Name the real cause. "not usable" covers a missing file, a
+				// wrong file, an ABI mismatch and -- much the most common
+				// after a successful download -- a plugin whose own runtime
+				// is not installed. Only the loader knows which.
+				string detail = "the plugin at " + plugin_path + " cannot be used: " +
+				                (load_error.empty() ? string("it is missing or unreadable") : load_error) + ".";
+				if (load_error.find("libmigraphx") != string::npos) {
+					detail += " MIGraphX is not installed — install the ROCm MIGraphX runtime, then re-run.";
+				} else if (load_error.find("libcud") != string::npos || load_error.find("libonnxruntime") != string::npos) {
+					detail += " Its runtime libraries are missing from that directory.";
+				}
+				detail += " Predictions continue on the CPU.";
+				add("verify", "failed", detail);
+			}
+
+			if (bind.backend == "rocm") {
+				add("note", "first-run cost",
+				    "MIGraphX compiles once per (rows, features) shape bucket, which takes minutes on first use. "
+				    "CALL tabfm_gpu_precompile(...) does it off the query path.");
+			} else if (bind.backend == "mlx") {
+				add("note", "prerequisite",
+				    "the MLX plugin links Apple's own libmlx/libmlxc — install them with: brew install mlx mlx-c");
+			}
+		}
+	}
+
+	idx_t out = 0;
+	while (state.next < state.rows.size() && out < STANDARD_VECTOR_SIZE) {
+		auto &r = state.rows[state.next++];
+		output.SetValue(0, out, Value(r.step));
+		output.SetValue(1, out, Value(r.status));
+		output.SetValue(2, out, Value(r.detail));
+		out++;
+	}
+	output.SetCardinality(out);
+}
 
 //===--------------------------------------------------------------------===//
 // tabfm_models()
@@ -1048,6 +1354,225 @@ void ListModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 		output.SetValue(6, out, nbig(r.max_features));
 		output.SetValue(7, out, nbig(r.max_classes));
 		output.SetValue(8, out, Value::BOOLEAN(r.downloaded));
+		out++;
+	}
+	output.SetCardinality(out);
+}
+
+//===--------------------------------------------------------------------===//
+// tabfm_backends() — which device can serve which model, and why not
+//
+// The question "can model X run on device Y" had no answer short of trying it
+// and reading the error. That is a bad way to learn that nine of eleven models
+// cannot run on ROCm, and an impossible way to learn it for a model you have
+// not downloaded yet.
+//
+// A SEPARATE relation from tabfm_models() on purpose: that one is a *state*
+// relation (loaded, device, bytes) which every tools/gpu_test scenario filters
+// with WHERE loaded, and which their max(device) SERVED_BY assertions depend
+// on. This is a *capability* relation -- model x task x discovered device,
+// including rows that were never loaded -- so folding the two would change
+// tabfm_models()'s cardinality and quietly weaken the harness that protects
+// the no-silent-fallback doctrine.
+//
+// Every row comes from EvaluateGpuServability, the same predicate dispatch
+// consults, so the matrix cannot promise what dispatch will refuse.
+//===--------------------------------------------------------------------===//
+
+struct BackendsRow {
+	string model;
+	string task;
+	string device;
+	string backend;
+	//! Tri-state on purpose. A bundled GPU graph is only usable if its baked
+	//! external-data offsets match the weights -- so with the weights not yet
+	//! downloaded the honest answer is not "no", it is "not knowable yet".
+	//!
+	//! Reporting false there was actively misleading, and running this on a
+	//! fresh GPU box is what showed it: every one of the 20 model x task rows
+	//! read supported=false on a working RTX 3070, purely because no weights
+	//! had been fetched. The reason column said so, but the boolean is what a
+	//! user reads, and "false" across the board on a new install says "this
+	//! GPU is useless to you".
+	bool supported = false;
+	bool known = true;
+	string reason;
+};
+
+struct BackendsGlobalState : public GlobalTableFunctionState {
+	vector<BackendsRow> rows;
+	idx_t next = 0;
+	idx_t MaxThreads() const override {
+		return 1;
+	}
+};
+
+unique_ptr<FunctionData> BackendsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
+                                      vector<string> &names) {
+	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_backends");
+	names = {"model", "task", "device", "backend", "supported", "reason"};
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                LogicalType::VARCHAR, LogicalType::BOOLEAN, LogicalType::VARCHAR};
+	return make_uniq<ModelsBindData>();
+}
+
+unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableFunctionInitInput &) {
+	auto state = make_uniq<BackendsGlobalState>();
+	auto registry = ModelRegistry::Build(TabFMState::Get(context)->RegisteredSpecs());
+	auto &fs = FileSystem::GetFileSystem(context);
+	auto cache_dir = GetCacheDir(context);
+
+	string precision = "fp32";
+	Value setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", setting) && !setting.IsNull()) {
+		precision = StringUtil::Lower(setting.ToString());
+	}
+	// Where dispatch would look for the plugins. Consulted below, because a
+	// lane whose plugin is not installed is one 'auto' declines -- and a
+	// capability relation that promises a device dispatch refuses is worse than
+	// no relation at all, since every refusal message sends users here.
+	string ep_setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
+		ep_setting = setting.ToString();
+	}
+	const auto ep_path = ResolveEpPath(ep_setting, cache_dir);
+
+	// Real hardware, not a static matrix: a device absent from this machine
+	// gets no row at all, so the relation never implies a card is there.
+	auto devices = DiscoverDevices();
+
+	for (auto &kv : registry.Models()) {
+		const auto &spec = kv.second;
+		for (auto &task_kv : spec.tasks) {
+			const auto task = task_kv.first;
+			const auto &artifacts = task_kv.second;
+			const string task_name = TabFMTaskName(task);
+
+			// Whether the weights are on disk decides whether the bundled
+			// graph's header can be checked at all.
+			// A model registered from SQL keeps its weights where it was
+			// registered from, not under the cache slug. Reading only the slug
+			// reported such a model as "weights are not downloaded" while
+			// dispatch was serving it from disk perfectly well.
+			auto wm = WeightsFromSpec(spec, task);
+			const auto base = wm.source_dir.empty() ? cache_dir + "/" + wm.CacheSlug(wm.revision) : wm.source_dir;
+			const bool downloaded = TaskWeightsComplete(fs, base, wm.files);
+
+			for (auto &device : devices) {
+				BackendsRow row;
+				row.model = spec.id;
+				row.task = task_name;
+				row.device = device.device_id;
+				row.backend = BackendOfDeviceId(device.device_id);
+				if (row.backend == "cpu") {
+					// Every model runs on the CPU -- that is the floor the
+					// whole extension rests on.
+					row.supported = true;
+					state->rows.push_back(std::move(row));
+					continue;
+				}
+				if (row.backend == "coreml") {
+					// CoreML runs the ordinary in-process graph through ONNX
+					// Runtime's own provider -- it needs no bundled GPU graph,
+					// so the ext-graph predicate below says nothing useful
+					// about it. It is also dropped
+					// (docs/DYNAMIC_BACKENDS.md), so say that rather than
+					// implying a model problem.
+					row.reason = "coreml is not shipped — on Apple Silicon use 'mlx', which serves every model: "
+					             "CALL tabfm_accelerate()";
+					state->rows.push_back(std::move(row));
+					continue;
+				}
+				if (!device.usable) {
+					row.reason = "the device was discovered but is not usable on this machine — see SELECT * FROM "
+					             "tabfm_devices() for its driver state";
+					state->rows.push_back(std::move(row));
+					continue;
+				}
+				const bool is_rocm = row.backend == "rocm";
+				const string kind = is_rocm ? "migraphx" : "ext";
+				const string &model_graph = is_rocm ? artifacts.migraphx_graph : artifacts.ext_graph;
+				auto bundled = GetBundledResource(BundledGpuGraphId(spec.id, kind, task_name));
+
+				GpuServabilityInputs in;
+				in.backend = row.backend;
+				in.model = spec.id;
+				in.task_name = task_name;
+				in.precision = precision;
+				in.model_provides_graph = !model_graph.empty();
+				in.bundled_graph_exists = bundled.data != nullptr;
+				// A bundled graph's offsets are baked against one weights
+				// header, so without the weights there is nothing to compare
+				// and the honest answer is "not yet", not "no".
+				// The weights file is NOT simply <slug>/model.safetensors: a
+				// model's declared paths may sit in a per-task subdirectory
+				// (tabfm-v1 keeps classification/ and regression/ side by
+				// side), and several models declare a .ckpt whose converted
+				// model.safetensors sits beside it. Hand-building the path got
+				// this wrong and reported tabfm-v1 -- which IS ROCm-servable --
+				// as having no graph. Walk the declared files through the same
+				// converter rule the engine uses instead; WeightsHeaderMatches
+				// itself ignores anything not named model.safetensors.
+				if (downloaded) {
+					for (auto &f : wm.files) {
+						const auto declared = base + "/" + f.path;
+						const auto actual =
+						    ListableArtifactPath(declared, [&](const string &c) { return fs.FileExists(c); });
+						if (!actual.empty() && WeightsHeaderMatches(fs, actual, spec.id, task)) {
+							in.bundled_header_matches = true;
+							break;
+						}
+					}
+				}
+				auto verdict = EvaluateGpuServability(in);
+				row.supported = verdict.supported;
+				row.reason = verdict.reason;
+				// Plugin presence is checked AFTER servability, and only when
+				// the model would otherwise run. Both can be true at once --
+				// tabdpt on ROCm has no MIGraphX graph AND no plugin installed
+				// -- and reporting the plugin there would invite the user to
+				// install one and then be disappointed, because the structural
+				// reason is the permanent one. So: say what cannot change
+				// first, and only offer the fix that would actually work.
+				if (row.supported && (row.backend == "cuda" || row.backend == "rocm" || row.backend == "mlx") &&
+				    !PluginAvailableCached(ep_path, row.backend)) {
+					row.supported = false;
+					row.reason = "this model can run on '" + row.backend + "', but its backend plugin is not "
+					             "installed at " + ep_path + " — CALL tabfm_accelerate() to fetch and verify it";
+				}
+				// ...but only when the missing weights are what is actually
+				// blocking it. A precision the backend cannot run is a knowable,
+				// permanent NO, and downloading weights will not change it --
+				// yet the first version of this override replaced that reason
+				// too, so asking for tf32 on MLX (a CUDA tensor-core mode with
+				// no Metal equivalent) reported "the weights are not
+				// downloaded". Found on the M3: a wrong answer AND wrong advice.
+				if (!row.supported && BackendSupportsPrecision(row.backend, precision) &&
+				    !in.model_provides_graph && in.bundled_graph_exists && !downloaded) {
+					// Not "no" -- "ask again once the weights exist".
+					row.known = false;
+					row.reason = "the weights are not downloaded, so the bundled GPU graph cannot be matched to "
+					             "them yet — CALL tabfm_download('" + task_name + "', model := '" + spec.id +
+					             "') first, then ask again";
+				}
+				state->rows.push_back(std::move(row));
+			}
+		}
+	}
+	return std::move(state);
+}
+
+void BackendsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output) {
+	auto &state = data.global_state->Cast<BackendsGlobalState>();
+	idx_t out = 0;
+	while (state.next < state.rows.size() && out < STANDARD_VECTOR_SIZE) {
+		auto &r = state.rows[state.next++];
+		output.SetValue(0, out, Value(r.model));
+		output.SetValue(1, out, Value(r.task));
+		output.SetValue(2, out, Value(r.device));
+		output.SetValue(3, out, Value(r.backend));
+		output.SetValue(4, out, r.known ? Value::BOOLEAN(r.supported) : Value(LogicalType::BOOLEAN));
+		output.SetValue(5, out, r.reason.empty() ? Value(LogicalType::VARCHAR) : Value(r.reason));
 		out++;
 	}
 	output.SetCardinality(out);
@@ -1570,6 +2095,23 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            "List the TabFM models known to the local cache (model, task, revision, path, bytes, loaded, "
 	            "license).",
 	            "SELECT * FROM tabfm_models();");
+	// CALL tabfm_accelerate();
+	RegisterSet(loader, "anofox_tabfm_accelerate", "tabfm_accelerate", {{}},
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, AccelerateBind), AccelerateInit,
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, AccelerateExecute),
+	            "Set up GPU acceleration in one call: find the accelerator, fetch its backend plugin (and runtime), "
+	            "and verify it loads. Returns one row per step (step, status, detail). Idempotent — re-running "
+	            "re-verifies without re-downloading. Reconnect afterwards for it to take effect.",
+	            "CALL tabfm_accelerate();");
+	// SELECT * FROM tabfm_backends();
+	RegisterSet(loader, "anofox_tabfm_backends", "tabfm_backends", {{}},
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, BackendsBind), BackendsInit,
+	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, BackendsExecute),
+	            "Which discovered device can serve which model, and the reason when one cannot (model, task, "
+	            "device, backend, supported, reason). Built on the same servability predicate dispatch uses, so "
+	            "it cannot promise what a predict would refuse. 'supported' is NULL when the answer is not yet "
+	            "knowable — a bundled GPU graph cannot be matched against weights that have not been downloaded.",
+	            "SELECT * FROM tabfm_backends() WHERE NOT supported;");
 	// CALL tabfm_load(task);
 	RegisterSet(loader, "anofox_tabfm_load", "tabfm_load", {{LogicalType::VARCHAR}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, LoadBind), LifecycleInit,
 	            LifecycleExecute,

@@ -162,15 +162,20 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
 
 	config.AddExtensionOption("anofox_tabfm_device",
-	                          "Execution device: auto|cpu|cuda|rocm|coreml|mlx ('migraphx' alias). cuda, rocm and mlx "
-	                          "run in dlopen'd plugins and are explicit opt-ins ('auto' never selects them); coreml "
-	                          "is flavor-gated and errors helpfully where the build does not carry it.",
+	                          "Execution device: auto|cpu|cuda|rocm|coreml|mlx ('migraphx' alias). 'auto' resolves "
+	                          "per model: it picks the best device that model can actually be served on (its plugin "
+	                          "present and a graph available), else the CPU — so it never promises an accelerator a "
+	                          "model cannot use. SELECT * FROM tabfm_backends() shows the choice and the reason. "
+	                          "Naming a device explicitly is a hard request: it errors rather than falling back. "
+	                          "coreml is flavor-gated and 'auto' does not reach for it.",
 	                          LogicalType::VARCHAR, Value("auto"), ValidateDevice);
 
 	config.AddExtensionOption("anofox_tabfm_ep_path",
-	                          "Directory holding the GPU backend plugins (libanofox_tabfm_cuda_plugin.so, "
-	                          "libanofox_tabfm_migraphx_plugin.so) and the runtime libraries they load alongside "
-	                          "themselves. CALL tabfm_download_runtime('cuda') populates it.",
+	                          "Directory holding the GPU backend plugins (anofox_tabfm_{cuda,migraphx,mlx}_plugin, "
+	                          "with this platform's library prefix and extension) and the runtime libraries they "
+	                          "load alongside themselves. Defaults to the 'runtime' subdirectory of "
+	                          "anofox_tabfm_cache_dir, which is where CALL tabfm_download_runtime(...) and CALL "
+	                          "tabfm_accelerate() put them — set this only to point somewhere else.",
 	                          LogicalType::VARCHAR, Value(""));
 
 	config.AddExtensionOption(

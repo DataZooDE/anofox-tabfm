@@ -39,8 +39,17 @@ import urllib.request
 from pathlib import Path
 
 API = "https://rest.runpod.io/v1"
-# CUDA 12.4 + python 3.11; sshd starts when PUBLIC_KEY is set.
-DEFAULT_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
+# CUDA 12.8 + python 3.11; sshd starts when PUBLIC_KEY is set.
+#
+# NOT 12.4, which this default used to be and which is known not to work for
+# the thing this harness exists to test: the CUDA-12 ONNX Runtime provider
+# fails on a 12.4 image with `undefined symbol: cudaLibraryGetKernel, version
+# libcudart.so.12` -- that symbol needs a newer CUDA 12 minor than the image
+# ships. Recorded in docs/DYNAMIC_BACKENDS.md ("RunPod-verified" findings 1-2),
+# discovered by renting a pod and watching it fail, and then left in place as
+# the default so the next person rented a pod and watched it fail too.
+# README pins the floor at CUDA userspace >= 12.5.
+DEFAULT_IMAGE = "runpod/pytorch:2.8.0-py3.11-cuda12.8.1-cudnn-devel-ubuntu22.04"
 GRAPHQL = "https://api.runpod.io/graphql"
 # An EP-level graph bug reproduces on any CUDA device, and these graphs are tiny
 # with synthesized weights (~110 MB), so the cheapest card that exists will do.
@@ -268,6 +277,13 @@ def main() -> int:
                     help="comma-separated onnxruntime-gpu versions to sweep")
     ap.add_argument("--timeout", type=int, default=900, help="seconds to wait for the pod")
     ap.add_argument("--keep", action="store_true", help="do NOT terminate the pod (debugging; costs money)")
+    ap.add_argument("--secure", action="store_true",
+                    help="rent only from RunPod's own datacenters, never the COMMUNITY tier. Community hosts are "
+                         "other people's machines with whatever nvidia-container-toolkit setup they happen to "
+                         "have: seen twice on different hosts, nvidia-smi works and every /dev/nvidia* node is "
+                         "present, but cudaGetDeviceCount returns 999 and /dev/nvidia-uvm is owned by "
+                         "nobody:nogroup -- the host uid/gid is not mapped into the container's user namespace, "
+                         "so CUDA enumerates the device and then cannot initialise it. Costs more per hour.")
     ap.add_argument("--volume-id", help="attach this persistent network volume at /workspace (S7: uploads, "
                                         "toolchains and build trees survive across pods)")
     ap.add_argument("--create-volume", type=int, metavar="GB",
@@ -363,7 +379,7 @@ def main() -> int:
     # volume attached the cloud is forced to SECURE and the datacenter to the
     # volume's, so the inner loop degenerates to one attempt per GPU type.
     for price, gpu_id, vram in candidates:
-        for cloud in (("SECURE",) if volume else ("COMMUNITY", "SECURE")):
+        for cloud in (("SECURE",) if (volume or args.secure) else ("COMMUNITY", "SECURE")):
             try:
                 pod = call("POST", "/pods", key, _pod_spec(args, [gpu_id], cloud, pub, volume))
                 tag = f"${price}/hr" if price is not None else "?"

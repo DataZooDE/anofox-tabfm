@@ -198,6 +198,24 @@ jobs:
     needs: [cuda-plugin, migraphx-plugin, mlx-plugin]
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v4
+      - name: The pinned plugin release must be the one being published
+        run: |
+          # TABFM_PLUGIN_RELEASE_TAG is what tabfm_download_runtime fetches
+          # from. If a release ships without it pointing at itself, every
+          # download from that build silently fetches the PREVIOUS release's
+          # plugins -- which the loader will accept whenever the ABI version
+          # still matches, so nothing tells the user they got an old one.
+          pinned="$(sed -n 's/.*TABFM_PLUGIN_RELEASE_TAG = "\(.*\)".*/\1/p' \
+                    src/include/tabfm_plugin_artifacts.hpp)"
+          echo "pinned in source: ${pinned}"
+          echo "tag being built:  ${GITHUB_REF_NAME}"
+          if [ "${pinned}" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::TABFM_PLUGIN_RELEASE_TAG is '${pinned}' but this is '${GITHUB_REF_NAME}'." \
+                 "Bump it in src/include/tabfm_plugin_artifacts.hpp before tagging, so the release" \
+                 "contains code that points at itself."
+            exit 1
+          fi
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true

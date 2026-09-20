@@ -15,6 +15,7 @@
 #include "catch.hpp"
 
 #include "tabfm_plugin_backend.hpp"
+#include "tabfm_plugin_artifacts.hpp"
 
 #include <fstream>
 
@@ -234,4 +235,146 @@ TEST_CASE("mxr cache key: stem extraction handles plain names and extensionless 
 	using anofox_tabfm_mxr::MxrCacheStem;
 	REQUIRE(MxrCacheStem("graph.onnx", 1).rfind("graph_", 0) == 0);
 	REQUIRE(MxrCacheStem("/a.b/dir/noext", 1).rfind("noext_", 0) == 0);
+}
+
+//===----------------------------------------------------------------------===//
+// Plugin artifacts: filenames and published-platform refusals
+//===----------------------------------------------------------------------===//
+
+
+// These take the platform explicitly so every combination is testable from any
+// host — which is the point, since the combinations that need guarding are the
+// ones the developer's machine is not.
+
+TEST_CASE("plugin_artifacts: filenames follow each platform's convention", "[tabfm][plugin_artifacts]") {
+	REQUIRE(PluginFileNameFor("cuda", "linux") == "libanofox_tabfm_cuda_plugin.so");
+	REQUIRE(PluginFileNameFor("mlx", "osx") == "libanofox_tabfm_mlx_plugin.dylib");
+	// Windows DLLs carry no 'lib' prefix — that is what CMake emits there, so
+	// guessing otherwise would look for a file the build never produces.
+	REQUIRE(PluginFileNameFor("cuda", "windows") == "anofox_tabfm_cuda_plugin.dll");
+
+	// 'rocm' is the device; MIGraphX is the library that drives it, and the
+	// artifact has always been named for the library.
+	REQUIRE(PluginFileNameFor("rocm", "linux") == "libanofox_tabfm_migraphx_plugin.so");
+	REQUIRE(PluginFileNameFor("migraphx", "linux") == PluginFileNameFor("rocm", "linux"));
+}
+
+TEST_CASE("plugin_artifacts: the published platform for each backend is the only one accepted",
+          "[tabfm][plugin_artifacts]") {
+	// What IS published and hardware-verified.
+	REQUIRE(UnsupportedPluginPlatform("cuda", "linux", "amd64").empty());
+	REQUIRE(UnsupportedPluginPlatform("rocm", "linux", "amd64").empty());
+	REQUIRE(UnsupportedPluginPlatform("mlx", "osx", "arm64").empty());
+}
+
+TEST_CASE("plugin_artifacts: Windows CUDA is refused before the download, not after",
+          "[tabfm][plugin_artifacts]") {
+	// Windows discovers an NVIDIA card through NVML like any other platform,
+	// so a user can reasonably ask for 'cuda' there. The wheel is manylinux and
+	// no Windows plugin is built, so without this the request walked a 475 MB
+	// download and ended at a missing library.
+	auto refusal = UnsupportedPluginPlatform("cuda", "windows", "amd64");
+	REQUIRE(!refusal.empty());
+	REQUIRE(refusal.find("windows/amd64") != string::npos);
+	REQUIRE(refusal.find("linux/amd64 only") != string::npos);
+	// and names something the user can actually do next
+	REQUIRE(refusal.find("anofox_tabfm_device='cpu'") != string::npos);
+}
+
+TEST_CASE("plugin_artifacts: an unavailable backend points at the one that works there",
+          "[tabfm][plugin_artifacts]") {
+	// Apple Silicon asking for CUDA is told about MLX, not merely refused:
+	// MLX is published for exactly this machine and serves every model.
+	auto on_mac = UnsupportedPluginPlatform("cuda", "osx", "arm64");
+	REQUIRE(!on_mac.empty());
+	REQUIRE(on_mac.find("tabfm_download_runtime('mlx')") != string::npos);
+
+	// and Linux asking for MLX is told about the two backends that do run there
+	auto on_linux = UnsupportedPluginPlatform("mlx", "linux", "amd64");
+	REQUIRE(!on_linux.empty());
+	REQUIRE(on_linux.find("'cuda'") != string::npos);
+	REQUIRE(on_linux.find("'rocm'") != string::npos);
+}
+
+TEST_CASE("plugin_artifacts: linux arm64 gets no GPU plugin, and is told so", "[tabfm][plugin_artifacts]") {
+	// linux_arm64 ships a CPU extension, so the refusal must not read as a bug.
+	REQUIRE(!UnsupportedPluginPlatform("cuda", "linux", "arm64").empty());
+	REQUIRE(!UnsupportedPluginPlatform("rocm", "linux", "arm64").empty());
+}
+
+TEST_CASE("plugin_artifacts: an unknown backend is rejected by name", "[tabfm][plugin_artifacts]") {
+	auto refusal = UnsupportedPluginPlatform("tpu", "linux", "amd64");
+	REQUIRE(refusal.find("unknown backend 'tpu'") != string::npos);
+}
+
+TEST_CASE("plugin_artifacts: release asset urls are built from the single pinned tag",
+          "[tabfm][plugin_artifacts]") {
+	// One definition of the tag; a stale one is caught by the loader's ABI
+	// check rather than by anyone remembering to bump it.
+	REQUIRE(string(TABFM_PLUGIN_RELEASE_TAG).find("v20") == 0);
+	auto url = PluginReleaseAssetUrl("libanofox_tabfm_cuda_plugin.so", TABFM_PLUGIN_RELEASE_TAG);
+	REQUIRE(url.find("https://github.com/DataZooDE/anofox-tabfm/releases/download/") == 0);
+	REQUIRE(url.find(TABFM_PLUGIN_RELEASE_TAG) != string::npos);
+	REQUIRE(StringUtil::EndsWith(url, "libanofox_tabfm_cuda_plugin.so"));
+	// An empty tag yields no url at all rather than a 404-shaped one.
+	REQUIRE(PluginReleaseAssetUrl("x.so", "").empty());
+}
+
+TEST_CASE("plugin_artifacts: this host resolves to a platform it knows", "[tabfm][plugin_artifacts]") {
+	const auto os = HostPluginOs();
+	REQUIRE((os == "linux" || os == "osx" || os == "windows"));
+	// The filename used by dispatch and by the download must be the same one.
+	REQUIRE(PluginFileName("cuda") == PluginFileNameFor("cuda", os));
+}
+
+//===----------------------------------------------------------------------===//
+// Plugin integrity: the sha256 sidecar
+//===----------------------------------------------------------------------===//
+
+TEST_CASE("plugin_artifacts: the sidecar asset is named for the backend's base name",
+          "[tabfm][plugin_artifacts]") {
+	// CI writes `sha256sum <files> | tee <base>_plugin.sha256`.
+	REQUIRE(PluginSha256AssetName("cuda") == "cuda_plugin.sha256");
+	REQUIRE(PluginSha256AssetName("rocm") == "migraphx_plugin.sha256");
+	REQUIRE(PluginSha256AssetName("mlx") == "mlx_plugin.sha256");
+}
+
+TEST_CASE("plugin_artifacts: a digest is matched by FILENAME, not by position",
+          "[tabfm][plugin_artifacts]") {
+	// The real CUDA sidecar covers two files. Taking the first line would
+	// verify the plugin against the ORT core's digest and always fail — or,
+	// worse with the operands swapped, pass on the wrong file.
+	const string sidecar =
+	    "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  libanofox_tabfm_cuda_plugin.so\n"
+	    "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222  libanofoxort_gpu.so\n";
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_cuda_plugin.so") ==
+	        "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111");
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofoxort_gpu.so") ==
+	        "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222");
+}
+
+TEST_CASE("plugin_artifacts: a sidecar that does not mention the file vouches for nothing",
+          "[tabfm][plugin_artifacts]") {
+	// Must be empty, and callers must treat empty as a failure rather than as
+	// "no check required" — otherwise an attacker supplies a sidecar naming
+	// some other file and the verification silently passes.
+	const string sidecar =
+	    "cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333  some_other_file.so\n";
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_cuda_plugin.so").empty());
+	REQUIRE(Sha256FromSidecar("", "libanofox_tabfm_cuda_plugin.so").empty());
+	REQUIRE(Sha256FromSidecar("not a sidecar at all\n", "x.so").empty());
+}
+
+TEST_CASE("plugin_artifacts: sidecar parsing tolerates the formats sha256sum emits",
+          "[tabfm][plugin_artifacts]") {
+	const string hash = "dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444dddd4444";
+	// binary marker
+	REQUIRE(Sha256FromSidecar(hash + " *plug.so\n", "plug.so") == hash);
+	// a leading path, as `sha256sum dir/file` writes it
+	REQUIRE(Sha256FromSidecar(hash + "  build/plug.so\n", "plug.so") == hash);
+	// CRLF, and no trailing newline
+	REQUIRE(Sha256FromSidecar(hash + "  plug.so\r\n", "plug.so") == hash);
+	REQUIRE(Sha256FromSidecar(hash + "  plug.so", "plug.so") == hash);
+	// uppercase digests compare equal to our lowercase hex
+	REQUIRE(Sha256FromSidecar(StringUtil::Upper(hash) + "  plug.so\n", "plug.so") == hash);
 }

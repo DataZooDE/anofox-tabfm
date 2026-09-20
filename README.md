@@ -383,13 +383,20 @@ surfaces (`tabfm_predict_by` / `_agg` / `_win`) — planned on the same engine.
 
 ## Flavors (CPU / GPU)
 
-One codebase, four builds (`TABFM_FLAVOR`): `cpu` (default, community-extension
-eligible), `cuda` (NVIDIA), `rocm` (AMD via a **direct MIGraphX backend** —
-ONNX Runtime's MIGraphX EP can't load the >2 GB model, so ROCm bypasses it and
-drives libMIGraphX directly, with a compiled-program `.mxr` cache), and `coreml`
-(Apple Silicon via ONNX Runtime's CoreML EP — same macOS archive as `cpu`, GPU/ANE
-where the graph is supported, CPU fallback otherwise). GPU builds
-link no vendor runtime — CUDA/cuDNN or ROCm resolve from your system, and
+**A GPU is not a build.** The published artifact is the `cpu` flavor on every
+platform, and each accelerator is a plugin it loads at runtime: `cuda`
+(NVIDIA, via its own ONNX Runtime GPU distribution), `rocm` (AMD via a
+**direct MIGraphX backend** — ONNX Runtime's MIGraphX EP can't load the >2 GB
+model, so ROCm bypasses it and drives libMIGraphX directly, with a
+compiled-program `.mxr` cache), and `mlx` (Apple Silicon, running the shipped
+ONNX graph itself). `CALL tabfm_accelerate()` fetches the right one.
+
+`TABFM_FLAVOR` still selects which ONNX Runtime gets linked for a source
+build, and remains the mechanism for `coreml` alone — which is
+[dropped](docs/DYNAMIC_BACKENDS.md#phase-4--coreml--dropped-2026-09-19), since
+MLX supersedes it on the only platform it targets.
+
+No vendor runtime is linked — CUDA/cuDNN or ROCm resolve from your system, and
 `tabfm_devices()` reports what was found. GPU dtype is set by
 `anofox_tabfm_gpu_precision` (default `fp32` — strict CPU parity; faster modes are opt-in).
 
@@ -418,7 +425,7 @@ the DuckDB community repository.
 | CPU | Linux x64/arm64, macOS **arm64**, Windows x64 | all 7 built-ins | CI suites + install-smoke with inference on every platform |
 | CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | **all 7 built-ins** | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max |
 | ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1 + mitra (train_size-scalar family) | RX 9070 XT: parity, concurrency, user workflow |
-| CoreML | — | — | out of scope by decision (docs/PHASE_COMPLETION_PLAN.md) |
+| CoreML | — | — | **dropped** — MLX supersedes it on Apple Silicon ([why](docs/DYNAMIC_BACKENDS.md#phase-4--coreml--dropped-2026-09-19)) |
 | MLX (plugin) | macOS arm64 (Apple Silicon) | every model CPU serves (6 verified through SQL; tabfm-v1 via the graph harness) | Apple M3: 10 model×task pairs cpu-compared (0 disagreements), 4000-row stress, device/precision alternation |
 
 macOS is **arm64 only**: ONNX Runtime published its last macOS x86_64 /
@@ -432,25 +439,48 @@ its model coverage matches CPU's. The single_eval_pos models (TabPFN/TabICL/Orio
 bucketed compilation (y's length is the train/test split) — CUDA serves them.
 
 **Using a GPU.** A GPU backend is a plugin the extension `dlopen`s at runtime,
-not a separate build of the extension: point `anofox_tabfm_ep_path` at the
-directory holding it and select the device.
+not a separate build of the extension: fetch it, then select the device.
 
 ```sql
-CALL tabfm_download_runtime('cuda');    -- fetch the ORT GPU runtime into that directory
-SET anofox_tabfm_ep_path = '/path/to/plugin/dir';
-SET anofox_tabfm_device  = 'cuda';      -- or 'rocm', or 'mlx' on Apple Silicon
--- confirm it is really being used, rather than trusting the answers:
+CALL tabfm_accelerate();   -- finds the card, fetches its plugin, verifies it loads
+-- that is it: anofox_tabfm_device defaults to 'auto', which now routes each
+-- model to the best device IT can be served on, in this session.
+```
+
+It reports what it did as `(step, status, detail)` rows, including what is
+still ahead of you (MIGraphX's first-shape compile, MLX's `brew install mlx
+mlx-c`). Re-running it re-verifies without re-downloading.
+
+To see the routing — and the reason for every model that stays on the CPU:
+
+```sql
+SELECT * FROM tabfm_backends() WHERE NOT supported;
+-- and confirm what actually served a query, rather than trusting the answers:
 SELECT model, device FROM tabfm_models() WHERE loaded;
 ```
 
-The plugins themselves are **not published yet**, so today you build the one
-you need from source (`src/tabfm_cuda_plugin.cpp`,
+The manual equivalent, if you want to place things yourself:
+
+```sql
+CALL tabfm_download_runtime('cuda');    -- plugin + ORT GPU runtime, into the cache dir
+SET anofox_tabfm_device  = 'cuda';      -- or 'rocm', or 'mlx' on Apple Silicon
+-- anofox_tabfm_ep_path is only needed to override where the plugin lives
+```
+
+Naming a device explicitly is a hard request: if it cannot be served it
+errors, rather than quietly running on the CPU.
+
+`tabfm_download_runtime` fetches the plugin itself, and for CUDA the ONNX
+Runtime GPU libraries it loads alongside it. The plugins are published as
+release assets and are verified against the extension's plugin ABI version on
+load, so a mismatched pair refuses rather than misbehaves.
+
+You can still build one from source (`src/tabfm_cuda_plugin.cpp`,
 `src/tabfm_migraphx_plugin.cpp`, `src/tabfm_mlx_plugin.cpp` — the last needs
 `brew install mlx mlx-c` and builds via the `anofox_tabfm_mlx_plugin` CMake
-target; see [`docs/rocm-build.md`](docs/rocm-build.md)
-for the ROCm toolchain and [`docs/DYNAMIC_BACKENDS.md`](docs/DYNAMIC_BACKENDS.md)
-for how the two fit together). `tabfm_download_runtime('cuda')` fetches the
-ONNX Runtime GPU libraries the CUDA plugin needs, not the plugin itself.
+target; see [`docs/rocm-build.md`](docs/rocm-build.md) for the ROCm toolchain
+and [`docs/DYNAMIC_BACKENDS.md`](docs/DYNAMIC_BACKENDS.md) for how the pieces
+fit together).
 
 **Any build can host the CUDA plugin now.** Earlier, a host that loaded a
 *shared* `libonnxruntime.so` (the local `make debug` build) shadowed the

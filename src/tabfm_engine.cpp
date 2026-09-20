@@ -29,6 +29,7 @@
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_plugin_backend.hpp"
+#include "tabfm_plugin_artifacts.hpp"
 #include "tabfm_state.hpp"
 
 #include "duckdb/common/file_system.hpp"
@@ -42,6 +43,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <atomic>
 #include <fstream>
 
 #ifndef _WIN32
@@ -53,6 +55,14 @@
 
 namespace duckdb {
 namespace anofox {
+
+//! Bumped when a plugin is fetched or verified, so both memos below answer
+//! afresh without any entry being erased underneath a live reference.
+std::atomic<uint64_t> g_plugin_probe_generation {0};
+
+void BumpPluginProbeGeneration() {
+	g_plugin_probe_generation.fetch_add(1);
+}
 
 namespace {
 
@@ -720,19 +730,8 @@ shared_ptr<LoadedModel> RegisterBackend(TabFMState &state, const string &cache_k
 	return model;
 }
 
-string Sha256Hex(const_data_ptr_t data, idx_t len) {
-	unsigned char digest[EVP_MAX_MD_SIZE];
-	unsigned int n = 0;
-	EVP_Digest(data, len, digest, &n, EVP_sha256(), nullptr);
-	static const char *hex = "0123456789abcdef";
-	string out;
-	out.reserve(static_cast<size_t>(n) * 2);
-	for (unsigned int i = 0; i < n; i++) {
-		out.push_back(hex[digest[i] >> 4]);
-		out.push_back(hex[digest[i] & 0xf]);
-	}
-	return out;
-}
+// Sha256Hex is defined past this anonymous namespace: it is declared in
+// tabfm_predict.hpp so the plugin download can verify its published digest.
 
 // Read the safetensors JSON header bytes ([8, 8+header_len)). Returns false on
 // any I/O or sanity failure (caller falls back to injection).
@@ -759,20 +758,10 @@ bool ReadWeightsHeaderBytes(FileSystem &fs, const string &path, string &header) 
 // The (model, task)-keyed hash table lives in tabfm_model_spec.hpp
 // (ExpectedWeightsHeaderShaFor) beside the bundled-id naming, since GPU graph
 // selection is a model-spec concern shared by three backends.
-bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task) {
-	const string expected = ExpectedWeightsHeaderShaFor(model, TabFMTaskName(task));
-	if (expected.empty()) {
-		return false;
-	}
-	if (StringUtil::Split(weights_path, "/").back() != "model.safetensors") {
-		return false;
-	}
-	string header;
-	if (!ReadWeightsHeaderBytes(fs, weights_path, header)) {
-		return false;
-	}
-	return Sha256Hex(const_data_ptr_cast(header.data()), header.size()) == expected;
-}
+// WeightsHeaderMatches is defined just past this anonymous namespace: it is
+// declared in tabfm_predict.hpp so tabfm_backends() asks dispatch's exact
+// question rather than a lookalike, and an anonymous-namespace copy here would
+// make every call in this file ambiguous between the two.
 
 // Stage a bundled graph next to the weights (idempotent by size) so external-data
 // "model.safetensors" resolves. Returns false if it cannot be written.
@@ -798,6 +787,47 @@ bool StageBundledGraph(FileSystem &fs, const BundledResource &graph, const strin
 // exists for the task AND the downloaded safetensors header matches exactly
 // (else the baked offsets could be wrong -> fall back to injection). Returns
 // nullptr to signal "fall back".
+// Defined further down, where the per-model 'auto' logic lives; declared here
+// because every dispatch branch below must agree with it. Re-resolving with
+// ResolveDevice(ctx.device, ...) instead would answer a DIFFERENT question --
+// the session-wide one -- so under 'auto' the session would be built for one
+// device while dispatch looked for another, and no GPU branch would ever fire.
+const string &ResolvedDeviceCached(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx);
+
+//! The discovered device row this (model, task) resolves to. One lookup so no
+//! branch can disagree with the session cache about which device it is on.
+TabFMDeviceInfo DeviceInfoFor(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx,
+                              const vector<TabFMDeviceInfo> &devices) {
+	const string &id = ResolvedDeviceCached(fs, resolved, ctx);
+	for (auto &device : devices) {
+		if (device.device_id == id) {
+			return device;
+		}
+	}
+	// The id came from this same list once, so a miss means the topology
+	// changed underneath us -- a card removed, a driver reloaded, an NVML probe
+	// that failed this time. What to do about it depends entirely on whether
+	// the user asked for that device by name.
+	if (VanishedDeviceMustThrow(id, ctx.device)) {
+		throw InvalidInputException(
+		    "anofox_tabfm: device '" + ctx.device + "' resolved to '" + id +
+		    "' earlier in this process, but it is no longer among the discovered devices — the card or its driver "
+		    "may have gone away. Check SELECT * FROM tabfm_devices(); and restart the process to re-probe, or SET "
+		    "anofox_tabfm_device='cpu'.");
+	}
+	// Under 'auto' the user asked for "whatever works", and the CPU does.
+	for (auto &device : devices) {
+		if (device.device_id == "cpu") {
+			return device;
+		}
+	}
+	TabFMDeviceInfo cpu;
+	cpu.device_id = "cpu";
+	cpu.ep = "CPUExecutionProvider";
+	cpu.usable = true;
+	return cpu;
+}
+
 shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                                const PredictContext &ctx) {
 	if (std::getenv("TABFM_DISABLE_EXTERNAL_DATA")) {
@@ -820,7 +850,7 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 	config.intra_op_threads = MaxValue<int64_t>(1, ctx.threads);
 	config.prepack = ctx.cpu_prepack;
 	auto devices = DiscoverDevices();
-	auto device = ResolveDevice(ctx.device, devices);
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
 	config.device_id = device.device_id;
 	config.device_ordinal = device.device_ordinal;
 	config.model_tag = task_name;
@@ -841,6 +871,70 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 // migraphx-ready graph (external-data + Shape-rewrite) directly and compiles
 // per shape-bucket (cached to .mxr). Engages only when the resolved device is
 // a rocm GPU and a bundled migraphx graph + matching weights exist; nullptr
+//! Servability for a resolved model on a backend: the pure predicate in
+//! tabfm_model_spec.hpp plus the one fact only the filesystem can answer —
+//! whether the directory a BUNDLED graph must be staged into is even there.
+//!
+//! Deliberately existence, not writability. Answering "can I write here?"
+//! honestly means attempting a write, and this runs on the capability path
+//! that tabfm_backends() and device resolution call for every (model, device)
+//! pair — creating and deleting probe files across the catalog to answer a
+//! question staging itself answers a moment later. So a read-only directory
+//! is still caught at staging, where it throws for an explicit request; what
+//! this rules out cheaply is the case where the directory is absent
+//! altogether. The distinct reason string exists because reporting either as
+//! "no graph" would send the user to register one, which would not help.
+GpuServabilityResult GpuServabilityFor(FileSystem &fs, const ResolvedModel &resolved, const string &backend,
+                                       const string &task_name, bool model_provides_graph, bool bundled_graph_exists,
+                                       bool bundled_header_matches, const string &precision) {
+	GpuServabilityInputs in;
+	in.backend = backend;
+	in.model = resolved.manifest.model;
+	in.task_name = task_name;
+	in.model_provides_graph = model_provides_graph;
+	in.bundled_graph_exists = bundled_graph_exists;
+	in.bundled_header_matches = bundled_header_matches;
+	in.precision = precision;
+	// Only a bundled graph needs staging; a model-provided one runs where it
+	// already is, so do not fail it on someone else's directory.
+	in.weights_dir_stageable = true;
+	if (!model_provides_graph && bundled_graph_exists && bundled_header_matches) {
+		const auto weights_dir = DirName(resolved.weights_path);
+		in.weights_dir_stageable = weights_dir.empty() || fs.DirectoryExists(weights_dir);
+	}
+	return EvaluateGpuServability(in);
+}
+
+//! A failure AFTER a device was committed to, phrased for whoever chose it.
+//!
+//! These paths are reached when the cheap capability check passed and
+//! something later did not -- most often a bundled graph that could not be
+//! staged beside read-only weights. They stay hard errors under 'auto' as well
+//! as under an explicit request, because degrading here is the silent fallback
+//! the whole design forbids. What has to differ is the TEXT: telling someone
+//! who never typed a device name that "device 'mlx' was requested" is
+//! confusing, and pointing them at a graph registration will not fix a
+//! directory they cannot write.
+string GpuPostCommitFailure(const string &device, const string &device_setting, const string &model,
+                            const string &what_failed, const string &fix) {
+	const bool explicit_request = IsExplicitGpuRequest(device_setting, BackendOfDeviceId(device));
+	const string who = explicit_request
+	                       ? "device '" + device + "' was requested"
+	                       : "'auto' selected device '" + device + "' for model '" + model +
+	                             "', because that is the best device this model can be served on";
+	return "anofox_tabfm: " + who + ", but " + what_failed + ". " + fix +
+	       " Or SET anofox_tabfm_device='cpu' to run this model on the CPU.";
+}
+
+//! Wrap a servability reason as the user-facing refusal for an explicitly
+//! requested device. Keeps the "here is the device, here is why, here is the
+//! way out" shape every §5 error has.
+string GpuRefusalMessage(const string &device, const string &reason) {
+	return "anofox_tabfm: device '" + device + "' was requested, but " + reason +
+	       ". SET anofox_tabfm_device='cpu' to run this model on the CPU, or SELECT * FROM tabfm_backends() to see "
+	       "which devices can serve it.";
+}
+
 // => fall back to the CPU/ORT path (no migraphx graph shipped for this task).
 //
 // Past the point where a migraphx graph is confirmed to exist for a resolved
@@ -850,7 +944,7 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                            const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
-	auto device = ResolveDevice(ctx.device, devices);
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
 	if (!StringUtil::StartsWith(device.device_id, "rocm")) {
 		return nullptr; // not the GPU path (cpu / cuda handled by the ORT backend)
 	}
@@ -860,35 +954,39 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "migraphx", task_name));
 	const bool bundled_matches =
 	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
-	string graph_path;
-	string weights_dir;
-	switch (SelectGpuGraph(!resolved.migraphx_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
-	case GpuGraphSource::MODEL_PROVIDED:
-		graph_path = resolved.migraphx_graph_path;
-		weights_dir = DirName(graph_path); // external data sits beside the graph
-		break;
-	case GpuGraphSource::BUNDLED: {
-		weights_dir = DirName(resolved.weights_path);
-		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "migraphx", task_name) + ".onnx");
-		if (!StageBundledGraph(fs, graph, graph_path)) {
-			if (IsExplicitGpuRequest(ctx.device, "rocm")) {
-				throw IOException("anofox_tabfm: device 'rocm' needs the bundled GPU graph staged beside the "
-				                  "weights, but '" + graph_path + "' could not be written (read-only weights "
-				                  "directory?). Make the directory writable or SET anofox_tabfm_device='cpu'.");
-			}
-			return nullptr;
-		}
-		break;
-	}
-	case GpuGraphSource::NONE:
+	// One predicate, shared with tabfm_backends() and with device resolution,
+	// so a refusal here and the matrix a user queries cannot disagree.
+	auto servability = GpuServabilityFor(fs, resolved, "rocm", task_name, !resolved.migraphx_graph_path.empty(),
+	                                     graph.data != nullptr, bundled_matches, ctx.gpu_precision);
+	if (!servability.supported) {
 		// Explicitly-requested ROCm + no runnable graph is an error here, with
 		// the real cause; declining silently used to surface a downstream
 		// message blaming ep_path (found running the examples on GPU hardware).
 		if (IsExplicitGpuRequest(ctx.device, "rocm")) {
-			throw InvalidInputException(
-			    NoGpuGraphMessage("rocm", resolved.manifest.model, task_name, "migraphx_graph"));
+			throw InvalidInputException(GpuRefusalMessage("rocm", servability.reason));
 		}
 		return nullptr;
+	}
+	string graph_path;
+	string weights_dir;
+	if (servability.source == GpuGraphSource::MODEL_PROVIDED) {
+		graph_path = resolved.migraphx_graph_path;
+		weights_dir = DirName(graph_path); // external data sits beside the graph
+	} else {
+		weights_dir = DirName(resolved.weights_path);
+		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "migraphx", task_name) + ".onnx");
+		if (!StageBundledGraph(fs, graph, graph_path)) {
+			// Servability said the directory was writable; if staging still
+			// failed the cause is not one a capability check can predict.
+			// Loud under 'auto' too: the capability check said this model was
+			// servable here, so falling back now would be the silent
+			// degradation the design forbids.
+			throw IOException(GpuPostCommitFailure(
+			    device.device_id, ctx.device, resolved.manifest.model,
+			    "the bundled GPU graph could not be staged beside the weights at '" + graph_path +
+			        "' (read-only weights directory?)",
+			    "Make that directory writable."));
+		}
 	}
 	const auto mxr_dir = fs.JoinPath(ctx.cache_dir, "migraphx");
 
@@ -897,7 +995,7 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 		    "anofox_tabfm: device 'rocm' was resolved but no backend plugin directory is configured. SET "
 		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_migraphx_plugin.so.");
 	}
-	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_migraphx_plugin.so");
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, PluginFileName("rocm"));
 
 	TabFMPluginCreateParams params {};
 	params.graph_path = graph_path.c_str();
@@ -932,7 +1030,7 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                        const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
-	auto device = ResolveDevice(ctx.device, devices);
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
 	if (!StringUtil::StartsWith(device.device_id, "cuda")) {
 		return nullptr; // not the CUDA path (cpu handled by the ORT backend, rocm above)
 	}
@@ -942,33 +1040,34 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
 	const bool bundled_matches =
 	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
-	string graph_path;
-	string weights_dir;
-	switch (SelectGpuGraph(!resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
-	case GpuGraphSource::MODEL_PROVIDED:
-		graph_path = resolved.ext_graph_path;
-		weights_dir = DirName(graph_path); // external data sits beside the graph
-		break;
-	case GpuGraphSource::BUNDLED: {
-		weights_dir = DirName(resolved.weights_path);
-		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
-		if (!StageBundledGraph(fs, graph, graph_path)) {
-			if (IsExplicitGpuRequest(ctx.device, "cuda")) {
-				throw IOException("anofox_tabfm: device 'cuda' needs the bundled GPU graph staged beside the "
-				                  "weights, but '" + graph_path + "' could not be written (read-only weights "
-				                  "directory?). Make the directory writable or SET anofox_tabfm_device='cpu'.");
-			}
-			return nullptr;
-		}
-		break;
-	}
-	case GpuGraphSource::NONE:
+	auto servability = GpuServabilityFor(fs, resolved, "cuda", task_name, !resolved.ext_graph_path.empty(),
+	                                     graph.data != nullptr, bundled_matches, ctx.gpu_precision);
+	if (!servability.supported) {
 		// Same contract as the ROCm branch above: an explicit 'cuda' with no
 		// runnable graph names the model and the fix, never ep_path.
 		if (IsExplicitGpuRequest(ctx.device, "cuda")) {
-			throw InvalidInputException(NoGpuGraphMessage("cuda", resolved.manifest.model, task_name, "ext_graph"));
+			throw InvalidInputException(GpuRefusalMessage("cuda", servability.reason));
 		}
 		return nullptr;
+	}
+	string graph_path;
+	string weights_dir;
+	if (servability.source == GpuGraphSource::MODEL_PROVIDED) {
+		graph_path = resolved.ext_graph_path;
+		weights_dir = DirName(graph_path); // external data sits beside the graph
+	} else {
+		weights_dir = DirName(resolved.weights_path);
+		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
+		if (!StageBundledGraph(fs, graph, graph_path)) {
+			// Loud under 'auto' too: the capability check said this model was
+			// servable here, so falling back now would be the silent
+			// degradation the design forbids.
+			throw IOException(GpuPostCommitFailure(
+			    device.device_id, ctx.device, resolved.manifest.model,
+			    "the bundled GPU graph could not be staged beside the weights at '" + graph_path +
+			        "' (read-only weights directory?)",
+			    "Make that directory writable."));
+		}
 	}
 
 	if (ctx.ep_path.empty()) {
@@ -977,7 +1076,7 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_cuda_plugin.so (CALL "
 		    "tabfm_download_runtime('cuda') to fetch it).");
 	}
-	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_cuda_plugin.so");
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, PluginFileName("cuda"));
 
 	TabFMPluginCreateParams params {};
 	params.graph_path = graph_path.c_str();
@@ -1012,7 +1111,7 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                       const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
-	auto device = ResolveDevice(ctx.device, devices);
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
 	if (!StringUtil::StartsWith(device.device_id, "mlx")) {
 		return nullptr; // not the MLX path
 	}
@@ -1044,10 +1143,20 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		graph_path.clear();
 		break;
 	}
-	// No graph and no hand-port means nothing to run. Explicit 'mlx' must say
-	// so rather than fall through to CPU -- the tier-4 contract.
+	// No graph and no hand-port means nothing to run, so this must say so
+	// rather than fall through to CPU -- the tier-4 contract. It used to be
+	// written as though only an explicit 'mlx' could reach it, which was true
+	// while 'auto' never resolved to mlx and is not any more: servability is
+	// checked before auto commits, but staging can still fail afterwards on a
+	// weights directory that is not writable.
 	if (graph_path.empty() && resolved.manifest.model != "mitra") {
-		throw InvalidInputException(NoGpuGraphMessage("mlx", resolved.manifest.model, task_name, "ext_graph"));
+		throw InvalidInputException(GpuPostCommitFailure(
+		    device.device_id, ctx.device, resolved.manifest.model,
+		    "no runnable graph for task '" + task_name +
+		        "' could be prepared — the bundled graph could not be staged beside the weights, or none matches "
+		        "them",
+		    "Make the weights directory writable, or register the model with " + task_name +
+		        "_ext_graph := '<graph.onnx>'."));
 	}
 	if (ctx.ep_path.empty()) {
 		throw InvalidInputException(
@@ -1055,7 +1164,7 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_mlx_plugin.dylib (CALL "
 		    "tabfm_download_runtime('mlx') to fetch it).");
 	}
-	const auto plugin_path = fs.JoinPath(ctx.ep_path, "libanofox_tabfm_mlx_plugin.dylib");
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, PluginFileName("mlx"));
 
 	// `arch` is backend-defined (see tabfm_plugin_abi.h): the GPU plugins read a
 	// compute architecture there, but MLX's hardware needs no such selector. It
@@ -1113,12 +1222,101 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 // belongs to the machine, not to a DuckDB instance, and two instances in one
 // process should agree about it. It is deliberately NOT used by `tabfm_devices()`,
 // so that diagnostic keeps probing live hardware.
-const string &ResolvedDeviceCached(const string &setting) {
+//! Is the plugin for `backend` present at `ep_path` and of an ABI we speak?
+//! Memoized per (ep_path, backend): the answer is a property of the
+//! filesystem, and the probe dlopens a library that is deliberately never
+//! unloaded, so asking once per predict would map it repeatedly.
+//!
+//! A consequence worth stating plainly: fetching a plugin mid-session does not
+//! change what 'auto' does until the next connection. That is the deliberate
+//! trade -- the alternative is invalidating a process-wide memo that
+//! DeviceMutex also keys on, which is the area issue #42 was about.
+//! tabfm_accelerate() says so in its output.
+
+//! Resolve the device for THIS model, not merely for this session.
+//!
+//! An explicit request is unchanged: ResolveDevice decides, and every
+//! downstream refusal stays a hard error via IsExplicitGpuRequest.
+//!
+//! 'auto' is where this differs, and the difference is the point. The old
+//! 'auto' could only ever pick a lane the compiled FLAVOR carried, so on the
+//! released cpu-flavor builds it was always cpu -- a user with a card and a
+//! plugin installed still got the CPU, on every platform. Making it pick a GPU
+//! session-wide would have been worse than useless: the codebase's
+//! anti-silent-fallback contract is enforced by IsExplicitGpuRequest, a string
+//! compare on the raw setting, whose asymmetry is deliberate -- an explicit
+//! request hard-errors where 'auto' declines quietly. So the moment 'auto'
+//! resolved to rocm, the nine catalog models with no MIGraphX graph would have
+//! been served on the CPU with nothing said.
+//!
+//! Resolving per (model, task) dissolves that rather than negotiating with it.
+//! 'auto' only ever names a device this model can actually be served on, so
+//! there is no fallback event left to report: tabfm-v1 goes to rocm and tabdpt
+//! goes to cpu in the same session, each because that is the best device that
+//! model supports. IsExplicitGpuRequest is untouched.
+string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx) {
+	auto devices = DiscoverDevices();
+	if (StringUtil::Lower(ctx.device) != "auto") {
+		return ResolveDevice(ctx.device, devices).device_id;
+	}
+	const string task_name = TabFMTaskName(resolved.manifest.task);
+	for (auto &device : devices) {
+		if (device.device_id == "cpu" || !device.usable) {
+			continue;
+		}
+		const string backend = BackendOfDeviceId(device.device_id);
+		// coreml is an in-process ORT provider, not a plugin, and is unverified
+		// (docs/DYNAMIC_BACKENDS.md). 'auto' does not reach for it.
+		if (backend != "cuda" && backend != "rocm" && backend != "mlx") {
+			continue;
+		}
+		// Is the lane even here? Cheap, local, and never create(): a plugin
+		// that is absent simply means this lane is not a candidate, which
+		// cannot turn a working CPU install into a failing one.
+		if (!PluginAvailableCached(ctx.ep_path, backend)) {
+			continue;
+		}
+		const bool is_rocm = backend == "rocm";
+		const string kind = is_rocm ? "migraphx" : "ext";
+		const string &model_graph = is_rocm ? resolved.migraphx_graph_path : resolved.ext_graph_path;
+		auto bundled = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, kind, task_name));
+		auto verdict = GpuServabilityFor(fs, resolved, backend, task_name, !model_graph.empty(),
+		                                 bundled.data != nullptr,
+		                                 bundled.data && WeightsHeaderMatches(fs, resolved.weights_path,
+		                                                                      resolved.manifest.model,
+		                                                                      resolved.manifest.task),
+		                                 ctx.gpu_precision);
+		if (verdict.supported) {
+			return device.device_id;
+		}
+	}
+	return "cpu";
+}
+
+// Memoized because the fix has to work on the hot path: `DiscoverDevices()`
+// dlopens NVML and calls nvmlInit on every invocation, which is fine once per
+// session load and not fine once per forward pass.
+//
+// The key carries everything the answer depends on. It used to be the setting
+// alone, which was correct only while resolution was a pure function of the
+// machine. It is now also a function of the MODEL (a per-model 'auto'), the
+// PRECISION (a mode the backend cannot run makes it unservable there) and
+// EP_PATH (whether the lane's plugin is present) -- and ep_path is a
+// per-connection setting, so leaving it out would let two databases in one
+// process inherit whichever raced first.
+const string &ResolvedDeviceCached(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx) {
 	static mutex memo_lock;
 	static map<string, string> memo;
+	// The generation leads, so a freshly installed plugin invalidates every
+	// prior answer at once (see BumpPluginProbeGeneration).
+	const string key = std::to_string(g_plugin_probe_generation.load()) + "\x1f" + ctx.device + "\x1f" +
+	                   resolved.manifest.model + "\x1f" + TabFMTaskName(resolved.manifest.task) + "\x1f" +
+	                   ctx.gpu_precision + "\x1f" + ctx.ep_path + "\x1f" + ctx.cache_dir + "\x1f" +
+	                   resolved.ext_graph_path + "\x1f" + resolved.migraphx_graph_path + "\x1f" +
+	                   resolved.weights_path + "\x1f" + (ctx.context_cache ? "1" : "0");
 	{
 		lock_guard<mutex> guard(memo_lock);
-		auto entry = memo.find(setting);
+		auto entry = memo.find(key);
 		if (entry != memo.end()) {
 			return entry->second;
 		}
@@ -1127,10 +1325,9 @@ const string &ResolvedDeviceCached(const string &setting) {
 	// lock across that would serialize unrelated first-time resolutions behind it.
 	// Two connections racing here compute the same answer, so the re-lookup on the
 	// way back in is a correctness no-op rather than a guard.
-	auto devices = DiscoverDevices();
-	auto resolved = ResolveDevice(setting, devices);
+	auto device_id = ResolveDeviceForModel(fs, resolved, ctx);
 	lock_guard<mutex> guard(memo_lock);
-	return memo.emplace(setting, resolved.device_id).first->second;
+	return memo.emplace(key, std::move(device_id)).first->second;
 }
 
 // Build (or reuse) the ORT session for `resolved` and return a snapshot of the
@@ -1157,7 +1354,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	// quietly becomes CPU" outcome the tier-4 contract in
 	// docs/DYNAMIC_BACKENDS.md exists to rule out, and it is invisible without
 	// looking at tabfm_models().device.
-	const string &wanted_device = ResolvedDeviceCached(ctx.device);
+	const string &wanted_device = ResolvedDeviceCached(fs, resolved, ctx);
 	// gpu_precision only shapes GPU sessions; for CPU it is "" so flipping the
 	// setting does not rebuild a session it never influenced.
 	const string wanted_precision = SessionPrecisionFor(wanted_device, ctx.gpu_precision);
@@ -1342,7 +1539,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	config.intra_op_threads = MaxValue<int64_t>(1, ctx.threads);
 	config.prepack = ctx.cpu_prepack;
 	auto devices = DiscoverDevices();
-	auto device = ResolveDevice(ctx.device, devices);
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
 	config.device_id = device.device_id;
 	config.device_ordinal = device.device_ordinal;
 	config.model_tag = TabFMTaskName(resolved.manifest.task);
@@ -1603,7 +1800,7 @@ public:
 		auto state = TabFMState::Get(*in.ctx.db);
 		TabFMRunOutput out;
 		{
-			lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(in.ctx.device)));
+			lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(*fs, resolved, in.ctx)));
 			auto model = LoadOrGetSession(*fs, *state, resolved, in.ctx);
 			auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
 
@@ -1716,6 +1913,60 @@ private:
 
 } // anonymous namespace
 
+string Sha256Hex(const_data_ptr_t data, idx_t len) {
+	unsigned char digest[EVP_MAX_MD_SIZE];
+	unsigned int n = 0;
+	EVP_Digest(data, len, digest, &n, EVP_sha256(), nullptr);
+	static const char *hex = "0123456789abcdef";
+	string out;
+	out.reserve(static_cast<size_t>(n) * 2);
+	for (unsigned int i = 0; i < n; i++) {
+		out.push_back(hex[digest[i] >> 4]);
+		out.push_back(hex[digest[i] & 0xf]);
+	}
+	return out;
+}
+
+// Defined with external linkage (declared in tabfm_predict.hpp) so
+// tabfm_backends() consults the SAME memo dispatch does -- a capability
+// relation that disagrees with dispatch about whether a lane exists is worse
+// than none, because every refusal message points users at it.
+bool PluginAvailableCached(const string &ep_path, const string &backend) {
+	static mutex memo_lock;
+	static map<string, bool> memo;
+	const string key =
+	    std::to_string(g_plugin_probe_generation.load()) + "\x1f" + ep_path + "\x1f" + backend;
+	{
+		lock_guard<mutex> guard(memo_lock);
+		auto entry = memo.find(key);
+		if (entry != memo.end()) {
+			return entry->second;
+		}
+	}
+	bool available = false;
+	if (!ep_path.empty()) {
+		auto fs = FileSystem::CreateLocal();
+		available = PluginLoadable(fs->JoinPath(ep_path, PluginFileName(backend)));
+	}
+	lock_guard<mutex> guard(memo_lock);
+	return memo.emplace(key, available).first->second;
+}
+
+bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task) {
+	const string expected = ExpectedWeightsHeaderShaFor(model, TabFMTaskName(task));
+	if (expected.empty()) {
+		return false;
+	}
+	if (StringUtil::Split(weights_path, "/").back() != "model.safetensors") {
+		return false;
+	}
+	string header;
+	if (!ReadWeightsHeaderBytes(fs, weights_path, header)) {
+		return false;
+	}
+	return Sha256Hex(const_data_ptr_cast(header.data()), header.size()) == expected;
+}
+
 PredictEngine &GetPredictEngine() {
 	static TabFMRealEngine engine;
 	return engine;
@@ -1731,7 +1982,7 @@ void TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows,
 	// Loads/caches the backend (registered in state) and warms the shape-bucket:
 	// on ROCm this is the expensive MIGraphX compile + .mxr cache; on CPU/CUDA the
 	// no-op default just leaves the freshly-built ORT session warm.
-	lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(ctx.device)));
+	lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(*fs, resolved, ctx)));
 	auto model = LoadOrGetSession(*fs, *state, resolved, ctx);
 	auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
 	backend->Precompile(rows, features);

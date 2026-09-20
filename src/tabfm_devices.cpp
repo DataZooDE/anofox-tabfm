@@ -562,9 +562,9 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 			throw InvalidInputException(
 			    "anofox_tabfm: '" + setting + "' hardware is present (" + discovered_name +
 			    ") but this build carries no '" + setting +
-			    "' runtime, so it cannot be driven. The GPU runtimes are not published yet — build from source "
-			    "with TABFM_FLAVOR=" +
-			    setting + " (see docs/rocm-build.md for the rocm toolchain), or SET anofox_tabfm_device='cpu'.");
+			    "' runtime, so it cannot be driven. Unlike the cuda/rocm/mlx plugins, coreml is compiled into "
+			    "the extension's own ONNX Runtime — build with TABFM_FLAVOR=coreml on macOS, or SET "
+			    "anofox_tabfm_device='cpu'.");
 		}
 		if (!carried) {
 			// Mirrors ThrowFlavorMissingDeviceLocal in tabfm_ort_engine.cpp: the
@@ -572,8 +572,10 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 			// there would land back here (issue #25).
 			throw InvalidInputException(
 			    "anofox_tabfm: this build is the '" + flavor + "' flavor and does not carry '" + setting +
-			    "'; the GPU flavors are not published yet, so build one from source with TABFM_FLAVOR=" +
-			    setting + " (see docs/rocm-build.md for the rocm toolchain), or SET "
+			    "'. coreml is an in-process ONNX Runtime provider, so it needs a build with "
+			    "TABFM_FLAVOR=coreml (macOS only) — it is not a downloadable plugin the way cuda, rocm and mlx "
+			    "are. On Apple Silicon prefer 'mlx', which is a plugin and serves every model: CALL "
+			    "tabfm_download_runtime('mlx'); SET anofox_tabfm_device='mlx'. Otherwise SET "
 			    "anofox_tabfm_device='cpu'. Released cpu builds: SET custom_extension_repository = "
 			    "'https://get.anofox.com'");
 		}

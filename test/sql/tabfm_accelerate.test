@@ -1,0 +1,81 @@
+# name: test/sql/tabfm_accelerate.test
+# description: CALL tabfm_accelerate() — one call from installed to accelerated.
+#              Asserted structurally so it holds on a CPU-only CI runner, a
+#              GPU box with a plugin, and a GPU box without one.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# __TEST_DIR__ is the sqllogictest scratch directory, cleaned up by the runner.
+# A RELATIVE path here was worse than untidy: on any host with a usable
+# accelerator, AccelerateBind picks a backend and the download path then
+# CreateDirectoriesRecursive's it in the working directory and reaches for
+# GitHub — so the test littered the repo root and tried to download, eight
+# times over. It left __tabfm_accelerate_test_dir__ behind, invisible to
+# `git status` only because git does not track empty directories.
+statement ok
+SET anofox_tabfm_ep_path = '__TEST_DIR__/tabfm_accelerate_ep';
+
+# It always reports, and always reports the two things a user needs to know:
+# what hardware was found, and what happens now.
+query I
+SELECT count(*) > 0 FROM tabfm_accelerate();
+----
+true
+
+query I
+SELECT count(*) FROM tabfm_accelerate() WHERE step = 'hardware';
+----
+1
+
+# Every row is a filled-in (step, status, detail) triple. An empty detail is a
+# step that reported nothing, which is worse than not reporting it.
+query I
+SELECT count(*) FROM tabfm_accelerate()
+WHERE step IS NULL OR status IS NULL OR detail IS NULL
+   OR step = '' OR status = '' OR detail = '';
+----
+0
+
+# Idempotent: calling it twice says the same thing. Onboarding commands get
+# re-run by people who are not sure whether the first one worked.
+query I
+SELECT (SELECT count(*) FROM tabfm_accelerate()) = (SELECT count(*) FROM tabfm_accelerate());
+----
+true
+
+# It never claims success it has not proved. A 'ready' device row may only
+# appear when verification actually passed — this is the whole contract: the
+# command's job is the lane, and it may not promise one it could not load.
+query I
+SELECT count(*) FROM tabfm_accelerate()
+WHERE step = 'device' AND status = 'ready'
+  AND NOT EXISTS (SELECT 1 FROM tabfm_accelerate() WHERE step = 'verify' AND status = 'ok');
+----
+0
+
+# Conversely a successful verify must tell the user the one surprising thing:
+# that it takes effect on the next connection, not this one.
+query I
+SELECT count(*) FROM tabfm_accelerate() a
+WHERE a.step = 'verify' AND a.status = 'ok'
+  AND NOT EXISTS (SELECT 1 FROM tabfm_accelerate() WHERE step = 'next');
+----
+0
+
+# A machine with no usable accelerator is told so plainly, and told that the
+# CPU serves everything — not left to wonder whether something broke.
+query I
+SELECT count(*) FROM tabfm_accelerate()
+WHERE step = 'hardware' AND status = 'none' AND detail NOT LIKE '%CPU%';
+----
+0
+
+# The alias and the full name are one function.
+query I
+SELECT (SELECT count(*) FROM tabfm_accelerate()) = (SELECT count(*) FROM anofox_tabfm_accelerate());
+----
+true

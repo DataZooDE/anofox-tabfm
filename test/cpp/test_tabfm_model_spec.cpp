@@ -414,3 +414,160 @@ TEST_CASE("model_spec: session precision key follows the device, not the code pa
 	REQUIRE(SessionPrecisionFor("", "fp32") == "");
 	REQUIRE(SessionPrecisionFor("coreml:0", "fp32") == "");
 }
+
+//===----------------------------------------------------------------------===//
+// GPU servability
+//
+// The predicate dispatch, the refusal messages and tabfm_backends() all read.
+// Pure, so every combination is testable without a model on disk — including
+// the ones no developer machine can produce.
+//===----------------------------------------------------------------------===//
+
+static GpuServabilityInputs ServableBase(const string &backend) {
+	GpuServabilityInputs in;
+	in.backend = backend;
+	in.model = "tabfm-v1";
+	in.task_name = "classification";
+	in.precision = "fp32";
+	return in;
+}
+
+TEST_CASE("servability: a model-provided graph is servable regardless of the bundled one",
+          "[tabfm][model_spec][servability]") {
+	auto in = ServableBase("cuda");
+	in.model_provides_graph = true;
+	// deliberately hostile: no bundled graph, header mismatch
+	in.bundled_graph_exists = false;
+	in.bundled_header_matches = false;
+	auto out = EvaluateGpuServability(in);
+	REQUIRE(out.supported);
+	REQUIRE(out.reason.empty());
+	REQUIRE(out.source == GpuGraphSource::MODEL_PROVIDED);
+}
+
+TEST_CASE("servability: a bundled graph needs its header to match the weights",
+          "[tabfm][model_spec][servability]") {
+	auto in = ServableBase("cuda");
+	in.bundled_graph_exists = true;
+	in.bundled_header_matches = true;
+	REQUIRE(EvaluateGpuServability(in).supported);
+
+	// Same graph, weights it was not baked against: the external-data offsets
+	// would index the wrong bytes, so it is not servable.
+	in.bundled_header_matches = false;
+	auto out = EvaluateGpuServability(in);
+	REQUIRE(!out.supported);
+	REQUIRE(out.source == GpuGraphSource::NONE);
+	REQUIRE(out.reason.find("does not match its weights") != string::npos);
+}
+
+TEST_CASE("servability: a read-only weights directory is its own reason, not 'no graph'",
+          "[tabfm][model_spec][servability]") {
+	// A bundled graph must be staged beside the weights before it can run.
+	// Reporting this as "no graph" would send the user to register one, which
+	// would not help: the graph exists and the directory is the problem.
+	auto in = ServableBase("rocm");
+	in.bundled_graph_exists = true;
+	in.bundled_header_matches = true;
+	in.weights_dir_stageable = false;
+	auto out = EvaluateGpuServability(in);
+	REQUIRE(!out.supported);
+	REQUIRE(out.reason.find("missing or not writable") != string::npos);
+	REQUIRE(out.reason.find("no ") == string::npos); // not the missing-graph text
+}
+
+TEST_CASE("servability: the nine ROCm-blocked models say WHY, not just no",
+          "[tabfm][model_spec][servability]") {
+	// tabdpt and friends read the train/test split from y's length, so a
+	// fixed-shape MIGraphX compile cannot bucket them. The user cannot fix
+	// this by registering a graph, so the reason must point at the analysis.
+	auto in = ServableBase("rocm");
+	in.model = "tabdpt";
+	in.bundled_graph_exists = false;
+	auto out = EvaluateGpuServability(in);
+	REQUIRE(!out.supported);
+	REQUIRE(out.reason.find("tabdpt") != string::npos);
+	REQUIRE(out.reason.find("ROCM_SINGLE_EVAL_POS") != string::npos);
+	REQUIRE(out.reason.find("migraphx_graph") != string::npos);
+}
+
+TEST_CASE("servability: a precision the backend cannot run makes it unservable there",
+          "[tabfm][model_spec][servability]") {
+	// Not a detail: with a per-model 'auto', committing to a device whose
+	// precision the plugin refuses turns a working CPU query into an error.
+	auto cuda = ServableBase("cuda");
+	cuda.model_provides_graph = true;
+	cuda.precision = "bf16"; // MIGraphX mode, no CUDA equivalent
+	auto out = EvaluateGpuServability(cuda);
+	REQUIRE(!out.supported);
+	REQUIRE(out.reason.find("bf16") != string::npos);
+	REQUIRE(out.reason.find("cuda") != string::npos);
+
+	// tf32 is CUDA's own mode and has no Metal/MIGraphX equivalent
+	auto mlx = ServableBase("mlx");
+	mlx.model_provides_graph = true;
+	mlx.precision = "tf32";
+	REQUIRE(!EvaluateGpuServability(mlx).supported);
+}
+
+TEST_CASE("servability: each backend's real precision set", "[tabfm][model_spec][servability]") {
+	// fp32 is every backend's reference mode; "" is the CPU path leaving it unset
+	for (const char *backend : {"cuda", "rocm", "mlx"}) {
+		REQUIRE(BackendSupportsPrecision(backend, "fp32"));
+		REQUIRE(BackendSupportsPrecision(backend, ""));
+	}
+	REQUIRE(BackendSupportsPrecision("cuda", "tf32"));
+	REQUIRE(!BackendSupportsPrecision("cuda", "bf16"));
+	REQUIRE(!BackendSupportsPrecision("cuda", "fp16"));
+
+	// MIGraphX quantizes; MLX casts. Both do bf16/fp16, neither does tf32.
+	for (const char *backend : {"rocm", "mlx"}) {
+		REQUIRE(BackendSupportsPrecision(backend, "bf16"));
+		REQUIRE(BackendSupportsPrecision(backend, "fp16"));
+		REQUIRE(!BackendSupportsPrecision(backend, "tf32"));
+	}
+}
+
+TEST_CASE("servability: the graph kind matches what tabfm_register_model accepts",
+          "[tabfm][model_spec][servability]") {
+	REQUIRE(GpuGraphKindFor("cuda") == "ext_graph");
+	REQUIRE(GpuGraphKindFor("mlx") == "ext_graph");
+	REQUIRE(GpuGraphKindFor("rocm") == "migraphx_graph");
+	REQUIRE(GpuGraphKindFor("migraphx") == "migraphx_graph");
+}
+
+//===----------------------------------------------------------------------===//
+// A device that resolved once and is then gone
+//
+// Device resolution is memoized while the device list is re-probed per
+// dispatch, so the two can disagree: a card is pulled, a driver reloads, an
+// NVML probe fails this time. What to do about it depends entirely on whether
+// the user named that device.
+//===----------------------------------------------------------------------===//
+
+TEST_CASE("servability: a vanished device the user ASKED for must raise, never become CPU",
+          "[tabfm][model_spec][servability]") {
+	// The regression this encodes: the first version of DeviceInfoFor
+	// synthesized a cpu row on a miss. Every Try*Backend gate is a StartsWith
+	// on the device id, so all three then declined and the ORT CPU path picked
+	// the work up silently — an explicit 'cuda' served on the CPU with nothing
+	// printed, which is exactly what IsExplicitGpuRequest exists to forbid.
+	REQUIRE(VanishedDeviceMustThrow("cuda:0", "cuda"));
+	REQUIRE(VanishedDeviceMustThrow("rocm:0", "rocm"));
+	REQUIRE(VanishedDeviceMustThrow("rocm:0", "migraphx")); // documented alias
+	REQUIRE(VanishedDeviceMustThrow("mlx:0", "mlx"));
+}
+
+TEST_CASE("servability: under 'auto' a vanished device falls to the CPU, which is what was asked for",
+          "[tabfm][model_spec][servability]") {
+	// 'auto' means "whatever works", and the CPU does. Raising here would turn
+	// a working install into a failing one the moment a card misbehaved.
+	REQUIRE(!VanishedDeviceMustThrow("cuda:0", "auto"));
+	REQUIRE(!VanishedDeviceMustThrow("rocm:0", "auto"));
+	// The CPU row is always present, so nothing can have vanished.
+	REQUIRE(!VanishedDeviceMustThrow("cpu", "cpu"));
+	REQUIRE(!VanishedDeviceMustThrow("cpu", "auto"));
+	// A device explicitly requested by a DIFFERENT name is not this user's
+	// explicit request either.
+	REQUIRE(!VanishedDeviceMustThrow("cuda:0", "rocm"));
+}

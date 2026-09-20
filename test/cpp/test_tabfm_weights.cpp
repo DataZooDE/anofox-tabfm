@@ -1,6 +1,7 @@
 #include "catch.hpp"
 
 #include "tabfm_weights.hpp"
+#include "tabfm_predict.hpp" // ResolveEpPath — shared by download and dispatch
 
 using namespace duckdb;
 using namespace duckdb::anofox;
@@ -50,4 +51,41 @@ TEST_CASE("tabfm_weights: a non-HuggingFace host still gets the secret hint", "[
 	REQUIRE(hint.find("models.example.com") != string::npos);
 	// no HuggingFace-specific license line for a generic host
 	REQUIRE(hint.find("huggingface.co/") == string::npos);
+}
+
+//===----------------------------------------------------------------------===//
+// ep_path resolution
+//
+// tabfm_download_runtime has always written the plugin into
+// <cache_dir>/runtime, but the two predict bind paths read
+// anofox_tabfm_ep_path raw and dispatch throws on an empty one — so
+// download-then-predict failed until the user also issued a SET naming the
+// directory the download had just chosen for them. One shared resolver gives
+// both sides the same default, and the SET goes back to being an override.
+//===----------------------------------------------------------------------===//
+
+TEST_CASE("tabfm_weights: an unset ep_path resolves to the directory downloads land in",
+          "[tabfm][weights][ep_path]") {
+	// The empty setting is the default (anofox_tabfm_ep_path defaults to ''),
+	// so this is the path every user who never issued a SET takes.
+	REQUIRE(ResolveEpPath("", "/home/u/.cache/anofox-tabfm") == "/home/u/.cache/anofox-tabfm/runtime");
+}
+
+TEST_CASE("tabfm_weights: a set ep_path overrides the default and is ~-expanded",
+          "[tabfm][weights][ep_path]") {
+	REQUIRE(ResolveEpPath("/opt/plugins", "/home/u/.cache/anofox-tabfm") == "/opt/plugins");
+	// ~ must expand here exactly as it does for cache_dir: the setting is a
+	// directory a human types.
+	const auto expanded = ResolveEpPath("~/plugins", "/home/u/.cache/anofox-tabfm");
+	REQUIRE(expanded.find('~') == string::npos);
+	REQUIRE(StringUtil::EndsWith(expanded, "/plugins"));
+}
+
+TEST_CASE("tabfm_weights: ep_path resolution never yields an empty directory",
+          "[tabfm][weights][ep_path]") {
+	// Dispatch throws on an empty ep_path naming a SET as the fix. With a
+	// default in place that message becomes unreachable through the settings
+	// path, so no combination of blank inputs may produce one.
+	REQUIRE(!ResolveEpPath("", "/c").empty());
+	REQUIRE(!ResolveEpPath("   ", "/c").empty());
 }

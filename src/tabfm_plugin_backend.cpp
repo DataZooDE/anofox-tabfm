@@ -20,6 +20,17 @@
 
 #include <cstring>
 
+// Is this translation unit built with AddressSanitizer? GCC defines the macro
+// directly; Clang answers through __has_feature. Used only to drop
+// RTLD_DEEPBIND below, which the sanitizer runtime cannot tolerate.
+#if defined(__SANITIZE_ADDRESS__)
+#define TABFM_SANITIZER_BUILD 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define TABFM_SANITIZER_BUILD 1
+#endif
+#endif
+
 #ifndef _WIN32
 #include <dlfcn.h>
 #else
@@ -51,8 +62,18 @@ LibraryHandle OpenLibrary(const string &path) {
 	// plugin-freed via free_output), which is the classic DEEPBIND hazard.
 	// glibc-only: macOS has no RTLD_DEEPBIND (and needs none — Mach-O
 	// two-level namespaces bind each image to the library it linked against).
+	//
+	// Exception, sanitizer builds only: RTLD_DEEPBIND is incompatible with the
+	// ASan/LSan runtime, which aborts the process on the dlopen rather than
+	// failing it (google/sanitizers#611). That abort killed the whole `make
+	// test_debug` C++ stage at the first plugin test, taking every later case
+	// with it — so a debug build could not run the plugin tests at all, which
+	// is exactly where plugin changes need testing. Dropping the flag under a
+	// sanitizer costs nothing real: DEEPBIND isolates a plugin's own ORT/HIP
+	// runtime from the host's, and the sanitizer build loads the weight-free
+	// fixture plugin, which has no such runtime to isolate.
 	int flags = RTLD_NOW | RTLD_LOCAL;
-#ifdef RTLD_DEEPBIND
+#if defined(RTLD_DEEPBIND) && !defined(TABFM_SANITIZER_BUILD)
 	flags |= RTLD_DEEPBIND;
 #endif
 	return dlopen(path.c_str(), flags);
@@ -143,6 +164,48 @@ private:
 };
 
 } // namespace
+
+bool PluginLoadable(const string &library_path, string *error) {
+	auto set_error = [&](string message) {
+		if (error) {
+			*error = std::move(message);
+		}
+	};
+	auto library = OpenLibrary(library_path);
+	if (!library) {
+		// The loader's own text is the useful part and is usually specific:
+		// a plugin present but unloadable almost always names the dependency
+		// that is missing (libmigraphx_c.so, a CUDA runtime), which is a
+		// different problem from the file not being there and has a different
+		// fix. Reporting only "not loadable" would hide it.
+		set_error(LibraryError());
+		return false;
+	}
+	auto entry = reinterpret_cast<TabFMGetPluginApiFn>(LibrarySymbol(library, TABFM_PLUGIN_ENTRY_SYMBOL));
+	if (!entry) {
+		CloseLibrary(library);
+		set_error("the library exports no " + string(TABFM_PLUGIN_ENTRY_SYMBOL) +
+		          " — a file with the right name but the wrong contents");
+		return false;
+	}
+	const TabFMPluginApi *api = entry();
+	if (api && api->abi_version != TABFM_PLUGIN_ABI_VERSION) {
+		set_error("built against plugin ABI version " + std::to_string(api->abi_version) + ", but this build speaks " +
+		          std::to_string(TABFM_PLUGIN_ABI_VERSION));
+	}
+	// Same ordering rule as LoadPluginBackend: abi_version is the only field
+	// safe to read before it has been checked.
+	const bool ok = api && api->abi_version == TABFM_PLUGIN_ABI_VERSION;
+	// Deliberately NOT unloaded on success: this library is about to be opened
+	// for real by LoadPluginBackend, and a GPU plugin that has been mapped once
+	// must not be unmapped underneath the driver context it may already have
+	// registered. On failure nothing was initialised, so closing is safe and
+	// keeps a probe of a wrong file from pinning it.
+	if (!ok) {
+		CloseLibrary(library);
+	}
+	return ok;
+}
 
 unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const TabFMPluginCreateParams &params) {
 	auto library = OpenLibrary(library_path);

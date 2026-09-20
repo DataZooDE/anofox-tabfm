@@ -59,14 +59,21 @@ BUILD_ROOT:=$(or $(TABFM_BUILD_ROOT),build)
 # sqllogictests register under their PATH ("test/sql/foo.test"), while the
 # Catch2 TUs in TABFM_CPP_TEST_SOURCES register under their tag ([tabfm]).
 # "test/*" alone silently skipped every C++ case in CI.
+# Sanitizer builds also need LSan pointed at the suppression list: ONNX
+# Runtime leaks one small allocation from its own static init that no
+# extension code can reach, and without this the run fails at exit with every
+# test passing. Narrow by design (see test/lsan.supp) — a leak in tabfm code
+# still fails.
+TABFM_TEST_ENV = DATAZOO_DISABLE_TELEMETRY=1 LSAN_OPTIONS=suppressions=$(CURDIR)/test/lsan.supp
+
 test_release_internal:
-	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/release/test/unittest "test/*"
-	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/release/test/unittest "[tabfm]"
+	$(TABFM_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/*"
+	$(TABFM_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest "[tabfm]"
 
 test_debug_internal:
-	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/debug/test/unittest "test/*"
-	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/debug/test/unittest "[tabfm]"
+	$(TABFM_TEST_ENV) ./$(BUILD_ROOT)/debug/test/unittest "test/*"
+	$(TABFM_TEST_ENV) ./$(BUILD_ROOT)/debug/test/unittest "[tabfm]"
 
 test_reldebug_internal:
-	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/reldebug/test/unittest "test/*"
-	DATAZOO_DISABLE_TELEMETRY=1 ./$(BUILD_ROOT)/reldebug/test/unittest "[tabfm]"
+	$(TABFM_TEST_ENV) ./$(BUILD_ROOT)/reldebug/test/unittest "test/*"
+	$(TABFM_TEST_ENV) ./$(BUILD_ROOT)/reldebug/test/unittest "[tabfm]"
