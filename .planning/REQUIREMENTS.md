@@ -12,11 +12,11 @@ columns) and must stay cpu-flavor-clean and weight-free.
 ### Classification Metrics
 
 - [x] **CMET-01**: User can compute classification accuracy over `(actual, predicted)` columns via a SQL aggregate
-- [ ] **CMET-02**: User can compute precision, recall, and F1 with an explicit averaging mode (micro / macro / weighted) — no silent default
-- [ ] **CMET-03**: User can compute log-loss (cross-entropy) from a per-class probability MAP, with probability clipping to avoid infinities
-- [ ] **CMET-04**: User can compute ROC-AUC with an explicit multiclass averaging mode and correct tie handling (rank-sum form)
-- [ ] **CMET-05**: User can compute a confusion matrix (as a table-valued result) over `(actual, predicted)`
-- [ ] **CMET-06**: User can compute Expected Calibration Error (ECE) from the per-class probability MAP
+- [x] **CMET-02**: User can compute precision, recall, and F1 with an explicit averaging mode (micro / macro / weighted) — no silent default
+- [x] **CMET-03**: User can compute log-loss (cross-entropy) from a per-class probability MAP, with probability clipping to avoid infinities
+- [x] **CMET-04**: User can compute ROC-AUC with an explicit multiclass averaging mode and correct tie handling (rank-sum form)
+- [x] **CMET-05**: User can compute a confusion matrix (as a table-valued result) over `(actual, predicted)`
+- [x] **CMET-06**: User can compute Expected Calibration Error (ECE) from the per-class probability MAP
 
 ### Regression Metrics
 
@@ -95,11 +95,11 @@ Which phases cover which requirements. Populated during roadmap creation.
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | CMET-01 | Phase 1 | Complete |
-| CMET-02 | Phase 1 | Pending |
-| CMET-03 | Phase 1 | Pending |
-| CMET-04 | Phase 1 | Pending |
-| CMET-05 | Phase 1 | Pending |
-| CMET-06 | Phase 1 | Pending |
+| CMET-02 | Phase 1 | Complete |
+| CMET-03 | Phase 1 | Complete |
+| CMET-04 | Phase 1 | Complete |
+| CMET-05 | Phase 1 | Complete |
+| CMET-06 | Phase 1 | Complete |
 | RMET-01 | Phase 1 | Pending |
 | RMET-02 | Phase 1 | Pending |
 | RMET-03 | Phase 1 | Pending |

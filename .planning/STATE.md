@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 01
 current_phase_name: Evaluation Metrics + Cross-Validation
 status: executing
-stopped_at: "Completed 01-01: scaffold wired, tabfm_accuracy tracer shipped (CMET-01), 3 commits"
-last_updated: "2026-09-20T20:45:16.616Z"
+stopped_at: "Completed 01-02: CMET-02..06 classification metrics, 2 commits"
+last_updated: "2026-09-20T21:07:00.220Z"
 last_activity: 2026-09-20
 last_activity_desc: Phase 01 execution started
-state_head: 1cf2fb6125a6ffdab938db143f8500507ddd2cf8
+state_head: da1650a39eb6a917d9ea4f1b07d88ff4adcf0bb3
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 4
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-19)
 ## Current Position
 
 Phase: 01 (Evaluation Metrics + Cross-Validation) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-09-20 — Phase 01 execution started
 
@@ -59,6 +59,7 @@ Progress: [░░░░░░░░░░] 0%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 01 P01 | 10 | 2 tasks | 15 files |
+| Phase 01 P02 | 18 | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -72,6 +73,8 @@ Recent decisions affecting current work:
 - Roadmap: Hard dependency gate — PSR-* (Phase 3) blocked on RDIST-* + MODL-01 + MGEN-* (Phase 2); point metrics + CV (Phase 1) unblocked.
 - [Phase 01]: Golden values hard-coded in .test files; generate_metric_fixtures.py traces sklearn origin but is not a build artifact — CI reproducibility without sklearn runtime dependency
 - [Phase 01]: FunctionDescription required for all tabfm_*/anofox_tabfm_* registered functions per tabfm_function_docs.test contract
+- [Phase 01]: Required avg enforced via 2-arg overload that always throws at bind — no silent default for F1/precision/recall/ROC-AUC
+- [Phase 01]: tabfm_confusion_matrix implemented as TABLE MACRO (not C++ table function) wrapping GROUP BY with replace() identifier quoting
 
 ### Pending Todos
 
@@ -93,6 +96,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-20T20:45:16.601Z
-Stopped at: Completed 01-01: scaffold wired, tabfm_accuracy tracer shipped (CMET-01), 3 commits
+Last session: 2026-09-20T21:07:00.204Z
+Stopped at: Completed 01-02: CMET-02..06 classification metrics, 2 commits
 Resume file: None
