@@ -1,0 +1,52 @@
+# name: test/sql/tabfm_gpu_precompile.test
+# description: tabfm_gpu_precompile honours both documented ways of choosing a model
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+# Regression: the bind validated the model and then threw the answer away, and
+# the execute path re-resolved with an EMPTY model id against a context whose
+# default_model was never set. Both documented ways of selecting a model were
+# therefore discarded, and the failure was the generic "N models are registered
+# and none is selected" — which names the two remedies that had just been
+# ignored. Harmless while the registry held one model; broken for every install
+# once the catalog grew.
+query IIIII
+CALL tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
+----
+classification	64	4	cpu	compiled
+
+# ...and via the session default, the other remedy the error text advertises.
+statement ok
+SET anofox_tabfm_default_model = 'fixture';
+
+query IIIII
+CALL tabfm_gpu_precompile('classification', 64, 4);
+----
+classification	64	4	cpu	compiled
+
+# The one-argument overload resolves a model the same way.
+query I
+SELECT count(*) FROM tabfm_gpu_precompile('classification');
+----
+1
+
+# NOT asserted here: the "no model selected" error. With the fixture
+# registered, anofox_tabfm_default_model='' resolves to the sole
+# SQL-registered model by documented design, so that path legitimately
+# succeeds in this file and the assertion I first wrote was simply wrong about
+# its own setup.

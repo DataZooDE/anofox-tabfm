@@ -1771,7 +1771,21 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
                                         vector<LogicalType> &return_types, vector<string> &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_gpu_precompile");
 	auto task = RequireTaskArgument(input, "tabfm_gpu_precompile");
-	FindManifest(context, "tabfm_gpu_precompile", ModelArg(input), task); // validates the task name
+	// Resolve the model HERE and carry the id into the context, rather than
+	// validating it and throwing the answer away.
+	//
+	// This used to call FindManifest purely for its side effect of validating
+	// the task, and the execute path then re-resolved with an empty model id
+	// against a ctx whose default_model was never set. So both documented ways
+	// of choosing a model -- `model := '<id>'` and SET
+	// anofox_tabfm_default_model -- were discarded, and the failure was the
+	// generic "11 models are registered and none is selected", which names the
+	// two remedies that had just been ignored.
+	//
+	// Harmless while the registry held one model; broken for every install
+	// since the catalog grew, which is to say all of them. Found by trying to
+	// warm a shape bucket from tabfm_accelerate()'s own advice.
+	auto manifest = FindManifest(context, "tabfm_gpu_precompile", ModelArg(input), task);
 	auto result = make_uniq<PrecompileBindData>();
 	result->task = task;
 	result->task_enum = task == "regression" ? TabFMTask::REGRESSION : TabFMTask::CLASSIFICATION;
@@ -1785,6 +1799,8 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	auto &ctx = result->ctx;
 	ctx.db = &DatabaseInstance::GetDatabase(context);
 	ctx.cache_dir = GetCacheDir(context);
+	// The execute path resolves exactly the model the bind just validated.
+	ctx.default_model = manifest.model;
 	Value v;
 	if (context.TryGetCurrentSetting("anofox_tabfm_threads", v) && !v.IsNull()) {
 		ctx.threads = v.GetValue<int64_t>();
@@ -1798,6 +1814,19 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", v) && !v.IsNull()) {
 		ctx.mxr_source = v.ToString();
 	}
+	// ep_path, via the same resolver the predict and download paths use.
+	//
+	// This context is assembled by hand rather than shared with those paths,
+	// so it silently missed the default: precompile refused with "no backend
+	// plugin directory is configured. SET anofox_tabfm_ep_path" on a machine
+	// where tabfm_accelerate() had already installed the plugin and every
+	// predict was using it happily. A fourth site for a setting I had called
+	// three.
+	string ep_setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", v) && !v.IsNull()) {
+		ep_setting = v.ToString();
+	}
+	ctx.ep_path = ResolveEpPath(ep_setting, ctx.cache_dir);
 	names = {"task", "rows", "features", "device", "status"};
 	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR,
 	                LogicalType::VARCHAR};

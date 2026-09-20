@@ -118,6 +118,51 @@ graphs and re-establishing CUDA and CPU parity, not just adding a ROCm one.
 That is the item to budget, and it is a per-model cost of roughly "one model's
 onboarding", not the cross-catalog bump the review feared.
 
+## Measured baseline: what ROCm is actually worth here
+
+Run on the dev box (RX 9070 XT, gfx1201, ROCm 7.2.4 + MIGraphX 7.2.3) with
+`tools/bench/bench.py`, mitra, 3 features, 80% context, warm (shape buckets
+precompiled), every cell confirmed by `served_by`:
+
+| rows | CPU | ROCm | speedup |
+|---:|---:|---:|---:|
+| 100 | 366 ms | *unmeasurable* | — |
+| 1000 | 4035 ms | 443 ms | **9.1x** |
+| 2500 | 14914 ms | 2455 ms | **6.1x** |
+
+Two things to read carefully here.
+
+**The 100-row cell is null, not fast.** The harness reports null when the
+difference is not positive — at that size the inference is lost in process
+startup. It is not evidence that ROCm is slow at 100 rows; it is evidence that
+this method cannot measure it, which is the honest output.
+
+**These are lower than the 20-80x in `docs/DYNAMIC_BACKENDS.md`.** Different
+measurement: that table is tabfm-v1 (a 6.5 GB model) timed around the forward
+pass; this is mitra (300 MB) end-to-end through SQL, including preprocessing
+and decode. Neither is wrong; they answer different questions, and this one is
+the question a user experiences.
+
+### Why this baseline is the right estimate for converted tabdpt
+
+The obvious objection to the conversion is that masking does strictly more
+work: K/V projected over all `T` rows instead of `S`, and attention over `T x T`
+instead of `L x S`, with bucket padding making both worse. At 2500 rows padded
+to the 4096 bucket that is roughly an order of magnitude more attention
+arithmetic. If the GPU only buys 6-9x, the overhead could eat the entire win.
+
+**It does not, and mitra is the proof.** Mitra is already in the
+train_size-scalar family: it declares `train_size` and `d`, pads to the same
+buckets, and masks exactly as converted tabdpt would. The contract this spike
+would give tabdpt is the contract mitra already has. So the 6.1-9.1x above is
+not a speedup that the conversion overhead must still be subtracted from — it
+is a speedup measured *with that overhead already paid*.
+
+That does not make the conversion certain to pay off for tabdpt specifically:
+its architecture differs (retrieval-style attention, a different depth/width
+ratio), and only converting it settles that. But it removes the reason to
+expect it cannot.
+
 ## Why this is not executed here
 
 Two reasons, neither of them effort:
