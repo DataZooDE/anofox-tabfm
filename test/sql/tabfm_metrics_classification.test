@@ -64,11 +64,15 @@ SELECT round(tabfm_accuracy(actual, predicted), 6) FROM preds_with_nulls
 1.0
 
 # --- Empty / all-NULL input returns NULL ---
+# preds_empty columns are explicitly typed VARCHAR to avoid DuckDB inferring
+# INTEGER for untyped NULLs, which was causing a Binder Error pre-fix.
+# With the {ANY, ANY} registration this is no longer strictly necessary but
+# preserves intent clarity.
 
 statement ok
 CREATE TABLE preds_empty AS SELECT * FROM (VALUES
-  (NULL, NULL),
-  (NULL, NULL)
+  (NULL::VARCHAR, NULL::VARCHAR),
+  (NULL::VARCHAR, NULL::VARCHAR)
 ) v(actual, predicted);
 
 query I
@@ -85,12 +89,13 @@ SELECT tabfm_accuracy(actual, predicted) IS NULL FROM preds_zero
 ----
 true
 
-# --- Non-VARCHAR (INTEGER) inputs: implicit cast to VARCHAR at bind time (CR-01) ---
-# DuckDB must insert an implicit cast when the registration is {VARCHAR, VARCHAR}.
-# Integer 1 casts to '1', integer 2 to '2'.
+# --- Non-VARCHAR (INTEGER) inputs: ANY-typed binding (CR-01 / Option B fix) ---
+# Registration is {ANY, ANY}; DuckDB binds INTEGER columns directly without
+# requiring an explicit CAST. Label equality uses Value comparison, which is
+# type-safe for all DuckDB types (no raw-byte string_t reinterpretation).
 # actual=[1,2,1], predicted=[1,1,1]  =>  correct rows: 1 and 3  =>  2/3 = 0.666667
-# This test gates the fix for CR-01: passing INTEGER columns must NOT crash or
-# silently reinterpret int32 bytes as string_t (which was the WR-03 regression).
+# This test gates the Option B fix: passing INTEGER columns must bind, compute
+# correctly, and not crash or silently corrupt results.
 
 statement ok
 CREATE TABLE preds_int AS SELECT * FROM (VALUES

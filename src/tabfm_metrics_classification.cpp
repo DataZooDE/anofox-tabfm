@@ -51,11 +51,17 @@ namespace {
 //===----------------------------------------------------------------------===//
 // tabfm_accuracy — CMET-01
 //
-// Computes correct / total as DOUBLE over (actual VARCHAR, predicted VARCHAR).
-// Registered with VARCHAR inputs so DuckDB inserts an implicit cast at bind
-// time for non-VARCHAR columns (INTEGER, BIGINT, DATE, …); this guarantees the
-// raw GetData<string_t>() access in AccuracyUpdate is always reading real
-// string_t values, not reinterpreted integer/float bytes (CR-01).
+// Computes correct / total as DOUBLE over ANY-typed (actual, predicted) inputs.
+// Registered with {ANY, ANY} so DuckDB accepts INTEGER, BIGINT, DATE, VARCHAR,
+// and any other type without requiring an explicit CAST (model-agnostic intent
+// per CMET-01 and 01-CONTEXT.md). Label equality is determined via per-row
+// Value comparison, which is type-safe for all DuckDB types.
+//
+// Note: DuckDB v1.5.4 does NOT insert implicit casts from INTEGER→VARCHAR for
+// aggregate functions; a {VARCHAR, VARCHAR} registration raises a Binder Error
+// for integer columns. The ANY registration plus Value::ToString() for the map
+// key preserves correctness at all types (Option B from 01-VERIFICATION.md).
+//
 // NULL semantics: rows where actual OR predicted is NULL are skipped (not
 // counted in either numerator or denominator). Empty / all-NULL input returns
 // NULL (standard SQL aggregate NULL-on-empty). Alias: tabfm_accuracy.
@@ -64,7 +70,7 @@ namespace {
 //===----------------------------------------------------------------------===//
 
 struct AccuracyState {
-	int64_t correct; // pairs where actual == predicted (as string)
+	int64_t correct; // pairs where actual == predicted
 	int64_t total;   // valid (non-NULL) pairs seen
 };
 
@@ -76,21 +82,19 @@ void AccuracyStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
 	new (state_ptr) AccuracyState{0, 0};
 }
 
-// Update — UnifiedVectorFormat NULL-skip (01-PATTERNS.md "NULL skip in Update")
+// Update — per-row Value comparison for ANY-typed inputs.
 // Signature: (inputs, aggr_input_data, input_count [discarded], states, row_count)
+//
+// Uses the DuckDB Value path (inputs[i].GetValue(row)) rather than raw
+// GetData<string_t>() because the registration accepts ANY type; casting raw
+// bytes of e.g. an INTEGER column as string_t would silently corrupt results or
+// crash (CR-01). Value equality is type-aware and safe for all DuckDB types.
 void AccuracyUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector, idx_t count) {
 	UnifiedVectorFormat sdata, actual_data, predicted_data;
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, predicted_data);
 	auto states = reinterpret_cast<AccuracyState **>(sdata.data);
-
-	// Hoist data pointers outside the loop — GetData() is a single pointer-cast
-	// with no side effects, so calling it per-iteration was pure overhead (IN-01).
-	// Safe because the registration uses {VARCHAR, VARCHAR} (not ANY), so DuckDB
-	// guarantees the backing buffer holds string_t values (CR-01).
-	auto *actual_raw    = UnifiedVectorFormat::GetData<string_t>(actual_data);
-	auto *predicted_raw = UnifiedVectorFormat::GetData<string_t>(predicted_data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -105,10 +109,9 @@ void AccuracyUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_
 		auto &state = *states[sidx];
 		state.total++;
 
-		// Compare string_t values directly (zero allocation); safe because the
-		// inputs are bound as VARCHAR (implicit cast inserted by DuckDB at bind
-		// time for non-VARCHAR columns such as INTEGER or DATE).
-		if (actual_raw[aidx] == predicted_raw[pidx]) {
+		// Compare via Value for type-safety — works for INTEGER, BIGINT, DATE,
+		// VARCHAR, and all other DuckDB types without implicit cast assumptions.
+		if (inputs[0].GetValue(i) == inputs[1].GetValue(i)) {
 			state.correct++;
 		}
 	}
@@ -284,12 +287,12 @@ void F1Update(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector
 		}
 		auto &class_map = *slot.data;
 
-		// Use raw string_t pointers from UnifiedVectorFormat to avoid per-row
-		// Value heap allocation from GetValue(i) (WR-03).
-		auto *actual_raw    = UnifiedVectorFormat::GetData<string_t>(actual_data);
-		auto *predicted_raw = UnifiedVectorFormat::GetData<string_t>(predicted_data);
-		std::string actual_str    = actual_raw[aidx].GetString();
-		std::string predicted_str = predicted_raw[pidx].GetString();
+		// Use Value::ToString() for map keys so ANY-typed inputs (INTEGER, DATE,
+		// VARCHAR, …) produce a stable string key without raw-byte reinterpretation
+		// (CR-01; WR-03 micro-opt reverted in favour of correctness — registration
+		// is now {ANY, ANY} per 01-VERIFICATION.md Option B).
+		std::string actual_str    = inputs[0].GetValue(i).ToString();
+		std::string predicted_str = inputs[1].GetValue(i).ToString();
 
 		// Ensure both class entries exist before modifying them
 		class_map[actual_str];    // default-insert if missing
@@ -1035,15 +1038,16 @@ static unique_ptr<CreateMacroInfo> BuildConfusionMacroInfo(const std::string &na
 
 void RegisterClassificationMetrics(ExtensionLoader &loader) {
 	// --- tabfm_accuracy / anofox_tabfm_accuracy (CMET-01) ---
-	// Registered with {VARCHAR, VARCHAR} (not ANY) so DuckDB inserts an implicit
-	// cast at bind time for non-VARCHAR inputs (INTEGER, BIGINT, DATE, …).
-	// AccuracyUpdate reads the buffer via GetData<string_t>(), which is safe only
-	// when the backing buffer holds string_t; ANY would let integer columns reach
-	// the Update without casting, causing silent data corruption or a crash (CR-01).
+	// Registered with {ANY, ANY} so DuckDB accepts INTEGER, BIGINT, DATE, VARCHAR,
+	// and any other type without requiring an explicit CAST (model-agnostic intent
+	// per CMET-01). AccuracyUpdate uses Value comparison (not raw GetData<string_t>()),
+	// which is safe for all DuckDB types. DuckDB v1.5.4 does NOT auto-cast
+	// INTEGER→VARCHAR for aggregate functions; {VARCHAR, VARCHAR} raises a Binder
+	// Error for integer columns (01-VERIFICATION.md Option B).
 	{
 		AggregateFunctionSet set("anofox_tabfm_accuracy");
 		AggregateFunction fn("anofox_tabfm_accuracy",
-		                     {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::DOUBLE,
+		                     {LogicalType::ANY, LogicalType::ANY}, LogicalType::DOUBLE,
 		                     AccuracyStateSize, AccuracyStateInit, AccuracyUpdate, AccuracyCombine,
 		                     AccuracyFinalize, /*simple_update=*/nullptr, AccuracyBind,
 		                     /*state_destroy=*/nullptr);
@@ -1060,17 +1064,18 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 
 	// --- tabfm_precision / anofox_tabfm_precision (CMET-02) ---
 	// Two overloads:
-	//   3-arg (actual, predicted, avg): accepted
+	//   3-arg (actual, predicted, avg): accepted; actual/predicted accept ANY type
 	//   2-arg (actual, predicted):      bind throws the named exception
+	// {ANY, ANY, VARCHAR} lets integer/float/date label columns bind without CAST.
 	{
 		AggregateFunctionSet set("anofox_tabfm_precision");
 		AggregateFunction fn3("anofox_tabfm_precision",
-		                      {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+		                      {LogicalType::ANY, LogicalType::ANY, LogicalType::VARCHAR},
 		                      LogicalType::DOUBLE, F1StateSize, F1StateInit, F1Update, F1Combine,
 		                      F1Finalize, /*simple_update=*/nullptr, PrecisionBind, F1StateDestroy);
 		set.AddFunction(fn3);
 		AggregateFunction fn2(
-		    "anofox_tabfm_precision", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::DOUBLE,
+		    "anofox_tabfm_precision", {LogicalType::ANY, LogicalType::ANY}, LogicalType::DOUBLE,
 		    F1StateSize, F1StateInit, F1Update, F1Combine, F1Finalize,
 		    /*simple_update=*/nullptr,
 		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
@@ -1091,15 +1096,16 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 	}
 
 	// --- tabfm_recall / anofox_tabfm_recall (CMET-02) ---
+	// {ANY, ANY, VARCHAR}: label columns accept any DuckDB type; avg stays VARCHAR.
 	{
 		AggregateFunctionSet set("anofox_tabfm_recall");
 		AggregateFunction fn3("anofox_tabfm_recall",
-		                      {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+		                      {LogicalType::ANY, LogicalType::ANY, LogicalType::VARCHAR},
 		                      LogicalType::DOUBLE, F1StateSize, F1StateInit, F1Update, F1Combine,
 		                      F1Finalize, /*simple_update=*/nullptr, RecallBind, F1StateDestroy);
 		set.AddFunction(fn3);
 		AggregateFunction fn2(
-		    "anofox_tabfm_recall", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::DOUBLE,
+		    "anofox_tabfm_recall", {LogicalType::ANY, LogicalType::ANY}, LogicalType::DOUBLE,
 		    F1StateSize, F1StateInit, F1Update, F1Combine, F1Finalize,
 		    /*simple_update=*/nullptr,
 		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
@@ -1120,15 +1126,16 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 	}
 
 	// --- tabfm_f1 / anofox_tabfm_f1 (CMET-02) ---
+	// {ANY, ANY, VARCHAR}: label columns accept any DuckDB type; avg stays VARCHAR.
 	{
 		AggregateFunctionSet set("anofox_tabfm_f1");
 		AggregateFunction fn3("anofox_tabfm_f1",
-		                      {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR},
+		                      {LogicalType::ANY, LogicalType::ANY, LogicalType::VARCHAR},
 		                      LogicalType::DOUBLE, F1StateSize, F1StateInit, F1Update, F1Combine,
 		                      F1Finalize, /*simple_update=*/nullptr, F1ScoreBind, F1StateDestroy);
 		set.AddFunction(fn3);
 		AggregateFunction fn2(
-		    "anofox_tabfm_f1", {LogicalType::VARCHAR, LogicalType::VARCHAR}, LogicalType::DOUBLE,
+		    "anofox_tabfm_f1", {LogicalType::ANY, LogicalType::ANY}, LogicalType::DOUBLE,
 		    F1StateSize, F1StateInit, F1Update, F1Combine, F1Finalize,
 		    /*simple_update=*/nullptr,
 		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
