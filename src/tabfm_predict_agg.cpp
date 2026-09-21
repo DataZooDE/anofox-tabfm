@@ -54,6 +54,7 @@ struct PredictBindData : public FunctionData {
 		return function_name == other.function_name && target == other.target &&
 		       target_idx == other.target_idx && row_type == other.row_type &&
 		       options.task == other.options.task && options.detail == other.options.detail &&
+		       options.distribution == other.options.distribution &&
 		       options.n_estimators == other.options.n_estimators && options.seed == other.options.seed &&
 		       options.context_rows == other.options.context_rows && options.model == other.options.model &&
 		       max_rows == other.max_rows;
@@ -61,6 +62,12 @@ struct PredictBindData : public FunctionData {
 
 	bool EmitProba() const {
 		return options.detail && options.task == TabFMTask::CLASSIFICATION;
+	}
+	//! True when the distribution fields (yhat_dist + yhat_quantiles) are added
+	//! to the return type (RDIST-02). Requires output_mode='distribution' AND
+	//! regression — classification never emits a bar distribution.
+	bool EmitDistribution() const {
+		return options.distribution && options.task == TabFMTask::REGRESSION;
 	}
 	LogicalType YhatType() const {
 		return options.task == TabFMTask::CLASSIFICATION ? target_type : LogicalType::DOUBLE;
@@ -75,7 +82,7 @@ struct PredictBindData : public FunctionData {
 		}
 		return LogicalType::STRUCT(std::move(fields));
 	}
-	//! aggregate return shape: LIST(STRUCT(cols, yhat, yhat_score, is_training[, proba]))
+	//! aggregate return shape: LIST(STRUCT(cols, yhat, yhat_score, is_training[, proba][, yhat_dist, yhat_quantiles]))
 	LogicalType ListStructType() const {
 		child_list_t<LogicalType> fields;
 		fields.emplace_back("cols", row_type); // 'row' is a reserved word (S04)
@@ -84,6 +91,16 @@ struct PredictBindData : public FunctionData {
 		fields.emplace_back("is_training", LogicalType::BOOLEAN);
 		if (EmitProba()) {
 			fields.emplace_back("proba", LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE));
+		}
+		// Distribution fields: only when output_mode='distribution' AND regression (RDIST-02).
+		// Absent from the return type when not emitting (backward compatible default).
+		// Pitfall 6: child types must exactly match what DecodeDistribution produces —
+		// use Value::LIST(LogicalType::DOUBLE, ...) in the population code.
+		if (EmitDistribution()) {
+			fields.emplace_back("yhat_dist",
+			                    LogicalType::STRUCT({{"logits", LogicalType::LIST(LogicalType::DOUBLE)},
+			                                        {"borders", LogicalType::LIST(LogicalType::DOUBLE)}}));
+			fields.emplace_back("yhat_quantiles", LogicalType::LIST(LogicalType::DOUBLE));
 		}
 		return LogicalType::LIST(LogicalType::STRUCT(std::move(fields)));
 	}
@@ -141,8 +158,12 @@ void ParseOneOption(const string &fname, PredictBindData &bind, const string &ke
 		auto mode = StringUtil::Lower(val);
 		if (mode == "detail") {
 			opts.detail = true;
+		} else if (mode == "distribution") {
+			opts.detail = false;        // mutually exclusive with detail
+			opts.distribution = true;
 		} else if (mode != "compact") {
-			throw BinderException("%s: output_mode must be 'compact' or 'detail', got '%s'", fname, val);
+			throw BinderException("%s: output_mode must be 'compact', 'detail', or 'distribution', got '%s'", fname,
+			                      val);
 		}
 	} else if (key == "context_rows") {
 		if (val.empty()) {
@@ -566,6 +587,16 @@ void PredictAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_dat
 
 		const idx_t list_start = ListVector::GetListSize(result);
 		const bool emit_proba = bind.EmitProba();
+		const bool emit_dist = bind.EmitDistribution();
+
+		// Null STRUCT typed value for rows where no distribution was computed
+		// (e.g., is_training=true rows); must match the declared STRUCT type exactly.
+		const LogicalType dist_struct_type = LogicalType::STRUCT(
+		    {{"logits", LogicalType::LIST(LogicalType::DOUBLE)},
+		     {"borders", LogicalType::LIST(LogicalType::DOUBLE)}});
+		const Value null_dist = Value(dist_struct_type);
+		const Value null_quantiles = Value(LogicalType::LIST(LogicalType::DOUBLE));
+
 		for (idx_t j = 0; j < rows.size(); j++) {
 			child_list_t<Value> struct_fields;
 			struct_fields.emplace_back("cols", row_values[j]);
@@ -574,6 +605,24 @@ void PredictAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_dat
 			struct_fields.emplace_back("is_training", Value::BOOLEAN(!rows[j][bind.target_idx].IsNull()));
 			if (emit_proba) {
 				struct_fields.emplace_back("proba", predictions.proba[j]);
+			}
+			// Distribution fields (RDIST-02): mirror the proba population pattern.
+			// Use Value::LIST(LogicalType::DOUBLE, ...) — typed overload required
+			// (Pitfall 6: child type must match the bind-time declared type exactly).
+			if (emit_dist) {
+				if (!predictions.yhat_dist_logits.empty() && j < predictions.yhat_dist_logits.size() &&
+				    !predictions.yhat_dist_logits[j].IsNull()) {
+					// Assemble yhat_dist STRUCT(logits LIST(DOUBLE), borders LIST(DOUBLE))
+					child_list_t<Value> dist_fields;
+					dist_fields.emplace_back("logits", predictions.yhat_dist_logits[j]);
+					dist_fields.emplace_back("borders", predictions.yhat_dist_borders[j]);
+					struct_fields.emplace_back("yhat_dist", Value::STRUCT(std::move(dist_fields)));
+					struct_fields.emplace_back("yhat_quantiles", predictions.yhat_quantiles[j]);
+				} else {
+					// Row has no distribution (e.g., training row or model without borders)
+					struct_fields.emplace_back("yhat_dist", null_dist);
+					struct_fields.emplace_back("yhat_quantiles", null_quantiles);
+				}
 			}
 			// ListVector::PushBack grows the child vector as needed (10k+ safe)
 			ListVector::PushBack(result, Value::STRUCT(std::move(struct_fields)));
