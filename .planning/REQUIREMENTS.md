@@ -36,12 +36,12 @@ columns) and must stay cpu-flavor-clean and weight-free.
 
 - [x] **MGEN-01**: A preprocessing-profile registry maps a manifest `preprocessing_profile` string to a C++ preprocessing function; the existing `tabfm-v1` profile self-registers
 - [x] **MGEN-02**: Model loading dispatches preprocessing through the registry (rejecting unknown profiles with a named, actionable error)
-- [ ] **MGEN-03**: Model-output validation (shape/rank/class-count) runs before decode for every family, extending the existing P0 gap
+- [x] **MGEN-03**: Model-output validation (shape/rank/class-count) runs before decode for every family, extending the existing P0 gap
 
 ### Regression Distribution Output
 
-- [ ] **RDIST-01**: The ORT run output can carry a regression predictive distribution (per-bin logits + bin borders), empty when a model does not emit one
-- [ ] **RDIST-02**: `output_mode='distribution'` emits a predictive distribution and quantiles for regression, backward-compatible with point-estimate output
+- [x] **RDIST-01**: The ORT run output can carry a regression predictive distribution (per-bin logits + bin borders), empty when a model does not emit one
+- [x] **RDIST-02**: `output_mode='distribution'` emits a predictive distribution and quantiles for regression, backward-compatible with point-estimate output
 
 ### Model Onboarding
 
@@ -112,9 +112,9 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CV-04 | Phase 1 | Complete |
 | MGEN-01 | Phase 2 | Complete |
 | MGEN-02 | Phase 2 | Complete |
-| MGEN-03 | Phase 2 | Pending |
-| RDIST-01 | Phase 2 | Pending |
-| RDIST-02 | Phase 2 | Pending |
+| MGEN-03 | Phase 2 | Complete |
+| RDIST-01 | Phase 2 | Complete |
+| RDIST-02 | Phase 2 | Complete |
 | MODL-01 | Phase 2 | Pending (fixture-scoped; real export → v2) |
 | MODL-02 | v2 | Deferred (TabICL export infeasible) |
 | MODL-03 | Phase 2 | Pending |

@@ -68,10 +68,10 @@ Decimal phases appear between their surrounding integers in numeric order.
   - **TabPFN v2 tensor contract — CONFIRMED**: K=5000 bins; logits `[n_test, K]` f32; borders `[K+1]` f32, checkpoint-fixed and **highly non-uniform** (widths vary ~28,000:1) — CRPS/quantiles MUST use the actual bucket widths. Real ONNX export blocked (data-dependent preprocessing + chunked attention). `tools/export_onnx` currently emits Google TabFM (scalar `C=1`), an incompatible contract.
   - **TabICL ONNX export — INFEASIBLE** on tabicl 2.2.0 (data-dependent Stage-1 branches). Deferred pending upstream PRs.
 
-**Plans**: 1/4 plans executed
+**Plans**: 2/4 plans executed
 
 - [x] 02-01-PLAN.md — Preprocessing-profile registry tracer: tabfm-v1 predict routed through the registry + unknown-profile named error + scaffold batch (MGEN-01/02)
-- [ ] 02-02-PLAN.md — Distribution output path: ORT borders + contract validation + output_mode='distribution' decode over non-uniform borders (RDIST-01/02, MGEN-03)
+- [x] 02-02-PLAN.md — Distribution output path: ORT borders + contract validation + output_mode='distribution' decode over non-uniform borders (RDIST-01/02, MGEN-03)
 - [ ] 02-03-PLAN.md — Weight-free K=16 tabpfn_v2 fixture family + tools/parity contract validator + fixture-scoped profile (MODL-01, MODL-04)
 - [ ] 02-04-PLAN.md — Per-family license gate + end-to-end distribution predict vs golden (MODL-03)
 
@@ -100,7 +100,7 @@ Phases execute in numeric order: 1 → 2 → 3
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Evaluation Metrics + Cross-Validation | 4/4 | Complete    | 2026-09-21 |
-| 2. Model Generalization + Multi-Family Onboarding | 1/4 | In Progress|  |
+| 2. Model Generalization + Multi-Family Onboarding | 2/4 | In Progress|  |
 | 3. Proper Scoring Rules + Cross-Model Comparison | 0/TBD | Not started | - |
 
 ## Recommended Spikes

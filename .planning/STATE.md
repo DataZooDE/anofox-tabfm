@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 02
 current_phase_name: Model Generalization + Distribution Output
 status: executing
-stopped_at: Completed 02-01-PLAN.md
-last_updated: "2026-09-21T19:56:06.000Z"
+stopped_at: Completed 02-02-PLAN.md
+last_updated: "2026-09-21T20:15:49.942Z"
 last_activity: 2026-09-21
 last_activity_desc: Phase 02 execution started
-state_head: 4176e0e836279b99fd725b742c1cc3bbaa32aa8e
+state_head: 8888c6614662793ecb4aa98edc85647eaa45c1f7
 progress:
   total_phases: 3
   completed_phases: 0
   total_plans: 8
-  completed_plans: 5
+  completed_plans: 6
   percent: 0
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-09-19)
 ## Current Position
 
 Phase: 02 (Model Generalization + Distribution Output) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Last activity: 2026-09-21 — Phase 02 execution started
 
@@ -63,6 +63,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 01 P03 | 11 | 3 tasks | 4 files |
 | Phase 01-evaluation-metrics-cross-validation P04 | multi-session (~600 minutes) | 4 tasks | 3 files |
 | Phase 02 P01 | 525689 | 3 tasks | 12 files |
+| Phase 02-model-generalization-distribution-output-fixture-backed P02 | 15 | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -86,6 +87,9 @@ Recent decisions affecting current work:
 - [Phase 01]: SELECT * EXCLUDE target used in test subquery to prevent UNION ALL BY NAME duplicate column error in tabfm_classify body
 - [Phase 02]: ResolveModel moved before PreprocessBatch so manifest.preprocessing_profile is available for DispatchPreprocess dispatch (02-01)
 - [Phase 02]: kKnownLicenses compile-time table with pre-sanitized option names; fixture-mit license excluded (ungated, no gate fires) (02-01)
+- [Phase 02]: DistributionMean/DistributionQuantile placed outside anonymous namespace for external linkage so Catch2 TU can call them directly (02-02)
+- [Phase 02]: kQuantileLevels={0.1,...,0.9} 9 levels in tabfm_predict.hpp; standard for regression confidence intervals (02-02)
+- [Phase 02]: DecodeDistribution branches before ValidateTabFMOutput — distribution graphs produce rank-2 [n,K] not rank-3 [1,T,C] (02-02)
 
 ### Pending Todos
 
@@ -107,6 +111,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-21T19:56:05.981Z
-Stopped at: Completed 02-01-PLAN.md
+Last session: 2026-09-21T20:15:49.922Z
+Stopped at: Completed 02-02-PLAN.md
 Resume file: None
