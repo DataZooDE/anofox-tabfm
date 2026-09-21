@@ -112,6 +112,10 @@ static void LoadInternal(ExtensionLoader &loader) {
 	}
 
 	anofox::RegisterTabfmSettings(loader);
+	// Force-link the preprocessing-profile registry TUs (tabfm_profile_registry.cpp
+	// + tabfm_preprocess_tabpfn_v2.cpp) so their static self-registration
+	// initializers are not stripped by the linker (T-02-02, RESEARCH Pitfall 2).
+	anofox::ForceProfileInit();
 	anofox::RegisterWeightsFunctions(loader);
 	anofox::RegisterDevicesFunctions(loader);
 	anofox::RegisterPredictAggFunction(loader);

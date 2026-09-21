@@ -57,6 +57,8 @@ set(EXTENSION_SOURCES
         src/tabfm_metrics_classification.cpp
         src/tabfm_metrics_regression.cpp
         src/tabfm_crossval.cpp
+        src/tabfm_profile_registry.cpp
+        src/tabfm_preprocess_tabpfn_v2.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
 )
 
@@ -129,6 +131,8 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_metrics.cpp
     test/cpp/test_tabfm_metrics_regression.cpp
     test/cpp/test_tabfm_crossval.cpp
+    test/cpp/test_tabfm_profile_registry.cpp
+    test/cpp/test_tabfm_distribution_decode.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     add_library(anofox_tabfm_unittest_tests OBJECT ${TABFM_CPP_TEST_SOURCES})

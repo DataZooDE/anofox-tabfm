@@ -22,6 +22,7 @@
 
 #include "tabfm_predict.hpp"
 #include "tabfm_preprocess.hpp"
+#include "tabfm_profile_registry.hpp"
 #include "tabfm_manifest.hpp"
 #include "tabfm_safetensors.hpp"
 #include "tabfm_ort_engine.hpp"
@@ -667,11 +668,17 @@ public:
 		const auto task =
 		    in.opts.task == TabFMTask::CLASSIFICATION ? TabFMTask::CLASSIFICATION : TabFMTask::REGRESSION;
 
-		// 1. preprocess
+		// 1. resolve the model manifest FIRST so the preprocessing_profile is
+		// available for the registry dispatch below (MGEN-01/02).
+		auto resolved = ResolveModel(*fs, in.ctx, task);
+
+		// 2. preprocess — dispatch through the profile registry so new model
+		// families (MGEN-01) resolve without changes to this function.
+		// Unknown profiles fail closed before any ORT run (MGEN-02, T-02-01).
 		vector<PreprocessColumnSpec> columns;
 		auto collection = BuildCollection(in.rows, in.row_type, columns, in.target_idx);
 		auto pp_task = task == TabFMTask::CLASSIFICATION ? PreprocessTask::CLASSIFICATION : PreprocessTask::REGRESSION;
-		auto batch = PreprocessBatch(collection, columns, pp_task);
+		auto batch = DispatchPreprocess(resolved.manifest.preprocessing_profile, collection, columns, pp_task);
 
 		if (task == TabFMTask::CLASSIFICATION && batch.label_decoder.size() > 10) {
 			throw InvalidInputException(
@@ -679,7 +686,7 @@ public:
 			    in.target_name, static_cast<unsigned long long>(batch.label_decoder.size()));
 		}
 
-		// 2. materialize the input tensors (float32) — CPU-only work, done OUTSIDE
+		// 3. materialize the input tensors (float32) — CPU-only work, done OUTSIDE
 		// the per-device lock so it can overlap another group's inference on the
 		// same device.
 		vector<float> x(batch.x.size());
@@ -704,9 +711,8 @@ public:
 		run_input.train_size = NumericCast<int64_t>(batch.train_size);
 		run_input.d = NumericCast<int64_t>(batch.d);
 
-		// 3. resolve + load + forward. Only the session load and the forward pass
+		// 4. load + forward. Only the session load and the forward pass
 		// are serialized per device (the expensive, non-reentrant parts).
-		auto resolved = ResolveModel(*fs, in.ctx, task);
 		auto state = TabFMState::Get(*in.ctx.db);
 		TabFMRunOutput out;
 		{
@@ -716,7 +722,7 @@ public:
 			out = backend->Run(run_input);
 		}
 
-		// 4. decode logits[1,T,C] -> per-source-row predictions
+		// 5. decode logits[1,T,C] -> per-source-row predictions
 		return Decode(in, batch, out, task);
 	}
 
