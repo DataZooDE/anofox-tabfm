@@ -225,6 +225,13 @@ ModelManifest ParseModelManifest(const string &json, const string &manifest_path
 	ParseTensorMap(root, manifest, manifest_path);
 	manifest.preprocessing_profile = GetRequiredString(root, "preprocessing_profile", manifest_path);
 	manifest.license = GetRequiredString(root, "license", manifest_path);
+	// Optional boolean: "distribution_output" (RDIST-01). Default false so
+	// existing manifests need no change. Controls ValidateDistributionOutput
+	// vs ValidateTabFMOutput dispatch + distribution decode in the engine.
+	auto dist_val = duckdb_yyjson::yyjson_obj_get(root, "distribution_output");
+	if (dist_val && duckdb_yyjson::yyjson_is_bool(dist_val)) {
+		manifest.distribution_output = duckdb_yyjson::yyjson_get_bool(dist_val);
+	}
 	ParseEngineProfiles(root, manifest, manifest_path);
 
 	// every file must be resolvable to a URL (FR-1.x download path)

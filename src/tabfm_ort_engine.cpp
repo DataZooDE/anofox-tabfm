@@ -501,15 +501,36 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 			break;
 		}
 	}
-	const char *output_name = session.output_names[output_index].c_str();
+
+	// Detect whether the session also declares a "borders" output (RDIST-01).
+	// If present, request both outputs in a single Run(); otherwise request
+	// only "logits" (backward compatible).
+	idx_t borders_index = session.output_names.size(); // sentinel: "not found"
+	for (idx_t i = 0; i < session.output_names.size(); i++) {
+		if (session.output_names[i] == "borders") {
+			borders_index = i;
+			break;
+		}
+	}
+	const bool has_borders = (borders_index < session.output_names.size());
+
+	// Build the requested-output name list for ORT.
+	std::vector<const char *> req_output_names;
+	req_output_names.push_back(session.output_names[output_index].c_str());
+	if (has_borders) {
+		req_output_names.push_back(session.output_names[borders_index].c_str());
+	}
 
 	try {
-		auto outputs = session.session.Run(Ort::RunOptions {nullptr}, feed_names.data(), feed_values.data(),
-		                                   feed_values.size(), &output_name, 1);
+		auto outputs =
+		    session.session.Run(Ort::RunOptions {nullptr}, feed_names.data(), feed_values.data(), feed_values.size(),
+		                        req_output_names.data(), req_output_names.size());
+
+		// --- logits ---
 		auto &logits_value = outputs[0];
 		auto info = logits_value.GetTensorTypeAndShapeInfo();
 		if (info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
-			throw InternalException("anofox_tabfm: model output '" + string(output_name) +
+			throw InternalException("anofox_tabfm: model output '" + string(req_output_names[0]) +
 			                        "' is not float32 — unexpected graph");
 		}
 		TabFMRunOutput result;
@@ -518,6 +539,20 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 		const auto element_count = info.GetElementCount();
 		const float *data = logits_value.GetTensorData<float>();
 		result.logits.assign(data, data + element_count);
+
+		// --- borders (optional, RDIST-01) ---
+		if (has_borders && outputs.size() > 1) {
+			auto &borders_value = outputs[1];
+			auto borders_info = borders_value.GetTensorTypeAndShapeInfo();
+			if (borders_info.GetElementType() != ONNX_TENSOR_ELEMENT_DATA_TYPE_FLOAT) {
+				throw InternalException(
+				    "anofox_tabfm: model output 'borders' is not float32 — unexpected graph");
+			}
+			const auto borders_count = borders_info.GetElementCount();
+			const float *borders_data = borders_value.GetTensorData<float>();
+			result.borders.assign(borders_data, borders_data + borders_count);
+		}
+
 		return result;
 	} catch (const Ort::Exception &error) {
 		throw InvalidInputException("anofox_tabfm: inference failed (ORT error code " +
@@ -556,6 +591,38 @@ void ValidateTabFMOutput(const TabFMRunOutput &out, idx_t expected_t, idx_t min_
 		    "malformed model output.",
 		    static_cast<unsigned long long>(out.logits.size()), static_cast<unsigned long long>(expected_t),
 		    static_cast<unsigned long long>(C), static_cast<unsigned long long>(expected));
+	}
+}
+
+void ValidateDistributionOutput(const TabFMRunOutput &out, idx_t n_test) {
+	// Build a shape string for error messages (reuse the same lambda style as
+	// ValidateTabFMOutput above).
+	auto shape_str = [&]() {
+		string s = "[";
+		for (idx_t i = 0; i < out.shape.size(); i++) {
+			s += (i ? ", " : "") + std::to_string(out.shape[i]);
+		}
+		return s + "]";
+	};
+	// Distribution models must produce rank-2 logits [n_test, K] — NOT the
+	// rank-3 [1, T, C] used by tabfm-v1. Any other rank indicates a graph
+	// mismatch (e.g., wrong model manifest) and is caught here before any
+	// indexing into the logits buffer (MGEN-03, T-02-03).
+	if (out.shape.size() != 2 || out.shape[0] != NumericCast<int64_t>(n_test)) {
+		throw InvalidInputException(
+		    "anofox_tabfm: distribution model logits shape %s does not match [n_test=%llu, K]. "
+		    "Check the manifest's graph field and SET anofox_tabfm_model_manifest.",
+		    shape_str(), static_cast<unsigned long long>(n_test));
+	}
+	const int64_t K = out.shape[1];
+	// borders must be [K+1]; empty borders means the graph does not emit them,
+	// which is a contract violation for distribution_output=true manifests.
+	if (out.borders.size() != static_cast<size_t>(K + 1)) {
+		throw InvalidInputException(
+		    "anofox_tabfm: distribution model borders size %llu must equal K+1=%lld (logits shape %s). "
+		    "The graph must emit both 'logits' [n,K] and 'borders' [K+1]. "
+		    "Check the manifest and SET anofox_tabfm_model_manifest.",
+		    static_cast<unsigned long long>(out.borders.size()), static_cast<long long>(K + 1), shape_str());
 	}
 }
 

@@ -212,8 +212,13 @@ struct TabFMRunInput {
 
 struct TabFMRunOutput {
 	vector<float> logits;
-	//! [1, T, C]
+	//! [1,T,C] for tabfm-v1; [n_test,K] for distribution models (tabpfn_v2).
 	vector<int64_t> shape;
+	//! Optional: [K+1] bin borders for distribution models; empty otherwise.
+	//! Non-uniform (outer bins ~67 wide, inner ~0.0024). Carries z-normalized
+	//! borders; caller applies affine transform to raw space during decode.
+	//! (RDIST-01)
+	vector<float> borders;
 };
 
 TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input);
@@ -242,6 +247,11 @@ public:
 //! InvalidInputException naming the contract on any mismatch. `task_name` is
 //! "classification"/"regression" for the message.
 void ValidateTabFMOutput(const TabFMRunOutput &out, idx_t expected_t, idx_t min_classes, const char *task_name);
+
+//! Validates a distribution-output forward pass (RDIST-01, MGEN-03):
+//! shape must be rank-2 [n_test, K] and borders.size() == K+1. Throws
+//! InvalidInputException naming the contract and the fix on any mismatch.
+void ValidateDistributionOutput(const TabFMRunOutput &out, idx_t n_test);
 
 } // namespace anofox
 } // namespace duckdb

@@ -81,6 +81,11 @@ struct ModelManifest {
 	unordered_map<string, string> tensor_map;
 	string preprocessing_profile;
 	string license;
+	//! True when the model graph emits distribution tensors (logits [n,K] +
+	//! borders [K+1]). Parsed from optional JSON field "distribution_output"
+	//! (default: false). Controls ValidateDistributionOutput vs.
+	//! ValidateTabFMOutput dispatch in the engine (RDIST-01, MGEN-03).
+	bool distribution_output = false;
 	//! Keyed by device ("cpu"/"cuda"/"rocm"/...); "cpu" -> f32 guaranteed.
 	map<string, EngineProfile> engine_profiles;
 };
