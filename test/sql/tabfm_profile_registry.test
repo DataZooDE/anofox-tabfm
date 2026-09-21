@@ -1,0 +1,58 @@
+# name: test/sql/tabfm_profile_registry.test
+# description: MGEN-01/02 — preprocessing-profile registry error-path and
+#              positive dispatch tests. Unknown preprocessing_profile fails
+#              with a named, actionable error before any ORT run. The tabfm-v1
+#              path (tabfm_v1_minimal) still works through DispatchPreprocess.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# --- Test data shared across both cases ------------------------------------
+
+statement ok
+CREATE TABLE reg_test AS SELECT * FROM (VALUES
+  (1.0, 10.0), (2.0, 20.0), (3.0, 30.0),
+  (4.0, 40.0), (5.0, NULL), (6.0, NULL))
+  v(feat, target);
+
+# --- Case 1: unknown preprocessing_profile fails with named error (MGEN-02) --
+#
+# manifest_bad_profile.json is identical to the regression fixture manifest
+# except preprocessing_profile = "no_such_profile". The error must surface
+# the profile id and the tabfm_models() SELECT hint.
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/regression/manifest_bad_profile.json'
+
+# The error surfaces the profile id (substring check — not full sentence).
+statement error
+SELECT count(*) FROM tabfm_regress('reg_test', 'target')
+----
+no_such_profile
+
+# Same call: error also contains the tabfm_models() SELECT hint.
+statement error
+SELECT count(*) FROM tabfm_regress('reg_test', 'target')
+----
+tabfm_models()
+
+# --- Case 2: tabfm_v1_minimal routes through registry and still works (MGEN-01)
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/regression/manifest.json'
+
+# Should return 6 rows (all: 4 train + 2 test)
+query I
+SELECT count(*) FROM tabfm_regress('reg_test', 'target')
+----
+6
+
+# Every yhat must be finite (registry dispatch preserved backward compat)
+query I
+SELECT count(*) FROM tabfm_regress('reg_test', 'target')
+WHERE yhat IS NULL OR NOT isfinite(yhat)
+----
+0
