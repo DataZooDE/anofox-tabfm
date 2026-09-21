@@ -1,0 +1,9 @@
+{
+  "initializers": {
+    "W": "W",
+    "b": "b"
+  },
+  "transforms": {},
+  "safetensors": "model.safetensors",
+  "task": "regression"
+}
