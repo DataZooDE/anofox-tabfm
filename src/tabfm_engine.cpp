@@ -650,6 +650,70 @@ void SoftmaxInPlace(vector<double> &v, double temperature) {
 	}
 }
 
+} // anonymous namespace
+
+// FullSupportBarDistribution mean and quantile helpers.
+// Declared in tabfm_predict.hpp with external linkage so the Catch2 test TU
+// can call them directly (RDIST-02). Defined here (not in anonymous namespace)
+// to give them external linkage while keeping them in the right translation
+// unit alongside the engine that calls them.
+
+double DistributionMean(const vector<double> &probs, const vector<double> &borders) {
+	// FullSupportBarDistribution (SPIKE-tabpfn-v2-tensor-contract.md, RESEARCH §3)
+	// Mean = Σ p_i * contribution_i, where:
+	//   left outer  bin (i=0):   contribution = borders[0]  - sqrt(π/2) * width[0]
+	//   right outer bin (i=K-1): contribution = borders[K]  + sqrt(π/2) * width[K-1]
+	//   interior bins:           contribution = midpoint_i  = (borders[i]+borders[i+1])/2
+	// The half-normal correction handles unbounded tails for extreme inputs.
+	const size_t K = probs.size();
+	if (K == 0 || borders.size() != K + 1) {
+		return 0.0;
+	}
+	const double sqrt_pi_over_2 = std::sqrt(M_PI / 2.0);
+	double mean = 0.0;
+	for (size_t i = 0; i < K; i++) {
+		const double width = borders[i + 1] - borders[i];
+		double contribution;
+		if (i == 0) {
+			contribution = borders[0] - sqrt_pi_over_2 * width;
+		} else if (i == K - 1) {
+			contribution = borders[K] + sqrt_pi_over_2 * width;
+		} else {
+			contribution = (borders[i] + borders[i + 1]) * 0.5;
+		}
+		mean += probs[i] * contribution;
+	}
+	return mean;
+}
+
+double DistributionQuantile(const vector<double> &probs, const vector<double> &borders, double q) {
+	// Inverse CDF via cumsum search + linear interpolation within the found bin.
+	// Uses actual bucket_width = borders[i+1] - borders[i] (non-uniform; Pitfall 1).
+	// (SPIKE icdf section, RESEARCH §3)
+	const size_t K = probs.size();
+	if (K == 0 || borders.size() != K + 1) {
+		return 0.0;
+	}
+	double prev_cum = 0.0;
+	for (size_t i = 0; i < K; i++) {
+		const double curr_cum = prev_cum + probs[i];
+		const double width = borders[i + 1] - borders[i];
+		if (q <= curr_cum) {
+			// Found the bin; linear interpolate within it.
+			if (probs[i] > 0.0) {
+				return borders[i] + (q - prev_cum) / probs[i] * width;
+			}
+			// Zero-probability bin: return the bin's left edge
+			return borders[i];
+		}
+		prev_cum = curr_cum;
+	}
+	// q > sum(probs) (numerical rounding): return the right boundary
+	return borders[K];
+}
+
+namespace {
+
 //===--------------------------------------------------------------------===//
 // The engine
 //===--------------------------------------------------------------------===//
@@ -732,10 +796,18 @@ private:
 		const idx_t T = batch.T;
 		const idx_t n_rows = in.rows.size();
 		const idx_t n_classes = batch.label_decoder.size();
-		// Fail loudly on any graph whose output does not match the contract
-		// [1, T, C] rather than indexing out of bounds or decoding with the wrong
-		// stride / zero-filled classes (classification needs C >= #labels,
-		// regression needs C >= 1).
+
+		// Distribution decode branch (RDIST-02): gated on opts.distribution AND
+		// the model actually emitting borders (non-empty). The [1,T,C] validator
+		// must NOT run for distribution graphs (rank-2 output). (MGEN-03, T-02-03)
+		const bool is_distribution = (in.opts.distribution && !out.borders.empty() &&
+		                               task == TabFMTask::REGRESSION);
+		if (is_distribution) {
+			return DecodeDistribution(in, batch, out, n_rows, T);
+		}
+
+		// Standard path: validate [1,T,C] contract before any indexing.
+		// (classification needs C >= #labels, regression needs C >= 1).
 		ValidateTabFMOutput(out, T, task == TabFMTask::CLASSIFICATION ? n_classes : 1, TabFMTaskName(task));
 		const idx_t C = NumericCast<idx_t>(out.shape.back());
 
@@ -777,6 +849,80 @@ private:
 				result.yhat[src] = Value::DOUBLE(yhat);
 				result.yhat_score[src] = Value(LogicalType::DOUBLE); // NULL
 			}
+		}
+		return result;
+	}
+
+	//! Distribution decode: softmax(logits) → mean + quantiles over non-uniform
+	//! raw-space borders (RDIST-02). Runs AFTER ValidateDistributionOutput so all
+	//! indexing is bounds-safe. Z-space logits stored pre-softmax; raw-space
+	//! borders stored after affine transform (Pitfall 5).
+	static TabFMPredictResult DecodeDistribution(const PredictInput &in, const PreprocessedBatch &batch,
+	                                              const TabFMRunOutput &out, idx_t n_rows, idx_t T) {
+		// Validate the [n_test, K] + [K+1] contract before any indexing (MGEN-03).
+		ValidateDistributionOutput(out, T);
+
+		const idx_t K = NumericCast<idx_t>(out.shape[1]);
+
+		// 1. Affine-transform z-normalized borders → raw space once
+		//    (Pitfall 4: forgetting this gives z-space yhat; Pitfall 5: store raw-space).
+		vector<double> raw_borders(K + 1);
+		for (idx_t k = 0; k <= K; k++) {
+			raw_borders[k] = out.borders[k] * batch.target_scale + batch.target_mean;
+		}
+
+		TabFMPredictResult result;
+		result.yhat.resize(n_rows);
+		result.yhat_score.resize(n_rows);
+		result.yhat_dist_logits.resize(n_rows);
+		result.yhat_dist_borders.resize(n_rows);
+		result.yhat_quantiles.resize(n_rows);
+
+		// Pre-build the raw-space borders Value once — same K+1 vector for every row.
+		vector<Value> borders_children;
+		borders_children.reserve(K + 1);
+		for (idx_t k = 0; k <= K; k++) {
+			borders_children.emplace_back(Value::DOUBLE(raw_borders[k]));
+		}
+		Value raw_borders_val = Value::LIST(LogicalType::DOUBLE, borders_children);
+
+		for (idx_t t = 0; t < T; t++) {
+			const idx_t src = batch.row_source_index[t];
+
+			// 2. Collect z-space logits for this row (pre-softmax, stored for CRPS).
+			vector<double> zlogits(K);
+			for (idx_t k = 0; k < K; k++) {
+				zlogits[k] = out.logits[t * K + k];
+			}
+
+			// 3. Softmax → probs (temperature=1.0 per distribution spec).
+			vector<double> probs = zlogits;
+			SoftmaxInPlace(probs, 1.0);
+
+			// 4. Mean via DistributionMean (FullSupportBarDistribution, raw-space borders).
+			double mean = DistributionMean(probs, raw_borders);
+			result.yhat[src] = Value::DOUBLE(mean);
+			result.yhat_score[src] = Value(LogicalType::DOUBLE); // NULL (no top-class score)
+
+			// 5. Quantiles at kQuantileLevels using raw-space borders.
+			vector<Value> quantile_vals;
+			quantile_vals.reserve(kNumQuantileLevels);
+			for (size_t qi = 0; qi < kNumQuantileLevels; qi++) {
+				quantile_vals.emplace_back(Value::DOUBLE(
+				    DistributionQuantile(probs, raw_borders, kQuantileLevels[qi])));
+			}
+			result.yhat_quantiles[src] = Value::LIST(LogicalType::DOUBLE, quantile_vals);
+
+			// 6. Store z-space logits (pre-softmax, Pitfall 5) for CRPS in Phase 3.
+			vector<Value> logit_vals;
+			logit_vals.reserve(K);
+			for (idx_t k = 0; k < K; k++) {
+				logit_vals.emplace_back(Value::DOUBLE(zlogits[k]));
+			}
+			result.yhat_dist_logits[src] = Value::LIST(LogicalType::DOUBLE, logit_vals);
+
+			// 7. Store raw-space borders (same for all rows, copy pre-built value).
+			result.yhat_dist_borders[src] = raw_borders_val;
 		}
 		return result;
 	}

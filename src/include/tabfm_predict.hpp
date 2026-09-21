@@ -55,6 +55,10 @@ struct TabFMPredictOptions {
 	int64_t seed = 42;
 	//! output_mode == 'detail' → proba MAP(VARCHAR, DOUBLE) field
 	bool detail = false;
+	//! output_mode == 'distribution' → yhat_dist STRUCT + yhat_quantiles
+	//! Only meaningful when task == REGRESSION and model emits borders.
+	//! Mutually exclusive with detail (RDIST-02).
+	bool distribution = false;
 	//! subsample the context to at most N rows (0 = use all context rows)
 	idx_t context_rows = 0;
 	double softmax_temperature = 0.9;
@@ -71,6 +75,16 @@ struct TabFMPredictResult {
 	//! MAP(VARCHAR, DOUBLE) label→probability; only populated when
 	//! opts.detail && classification, empty vector otherwise
 	vector<Value> proba;
+	//! Populated only when opts.distribution && task==REGRESSION && model emits borders.
+	//! yhat_dist_logits: z-space logits (DOUBLE[], K per test row; pre-softmax,
+	//!   kept at maximum precision for Phase 3 CRPS recomputation).
+	//! yhat_dist_borders: raw-space borders (DOUBLE[], K+1; affine-transformed
+	//!   from z-space using y_mean/y_std; same K+1 values for every row but
+	//!   stored per-row for SQL ergonomics). See Pitfall 5 in RESEARCH.md.
+	//! yhat_quantiles: DOUBLE[], 9 values at levels {0.1,0.2,...,0.9} per test row.
+	vector<Value> yhat_dist_logits;
+	vector<Value> yhat_dist_borders;
+	vector<Value> yhat_quantiles;
 };
 
 //===----------------------------------------------------------------------===//
@@ -150,6 +164,46 @@ PredictEngine &GetPredictEngine();
 //! matching shape-bucket (minutes) so the first real query does not stall. On
 //! CPU/CUDA it just warms the ORT session. Backs CALL tabfm_gpu_precompile(...).
 void TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows, int64_t features);
+
+//===----------------------------------------------------------------------===//
+// Distribution decode helpers (RDIST-02)
+//
+// Called from tabfm_engine.cpp Decode() and from Catch2 tests.
+// Implementations live in tabfm_engine.cpp (anonymous namespace exposed for
+// tests via this header).
+//===----------------------------------------------------------------------===//
+
+//! Quantile levels emitted when output_mode='distribution' (RDIST-02).
+//! 9 standard levels: easy to read as confidence intervals
+//! (0.1/0.9 = 80% CI, 0.05/0.95 would be 90% CI — using 0.1 for simplicity).
+static constexpr double kQuantileLevels[] = {0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9};
+static constexpr size_t kNumQuantileLevels = 9;
+
+//! Compute the FullSupportBarDistribution mean over non-uniform borders.
+//!
+//! `probs` = softmax(logits), shape [K].
+//! `borders` = [K+1] bin edges (can be z-space or raw-space; caller picks).
+//!
+//! Outer-bin correction (FullSupportBarDistribution half-normal tails):
+//!   left  (i=0):   contribution = borders[0]  - sqrt(pi/2) * width[0]
+//!   right (i=K-1): contribution = borders[K]  + sqrt(pi/2) * width[K-1]
+//!   interior bins: contribution = midpoint_i
+//!
+//! (RESEARCH §3, SPIKE decode math)
+double DistributionMean(const vector<double> &probs, const vector<double> &borders);
+
+//! Compute the inverse CDF (quantile) at level `q` over non-uniform borders.
+//!
+//! Algorithm: CDF cumsum search + linear interpolation within the found bin
+//! using actual bucket_width = borders[i+1] - borders[i] (Pitfall 1: never
+//! assume uniform widths).
+//!
+//! `probs` = softmax(logits), shape [K].
+//! `borders` = [K+1] bin edges.
+//! `q` in (0, 1).
+//!
+//! (RESEARCH §3, SPIKE icdf section)
+double DistributionQuantile(const vector<double> &probs, const vector<double> &borders, double q);
 
 } // namespace anofox
 } // namespace duckdb
