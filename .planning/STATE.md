@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 2
-current_phase_name: Model Generalization + Multi-Family Onboarding
-status: planning
-stopped_at: Phase 01 complete, ready to plan Phase 2
-last_updated: "2026-09-20T23:10:30.539Z"
+current_phase: 02
+current_phase_name: Model Generalization + Distribution Output
+status: executing
+stopped_at: Completed 02-01-PLAN.md
+last_updated: "2026-09-21T19:56:06.000Z"
 last_activity: 2026-09-21
-last_activity_desc: Phase 01 complete, transitioned to Phase 2
-state_head: fda45f8c40ca03a6acf7d428f565c7131808ff73
+last_activity_desc: Phase 02 execution started
+state_head: 4176e0e836279b99fd725b742c1cc3bbaa32aa8e
 progress:
   total_phases: 3
-  completed_phases: 1
-  total_plans: 4
-  completed_plans: 4
-  percent: 33
+  completed_phases: 0
+  total_plans: 8
+  completed_plans: 5
+  percent: 0
 ---
 
 # Project State
@@ -23,16 +23,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-19)
 
 **Core value:** Users can trust and compare tabular-foundation-model predictions directly in SQL — computing standard metrics and cross-validation on their own data, across more than one model family — without leaving DuckDB.
-**Current focus:** Phase 01 — Evaluation Metrics + Cross-Validation
+**Current focus:** Phase 02 — Model Generalization + Distribution Output
 
 ## Current Position
 
-Phase: 2 — Model Generalization + Multi-Family Onboarding
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-09-21 — Phase 01 complete, transitioned to Phase 2
+Phase: 02 (Model Generalization + Distribution Output) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-09-21 — Phase 02 execution started
 
-Progress: [███░░░░░░░] 33%
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -62,6 +62,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 01 P02 | 18 | 3 tasks | 4 files |
 | Phase 01 P03 | 11 | 3 tasks | 4 files |
 | Phase 01-evaluation-metrics-cross-validation P04 | multi-session (~600 minutes) | 4 tasks | 3 files |
+| Phase 02 P01 | 525689 | 3 tasks | 12 files |
 
 ## Accumulated Context
 
@@ -83,6 +84,8 @@ Recent decisions affecting current work:
 - [Phase 01]: CV macro uses JOIN-back on row_key to recover actual labels after tabfm_classify forces label=NULL in two-table form
 - [Phase 01]: tabfm_cross_validate uses list_transform(range(k), f -> sql_frag) + array_to_string for k-fold UNION ALL without C++ loop
 - [Phase 01]: SELECT * EXCLUDE target used in test subquery to prevent UNION ALL BY NAME duplicate column error in tabfm_classify body
+- [Phase 02]: ResolveModel moved before PreprocessBatch so manifest.preprocessing_profile is available for DispatchPreprocess dispatch (02-01)
+- [Phase 02]: kKnownLicenses compile-time table with pre-sanitized option names; fixture-mit license excluded (ungated, no gate fires) (02-01)
 
 ### Pending Todos
 
@@ -104,6 +107,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-20T22:06:50.924Z
-Stopped at: Phase 01 complete, ready to plan Phase 2
+Last session: 2026-09-21T19:56:05.981Z
+Stopped at: Completed 02-01-PLAN.md
 Resume file: None

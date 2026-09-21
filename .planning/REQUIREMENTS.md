@@ -34,8 +34,8 @@ columns) and must stay cpu-flavor-clean and weight-free.
 
 ### Model Generalization
 
-- [ ] **MGEN-01**: A preprocessing-profile registry maps a manifest `preprocessing_profile` string to a C++ preprocessing function; the existing `tabfm-v1` profile self-registers
-- [ ] **MGEN-02**: Model loading dispatches preprocessing through the registry (rejecting unknown profiles with a named, actionable error)
+- [x] **MGEN-01**: A preprocessing-profile registry maps a manifest `preprocessing_profile` string to a C++ preprocessing function; the existing `tabfm-v1` profile self-registers
+- [x] **MGEN-02**: Model loading dispatches preprocessing through the registry (rejecting unknown profiles with a named, actionable error)
 - [ ] **MGEN-03**: Model-output validation (shape/rank/class-count) runs before decode for every family, extending the existing P0 gap
 
 ### Regression Distribution Output
@@ -110,8 +110,8 @@ Which phases cover which requirements. Populated during roadmap creation.
 | CV-02 | Phase 1 | Complete |
 | CV-03 | Phase 1 | Complete |
 | CV-04 | Phase 1 | Complete |
-| MGEN-01 | Phase 2 | Pending |
-| MGEN-02 | Phase 2 | Pending |
+| MGEN-01 | Phase 2 | Complete |
+| MGEN-02 | Phase 2 | Complete |
 | MGEN-03 | Phase 2 | Pending |
 | RDIST-01 | Phase 2 | Pending |
 | RDIST-02 | Phase 2 | Pending |
