@@ -22,7 +22,7 @@ phases are merged into three broad delivery boundaries.
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Evaluation Metrics + Cross-Validation** - Model-agnostic classification/regression metric aggregates and leakage-safe k-fold CV over `(actual, predicted[, proba])` (completed 2026-09-21)
-- [ ] **Phase 2: Model Generalization + Multi-Family Onboarding** - Preprocessing-profile registry, regression distribution output, TabPFN v2 + TabICL as first-class families
+- [ ] **Phase 2: Model Generalization + Distribution Output (fixture-backed)** - Preprocessing-profile registry, regression distribution output against the confirmed TabPFN v2 contract, per-family license gate, weight-free TabPFN v2 fixture family (real TabPFN v2 export + TabICL deferred — see Spike Outcomes)
 - [ ] **Phase 3: Proper Scoring Rules + Cross-Model Comparison** - Distribution-gated CRPS / log-score / interval score and evaluation across model families on user tables
 
 ## Phase Details
@@ -48,19 +48,24 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] 01-03-PLAN.md — Regression metrics: RMSE, MAE, R², MAPE, median absolute error (RMET-01..04)
 - [x] 01-04-PLAN.md — Cross-validation: seedable folds, leakage-safe k-fold, per-fold+aggregate output, safe quoting, leakage test (CV-01..04)
 
-### Phase 2: Model Generalization + Multi-Family Onboarding
+### Phase 2: Model Generalization + Distribution Output (fixture-backed)
 
-**Goal**: Users can load and predict with more than one foundation-model family — TabPFN v2 (with a native regression predictive distribution) and TabICL — each with its own preprocessing profile, weight-free fixture, and license gate.
+**Goal**: Generalize the model seam so families beyond `tabfm-v1` are first-class, and carry a regression predictive distribution end-to-end against the **confirmed TabPFN v2 tensor contract** (per-bin logits `[n, K]` + non-uniform bin borders `[K+1]`) — proven with a committed weight-free random-init fixture family, since real TabPFN v2 ONNX export and TabICL are upstream-blocked (Spike Outcomes below).
 **Mode:** mvp
 **Depends on**: Phase 1
-**Requirements**: MGEN-01, MGEN-02, MGEN-03, RDIST-01, RDIST-02, MODL-01, MODL-02, MODL-03, MODL-04
+**Requirements**: MGEN-01, MGEN-02, MGEN-03, RDIST-01, RDIST-02, MODL-01 (fixture-scoped), MODL-03
+**Deferred (upstream-blocked, tracked in REQUIREMENTS v2/deferred)**: MODL-02 (TabICL — ONNX export infeasible on tabicl 2.2.0), MODL-04-for-TabICL, real TabPFN v2 ONNX *inference* export (blocked on data-dependent preprocessing + chunked attention)
 **Success Criteria** (what must be TRUE):
 
-  1. A model whose manifest names `preprocessing_profile: 'tabpfn_v2'` (or `tabicl_v2`) loads and predicts through the registry-dispatched preprocessing; an unknown profile fails with a named, actionable error, and the existing `tabfm-v1` profile still works via self-registration
-  2. Model-output validation (shape/rank/class-count) runs before decode for every family and rejects contract violations with a named error (extends the existing P0 gap)
-  3. `tabfm_regress(..., opts := {'output_mode': 'distribution'})` against TabPFN v2 emits `yhat_dist` (per-bin logits) and `yhat_quantiles`, while point-estimate output remains the backward-compatible default and is empty when a model does not emit a distribution
-  4. `tabpfn_v2` and `tabicl_v2` are available as first-class families (manifest + profile + committed weight-free random-init ONNX fixture), and predicting with each returns results verified against a golden fixture
-  5. Each non-`tabfm-v1` family enforces its own license-acceptance gate before download, and `tools/parity` validates each family's ONNX output contract (including both TabPFN v2 distribution tensors) before its C++ decoder is trusted
+  1. A model whose manifest names `preprocessing_profile: 'tabpfn_v2'` loads and predicts through the registry-dispatched preprocessing; an unknown profile fails with a named, actionable error, and the existing `tabfm-v1` profile still works via self-registration (MGEN-01/02)
+  2. Model-output validation (shape/rank/class-count) runs before decode for every family and rejects contract violations with a named error (MGEN-03, extends the existing P0 gap)
+  3. `tabfm_regress(..., opts := {'output_mode': 'distribution'})` emits `yhat_dist` (per-bin logits) and `yhat_quantiles` computed with the model-provided **non-uniform** bin borders, while point-estimate output remains the backward-compatible default and is empty when a model does not emit a distribution (RDIST-01/02)
+  4. A `tabpfn_v2` fixture family is available first-class (manifest + `tabpfn_v2` preprocessing profile + committed weight-free random-init ONNX fixture whose outputs match the confirmed `[n,K]` logits + `[K+1]` borders contract), and predicting with it returns distribution results verified against a golden fixture (MODL-01 fixture-scoped)
+  5. Each non-`tabfm-v1` family enforces its own license-acceptance gate before download (MODL-03), and `tools/parity` validates the fixture family's ONNX output contract (both distribution tensors) before its C++ decoder is trusted (MODL-04 for the fixture)
+
+**Spike Outcomes (2026-09-21, see `.planning/spikes/`)**:
+  - **TabPFN v2 tensor contract — CONFIRMED**: K=5000 bins; logits `[n_test, K]` f32; borders `[K+1]` f32, checkpoint-fixed and **highly non-uniform** (widths vary ~28,000:1) — CRPS/quantiles MUST use the actual bucket widths. Real ONNX export blocked (data-dependent preprocessing + chunked attention). `tools/export_onnx` currently emits Google TabFM (scalar `C=1`), an incompatible contract.
+  - **TabICL ONNX export — INFEASIBLE** on tabicl 2.2.0 (data-dependent Stage-1 branches). Deferred pending upstream PRs.
 
 **Plans**: TBD
 
@@ -75,7 +80,9 @@ Decimal phases appear between their surrounding integers in numeric order.
   1. `tabfm_crps(actual, yhat_dist)` computes CRPS over a bar distribution (energy-score identity) and matches a golden fixture; `tabfm_log_score(actual, yhat_dist)` computes NLL over the predictive distribution
   2. `tabfm_interval_score(actual, yhat_dist, coverage := 0.9)` computes the interval score at a configurable coverage level
   3. Proper-scoring-rule functions are bind-gated on distribution input and fail with a named remedy (pointing at `output_mode := 'distribution'`) when given point estimates
-  4. A user can run the Phase 1 metrics and Phase 3 scoring rules across `tabpfn_v2`, `tabicl_v2`, and `tabfm-v1` on their own table to compare model quality, with no bundled datasets involved
+  4. A user can run the Phase 1 metrics and Phase 3 scoring rules across the `tabpfn_v2` (fixture) distribution output and `tabfm-v1` on their own table to compare model quality, with no bundled datasets involved (TabICL comparison deferred — export infeasible; CRPS/log-score use the confirmed non-uniform bin borders)
+
+**Note:** Scoring rules are built and golden-tested against the confirmed TabPFN v2 distribution contract via the Phase 2 weight-free fixture — they operate on `(actual, yhat_dist)` columns and do not require real TabPFN v2 weights.
 
 **Plans**: TBD
 

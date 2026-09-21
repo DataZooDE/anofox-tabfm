@@ -90,9 +90,8 @@ None yet.
 
 ### Blockers/Concerns
 
-- Two spikes warranted before Phase 2 planning: TabPFN v2 ONNX tensor contract (logits + bin borders + K) and TabICL ONNX export feasibility (dynamo traceability unconfirmed). See ROADMAP.md §Recommended Spikes.
-- CV leakage-detecting golden test must be written before Phase 1 CV ships (non-negotiable, research §Gaps).
-- REQUIREMENTS.md header says "26 total" but 28 IDs are enumerated (CMET/RMET/CV/MGEN/RDIST/MODL/PSR/CMP). Traceability covers all 28; header count is stale.
+- ✓ RESOLVED 2026-09-21: Both Phase 2 spikes executed (`.planning/spikes/`). TabPFN v2 tensor contract CONFIRMED (K=5000, logits `[n,K]`, borders `[K+1]` non-uniform). TabICL ONNX export INFEASIBLE on tabicl 2.2.0 → deferred. Real TabPFN v2 inference export blocked → deferred. Phase 2 rescoped to fixture-backed slice (user-approved).
+- ✓ RESOLVED (Phase 1): CV leakage-detecting golden test shipped in 01-04 (`test/sql/tabfm_crossval.test`).
 
 ## Deferred Items
 
@@ -100,7 +99,8 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 | Category | Item | Status | Deferred At | Milestone |
 |----------|------|--------|-------------|-----------|
-| *(none)* | | | | |
+| Model family | MODL-02 TabICL first-class family — ONNX export infeasible (tabicl 2.2.0 data-dependent Stage-1 branches); needs upstream PRs | Deferred → v2 | 2026-09-21 (Phase 2 rescope) | current |
+| Model export | Real TabPFN v2 ONNX inference export — blocked on data-dependent preprocessing + chunked attention; Phase 2 ships fixture-scoped MODL-01 instead | Deferred → v2 | 2026-09-21 (Phase 2 rescope) | current |
 
 ## Session Continuity
 

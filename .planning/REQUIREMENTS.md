@@ -45,10 +45,10 @@ columns) and must stay cpu-flavor-clean and weight-free.
 
 ### Model Onboarding
 
-- [ ] **MODL-01**: TabPFN v2 is available as a first-class model family (manifest + `tabpfn_v2` preprocessing profile + weight-free ONNX fixture), including its bar-distribution regression output
-- [ ] **MODL-02**: TabICL is available as a first-class classification model family (manifest + `tabicl_v2` preprocessing profile + weight-free ONNX fixture)
+- [ ] **MODL-01** *(fixture-scoped — Phase 2)*: TabPFN v2 is available as a first-class model family (manifest + `tabpfn_v2` preprocessing profile + committed weight-free random-init ONNX fixture whose outputs match the confirmed `[n,K]` logits + `[K+1]` non-uniform borders contract), including its bar-distribution regression output. *Real TabPFN v2 ONNX inference export is deferred (upstream-blocked: data-dependent preprocessing + chunked attention — see `.planning/spikes/SPIKE-tabpfn-v2-tensor-contract.md`).*
+- [ ] ~~**MODL-02**: TabICL as a first-class classification family~~ **→ DEFERRED to v2** (ONNX export infeasible on `tabicl 2.2.0`: data-dependent Stage-1 branches; needs upstream PRs — see `.planning/spikes/SPIKE-tabicl-onnx-export.md`)
 - [ ] **MODL-03**: Each non-tabfm-v1 family has its own license-acceptance gate (separate from the existing HF-license flag), enforced before download
-- [ ] **MODL-04**: `tools/parity` validates each new family's ONNX output contract (including both distribution tensors for TabPFN v2) before its C++ decoder is trusted
+- [ ] **MODL-04** *(fixture-scoped — Phase 2)*: `tools/parity` validates the TabPFN v2 fixture family's ONNX output contract (both distribution tensors) before its C++ decoder is trusted. *TabICL parity deferred with MODL-02.*
 
 ### Proper Scoring Rules
 
@@ -74,6 +74,8 @@ Deferred to a future milestone. Tracked but not in this roadmap.
 
 - **MFAM-01**: TabPFN v3 (post-cutoff; tensor contract unknown)
 - **MFAM-02**: Regression predictive distributions for TabICL (if/when upstream supports it)
+- **MODL-02** *(deferred from v1, 2026-09-21)*: TabICL as a first-class classification family — ONNX export infeasible on `tabicl 2.2.0` (data-dependent Stage-1 branches: `SkippableLinear` if-branch + `num_classes = y_train.max()`). Needs 2–3 upstream PRs to `soda-inria/tabicl`; re-spike after. (`.planning/spikes/SPIKE-tabicl-onnx-export.md`)
+- **MODL-01-EXPORT** *(deferred from v1, 2026-09-21)*: Real TabPFN v2 ONNX *inference* export — blocked on data-dependent preprocessing (`_remove_constant_features`, `_impute_nan_and_inf_with_mean`) + chunked attention failing `torch.export`. Phase 2 delivers the fixture-scoped MODL-01 (weight-free graph matching the confirmed contract); real-model inference needs a cleaned export path. (`.planning/spikes/SPIKE-tabpfn-v2-tensor-contract.md`)
 
 ## Out of Scope
 
@@ -113,10 +115,10 @@ Which phases cover which requirements. Populated during roadmap creation.
 | MGEN-03 | Phase 2 | Pending |
 | RDIST-01 | Phase 2 | Pending |
 | RDIST-02 | Phase 2 | Pending |
-| MODL-01 | Phase 2 | Pending |
-| MODL-02 | Phase 2 | Pending |
+| MODL-01 | Phase 2 | Pending (fixture-scoped; real export → v2) |
+| MODL-02 | v2 | Deferred (TabICL export infeasible) |
 | MODL-03 | Phase 2 | Pending |
-| MODL-04 | Phase 2 | Pending |
+| MODL-04 | Phase 2 | Pending (fixture parity; TabICL parity → v2) |
 | PSR-01 | Phase 3 | Pending |
 | PSR-02 | Phase 3 | Pending |
 | PSR-03 | Phase 3 | Pending |
@@ -125,8 +127,9 @@ Which phases cover which requirements. Populated during roadmap creation.
 
 **Coverage:**
 
-- v1 requirements: 28 total (enumerated IDs; the earlier "26" header count was stale)
-- Mapped to phases: 28 (Phase 1: 14, Phase 2: 9, Phase 3: 5)
+- v1 requirements: 28 enumerated; 1 deferred to v2 post-spike (MODL-02, TabICL export infeasible), 1 export sub-requirement split off (MODL-01-EXPORT → v2)
+- Active v1 mapped to phases: 27 (Phase 1: 14 ✓ complete, Phase 2: 8 [MGEN-01/02/03, RDIST-01/02, MODL-01 fixture, MODL-03, MODL-04 fixture], Phase 3: 5)
+- Deferred (upstream-blocked, 2026-09-21): MODL-02 (TabICL), real TabPFN v2 inference export
 - Unmapped: 0 ✓
 
 ---
