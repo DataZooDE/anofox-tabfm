@@ -53,7 +53,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Goal**: Generalize the model seam so families beyond `tabfm-v1` are first-class, and carry a regression predictive distribution end-to-end against the **confirmed TabPFN v2 tensor contract** (per-bin logits `[n, K]` + non-uniform bin borders `[K+1]`) — proven with a committed weight-free random-init fixture family, since real TabPFN v2 ONNX export and TabICL are upstream-blocked (Spike Outcomes below).
 **Mode:** mvp
 **Depends on**: Phase 1
-**Requirements**: MGEN-01, MGEN-02, MGEN-03, RDIST-01, RDIST-02, MODL-01 (fixture-scoped), MODL-03
+**Requirements**: MGEN-01, MGEN-02, MGEN-03, RDIST-01, RDIST-02, MODL-01 (fixture-scoped), MODL-03, MODL-04 (fixture parity)
 **Deferred (upstream-blocked, tracked in REQUIREMENTS v2/deferred)**: MODL-02 (TabICL — ONNX export infeasible on tabicl 2.2.0), MODL-04-for-TabICL, real TabPFN v2 ONNX *inference* export (blocked on data-dependent preprocessing + chunked attention)
 **Success Criteria** (what must be TRUE):
 
