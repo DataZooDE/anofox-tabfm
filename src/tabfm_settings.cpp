@@ -79,6 +79,28 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	                          "no redistribution). Downloads of Google-licensed weights fail without this.",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
+	// Per-family license acceptance options (MODL-03, scaffold prerequisite for plan 04).
+	// DuckDB v1.5.4 AddExtensionOption is Load()-time only — must be pre-registered
+	// for all known license families here so plan 04's generic gate can look them up
+	// via TryGetCurrentSetting (RESEARCH §6). Option names use pre-sanitized ids
+	// (lowercase, underscores only) matching SanitizeLicenseId() output in tabfm_weights.cpp.
+	// The fixture license ("fixture-mit") is intentionally absent — IsGated() returns false
+	// for it, so no gate fires on fixture use. Keep existing anofox_tabfm_accept_hf_license
+	// untouched for backward compat (it gates tabfm-non-commercial-v1.0 via the legacy path).
+	static const struct {
+		const char *id;  // pre-sanitized: lowercase, underscores only
+		const char *desc;
+	} kKnownLicenses[] = {
+	    {"tabfm_non_commercial_v1_0",
+	     "Accept license 'tabfm-non-commercial-v1.0' (non-commercial, no redistribution) for TabFM v1 downloads."},
+	    {"tabpfn_v2_cc_by_nc_4_0",
+	     "Accept license 'tabpfn-v2-cc-by-nc-4.0' (CC BY-NC 4.0) for TabPFN v2 downloads."},
+	    {nullptr, nullptr}};
+	for (auto *lic = kKnownLicenses; lic->id; ++lic) {
+		config.AddExtensionOption(string("anofox_tabfm_accept_") + lic->id, lic->desc, LogicalType::BOOLEAN,
+		                          Value::BOOLEAN(false));
+	}
+
 	config.AddExtensionOption("anofox_tabfm_cache_dir",
 	                          "Weight cache root directory (default ~/.cache/anofox-tabfm)", LogicalType::VARCHAR,
 	                          Value("~/.cache/anofox-tabfm"));
