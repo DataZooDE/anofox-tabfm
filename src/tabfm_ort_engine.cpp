@@ -355,7 +355,12 @@ void PrepareSessionOptions(Ort::SessionOptions &options, const vector<TabFMTenso
 	// the source arena must outlive the SESSION (LoadOrGetSession bundles it).
 	names.reserve(initializers.size());
 	values.reserve(initializers.size());
-	static auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+	// Stack-allocated per call: Ort::MemoryInfo is a lightweight value type
+	// (wraps a single OrtMemoryInfo* opaque handle). Moving it off static storage
+	// eliminates any theoretical data-race concern from concurrent
+	// PrepareSessionOptions calls for separate devices — each thread gets its
+	// own instance. Construction cost is negligible (one ORT C API call).
+	auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 	for (auto &tensor : initializers) {
 		if (!tensor.data) {
 			throw InvalidInputException("anofox_tabfm: initializer '" + tensor.name + "' has no data buffer");
