@@ -594,7 +594,7 @@ void ValidateTabFMOutput(const TabFMRunOutput &out, idx_t expected_t, idx_t min_
 	}
 }
 
-void ValidateDistributionOutput(const TabFMRunOutput &out, idx_t n_test) {
+void ValidateDistributionOutput(const TabFMRunOutput &out, idx_t n_all_rows) {
 	// Build a shape string for error messages (reuse the same lambda style as
 	// ValidateTabFMOutput above).
 	auto shape_str = [&]() {
@@ -604,15 +604,18 @@ void ValidateDistributionOutput(const TabFMRunOutput &out, idx_t n_test) {
 		}
 		return s + "]";
 	};
-	// Distribution models must produce rank-2 logits [n_test, K] — NOT the
-	// rank-3 [1, T, C] used by tabfm-v1. Any other rank indicates a graph
-	// mismatch (e.g., wrong model manifest) and is caught here before any
-	// indexing into the logits buffer (MGEN-03, T-02-03).
-	if (out.shape.size() != 2 || out.shape[0] != NumericCast<int64_t>(n_test)) {
+	// Distribution models must produce rank-2 logits [T, K] (all rows: train +
+	// test) — NOT the rank-3 [1, T, C] used by tabfm-v1. The current fixture
+	// graph emits [T, K] for all T rows; the real TabPFN v2 wire format emits
+	// only [n_test, K] (test rows only) and will require updating this call site.
+	// Any rank other than 2, or a row count mismatch, indicates a graph mismatch
+	// (e.g., wrong model manifest) and is caught here before any indexing into
+	// the logits buffer (MGEN-03, T-02-03).
+	if (out.shape.size() != 2 || out.shape[0] != NumericCast<int64_t>(n_all_rows)) {
 		throw InvalidInputException(
-		    "anofox_tabfm: distribution model logits shape %s does not match [n_test=%llu, K]. "
+		    "anofox_tabfm: distribution model logits shape %s does not match [n_all_rows=%llu, K]. "
 		    "Check the manifest's graph field and SET anofox_tabfm_model_manifest.",
-		    shape_str(), static_cast<unsigned long long>(n_test));
+		    shape_str(), static_cast<unsigned long long>(n_all_rows));
 	}
 	const int64_t K = out.shape[1];
 	// borders must be [K+1]; empty borders means the graph does not emit them,

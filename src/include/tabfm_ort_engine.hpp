@@ -212,7 +212,11 @@ struct TabFMRunInput {
 
 struct TabFMRunOutput {
 	vector<float> logits;
-	//! [1,T,C] for tabfm-v1; [n_test,K] for distribution models (tabpfn_v2).
+	//! [1,T,C] for tabfm-v1; [T,K] for distribution models (tabpfn_v2 fixture).
+	//! NOTE: the current fixture emits logits for ALL T rows (train + test).
+	//! The real TabPFN v2 wire format emits only [n_test, K] (test rows only);
+	//! when a real-export graph is integrated, the call site and decode loop
+	//! in tabfm_engine.cpp must be updated to pass n_test and index accordingly.
 	vector<int64_t> shape;
 	//! Optional: [K+1] bin borders for distribution models; empty otherwise.
 	//! Non-uniform (outer bins ~67 wide, inner ~0.0024). Carries z-normalized
@@ -249,9 +253,18 @@ public:
 void ValidateTabFMOutput(const TabFMRunOutput &out, idx_t expected_t, idx_t min_classes, const char *task_name);
 
 //! Validates a distribution-output forward pass (RDIST-01, MGEN-03):
-//! shape must be rank-2 [n_test, K] and borders.size() == K+1. Throws
+//! shape must be rank-2 [n_all_rows, K] and borders.size() == K+1. Throws
 //! InvalidInputException naming the contract and the fix on any mismatch.
-void ValidateDistributionOutput(const TabFMRunOutput &out, idx_t n_test);
+//!
+//! CURRENT CONTRACT: n_all_rows == T (all rows: train + test), because the
+//! fixture graph (build_fixture.py) deliberately emits [T, K] for all rows.
+//! The decode loop in tabfm_engine.cpp iterates over all T rows accordingly.
+//!
+//! DEFERRED REAL-MODEL CONTRACT: the actual TabPFN v2 wire format outputs only
+//! test-row logits [n_test, K]. When a real-export graph is integrated, this
+//! parameter and the call site must change to pass n_test (= T - train_size),
+//! and the decode loop must index test rows only via row_source_index[train_size + t].
+void ValidateDistributionOutput(const TabFMRunOutput &out, idx_t n_all_rows);
 
 } // namespace anofox
 } // namespace duckdb

@@ -862,9 +862,16 @@ private:
 	//! borders stored after affine transform (Pitfall 5).
 	//! When opts.distribution is false (compact/detail mode) only yhat and yhat_score
 	//! are populated — distribution column vectors stay empty (backward compat).
+	//!
+	//! CURRENT CONTRACT: the fixture graph emits [T, K] for ALL rows (train +
+	//! test). T is passed to ValidateDistributionOutput and the loop iterates all
+	//! T rows. The real TabPFN v2 wire format emits [n_test, K] only; when a
+	//! real-export graph is integrated, pass (T - batch.train_size) and index
+	//! test rows as batch.row_source_index[batch.train_size + t].
 	static TabFMPredictResult DecodeDistribution(const PredictInput &in, const PreprocessedBatch &batch,
 	                                              const TabFMRunOutput &out, idx_t n_rows, idx_t T) {
-		// Validate the [n_test, K] + [K+1] contract before any indexing (MGEN-03).
+		// Validate the [T, K] + [K+1] contract before any indexing (MGEN-03).
+		// T = train_size + n_test; the fixture emits logits for all rows.
 		ValidateDistributionOutput(out, T);
 
 		const idx_t K = NumericCast<idx_t>(out.shape[1]);
