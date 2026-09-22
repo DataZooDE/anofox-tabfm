@@ -207,3 +207,74 @@ FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distributio
 WHERE 1=0
 ----
 NULL
+
+# =============================================================================
+# CMP-01: tabfm_compare_models — cross-model comparison macro
+# =============================================================================
+#
+# tabfm_compare_models('data', 'target') UNION-ALLs:
+#   - tabpfn_v2 row: rmse + crps + log_score + interval_score (distribution model)
+#   - tabfm-v1 row:  rmse + NULL + NULL + NULL (point-estimate only)
+#
+# Target identifier is safely double-quoted to prevent SQL injection (T-03-06).
+# Verified by an identifier-safety block below.
+#
+# NOTE: Only the tabpfn_v2 row is verified in this test block (tabfm-v1 requires
+# downloading the model, which is not available in CI). The identifier-safety
+# block uses a WHERE 1=0 guard to test quoting without executing inference.
+#
+# Golden references (from tabfm_scoring.test PSR-01/02/03 blocks above):
+#   tabpfn_v2 rmse = round(tabfm_rmse(y_val, yhat), 6) from point-estimate run
+#   tabpfn_v2 crps = 0.530862, log_score = 1.581928, interval_score = 5.411898
+
+# CMP-01: tabpfn_v2 row has all metrics populated (non-NULL)
+query RRRRR
+SELECT model, round(rmse,6) AS rmse, round(crps,6) AS crps,
+       round(log_score,6) AS log_score, round(interval_score,6) AS interval_score
+FROM tabfm_compare_models('dist_data', 'y_val')
+WHERE model = 'tabpfn_v2'
+----
+tabpfn_v2	0.756226	0.530862	1.581928	5.411898
+
+# CMP-01: alias parity — anofox_tabfm_compare_models returns the same row
+query RRRRR
+SELECT model, round(rmse,6) AS rmse, round(crps,6) AS crps,
+       round(log_score,6) AS log_score, round(interval_score,6) AS interval_score
+FROM anofox_tabfm_compare_models('dist_data', 'y_val')
+WHERE model = 'tabpfn_v2'
+----
+tabpfn_v2	0.756226	0.530862	1.581928	5.411898
+
+# CMP-01: explicit coverage parameter (0.5) changes interval_score
+query RRRRR
+SELECT model, round(rmse,6) AS rmse, round(crps,6) AS crps,
+       round(log_score,6) AS log_score, round(interval_score,6) AS interval_score
+FROM tabfm_compare_models('dist_data', 'y_val', coverage := 0.5)
+WHERE model = 'tabpfn_v2'
+----
+tabpfn_v2	0.756226	0.530862	1.581928	2.34192
+
+# CMP-01 identifier safety: target column name with a double-quote must not cause
+# SQL injection — the macro must produce either a controlled error or a correct
+# result (proving the replace(target, '"', '""') quoting is applied).
+#
+# We use WHERE 1=0 on the outer query so the macro is invoked and the SQL is
+# generated/parsed, but inference never runs (no model is needed).
+# The query must NOT error with an unbalanced string literal or SQL-injection
+# parse failure; it must either succeed (0 rows) or fail with a controlled
+# "target column not found" binder error (not a parser/injection error).
+
+statement ok
+CREATE TABLE dist_quoted AS
+  SELECT * FROM dist_data
+
+statement ok
+ALTER TABLE dist_quoted RENAME COLUMN y_val TO "y""val"
+
+# Calling with a double-quoted identifier: produce 0 rows (WHERE 1=0) but
+# the SQL string assembly must not break (no injection, no parse error).
+# Error is acceptable if it is a Binder error (column not found) rather
+# than a Parser error (unbalanced literal or injection).
+statement ok
+SELECT * FROM tabfm_compare_models('dist_quoted', 'y"val')
+WHERE 1=0

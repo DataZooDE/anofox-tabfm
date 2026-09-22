@@ -250,6 +250,88 @@ R"(
 };
 // clang-format on
 
+// ── tabfm_compare_models (CMP-01) ────────────────────────────────────────────
+//
+// Parameters: data (required), target (required)
+// Optional:   coverage (default 0.9) — passed to tabfm_interval_score
+//
+// Macro body UNION-ALLs two model families on the user's own table:
+//   1. tabpfn_v2 (distribution model): computes rmse + crps + log_score +
+//      interval_score using tabfm_regress with output_mode='distribution'.
+//   2. tabfm-v1 (point-estimate model): computes rmse only; PSR scores are
+//      NULL because tabfm-v1 has no predictive distribution output.
+//      (tabfm-v1 requires tabfm_download('regression') before use.)
+//
+// Output schema: model VARCHAR, rmse DOUBLE, crps DOUBLE,
+//                log_score DOUBLE, interval_score DOUBLE
+//
+// CMP-01 safe identifier quoting: replace(target, '"', '""') at EVERY
+// interpolation (CV-04 pattern, T-03-06 SQL-injection mitigation).
+//
+// Security: T-03-06 — quoting verified by an identifier-safety SQL test block.
+// Spec ref: CMP-01
+// Research ref: 03-RESEARCH.md §CMP-01 Macro Pattern
+
+// clang-format off
+static const CVMacroDef COMPARE_MODELS_MACRO = {
+    {"data", "target", nullptr},               // positional required params
+    {"coverage=0.9", nullptr},                 // optional with default
+R"(
+    SELECT * FROM query(
+      -- CMP-01: UNION ALL two model families.
+      -- tabpfn_v2 gets all four metrics (distribution output).
+      -- tabfm-v1 gets rmse only (point-estimate only; PSR scores are NULL).
+      --
+      -- Safe identifier quoting: replace(target, '"', '""') at every
+      -- interpolation (T-03-06 SQL-injection mitigation, CV-04 pattern).
+      --
+      -- The generated SQL:
+      --   SELECT 'tabpfn_v2' AS model,
+      --          tabfm_rmse("target", yhat) AS rmse,
+      --          tabfm_crps("target", {"logits":logits,"borders":borders}) AS crps,
+      --          tabfm_log_score(...) AS log_score,
+      --          tabfm_interval_score(..., coverage) AS interval_score
+      --   FROM tabfm_regress('data', 'target', opts := MAP{'output_mode':'distribution'})
+      --   UNION ALL
+      --   SELECT 'tabfm-v1' AS model,
+      --          tabfm_rmse("target", yhat) AS rmse,
+      --          NULL::DOUBLE AS crps, NULL::DOUBLE AS log_score, NULL::DOUBLE AS interval_score
+      --   FROM tabfm_regress('data', 'target', opts := MAP{'model':'tabfm-v1'})
+      --
+      'SELECT ''tabpfn_v2'' AS model,'
+      ' tabfm_rmse("' || replace(CAST(target AS VARCHAR), '"', '""') || '", yhat) AS rmse,'
+      ' tabfm_crps("' || replace(CAST(target AS VARCHAR), '"', '""') || '",'
+      '   {''logits'': logits, ''borders'': borders}) AS crps,'
+      ' tabfm_log_score("' || replace(CAST(target AS VARCHAR), '"', '""') || '",'
+      '   {''logits'': logits, ''borders'': borders}) AS log_score,'
+      ' tabfm_interval_score("' || replace(CAST(target AS VARCHAR), '"', '""') || '",'
+      '   {''logits'': logits, ''borders'': borders}, '
+      || CAST(CAST(coverage AS DOUBLE) AS VARCHAR) || ') AS interval_score'
+      ' FROM tabfm_regress(''' || CAST(data AS VARCHAR) || ''','
+      '   ''' || replace(CAST(target AS VARCHAR), '''', '''''') || ''','
+      '   opts := MAP{''output_mode'': ''distribution''})'
+      ' UNION ALL'
+      ' SELECT ''tabfm-v1'' AS model,'
+      ' tabfm_rmse("' || replace(CAST(target AS VARCHAR), '"', '""') || '", yhat) AS rmse,'
+      ' NULL::DOUBLE AS crps,'
+      ' NULL::DOUBLE AS log_score,'
+      ' NULL::DOUBLE AS interval_score'
+      ' FROM tabfm_regress(''' || CAST(data AS VARCHAR) || ''','
+      '   ''' || replace(CAST(target AS VARCHAR), '''', '''''') || ''','
+      '   opts := MAP{''model'': ''tabfm-v1''})'
+    )
+)",
+    "Compare tabpfn_v2 (distribution) vs tabfm-v1 (point estimate) on the user's own table. "
+    "Returns one row per model with rmse, crps, log_score, and interval_score metrics. "
+    "tabpfn_v2 requires SET anofox_tabfm_model_manifest (fixture or real model); "
+    "tabfm-v1 requires CALL tabfm_download('regression') (license must be accepted). "
+    "tabfm-v1 has no predictive distribution, so crps/log_score/interval_score are NULL for it. "
+    "The target identifier is safely double-quoted to prevent SQL injection (CMP-01, T-03-06). "
+    "coverage controls the nominal interval score level (default 0.9, must be in (0,1)).",
+    "SELECT * FROM tabfm_compare_models('my_table', 'y_value');"
+};
+// clang-format on
+
 // ── Macro registration helpers (exact analog of tabfm_macros.cpp) ────────────
 
 unique_ptr<MacroFunction> BuildTableMacroFunction(const CVMacroDef &def) {
@@ -325,6 +407,8 @@ void RegisterCrossValidateMacros(ExtensionLoader &loader) {
 	                         {"data", "k", "row_key", "seed"});
 	RegisterCVMacroWithAlias(loader, "anofox_tabfm_cross_validate", "tabfm_cross_validate", CROSS_VALIDATE_MACRO,
 	                         {"data", "target", "row_key", "k", "seed", "task", "metric"});
+	RegisterCVMacroWithAlias(loader, "anofox_tabfm_compare_models", "tabfm_compare_models", COMPARE_MODELS_MACRO,
+	                         {"data", "target", "coverage"});
 }
 
 } // namespace anofox
