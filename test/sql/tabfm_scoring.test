@@ -295,6 +295,48 @@ FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distributio
 coverage must be in (0, 1)
 
 # =============================================================================
+# WR-02: NULL elements inside logit/border lists must be skipped, not coerced
+# =============================================================================
+#
+# DoubleValue::Get returns 0.0 for NULL list elements without checking is_null.
+# The fix adds per-element IsNull() checks in all three Update functions;
+# a row with any NULL element is skipped (same as NULL actual or NULL dist).
+#
+# We construct a distribution STRUCT with a NULL logit element and verify
+# that tabfm_crps, tabfm_log_score, and tabfm_interval_score return NULL
+# (aggregate over a single input row that is skipped → empty group → NULL).
+
+# Baseline: well-formed 2-bin distribution produces a non-NULL result
+query I
+SELECT tabfm_crps(1.0, {'logits': [0.5, 0.5]::DOUBLE[], 'borders': [0.0, 1.0, 2.0]::DOUBLE[]}) IS NOT NULL
+----
+true
+
+# NULL in logits: row is skipped, aggregate over empty group returns NULL
+query R
+SELECT tabfm_crps(1.0, {'logits': [NULL, 0.5]::DOUBLE[], 'borders': [0.0, 1.0, 2.0]::DOUBLE[]})
+----
+NULL
+
+# NULL in borders: row is skipped, aggregate returns NULL
+query R
+SELECT tabfm_crps(1.0, {'logits': [0.5, 0.5]::DOUBLE[], 'borders': [0.0, NULL, 2.0]::DOUBLE[]})
+----
+NULL
+
+# NULL in logits for tabfm_log_score: row is skipped, returns NULL
+query R
+SELECT tabfm_log_score(1.0, {'logits': [NULL, 0.5]::DOUBLE[], 'borders': [0.0, 1.0, 2.0]::DOUBLE[]})
+----
+NULL
+
+# NULL in logits for tabfm_interval_score: row is skipped, returns NULL
+query R
+SELECT tabfm_interval_score(1.0, {'logits': [NULL, 0.5]::DOUBLE[], 'borders': [0.0, 1.0, 2.0]::DOUBLE[]})
+----
+NULL
+
+# =============================================================================
 # CR-02: data parameter single-quote-escaped in tabfm_compare_models
 # =============================================================================
 #

@@ -327,11 +327,26 @@ void CRPSUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vect
 			continue; // malformed distribution — skip
 		}
 
-		// Build double vectors for logits and borders
+		// Build double vectors for logits and borders.
+		// WR-02: check per-element nullability — DoubleValue::Get returns 0.0 for NULL
+		// elements without raising an error (GetValueUnsafe bypasses the null flag).
+		// Skip the entire row if any element is NULL, consistent with the aggregate
+		// NULL-skip policy for the top-level actual and dist arguments.
 		std::vector<double> logits(K), borders(K + 1);
+		bool any_null = false;
 		for (size_t k = 0; k < K; k++) {
+			if (logit_vals[k].IsNull() || border_vals[k].IsNull()) {
+				any_null = true;
+				break;
+			}
 			logits[k]  = DoubleValue::Get(logit_vals[k]);
 			borders[k] = DoubleValue::Get(border_vals[k]);
+		}
+		if (!any_null && border_vals[K].IsNull()) {
+			any_null = true;
+		}
+		if (any_null) {
+			continue; // NULL element in logits/borders — skip row
 		}
 		borders[K] = DoubleValue::Get(border_vals[K]);
 
@@ -444,10 +459,22 @@ void LogScoreUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_
 			continue;
 		}
 
+		// WR-02: per-element null check (see CRPSUpdate for rationale)
 		std::vector<double> logits(K), borders(K + 1);
+		bool any_null = false;
 		for (size_t k = 0; k < K; k++) {
+			if (logit_vals[k].IsNull() || border_vals[k].IsNull()) {
+				any_null = true;
+				break;
+			}
 			logits[k]  = DoubleValue::Get(logit_vals[k]);
 			borders[k] = DoubleValue::Get(border_vals[k]);
+		}
+		if (!any_null && border_vals[K].IsNull()) {
+			any_null = true;
+		}
+		if (any_null) {
+			continue;
 		}
 		borders[K] = DoubleValue::Get(border_vals[K]);
 
@@ -587,10 +614,22 @@ void IScoreUpdate(Vector inputs[], AggregateInputData &aggr_input, idx_t, Vector
 			continue;
 		}
 
+		// WR-02: per-element null check (see CRPSUpdate for rationale)
 		std::vector<double> logits(K), borders(K + 1);
+		bool any_null = false;
 		for (size_t k = 0; k < K; k++) {
+			if (logit_vals[k].IsNull() || border_vals[k].IsNull()) {
+				any_null = true;
+				break;
+			}
 			logits[k]  = DoubleValue::Get(logit_vals[k]);
 			borders[k] = DoubleValue::Get(border_vals[k]);
+		}
+		if (!any_null && border_vals[K].IsNull()) {
+			any_null = true;
+		}
+		if (any_null) {
+			continue;
 		}
 		borders[K] = DoubleValue::Get(border_vals[K]);
 
