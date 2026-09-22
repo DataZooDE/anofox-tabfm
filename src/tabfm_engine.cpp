@@ -708,6 +708,17 @@ double DistributionQuantile(const vector<double> &probs, const vector<double> &b
 	if (K == 0 || borders.size() != K + 1) {
 		return 0.0;
 	}
+	// Guard q to the open interval (0, 1): clamp to the distribution's support
+	// boundaries rather than extrapolating (WR-03). This matches the convention
+	// that q=0 → leftmost border and q=1 → rightmost border. Production callers
+	// always pass kQuantileLevels (all strictly in (0,1)) so this path is only
+	// reached by out-of-contract callers.
+	if (q <= 0.0) {
+		return borders[0];
+	}
+	if (q >= 1.0) {
+		return borders[K];
+	}
 	double prev_cum = 0.0;
 	for (size_t i = 0; i < K; i++) {
 		const double curr_cum = prev_cum + probs[i];
