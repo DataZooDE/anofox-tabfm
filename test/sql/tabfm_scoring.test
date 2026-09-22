@@ -278,3 +278,18 @@ ALTER TABLE dist_quoted RENAME COLUMN y_val TO "y""val"
 statement ok
 SELECT * FROM tabfm_compare_models('dist_quoted', 'y"val')
 WHERE 1=0
+
+# =============================================================================
+# CR-01: NaN coverage bypasses IScoreBind validation — must be rejected at bind
+# =============================================================================
+#
+# IEEE 754: NaN comparisons always return false, so the plain (coverage <= 0 ||
+# coverage >= 1) guard silently passes NaN. The fix adds std::isnan(coverage)
+# to the guard so NaN is caught and the named coverage error is thrown.
+
+# NaN coverage via 0.0/0.0 expression must throw the coverage validation error
+statement error
+SELECT tabfm_interval_score(y_val, {'logits': logits, 'borders': borders}, 0.0/0.0)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+coverage must be in (0, 1)

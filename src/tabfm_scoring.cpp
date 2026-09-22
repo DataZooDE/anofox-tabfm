@@ -652,7 +652,10 @@ unique_ptr<FunctionData> IScoreBind(ClientContext &context, AggregateFunction &,
 	}
 
 	// T-03-05: validate 0 < coverage < 1 at bind time (named error per SQL-API §5).
-	if (coverage <= 0.0 || coverage >= 1.0) {
+	// std::isnan guard is required because NaN comparisons always return false under
+	// IEEE 754 — without it, NaN passes the range check and silently propagates through
+	// DistributionQuantile into an NaN output aggregate (CR-01, gsd-code-review 03).
+	if (std::isnan(coverage) || coverage <= 0.0 || coverage >= 1.0) {
 		throw InvalidInputException(
 		    "tabfm_interval_score: coverage must be in (0, 1) exclusive — "
 		    "got %g. Use coverage := 0.9 for 90%% nominal coverage.",
