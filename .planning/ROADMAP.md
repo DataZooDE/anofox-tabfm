@@ -72,7 +72,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] 02-01-PLAN.md — Preprocessing-profile registry tracer: tabfm-v1 predict routed through the registry + unknown-profile named error + scaffold batch (MGEN-01/02)
 - [x] 02-02-PLAN.md — Distribution output path: ORT borders + contract validation + output_mode='distribution' decode over non-uniform borders (RDIST-01/02, MGEN-03)
-- [ ] 02-03-PLAN.md — Weight-free K=16 tabpfn_v2 fixture family + tools/parity contract validator + fixture-scoped profile (MODL-01, MODL-04)
+- [x] 02-03-PLAN.md — Weight-free K=16 tabpfn_v2 fixture family + tools/parity contract validator + fixture-scoped profile (MODL-01, MODL-04)
 - [ ] 02-04-PLAN.md — Per-family license gate + end-to-end distribution predict vs golden (MODL-03)
 
 ### Phase 3: Proper Scoring Rules + Cross-Model Comparison

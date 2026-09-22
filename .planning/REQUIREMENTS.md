@@ -115,10 +115,10 @@ Which phases cover which requirements. Populated during roadmap creation.
 | MGEN-03 | Phase 2 | Complete |
 | RDIST-01 | Phase 2 | Complete |
 | RDIST-02 | Phase 2 | Complete |
-| MODL-01 | Phase 2 | Pending (fixture-scoped; real export → v2) |
+| MODL-01 | Phase 2 | Implemented (fixture-scoped; real export → v2) |
 | MODL-02 | v2 | Deferred (TabICL export infeasible) |
 | MODL-03 | Phase 2 | Pending |
-| MODL-04 | Phase 2 | Pending (fixture parity; TabICL parity → v2) |
+| MODL-04 | Phase 2 | Implemented (fixture parity; TabICL parity → v2) |
 | PSR-01 | Phase 3 | Pending |
 | PSR-02 | Phase 3 | Pending |
 | PSR-03 | Phase 3 | Pending |
