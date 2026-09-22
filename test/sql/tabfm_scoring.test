@@ -1,0 +1,85 @@
+# name: test/sql/tabfm_scoring.test
+# description: End-to-end tabfm_crps tests (PSR-01, PSR-04).
+#   PSR-01: tabfm_crps aggregate over distribution output matches Python reference.
+#   PSR-04: tabfm_crps(actual, plain_double) fails at bind with named remedy.
+#   Alias parity: anofox_tabfm_crps == tabfm_crps.
+#   NULL/empty group returns NULL.
+#
+# Golden CRPS values from tools/parity/src/parity/crps_reference.py (crps_bar).
+# Fixture: test/fixtures/tabpfn_v2/golden.json (K=16, train_size=4, raw_borders).
+# Spec ref: PSR-01, PSR-04, plan 03-01
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# Point at the committed tabpfn_v2 K=16 weight-free fixture.
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/tabpfn_v2/manifest.json'
+
+# --- Build the regression table matching the golden fixture inputs ----------------
+# (same as tabfm_distribution.test — 6 rows × 8 features; first 4 rows have training
+# targets, last 2 have NULL y)
+
+statement ok
+CREATE TABLE dist_data AS SELECT * FROM (VALUES
+  (1.4459627866744995, 0.10230513662099838, 0.32675278186798096, 1.1364624500274658, 0.82424396276474, 0.5789564847946167, -0.37917059659957886, -1.0188735723495483, 0.3129126727581024),
+  (0.3761689066886902, -0.5119594931602478, 0.8272348642349243, 0.21125444769859314, -0.7452943325042725, 0.26772525906562805, 0.709180474281311, 0.17752011120319366, -0.7114407420158386),
+  (-0.7825691103935242, 0.26232901215553284, 0.3570016920566559, 0.8242873549461365, 0.7220343947410583, -0.9082574844360352, -0.49777135252952576, 0.6057131290435791, -0.8773788213729858),
+  (-1.697678565979004, 0.777228832244873, -0.8394498825073242, -0.4217756390571594, 1.4433399438858032, -0.06448289006948471, -0.3018791377544403, 0.28141310811042786, 0.7853227257728577),
+  (-0.09394489973783493, -0.6259090304374695, 0.24985754489898682, 2.1368298530578613, 0.9196307063102722, 0.4379057288169861, 0.2572841942310333, 0.7977890968322754, NULL),
+  (0.6240881085395813, -0.8567355871200562, 0.5070579648017883, 0.052237920463085175, 1.715856671333313, -0.2110760360956192, 1.251761794090271, -1.1556848287582397, NULL)
+) v(f0,f1,f2,f3,f4,f5,f6,f7,y_val);
+
+# --- PSR-01: CRPS golden value check -----------------------------------------
+# Run tabfm_regress with output_mode='distribution' to get logits + borders for
+# all rows. tabfm_regress unnests yhat_dist, so logits/borders appear as top-level
+# LIST columns. Reconstruct the STRUCT inline for tabfm_crps.
+#
+# Only rows with non-NULL y_val (the 4 training rows) contribute to the aggregate
+# since tabfm_crps skips NULL actual values.
+#
+# Reference (crps_reference.py, mean of 4 training rows):
+#   row 0: y=0.312913, CRPS=0.460410137817095
+#   row 1: y=-0.711441, CRPS=0.474775309518931
+#   row 2: y=-0.877379, CRPS=0.557400865340233
+#   row 3: y=0.785323, CRPS=0.630859821240884
+#   mean = 0.530861533479286 → round(_, 6) = 0.530862
+
+# PSR-01: tabfm_crps matches golden reference within 1e-6 (round to 6 decimal places)
+query R
+SELECT round(tabfm_crps(y_val, {'logits': logits, 'borders': borders}), 6)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+0.530862
+
+# PSR-01: alias parity — anofox_tabfm_crps returns the same value
+query R
+SELECT round(anofox_tabfm_crps(y_val, {'logits': logits, 'borders': borders}), 6)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+0.530862
+
+# --- PSR-04: bind-gate — plain DOUBLE second argument must error at bind ------
+# tabfm_crps(actual, yhat) where yhat is a plain DOUBLE should throw at bind
+# with a message naming the remedy 'output_mode := 'distribution''.
+
+# PSR-04: point-estimate second argument rejected at bind (error must mention output_mode)
+statement error
+SELECT tabfm_crps(y_val, yhat)
+FROM tabfm_regress('dist_data', 'y_val')
+----
+tabfm_crps: second argument must be a distribution
+
+# --- NULL/empty group: returns NULL ------------------------------------------
+# An empty group (WHERE 1=0) must return NULL per SQL aggregate semantics.
+
+# NULL group: tabfm_crps over empty result set returns NULL
+query R
+SELECT tabfm_crps(y_val, {'logits': logits, 'borders': borders})
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+WHERE 1=0
+----
+NULL
