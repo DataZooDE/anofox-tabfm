@@ -23,7 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Evaluation Metrics + Cross-Validation** - Model-agnostic classification/regression metric aggregates and leakage-safe k-fold CV over `(actual, predicted[, proba])` (completed 2026-09-21)
 - [x] **Phase 2: Model Generalization + Distribution Output (fixture-backed)** - Preprocessing-profile registry, regression distribution output against the confirmed TabPFN v2 contract, per-family license gate, weight-free TabPFN v2 fixture family (real TabPFN v2 export + TabICL deferred — see Spike Outcomes) (completed 2026-09-22)
-- [ ] **Phase 3: Proper Scoring Rules + Cross-Model Comparison** - Distribution-gated CRPS / log-score / interval score and evaluation across model families on user tables
+- [x] **Phase 3: Proper Scoring Rules + Cross-Model Comparison** - Distribution-gated CRPS / log-score / interval score and evaluation across model families on user tables (completed 2026-09-22)
 
 ## Phase Details
 
@@ -104,7 +104,7 @@ Phases execute in numeric order: 1 → 2 → 3
 |-------|----------------|--------|-----------|
 | 1. Evaluation Metrics + Cross-Validation | 4/4 | Complete    | 2026-09-21 |
 | 2. Model Generalization + Multi-Family Onboarding | 4/4 | Complete    | 2026-09-22 |
-| 3. Proper Scoring Rules + Cross-Model Comparison | 2/2 | In Progress|  |
+| 3. Proper Scoring Rules + Cross-Model Comparison | 2/2 | Complete    | 2026-09-22 |
 
 ## Recommended Spikes
 
