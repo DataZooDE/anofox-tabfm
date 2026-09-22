@@ -161,11 +161,15 @@ TEST_CASE("tabfm_scoring: tabfm_crps NULL rows are skipped", "[tabfm_scoring]") 
 
 	// Three rows: one valid (y=1.5, K=4 uniform), one NULL actual, one NULL dist
 	REQUIRE(!con.Query(
-	            "CREATE TABLE t_nulls AS SELECT * FROM (VALUES "
-	            "(1.5::DOUBLE, {'logits': [0.0,0.0,0.0,0.0]::DOUBLE[], 'borders': [0.0,1.0,2.0,3.0,4.0]::DOUBLE[]}), "
-	            "(NULL::DOUBLE, {'logits': [0.0,0.0,0.0,0.0]::DOUBLE[], 'borders': [0.0,1.0,2.0,3.0,4.0]::DOUBLE[]}), "
-	            "(1.5::DOUBLE, NULL::{logits DOUBLE[], borders DOUBLE[]})"
-	            ") v(actual, dist)")
+	            "CREATE TABLE t_nulls AS "
+	            "SELECT 1.5::DOUBLE AS actual, "
+	            "{'logits': [0.0,0.0,0.0,0.0]::DOUBLE[], 'borders': [0.0,1.0,2.0,3.0,4.0]::DOUBLE[]} AS dist "
+	            "UNION ALL "
+	            "SELECT NULL::DOUBLE AS actual, "
+	            "{'logits': [0.0,0.0,0.0,0.0]::DOUBLE[], 'borders': [0.0,1.0,2.0,3.0,4.0]::DOUBLE[]} AS dist "
+	            "UNION ALL "
+	            "SELECT 1.5::DOUBLE AS actual, "
+	            "NULL::STRUCT(logits DOUBLE[], borders DOUBLE[]) AS dist")
 	             ->HasError());
 
 	// Only the first row contributes; result equals single-row CRPS

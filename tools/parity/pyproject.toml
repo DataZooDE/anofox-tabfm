@@ -25,6 +25,7 @@ dev = ["pytest>=8"]
 [project.scripts]
 check_tabpfn_v2 = "parity.check_tabpfn_v2:main"
 build_tabpfn_v2_fixture = "parity.build_fixture:main"
+crps_reference = "parity.crps_reference:main"
 
 [build-system]
 requires = ["hatchling"]
