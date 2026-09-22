@@ -54,23 +54,58 @@ NEG_INF = -1e30  # finite so bf16/fp16 quantisation cannot turn it into a NaN
 
 
 def context_row_mask(total_rows: int, train_size: torch.Tensor, device) -> torch.Tensor:
-    """[T] bool: True on context rows. The whole conversion in one line."""
+    """[T] bool: True on context rows. The whole conversion in one line.
+
+    train_size stays at shape [1] and broadcasts against [T]. It must NOT be
+    reshaped to rank 0: MIGraphX's Reshape computes the element count of an
+    empty dims list as zero and refuses the graph outright --
+    "Reshape: reshape has 0 elements whereas the input has 1" -- which is how
+    the first compile of this conversion died. PyTorch and ONNX Runtime both
+    accept rank-0 happily, so nothing before the GPU compile could have caught
+    it.
+    """
     positions = torch.arange(total_rows, device=device)
-    return positions < train_size.reshape(())
+    return positions < train_size
+
+
+def _sum_rows(x: torch.Tensor) -> torch.Tensor:
+    """Sum over the row axis as a GEMM: ones[1, T] @ x[T, rest].
+
+    Mathematically ``x.sum(dim=0, keepdim=True)``. It is written as a matmul to
+    route around a MIGraphX code-generation bug, isolated by ablation on this
+    model: a SINGLE masked-statistics block compiles, and two chained ones make
+    its reducer template emit invalid C++ --
+
+        invalid operands to binary expression
+        ('reducer<...>::inner_storage<float, 1, integral_constant<unsigned,1>>'
+         and 'float')
+
+    -- four times, followed by an assertion in optional<tuning_config> and a
+    core dump. TabDPT's preprocessing chains three such blocks (clip, normalize,
+    clip), so it hits this squarely. No MIGRAPHX_DISABLE_* env var avoids it.
+
+    A GEMM never enters that template, and is a shape a GPU is good at anyway,
+    so this costs nothing beyond looking indirect. Verified: with reductions the
+    graph aborts the compiler; with matmuls it compiles.
+    """
+    rows = x.shape[0]
+    flat = x.reshape(rows, -1)
+    ones = torch.ones(1, rows, dtype=flat.dtype, device=flat.device)
+    return (ones @ flat).reshape(1, *x.shape[1:])
 
 
 def _masked_mean(x: torch.Tensor, mask: torch.Tensor, dim: int) -> torch.Tensor:
-    x = torch.where(mask, x, torch.zeros((), dtype=x.dtype, device=x.device))
-    return x.sum(dim=dim, keepdim=True) / mask.sum(dim=dim, keepdim=True)
+    xz = torch.where(mask, x, torch.zeros((), dtype=x.dtype, device=x.device))
+    return _sum_rows(xz) / _sum_rows(mask.to(x.dtype))
 
 
 def _masked_std(x: torch.Tensor, mask: torch.Tensor, dim: int = 0) -> torch.Tensor:
     # Transcribed from upstream maskstd, including its (num - 1) denominator:
     # the unbiased estimator, which is what torch's .std() uses by default.
-    num = mask.sum(dim=dim, keepdim=True)
+    num = _sum_rows(mask.to(x.dtype))
     mean = _masked_mean(x, mask, dim=0)
     diffs = torch.where(mask, mean - x, torch.zeros((), dtype=x.dtype, device=x.device))
-    return ((diffs**2).sum(dim=0, keepdim=True) / (num - 1)) ** 0.5
+    return (_sum_rows(diffs * diffs) / (num - 1)) ** 0.5
 
 
 def _row_mask_for(data: torch.Tensor, ctx_mask: torch.Tensor) -> torch.Tensor:
@@ -139,7 +174,7 @@ def masked_encoder_layer_forward(layer, x: torch.Tensor, y: torch.Tensor,
                        torch.full((), NEG_INF, dtype=q.dtype, device=q.device))
     bias = bias.reshape(1, 1, 1, L)
 
-    attn = F.scaled_dot_product_attention(q * beta, k, v, attn_mask=bias,
+    attn = F.scaled_dot_product_attention(q * beta.reshape(1, 1, 1, 1), k, v, attn_mask=bias,
                                           scale=default_scale).transpose(1, 2)
     attn = attn * gate.unsqueeze(-1)
     attn = layer.out_proj(attn.reshape(B, L, layer.num_heads * layer.head_dim))
@@ -165,9 +200,12 @@ def masked_get_scale_param(layer, train_size: torch.Tensor, *, device, dtype) ->
     """
     if layer.disable_attention_scaling:
         return torch.tensor(1.0, device=device, dtype=dtype)
-    n = train_size.reshape(()).to(device=device, dtype=dtype)
-    n = torch.minimum(n, layer.max_len_f.to(dtype))
-    return 1.0 + layer.kappa.to(dtype) * torch.clamp(torch.log(n / layer.n0.to(dtype)), min=0.0)
+    # Shape [1] throughout, never rank 0 (see context_row_mask): beta
+    # broadcasts against q's [B, heads, L, dim] just as well at [1].
+    n = train_size.to(device=device, dtype=dtype)
+    n = torch.minimum(n, layer.max_len_f.to(dtype).reshape(1))
+    return 1.0 + layer.kappa.to(dtype).reshape(1) * torch.clamp(
+        torch.log(n / layer.n0.to(dtype).reshape(1)), min=0.0)
 
 
 def masked_model_forward(model, x_src: torch.Tensor, y_src: torch.Tensor,
@@ -219,3 +257,119 @@ def masked_model_forward(model, x_src: torch.Tensor, y_src: torch.Tensor,
     if n_think > 0:
         src = src[n_think:]
     return model.head(src.float())
+
+
+class MaskExportWrapper(torch.nn.Module):
+    """TabDPT under the train_size contract: x, y_full, train_size, d.
+
+    The counterpart of tabdpt_patches.ExportWrapper, which declares only
+    ``(x, y)`` and reads the split from ``y``'s length. Here ``y`` is full
+    length and ``train_size`` carries the split as a value, so nothing about
+    the graph's shapes depends on how many rows happen to be context.
+
+    ``d`` (the real feature count) is declared because the family contract has
+    it and because it is what lets the H axis be padded to a bucket: without
+    it, padded feature columns are indistinguishable from real zeros. It is
+    accepted and currently unused by the forward -- the model pads internally
+    to its own fixed width -- but declaring it keeps the graph's inputs
+    identical to tabfm-v1's and mitra's, which is what makes the existing
+    engine path serve this model with no C++ change at all.
+    """
+
+    def __init__(self, model, task: str, num_features: int, n_out: int,
+                 bin_min: float, bin_max: float, bin_count: int):
+        super().__init__()
+        if task not in ("classification", "regression"):
+            raise ValueError(f"task must be classification|regression, got {task!r}")
+        self.m = model
+        self.task = task
+        self.num_features = int(num_features)
+        self.n_out = int(n_out)
+        if task == "regression":
+            edges = torch.linspace(float(bin_min), float(bin_max), int(bin_count) + 1)
+            self.register_buffer("bin_centres", (0.5 * (edges[:-1] + edges[1:])).float())
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor,
+                train_size: torch.Tensor, d: torch.Tensor) -> torch.Tensor:
+        # x: [1, T, H]   y: [1, T] (FULL length)   train_size: [1]   d: [1]
+        total_rows = x.shape[1]
+        x = torch.nn.functional.pad(x, (0, self.num_features - x.shape[2]))
+
+        ctx = context_row_mask(total_rows, train_size, x.device).reshape(1, -1)
+
+        # Standardise the target over the CONTEXT rows only -- the masked
+        # counterpart of the positional wrapper's y[:, :S] statistics. Getting
+        # this from the full y would leak the query labels into the scale of
+        # every regression prediction.
+        y_ctx_mask = ctx.expand_as(y)
+        n_ctx = y_ctx_mask.sum(dim=1, keepdim=True)
+        y_zeroed = torch.where(y_ctx_mask, y, torch.zeros((), dtype=y.dtype, device=y.device))
+        mean_y = y_zeroed.sum(dim=1, keepdim=True) / n_ctx
+        diffs = torch.where(y_ctx_mask, y - mean_y, torch.zeros((), dtype=y.dtype, device=y.device))
+        std_y = ((diffs**2).sum(dim=1, keepdim=True) / (n_ctx - 1)) ** 0.5 + 1e-6
+
+        y_src = y if self.task == "classification" else (y - mean_y) / std_y
+
+        out = masked_model_forward(self.m, x, y_src, train_size)  # (T, B, O)
+        out = out.transpose(0, 1)                                 # (B, T, O)
+
+        if self.task == "classification":
+            return out[..., : self.n_out]
+        reg_logits = out[..., self.n_out :]
+        weights = torch.softmax(reg_logits.float(), dim=-1)
+        centres: torch.Tensor = self.get_buffer("bin_centres")
+        point = (weights * centres).sum(dim=-1, keepdim=True)
+        return point * std_y.unsqueeze(-1) + mean_y.unsqueeze(-1)
+
+
+def build_mask_wrapper(model, task: str) -> MaskExportWrapper:
+    """Wrap a TabDPTModel under the masked contract. No patching of upstream."""
+    return MaskExportWrapper(
+        model,
+        task=task,
+        num_features=model.num_features,
+        n_out=model.n_out,
+        bin_min=getattr(model, "regression_bin_min", -5.0),
+        bin_max=getattr(model, "regression_bin_max", 5.0),
+        bin_count=getattr(model, "regression_bin_count", 1000),
+    ).eval()
+
+
+def _patched_swiglu_forward(self, x: torch.Tensor) -> torch.Tensor:
+    """SwiGLU with the gate split by SLICING instead of ``chunk``.
+
+    Upstream is ``u, v = self.up(x).chunk(2, dim=-1)``. ``torch.chunk`` exports
+    as ONNX ``SplitToSequence`` + ``SequenceAt``, and MIGraphX's ONNX parser
+    implements neither: the compile dies with "Unknown operator:
+    SplitToSequence".
+
+    This is a SECOND MIGraphX blocker in TabDPT, entirely independent of the
+    positional train/test split, and it is present in the graph tabdpt already
+    ships -- 32 SplitToSequence and 64 SequenceAt, exactly one chunk per layer
+    across the 32 layers. docs/ROCM_SINGLE_EVAL_POS.md nominated tabdpt as the
+    model worth converting on the strength of the split alone; converting the
+    split is necessary and was never sufficient. Only compiling it on the
+    hardware could reveal that, because ONNX Runtime supports sequence ops
+    perfectly well and the CUDA path has always been happy.
+
+    The rewrite is exact: the halves are the same elements in the same order,
+    and ``up`` has a statically known output width, so the split point is a
+    constant rather than a traced value.
+    """
+    h = self.up(x)
+    half = h.shape[-1] // 2
+    u = h[..., :half]
+    v = h[..., half:]
+    return self.down(F.silu(u) * v)
+
+
+def apply_migraphx_friendly() -> None:
+    """Patch the ops MIGraphX's parser cannot read. Idempotent.
+
+    Kept separate from the masked forward: this is about what the PARSER
+    accepts, not about the train/test contract, and a future backend that
+    handles sequence ops would want the contract change without this.
+    """
+    from tabdpt import model as m
+
+    m.SwiGLU.forward = _patched_swiglu_forward

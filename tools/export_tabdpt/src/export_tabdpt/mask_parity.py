@@ -188,3 +188,58 @@ def self_test(argv=None) -> int:
         print(f"GATE IS BLIND to: {', '.join(blind)}")
         return 2
     return compare(*shape)
+
+
+def compare_wrappers(cfg_name: str, task: str, rows: int, features: int,
+                     train_frac: float, seed: int) -> int:
+    """Wrapper-to-wrapper parity — the level that actually gets exported.
+
+    compare() checks the model forward. This checks the thing torch.onnx.export
+    is handed, which additionally owns feature padding, the regression target
+    standardisation and the output layout. The regression path is the reason
+    this exists separately: the positional wrapper standardises y over its
+    train PREFIX, and the masked one must do it over the context rows of a
+    full-length y. Getting that from the full y instead would leak query
+    labels into the scale of every regression prediction — and would still
+    look perfectly reasonable in classification, where y_src is untouched.
+    """
+    from export_tabdpt.tabdpt_mask_patches import build_mask_wrapper
+    from export_tabdpt.tabdpt_patches import build_wrapper
+
+    cfg = getattr(configs, cfg_name)()
+    apply_positional()
+    model = build_model(cfg, seed=seed)
+
+    positional = build_wrapper(model, task)
+    masked = build_mask_wrapper(model, task)  # SAME weights, by construction
+
+    torch.manual_seed(seed + 1)
+    train_size = max(2, int(rows * train_frac))
+    x = torch.randn(1, rows, features)
+    if task == "classification":
+        y_full = torch.randint(0, max(2, cfg.max_classes), (1, rows)).float()
+    else:
+        y_full = torch.randn(1, rows) * 3.0 + 1.0
+    y_full[:, train_size:] = -999.0  # poison; the mask must make it irrelevant
+
+    with torch.no_grad():
+        want = positional(x, y_full[:, :train_size])           # (1, T, C), head zero-padded
+        got = masked(x, y_full,
+                     torch.tensor([train_size], dtype=torch.long),
+                     torch.tensor([features], dtype=torch.long))
+
+    # The positional wrapper zero-pads rows < train_size; compare where the
+    # engine actually reads.
+    want_q = want[:, train_size:, :]
+    got_q = got[:, train_size:, :]
+    if want_q.shape != got_q.shape:
+        print(f"[{task}] SHAPE MISMATCH positional={tuple(want_q.shape)} masked={tuple(got_q.shape)}")
+        return 2
+
+    max_abs = (want_q - got_q).abs().max().item()
+    scale = want_q.abs().max().clamp(min=1e-6).item()
+    rel = max_abs / scale
+    ok = rel < 1e-4
+    print(f"[{task}] rows={rows} train_size={train_size} shape={tuple(want_q.shape)} "
+          f"rel={rel:.3e} {'PASS' if ok else 'FAIL'}")
+    return 0 if ok else 1
