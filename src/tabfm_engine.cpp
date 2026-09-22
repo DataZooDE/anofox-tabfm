@@ -797,12 +797,15 @@ private:
 		const idx_t n_rows = in.rows.size();
 		const idx_t n_classes = batch.label_decoder.size();
 
-		// Distribution decode branch (RDIST-02): gated on opts.distribution AND
-		// the model actually emitting borders (non-empty). The [1,T,C] validator
-		// must NOT run for distribution graphs (rank-2 output). (MGEN-03, T-02-03)
-		const bool is_distribution = (in.opts.distribution && !out.borders.empty() &&
-		                               task == TabFMTask::REGRESSION);
-		if (is_distribution) {
+		// Distribution decode branch (RDIST-02, MGEN-03): engage whenever the model
+		// actually emits borders (rank-2 [T,K] output), regardless of opts.distribution.
+		// A distribution model (distribution_output:true) ALWAYS produces [T,K]+borders;
+		// running ValidateTabFMOutput on it would incorrectly flag the shape as wrong.
+		// Whether distribution columns are included in the result is controlled by
+		// opts.distribution — the decoder suppresses yhat_dist_logits/borders/quantiles
+		// when the user did not request output_mode='distribution' (backward compat).
+		const bool model_emits_dist = (!out.borders.empty() && task == TabFMTask::REGRESSION);
+		if (model_emits_dist) {
 			return DecodeDistribution(in, batch, out, n_rows, T);
 		}
 
@@ -857,12 +860,15 @@ private:
 	//! raw-space borders (RDIST-02). Runs AFTER ValidateDistributionOutput so all
 	//! indexing is bounds-safe. Z-space logits stored pre-softmax; raw-space
 	//! borders stored after affine transform (Pitfall 5).
+	//! When opts.distribution is false (compact/detail mode) only yhat and yhat_score
+	//! are populated — distribution column vectors stay empty (backward compat).
 	static TabFMPredictResult DecodeDistribution(const PredictInput &in, const PreprocessedBatch &batch,
 	                                              const TabFMRunOutput &out, idx_t n_rows, idx_t T) {
 		// Validate the [n_test, K] + [K+1] contract before any indexing (MGEN-03).
 		ValidateDistributionOutput(out, T);
 
 		const idx_t K = NumericCast<idx_t>(out.shape[1]);
+		const bool emit_dist_cols = in.opts.distribution;
 
 		// 1. Affine-transform z-normalized borders → raw space once
 		//    (Pitfall 4: forgetting this gives z-space yhat; Pitfall 5: store raw-space).
@@ -874,17 +880,23 @@ private:
 		TabFMPredictResult result;
 		result.yhat.resize(n_rows);
 		result.yhat_score.resize(n_rows);
-		result.yhat_dist_logits.resize(n_rows);
-		result.yhat_dist_borders.resize(n_rows);
-		result.yhat_quantiles.resize(n_rows);
+		if (emit_dist_cols) {
+			result.yhat_dist_logits.resize(n_rows);
+			result.yhat_dist_borders.resize(n_rows);
+			result.yhat_quantiles.resize(n_rows);
+		}
 
 		// Pre-build the raw-space borders Value once — same K+1 vector for every row.
-		vector<Value> borders_children;
-		borders_children.reserve(K + 1);
-		for (idx_t k = 0; k <= K; k++) {
-			borders_children.emplace_back(Value::DOUBLE(raw_borders[k]));
+		// Only needed when emitting distribution columns.
+		Value raw_borders_val;
+		if (emit_dist_cols) {
+			vector<Value> borders_children;
+			borders_children.reserve(K + 1);
+			for (idx_t k = 0; k <= K; k++) {
+				borders_children.emplace_back(Value::DOUBLE(raw_borders[k]));
+			}
+			raw_borders_val = Value::LIST(LogicalType::DOUBLE, borders_children);
 		}
-		Value raw_borders_val = Value::LIST(LogicalType::DOUBLE, borders_children);
 
 		for (idx_t t = 0; t < T; t++) {
 			const idx_t src = batch.row_source_index[t];
@@ -903,6 +915,10 @@ private:
 			double mean = DistributionMean(probs, raw_borders);
 			result.yhat[src] = Value::DOUBLE(mean);
 			result.yhat_score[src] = Value(LogicalType::DOUBLE); // NULL (no top-class score)
+
+			if (!emit_dist_cols) {
+				continue; // compact/detail: skip distribution column population
+			}
 
 			// 5. Quantiles at kQuantileLevels using raw-space borders.
 			vector<Value> quantile_vals;

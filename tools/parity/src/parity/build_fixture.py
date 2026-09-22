@@ -98,11 +98,15 @@ def _sorted_borders(rng: np.random.Generator, k: int) -> np.ndarray:
 # ── ONNX graph construction ────────────────────────────────────────────────────
 
 def _build_onnx_graph(
-    W: np.ndarray,   # [H, K] linear layer weights (already in graph initializers)
-    b: np.ndarray,   # [K] bias
+    W: np.ndarray,   # [H, K] linear layer weights (used only for golden run, not embedded)
+    b: np.ndarray,   # [K] bias (same)
     borders_vals: np.ndarray,  # [K+1] constant borders
 ) -> onnx.ModelProto:
-    """Build the K=16 tabpfn_v2 fixture ONNX graph.
+    """Build the K=16 tabpfn_v2 fixture ONNX graph with external-data stubs for W and b.
+
+    W and b are EXTERNAL-DATA STUBS (data_location=EXTERNAL, raw_data empty) so the
+    C++ engine can inject them via ORT AddExternalInitializers (requires external-data
+    format). The graph is already 'weight-free' as committed — no strip step needed.
 
     Input convention matches the existing engine (see ORT Run in tabfm_ort_engine.cpp):
       x          float32 [1, T, H]   — features (batch dim 1, T rows, H cols)
@@ -132,9 +136,30 @@ def _build_onnx_graph(
     borders_out = helper.make_tensor_value_info("borders", TensorProto.FLOAT, [K_ + 1])
 
     # ── ONNX initializers (W, b, reshape_shape) ───────────────────────────────
-    W_init = numpy_helper.from_array(W.astype(np.float32),  name="W")
-    b_init = numpy_helper.from_array(b.astype(np.float32),  name="b")
-    # Shape for Reshape: [-1, H] so dynamic T is handled
+    # W and b are EXTERNAL-DATA STUBS so the C++ engine can inject them via
+    # ORT's AddExternalInitializers API (which requires data_location=EXTERNAL).
+    # The stub format: dims declared, raw_data empty, data_location=EXTERNAL,
+    # external_data[location] = 'model.safetensors' (documentation only — the
+    # location is ignored when injecting via AddExternalInitializers; the C++
+    # engine reads the actual weights from the safetensors file by name match).
+    W_init = onnx.TensorProto()
+    W_init.name = "W"
+    W_init.data_type = TensorProto.FLOAT
+    W_init.dims.extend([H_, K_])
+    W_init.data_location = TensorProto.EXTERNAL
+    W_init.external_data.add().CopyFrom(
+        onnx.StringStringEntryProto(key="location", value="model.safetensors")
+    )
+    b_init = onnx.TensorProto()
+    b_init.name = "b"
+    b_init.data_type = TensorProto.FLOAT
+    b_init.dims.extend([K_])
+    b_init.data_location = TensorProto.EXTERNAL
+    b_init.external_data.add().CopyFrom(
+        onnx.StringStringEntryProto(key="location", value="model.safetensors")
+    )
+    # Shape for Reshape: [-1, H] so dynamic T is handled — structural constant,
+    # not a model weight, stays as regular initializer.
     shape_vals = np.array([-1, H_], dtype=np.int64)
     shape_init = numpy_helper.from_array(shape_vals, name="reshape_shape")
 
@@ -191,7 +216,9 @@ def _build_onnx_graph(
         "MODL-01 fixture; plan 02-03."
     )
 
-    onnx.checker.check_model(model)
+    # Skip onnx.checker: external-data stubs with no data file cause checker to fail.
+    # The graph structure is correct; the parity test validates it at runtime via ORT
+    # injection (tools/parity/tests/test_check_tabpfn_v2.py).
     return model
 
 
@@ -308,8 +335,12 @@ def build(out: pathlib.Path) -> dict:
     b = np.zeros(K, dtype=np.float32)
     borders_vals = _sorted_borders(np.random.default_rng(SEED + 1), K)
 
-    # ── 2. Build ONNX graph with weights embedded as initializers ──────────────
-    model_with_weights = _build_onnx_graph(W, b, borders_vals)
+    # ── 2. Build ONNX graph with external-data stubs for W and b ──────────────
+    # The graph is already "weight-free" as built (W/b are stubs with data_location=EXTERNAL
+    # and no raw_data). No strip step needed; the C++ engine injects W/b from safetensors
+    # via ORT AddExternalInitializers (which requires data_location=EXTERNAL).
+    model_stub = _build_onnx_graph(W, b, borders_vals)
+    graph_bytes_stub = model_stub.SerializeToString()
 
     # ── 3. Safetensors — single __metadata__ key for sha256 determinism ────────
     #    Save W and b as the "model weights" (borders are a Constant node, not safetensors)
@@ -337,40 +368,25 @@ def build(out: pathlib.Path) -> dict:
     tm_path = out / "tensor_map_tabpfn_v2.json"
     tm_path.write_text(json.dumps(tensor_map, indent=2) + "\n")
 
-    # ── 5. Write graph with weights (for golden run) → strip → write weight-free ─
+    # ── 5. Write the external-data-stub graph (already weight-free) ──────────
     graph_path = out / "graph_tabpfn_v2.onnx"
-    # Write with weights for golden generation / parity verification
-    graph_bytes_with_weights = model_with_weights.SerializeToString()
+    graph_path.write_bytes(graph_bytes_stub)
 
-    # Build weight-free version (strip W and b initializers)
-    model_stripped = strip_weights(model_with_weights)
-    assert_weight_free(model_stripped)
-    graph_path.write_bytes(model_stripped.SerializeToString())
-
-    # ── 6. Generate golden.json: run ORT on the graph WITH weights injected ─────
-    #    (we inject from the safetensors into the stripped graph to mimic the C++ path)
+    # ── 6. Generate golden.json: run ORT via AddExternalInitializers ─────────
+    #    (mirrors the C++ injection path: stubs + safetensors → ORT)
     import onnxruntime as ort
     from safetensors.numpy import load_file as st_load_file
 
     st_tensors = st_load_file(str(st_path))
-    proto_for_golden = onnx.load_from_string(graph_bytes_with_weights)
+    W_ort = ort.OrtValue.ortvalue_from_numpy(st_tensors["W"].astype(np.float32), "cpu")
+    b_ort = ort.OrtValue.ortvalue_from_numpy(st_tensors["b"].astype(np.float32), "cpu")
 
-    # Inject weights from safetensors (mirrors C++ injection path)
-    tm = json.loads(tm_path.read_text())
-    injected = 0
-    for init in proto_for_golden.graph.initializer:
-        key = tm["initializers"].get(init.name)
-        if key is None:
-            continue
-        arr = st_tensors[key]
-        if tm["transforms"].get(init.name) == "transpose":
-            arr = arr.T.copy()
-        init.CopyFrom(numpy_helper.from_array(arr, name=init.name))
-        injected += 1
-    assert injected == len(tm["initializers"]), f"injected {injected}, expected {len(tm['initializers'])}"
+    opts = ort.SessionOptions()
+    opts.add_external_initializers(["W", "b"], [W_ort, b_ort])
 
     sess = ort.InferenceSession(
-        proto_for_golden.SerializeToString(),
+        graph_bytes_stub,
+        sess_options=opts,
         providers=["CPUExecutionProvider"],
     )
 
@@ -500,10 +516,9 @@ def build(out: pathlib.Path) -> dict:
     b2 = np.zeros(K, dtype=np.float32)
     borders2 = _sorted_borders(np.random.default_rng(SEED + 1), K)
 
-    # Rebuild stripped graph
+    # Rebuild external-data stub graph
     model2 = _build_onnx_graph(W2, b2, borders2)
-    model2_stripped = strip_weights(model2)
-    graph_bytes2 = model2_stripped.SerializeToString()
+    graph_bytes2 = model2.SerializeToString()
     assert graph_bytes2 == graph_path.read_bytes(), \
         "graph_tabpfn_v2.onnx is NOT byte-deterministic on double build"
 

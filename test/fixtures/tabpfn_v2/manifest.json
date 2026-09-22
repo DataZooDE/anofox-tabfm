@@ -23,8 +23,8 @@
     },
     {
       "path": "graph_tabpfn_v2.onnx",
-      "bytes": 1222,
-      "sha256": "0fa76d03be49d562551dd060eaa16867001a093f73c4d54a9ac8db52baf452fa"
+      "bytes": 706,
+      "sha256": "6e36cb3c389ba3d757571cc5698e9241f883cf4305f3d590eeb5216cd9d0b2be"
     },
     {
       "path": "tensor_map_tabpfn_v2.json",

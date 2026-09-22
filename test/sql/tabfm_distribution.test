@@ -1,0 +1,206 @@
+# name: test/sql/tabfm_distribution.test
+# description: End-to-end distribution predict on the tabpfn_v2 K=16 fixture
+#              (plan 02-04 capstone). Exercises registry dispatch (02-01) →
+#              tabpfn_v2 preprocessing (02-03) → ORT borders read + ValidateDistributionOutput
+#              (02-02) → distribution decode (02-02) → bind return type (02-02).
+#              tabfm_regress uses unnest(max_depth:=3) which flattens the yhat_dist STRUCT,
+#              so top-level distribution columns are: logits DOUBLE[], borders DOUBLE[],
+#              yhat_quantiles DOUBLE[].
+#              All numeric assertions are against golden.json values (MODL-04). Tolerance: 1e-3.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# Point at the committed tabpfn_v2 K=16 weight-free fixture (fixture-mit: ungated).
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/tabpfn_v2/manifest.json'
+
+# --- Build the regression table matching the golden fixture inputs ----------------
+# 6 rows × 8 features; first 4 rows have training targets, last 2 have NULL y.
+# Feature values from golden.json["inputs"]["x"][0] (numpy float32 values stored
+# as Python floats). The tabpfn_v2 preprocessing profile passes features through
+# as-is (fixture-scoped); the engine casts to float32 before ORT (same as golden).
+
+statement ok
+CREATE TABLE dist_data AS SELECT * FROM (VALUES
+  (1.4459627866744995, 0.10230513662099838, 0.32675278186798096, 1.1364624500274658, 0.82424396276474, 0.5789564847946167, -0.37917059659957886, -1.0188735723495483, 0.3129126727581024),
+  (0.3761689066886902, -0.5119594931602478, 0.8272348642349243, 0.21125444769859314, -0.7452943325042725, 0.26772525906562805, 0.709180474281311, 0.17752011120319366, -0.7114407420158386),
+  (-0.7825691103935242, 0.26232901215553284, 0.3570016920566559, 0.8242873549461365, 0.7220343947410583, -0.9082574844360352, -0.49777135252952576, 0.6057131290435791, -0.8773788213729858),
+  (-1.697678565979004, 0.777228832244873, -0.8394498825073242, -0.4217756390571594, 1.4433399438858032, -0.06448289006948471, -0.3018791377544403, 0.28141310811042786, 0.7853227257728577),
+  (-0.09394489973783493, -0.6259090304374695, 0.24985754489898682, 2.1368298530578613, 0.9196307063102722, 0.4379057288169861, 0.2572841942310333, 0.7977890968322754, NULL),
+  (0.6240881085395813, -0.8567355871200562, 0.5070579648017883, 0.052237920463085175, 1.715856671333313, -0.2110760360956192, 1.251761794090271, -1.1556848287582397, NULL)
+) v(f0,f1,f2,f3,f4,f5,f6,f7,y_val);
+
+# --- Schema checks (RDIST-02, plan 02-02 gating) ---------------------------------
+# tabfm_regress uses unnest(res, max_depth:=3) which flattens yhat_dist STRUCT into
+# top-level columns: logits DOUBLE[], borders DOUBLE[], yhat_quantiles DOUBLE[].
+
+# output_mode='distribution' emits all three distribution columns
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'}))
+WHERE column_name IN ('logits', 'borders', 'yhat_quantiles')
+----
+3
+
+# The default compact mode must NOT contain distribution columns (backward compat)
+query I
+SELECT count(*) FROM (DESCRIBE SELECT * FROM tabfm_regress('dist_data','y_val'))
+WHERE column_name IN ('logits', 'borders', 'yhat_quantiles')
+----
+0
+
+# --- Row count and basic validity -----------------------------------------------
+
+# Both NULL-y rows (test rows) are returned; total is 6 (all rows incl. train)
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+----
+6
+
+# All 6 rows have a finite yhat
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE NOT isfinite(yhat)
+----
+0
+
+# The 2 scored (test) rows have logits, borders, and yhat_quantiles populated (non-NULL)
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE is_training = false AND (logits IS NULL OR borders IS NULL OR yhat_quantiles IS NULL)
+----
+0
+
+# ALL rows (training + test) get distribution fields when output_mode='distribution'.
+# The ORT model decodes logits/borders for every row in the context window.
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE logits IS NULL OR borders IS NULL OR yhat_quantiles IS NULL
+----
+0
+
+# --- Distribution list lengths (K=16 fixture: borders K+1=17, logits K=16) ------
+
+# borders has length K+1 = 17 for all scored rows
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE is_training = false AND len(borders) <> 17
+----
+0
+
+# logits has length K = 16 for all scored rows
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE is_training = false AND len(logits) <> 16
+----
+0
+
+# yhat_quantiles has 9 elements (levels 0.1..0.9) for all scored rows
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE is_training = false AND len(yhat_quantiles) <> 9
+----
+0
+
+# --- Monotonicity: quantiles must be non-decreasing across the 9 levels ----------
+
+query I
+SELECT count(*) FROM (
+  SELECT yhat_quantiles
+  FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+  WHERE is_training = false
+) t
+WHERE (
+  list_slice(yhat_quantiles, 1, 8) <=
+  list_slice(yhat_quantiles, 2, 9)
+) = false
+----
+0
+
+# --- Determinism: two identical distribution calls agree on yhat -----------------
+
+query I
+SELECT count(*) FROM (
+  SELECT a.yhat AS y1, b.yhat AS y2
+  FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'}) a
+  JOIN tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'}) b
+  ON a.f0 = b.f0
+  WHERE a.is_training = false
+) WHERE y1 <> y2
+----
+0
+
+# --- Golden-value checks: decoded means within tolerance 1e-3 -------------------
+# golden.json decoded.means = [-0.1383064240217209, -0.14368537068367004]
+# row 0 (f0 < 0, f0 = -0.09394...): yhat ~ -0.1383064
+# row 1 (f0 > 0, f0 =  0.6240881...): yhat ~ -0.1436854
+
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE is_training = false
+  AND abs(yhat - CASE
+    WHEN f0 < 0 THEN -0.1383064240217209
+    ELSE            -0.14368537068367004
+  END) > 1e-3
+----
+0
+
+# --- Golden-value checks: raw borders (K+1=17) -----------------------------------
+# golden.json raw_borders[0] = -3.3272790908813477, raw_borders[16] = 3.081986904144287
+# Both scored rows share the same borders (one borders vector per predict call).
+
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE is_training = false
+  AND abs(borders[1] - (-3.3272790908813477)) > 1e-3
+----
+0
+
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE is_training = false
+  AND abs(borders[17] - 3.081986904144287) > 1e-3
+----
+0
+
+# --- Golden-value checks: quantiles for both test rows within tolerance 1e-3 ----
+# row 0 (f0 < 0): q0.1 = -2.427789, q0.5 = -0.032728, q0.9 = 2.143763
+
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE is_training = false AND f0 < 0
+  AND (abs(yhat_quantiles[1] - (-2.427788734436035)) > 1e-3
+    OR abs(yhat_quantiles[5] - (-0.03272783011198044)) > 1e-3
+    OR abs(yhat_quantiles[9] - 2.143763303756714) > 1e-3)
+----
+0
+
+# row 1 (f0 > 0): q0.1 = -2.432196, q0.5 = -0.142213, q0.9 = 2.232566
+
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'distribution'})
+WHERE is_training = false AND f0 > 0
+  AND (abs(yhat_quantiles[1] - (-2.4321956634521484)) > 1e-3
+    OR abs(yhat_quantiles[5] - (-0.1422133445739746)) > 1e-3
+    OR abs(yhat_quantiles[9] - 2.2325663566589355) > 1e-3)
+----
+0
+
+# --- Backward-compat: compact (default) and detail modes still work --------------
+
+# compact: returns 6 rows, all finite yhats
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val')
+WHERE NOT isfinite(yhat)
+----
+0
+
+# detail: yhat_score is NULL for regression (no proba)
+query I
+SELECT count(*) FROM tabfm_regress('dist_data','y_val', opts := MAP{'output_mode':'detail'})
+WHERE yhat_score IS NOT NULL
+----
+0
