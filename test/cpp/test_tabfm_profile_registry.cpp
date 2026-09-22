@@ -131,9 +131,11 @@ TEST_CASE("built-in manifests use the registered preprocessing profile id (CR-01
 	CHECK(cls_manifest.preprocessing_profile == kPreprocessProfileId);
 	CHECK(reg_manifest.preprocessing_profile == kPreprocessProfileId);
 
-	// Also verify that the profile id from the built-in manifest actually
-	// dispatches through the registry without throwing (end-to-end production path).
+	// Also verify that the profile id from each built-in manifest actually
+	// dispatches through the registry without throwing (end-to-end production
+	// path for both tasks — IN-01: use matching task enum per manifest).
 	auto coll = BuildTinyCollection();
 	auto specs = BuildTinyColumnSpecs();
-	REQUIRE_NOTHROW(DispatchPreprocess(cls_manifest.preprocessing_profile, coll, specs, PreprocessTask::REGRESSION));
+	REQUIRE_NOTHROW(DispatchPreprocess(cls_manifest.preprocessing_profile, coll, specs, PreprocessTask::CLASSIFICATION));
+	REQUIRE_NOTHROW(DispatchPreprocess(reg_manifest.preprocessing_profile, coll, specs, PreprocessTask::REGRESSION));
 }

@@ -632,6 +632,22 @@ void ValidateDistributionOutput(const TabFMRunOutput &out, idx_t n_all_rows) {
 		    "Check the manifest and SET anofox_tabfm_model_manifest.",
 		    static_cast<unsigned long long>(out.borders.size()), static_cast<long long>(K + 1), shape_str());
 	}
+	// shape[0] == n_all_rows and shape[1] == K, so the element count must be
+	// n_all_rows * K.  A graph that declares the correct shape but returns fewer
+	// elements (corrupt or non-conformant graph) would cause an OOB read in
+	// DecodeDistribution — catch it here before any indexing (MGEN-03, mirrors
+	// the equivalent check in ValidateTabFMOutput lines 592-599).
+	const size_t expected_logits =
+	    static_cast<size_t>(n_all_rows) * static_cast<size_t>(K);
+	if (out.logits.size() != expected_logits) {
+		throw InvalidInputException(
+		    "anofox_tabfm: distribution model returned %llu logits but shape [%llu, %lld] requires %llu — "
+		    "truncated or malformed model output. Check the manifest and SET anofox_tabfm_model_manifest.",
+		    static_cast<unsigned long long>(out.logits.size()),
+		    static_cast<unsigned long long>(n_all_rows),
+		    static_cast<long long>(K),
+		    static_cast<unsigned long long>(expected_logits));
+	}
 }
 
 } // namespace anofox

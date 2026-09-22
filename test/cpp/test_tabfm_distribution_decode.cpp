@@ -176,4 +176,16 @@ TEST_CASE("distribution decode: ValidateDistributionOutput rejects bad contracts
 		// borders empty
 		REQUIRE_THROWS_AS(ValidateDistributionOutput(bad, N), InvalidInputException);
 	}
+
+	// Bad: shape claims [N, 8] but logits vector is truncated by one element.
+	// This catches a corrupt or non-conformant graph that declares the right
+	// shape but returns fewer elements — which would cause an OOB read in
+	// DecodeDistribution without this check (MGEN-03).
+	{
+		TabFMRunOutput bad;
+		bad.shape = {static_cast<int64_t>(N), 8};
+		bad.logits.assign(N * 8 - 1, 0.0f); // one element short
+		bad.borders.assign(9, 0.0f);
+		REQUIRE_THROWS_AS(ValidateDistributionOutput(bad, N), InvalidInputException);
+	}
 }
