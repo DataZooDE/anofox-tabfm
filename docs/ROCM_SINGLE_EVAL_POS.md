@@ -117,3 +117,25 @@ Do not attempt it catalog-wide. Two narrower options, in order of value:
   the missing `d` on the `single_eval_pos` family shows up.
 - `ExpectedWeightsHeaderShaFor` in `src/include/tabfm_model_spec.hpp`, whose
   comment states the per-`train_size` half of the problem.
+
+## Superseded: tabdpt has been converted
+
+This document recommends documenting the ROCm limitation and, if any model is
+worth converting, picking `tabdpt`. That has now been done, and the analysis
+here was incomplete in one important way.
+
+**The result:** tabdpt serves on ROCm — zero query-row disagreements against
+the CPU, 103.2 ms → 18.59 ms at 100 rows (5.6x). See
+[`ROCM_TABDPT_SPIKE.md`](ROCM_TABDPT_SPIKE.md) for the full account.
+
+**What this document missed:** the positional split is not tabdpt's only
+MIGraphX blocker. Its graph also contains 32 `SplitToSequence` and 64
+`SequenceAt` ops — from a single `chunk` in the SwiGLU feed-forward — which
+MIGraphX's parser does not implement, and which are present in the graph tabdpt
+ships **today**, independent of the split. A third blocker then appeared in
+MIGraphX's own reduction codegen.
+
+So "cheapest to convert" was reasoned from one obstacle out of three. The
+recommendation happened to be right; the estimate behind it was not. Any future
+statement about which models are worth converting should be read with that in
+mind — the split is what analysis can see, and it was the least of it.

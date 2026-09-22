@@ -1,12 +1,14 @@
-# Converting tabdpt to run on ROCm — scoped, costed, not executed
+# Converting tabdpt to run on ROCm — done, measured, 5.6x
 
 `docs/ROCM_SINGLE_EVAL_POS.md` establishes *why* nine of eleven models cannot be
 served on MIGraphX, and recommends `tabdpt` as the one worth converting if any.
 This is the follow-up it asks for: what the conversion actually is, what it
 really costs, and what it would buy.
 
-**Status: scoped against the real export code, not executed.** The blocker is
-stated at the end and is not effort.
+**Status: executed and verified on hardware.** TabDPT serves on ROCm with
+identical predictions to the CPU. What follows is the analysis as it was written
+before the attempt, then what actually happened — kept in that order because the
+gap between them is the useful part.
 
 ---
 
@@ -163,7 +165,94 @@ its architecture differs (retrieval-style attention, a different depth/width
 ratio), and only converting it settles that. But it removes the reason to
 expect it cannot.
 
-## Why this is not executed here
+## EXECUTED — and the analysis above was incomplete
+
+Done on the dev box (RX 9070 XT gfx1201, ROCm 7.2.4, MIGraphX 7.2.3). **TabDPT
+runs on ROCm.** Classification: `TEST_SERVED_BY=rocm:0`, **zero** query-row
+label disagreements against the CPU, and **103.2 ms → 18.59 ms at 100 rows
+(5.6x)**. Regression: `rocm:0`, max query-row difference 3.4e-05, which is fp32
+GPU noise on continuous outputs.
+
+The conversion is what this document predicted. The *obstacle count* was wrong:
+there were **three** blockers, and the documented one turned out to be the
+least interesting.
+
+### Blocker 1 — the positional split (the one this document is about)
+
+Solved as described: `arange(T) < train_size` instead of a slice. Cheaper than
+the pre-merge review feared, and measurably so — the converted graph has **647
+initializers, the same set as the shipped one**, so the tensor map is unchanged
+and `ExpectedWeightsHeaderShaFor` is untouched. ROCm-only, exactly as the
+correction above claimed.
+
+It hides in FOUR places, not one. Missing any silently changes the answer:
+normalisation/clipping statistics (context rows only), attention K/V, the
+attention scale parameter, and the head slice — which also drops the
+`n_thinking_rows` prefix, so converting only the `eval_pos` half returns
+`T + n_think` rows.
+
+### Blocker 2 — `SplitToSequence`, already in the shipped graph
+
+`u, v = self.up(x).chunk(2, dim=-1)` in SwiGLU exports as `SplitToSequence` +
+`SequenceAt`, and MIGraphX's ONNX parser implements neither. There are 32 and
+64 of them respectively — one chunk per layer — **in the graph TabDPT ships
+today**, with nothing to do with the train/test split.
+
+So this document's recommendation ("convert tabdpt, it is the cheapest") rested
+on an incomplete count. Converting the split was necessary and never
+sufficient. Nothing short of compiling on the hardware could have shown it:
+ONNX Runtime implements sequence ops, so the CPU and CUDA paths have always
+been happy.
+
+Rewritten as two slices; bit-exact for both bias modes.
+
+### Blocker 3 — a MIGraphX code-generation bug
+
+With the parser satisfied, the compiler dies in its own kernel templates:
+
+```
+invalid operands to binary expression
+('reducer<...>::inner_storage<float, 1, integral_constant<unsigned,1>>' and 'float')
+```
+
+four times, then an assertion in `optional<tuning_config>::operator->` and a
+core dump.
+
+Isolated by ablation rather than guesswork: **either masked-statistics block
+compiles alone; two chained ones do not.** TabDPT's preprocessing chains three
+(clip → normalize → clip). No `MIGRAPHX_DISABLE_*` env var avoids it, and four
+hand-built minimal graphs reproducing the pattern all compiled fine — the bug
+only appears in the chained context, so the smallest repro is the fixture-sized
+model, not a toy.
+
+Worked around by expressing the masked sums as `ones[1, T] @ x[T, rest]`: the
+same arithmetic, never entering the broken template, and a GEMM is a shape the
+GPU prefers anyway. **This workaround is reusable by any model that hits the
+same wall**, which is the part most likely to matter beyond TabDPT.
+
+### A misread worth recording
+
+The first end-to-end run showed 53 of 100 rows disagreeing, which reads as a
+broken conversion. It is not: **every query row agrees exactly.** All 53 sit in
+context rows, where the CPU path returns a single constant — `argmax` of the
+zero pad the positional wrapper writes for rows it never computes — and the
+masked graph returns real values.
+
+Chasing that found a pre-existing defect unrelated to ROCm: over 80 context
+rows, `tabdpt` and `tabpfn-v2-6` return ONE distinct fitted value while
+`tabicl-v2` and `mitra` return three. The README calls these "in-context fitted
+values, handy for a sanity check". For those models they are not fitted values
+at all.
+
+### What this means for the other eight
+
+The recipe is proven but not yet shown to be general: blockers 1 and 3 look
+family-wide (every `single_eval_pos` model splits positionally, and any masked
+rewrite chains the same statistics), while blocker 2 is TabDPT's own
+architecture. Converting a second model is what settles that, and it is worth
+doing before anyone commits to the remaining catalog.
+
+## Why the original write-up stopped short
 
 Two reasons, neither of them effort:
 

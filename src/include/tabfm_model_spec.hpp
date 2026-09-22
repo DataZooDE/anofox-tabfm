@@ -414,9 +414,17 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 		}
 	}
 	// The single_eval_pos family (x, y inputs only): ext graphs bundle for the
-	// CUDA + CPU-low-memory paths; no migraphx variants — MIGraphX compiles
-	// per fixed shape, and these models read the train/test split from y's
-	// length, so bucketed compiles would need one per distinct train_size.
+	// CUDA + CPU-low-memory paths. No migraphx variants for MOST of them —
+	// MIGraphX compiles per fixed shape, and these models read the train/test
+	// split from y's length, so bucketed compiles would need one per distinct
+	// train_size.
+	//
+	// tabdpt is the exception: its split was converted to a train_size mask so
+	// every shape depends on the (T, H) bucket alone, and it now bundles
+	// migraphx graphs too (docs/ROCM_TABDPT_SPIKE.md). The sha below is
+	// unchanged by that — it hashes the WEIGHTS header, and the conversion
+	// touched only the graph, leaving all 647 initializers and the tensor map
+	// exactly as they were.
 	if (model == "tabpfn-v2") {
 		if (task_name == "classification") {
 			return "e97043c10b4572d6011cb1e389db2c7d57425213c761288f935188e25e953362";
