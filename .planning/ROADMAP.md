@@ -90,7 +90,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Note:** Scoring rules are built and golden-tested against the confirmed TabPFN v2 distribution contract via the Phase 2 weight-free fixture — they operate on `(actual, yhat_dist)` columns and do not require real TabPFN v2 weights.
 
-**Plans**: TBD
+**Plans**: 2 plans
+- [ ] 03-01-PLAN.md — Tracer + scaffold: `tabfm_crps` fully end-to-end (STRUCT-read, non-uniform CRPS math, PSR-04 bind-gate, golden test) + coordinated scoring-module scaffold (PSR-01, PSR-04)
+- [ ] 03-02-PLAN.md — Expansion + comparison: `tabfm_log_score` (PSR-02), `tabfm_interval_score` (PSR-03), and `tabfm_compare_models` cross-model macro (CMP-01)
 
 ## Progress
 
