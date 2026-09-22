@@ -1,18 +1,18 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 3
+current_phase: 03
 current_phase_name: Proper Scoring Rules + Cross-Model Comparison
-status: planning
-stopped_at: Phase 02 complete, ready to plan Phase 3
-last_updated: "2026-09-22T19:22:09.504Z"
+status: executing
+stopped_at: Completed 03-01 (tabfm_crps tracer)
+last_updated: "2026-09-22T20:02:09.731Z"
 last_activity: 2026-09-22
-last_activity_desc: Phase 02 complete, transitioned to Phase 3
-state_head: 501e3067be1658a3377f20a2ba13b480c5515da1
+last_activity_desc: Phase 03 execution started
+state_head: 26b67b916760e105af47a133237afb4cc031192f
 progress:
   total_phases: 3
   completed_phases: 1
-  total_plans: 8
-  completed_plans: 8
+  total_plans: 10
+  completed_plans: 9
   percent: 33
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-09-19)
 
 **Core value:** Users can trust and compare tabular-foundation-model predictions directly in SQL — computing standard metrics and cross-validation on their own data, across more than one model family — without leaving DuckDB.
-**Current focus:** Phase 02 — Model Generalization + Distribution Output
+**Current focus:** Phase 03 — Proper Scoring Rules + Cross-Model Comparison
 
 ## Current Position
 
-Phase: 3 — Proper Scoring Rules + Cross-Model Comparison
-Plan: Not started
-Status: Ready to plan
-Last activity: 2026-09-22 — Phase 02 complete, transitioned to Phase 3
+Phase: 03 (Proper Scoring Rules + Cross-Model Comparison) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
+Last activity: 2026-09-22 — Phase 03 execution started
 
 Progress: [███░░░░░░░] 33%
 
@@ -66,6 +66,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 02 P01 | 525689 | 3 tasks | 12 files |
 | Phase 02-model-generalization-distribution-output-fixture-backed P02 | 15 | 3 tasks | 8 files |
 | Phase 02-model-generalization-distribution-output-fixture-backed P04 | 90 | 2 tasks | 9 files |
+| Phase 03 P01 | 14 | 3 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -94,6 +95,8 @@ Recent decisions affecting current work:
 - [Phase 02]: DecodeDistribution branches before ValidateTabFMOutput — distribution graphs produce rank-2 [n,K] not rank-3 [1,T,C] (02-02)
 - [Phase 02]: GenericLicenseAccepted: backward-compat kBuiltinLicense path keeps hf_license SET working for tabfm-v1; non-builtin licenses use anofox_tabfm_accept_<sanitized>
 - [Phase 02]: Distribution model backward-compat: model_emits_dist = !out.borders.empty() activates DecodeDistribution regardless of opts.distribution; emit_dist_cols flag suppresses columns when !opts.distribution
+- [Phase 03]: PSR-01-external-linkage: ComputeCRPS given external linkage (declared in header) so Catch2 TU can call directly — same pattern as DistributionMean/DistributionQuantile (Phase 2 decision 02-02)
+- [Phase 03]: PSR-04-overload-order: STRUCT overload registered BEFORE DOUBLE overload so DuckDB overload resolution prefers exact STRUCT match; bind-gate fires only for plain DOUBLE second arg
 
 ### Pending Todos
 
@@ -115,6 +118,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-22T18:42:29.116Z
-Stopped at: Phase 02 complete, ready to plan Phase 3
+Last session: 2026-09-22T20:02:09.676Z
+Stopped at: Completed 03-01 (tabfm_crps tracer)
 Resume file: None
