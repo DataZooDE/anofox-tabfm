@@ -83,3 +83,127 @@ FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distributio
 WHERE 1=0
 ----
 NULL
+
+# =============================================================================
+# PSR-02: tabfm_log_score — mean NLL over the predictive bar distribution
+# =============================================================================
+#
+# log_score(y, probs, borders) = log(w_i) - log(max(1e-10, p_i))
+# for y in bin i, w_i = borders[i+1] - borders[i].
+# Out-of-support or zero-width bin → -log(1e-10) = 23.025... (T-03-04).
+# Epsilon 1e-10 (Assumption A2, 03-RESEARCH.md §Log-Score Math).
+#
+# Golden reference (log_score_bar() in tools/parity/src/parity/crps_reference.py):
+#   row 0: y=0.312913, log_score=1.30247899415998
+#   row 1: y=-0.711441, log_score=1.49734339902855
+#   row 2: y=-0.877379, log_score=1.69782566955359
+#   row 3: y=0.785323, log_score=1.83006203482205
+#   mean = 1.58192752439104  →  round(_, 6) = 1.581928
+# Fixture: test/fixtures/tabpfn_v2/golden.json, K=16, raw_borders, train rows.
+
+# PSR-02: tabfm_log_score matches golden reference within 1e-6 (round to 6 decimal places)
+query R
+SELECT round(tabfm_log_score(y_val, {'logits': logits, 'borders': borders}), 6)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+1.581928
+
+# PSR-02: alias parity — anofox_tabfm_log_score returns the same value
+query R
+SELECT round(anofox_tabfm_log_score(y_val, {'logits': logits, 'borders': borders}), 6)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+1.581928
+
+# PSR-04 (extended to log-score): plain DOUBLE second argument rejected at bind
+# with a message naming the remedy output_mode := 'distribution'.
+statement error
+SELECT tabfm_log_score(y_val, yhat)
+FROM tabfm_regress('dist_data', 'y_val')
+----
+tabfm_log_score: second argument must be a distribution
+
+# PSR-02: NULL/empty group returns NULL
+query R
+SELECT tabfm_log_score(y_val, {'logits': logits, 'borders': borders})
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+WHERE 1=0
+----
+NULL
+
+# =============================================================================
+# PSR-03: tabfm_interval_score — mean Gneiting & Raftery interval score
+# =============================================================================
+#
+# IS = (u - l) + (2/alpha) * [(l-y)*1{y<l} + (y-u)*1{y>u}]
+# alpha = 1 - coverage, l = q_{alpha/2}, u = q_{1-alpha/2}
+# default coverage = 0.9 (named parameter `coverage := 0.9`)
+# valid range: 0 < coverage < 1 (validated at bind, T-03-05)
+#
+# Golden reference (interval_score_bar() in tools/parity/src/parity/crps_reference.py):
+# coverage=0.9:
+#   row 0: y=0.312913, IS=5.50391195187414
+#   row 1: y=-0.711441, IS=5.31168312377161
+#   row 2: y=-0.877379, IS=5.43402405290823
+#   row 3: y=0.785323,  IS=5.39797281828486
+#   mean = 5.41189798670971  →  round(_, 6) = 5.411898
+# coverage=0.5:
+#   mean = 2.3419200879228  →  round(_, 6) = 2.34192
+# Fixture: test/fixtures/tabpfn_v2/golden.json, K=16, raw_borders, train rows.
+
+# PSR-03: tabfm_interval_score default coverage=0.9 matches golden reference
+query R
+SELECT round(tabfm_interval_score(y_val, {'logits': logits, 'borders': borders}), 6)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+5.411898
+
+# PSR-03: explicit coverage := 0.9 — same result as default
+query R
+SELECT round(tabfm_interval_score(y_val, {'logits': logits, 'borders': borders}, 0.9), 6)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+5.411898
+
+# PSR-03: coverage := 0.5 — different (tighter) interval
+query R
+SELECT round(tabfm_interval_score(y_val, {'logits': logits, 'borders': borders}, 0.5), 6)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+2.34192
+
+# PSR-03: alias parity — anofox_tabfm_interval_score returns the same value
+query R
+SELECT round(anofox_tabfm_interval_score(y_val, {'logits': logits, 'borders': borders}), 6)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+5.411898
+
+# PSR-03 coverage range: coverage=0.0 rejected at bind with named 'coverage' error
+statement error
+SELECT tabfm_interval_score(y_val, {'logits': logits, 'borders': borders}, 0.0)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+coverage must be in (0, 1)
+
+# PSR-03 coverage range: coverage=1.0 rejected at bind with named 'coverage' error
+statement error
+SELECT tabfm_interval_score(y_val, {'logits': logits, 'borders': borders}, 1.0)
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+----
+coverage must be in (0, 1)
+
+# PSR-04 (extended to interval-score): plain DOUBLE second argument rejected at bind
+statement error
+SELECT tabfm_interval_score(y_val, yhat)
+FROM tabfm_regress('dist_data', 'y_val')
+----
+tabfm_interval_score: second argument must be a distribution
+
+# PSR-03: NULL/empty group returns NULL
+query R
+SELECT tabfm_interval_score(y_val, {'logits': logits, 'borders': borders})
+FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distribution'})
+WHERE 1=0
+----
+NULL
