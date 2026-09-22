@@ -40,7 +40,6 @@
 #include <openssl/evp.h>
 
 #include <cmath>
-#include <fstream>
 
 #ifndef _WIN32
 #include <fcntl.h>
@@ -420,6 +419,11 @@ bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, TabFMTask 
 
 // Stage a bundled graph next to the weights (idempotent by size) so external-data
 // "model.safetensors" resolves. Returns false if it cannot be written.
+// Uses DuckDB FileSystem VFS for consistency with the rest of the cache I/O
+// path (tabfm_weights.cpp). std::ofstream was the original implementation; the
+// graph_path is always a local cache directory, so this VFS call lands on
+// LocalFileSystem in practice — but using the VFS keeps the abstraction uniform
+// and avoids silent host-filesystem writes when a VFS override is in effect.
 bool StageBundledGraph(FileSystem &fs, const BundledResource &graph, const string &graph_path) {
 	try {
 		if (fs.FileExists(graph_path)) {
@@ -430,10 +434,20 @@ bool StageBundledGraph(FileSystem &fs, const BundledResource &graph, const strin
 		}
 	} catch (...) { // NOLINT: any probe failure just means "rewrite"
 	}
-	std::ofstream out(graph_path, std::ios::binary | std::ios::trunc);
-	out.write(graph.data, NumericCast<std::streamsize>(graph.size));
-	out.close();
-	return static_cast<bool>(out);
+	try {
+		// FILE_FLAGS_FILE_CREATE_NEW: create or truncate-and-recreate the file.
+		// Mirrors the .part-file pattern in tabfm_weights.cpp (line ~448).
+		auto h = fs.OpenFile(graph_path,
+		                     FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		// Write requires non-const void*; graph.data is const char*. Cast is safe:
+		// Write does not modify the buffer — it is a read-only source.
+		h->Write(const_cast<void *>(static_cast<const void *>(graph.data)),
+		         NumericCast<int64_t>(graph.size));
+		h->Sync();
+		return true;
+	} catch (...) { // NOLINT: any write failure means "fall back to injection"
+		return false;
+	}
 }
 
 // Low-memory load path: the graph references the weights as ONNX external-data on
