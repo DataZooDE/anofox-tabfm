@@ -37,13 +37,14 @@ more than one model family — without leaving DuckDB.
 - ✓ **TabPFN v2 as a first-class family (fixture-scoped)** — manifest + `tabpfn_v2` profile + committed **weight-free** random-init ONNX fixture matching the confirmed `[n,K]`/`[K+1]` contract + `tools/parity` contract validator — Phase 2
 - ✓ **Generic per-family license gate** — manifest-license-keyed acceptance (`SET anofox_tabfm_accept_<id>`), backward-compatible with the existing HF-license flag — Phase 2
 
+- ✓ **Proper scoring rules** — `tabfm_crps` (analytical closed-form over non-uniform bins), `tabfm_log_score` (NLL), `tabfm_interval_score` (configurable coverage); all bind-gated on distribution input with a named remedy — Phase 3
+- ✓ **Cross-model comparison** — `tabfm_compare_models` runs the Phase-1 metrics + Phase-3 scores across model families on the user's own table (no bundled datasets) — Phase 3
+
 ### Active
 
 <!-- This milestone. Hypotheses until shipped and validated. -->
 
-**Evaluation framework:**
-- [ ] **Proper scoring rules** (CRPS, log-score, interval score) — now unblocked: distribution output ships (Phase 2); built/tested against the confirmed contract via the weight-free fixture (Phase 3)
-- [ ] **Cross-model comparison** path that runs the eval primitives across model families **on the user's own tables** (Phase 3)
+All milestone requirements delivered. (See Deferred below for upstream-blocked items carried to v2.)
 
 ### Deferred (upstream-blocked — see `.planning/spikes/`)
 
@@ -88,6 +89,7 @@ more than one model family — without leaving DuckDB.
 | Composable, model-agnostic metric primitives (not one monolithic eval macro) | Most DuckDB-idiomatic; reusable outside tabfm; CV macro composes them | ✓ Phase 1: 12 metric aggregates + confusion-matrix/CV macros, all `{ANY,…}` model-agnostic |
 | Metric aggregates accept ANY-typed labels (not VARCHAR-only) | DuckDB v1.5.4 does not implicitly cast INTEGER→VARCHAR for aggregate args; VARCHAR-only registration broke integer/float label columns | ✓ Phase 1: registered `{ANY, ANY}` with type-safe `Value` comparison |
 | Comparison on user's own tables, no bundled datasets | Keeps extension lean, avoids dataset licensing, consistent with community-extension goal | — Pending |
+| Proper scoring rules gated on distribution output | Regression previously emitted only a point estimate; PSR need a predictive distribution | ✓ Phase 2 shipped distribution output → Phase 3 CRPS/log-score/interval built + golden-tested against the confirmed contract via the fixture |
 | Prioritize TabPFN v2 + TabICL, plus generalized custom-model support | TabPFN v2 is the field reference and brings regression distributions; TabICL scales; generalization future-proofs onboarding | ⚠ Phase 2: generalization + TabPFN v2 distribution shipped fixture-scoped; real TabPFN v2 export + TabICL deferred (ONNX export blocked upstream — spikes) |
 
 ## Evolution
@@ -108,4 +110,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-22 after Phase 2*
+*Last updated: 2026-09-22 after Phase 3 (milestone complete)*
