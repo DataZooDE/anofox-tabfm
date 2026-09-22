@@ -233,3 +233,37 @@ SELECT max(abs(a.yhat - b.yhat)) > 1e-6
 FROM r_25 a JOIN r_real25 b USING (row_id)
 ----
 true
+
+# is_training rows must carry REAL in-context fitted values, not a placeholder.
+#
+# Regression: tabdpt's export ran the head over query rows only and the wrapper
+# zero-padded the context rows, so every training row decoded to argmax(zeros)
+# -- one constant label for the whole context. README describes this column as
+# "in-context fitted values, handy for a sanity check"; it was neither fitted
+# nor a sanity check. Found by comparing the CPU path against the masked ROCm
+# graph, which computes the head over all rows.
+#
+# A model that genuinely predicts one class everywhere would also produce 1
+# here, so the data below is built with three well-separated classes.
+require-env TABFM_REAL_WEIGHTS
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE fitted_t AS
+SELECT i AS f1, (i % 7)::DOUBLE AS f2, ((i * 13) % 5)::DOUBLE AS f3,
+       CASE WHEN i < 80 THEN ('c' || (i % 3)) ELSE NULL END AS label
+FROM range(100) s(i);
+
+query I
+SELECT count(DISTINCT yhat) > 1 FROM tabfm_classify('fitted_t', 'label', model := 'tabdpt')
+WHERE is_training;
+----
+true
+
+query I
+SELECT count(DISTINCT yhat) > 1 FROM tabfm_classify('fitted_t', 'label', model := 'tabicl-v2')
+WHERE is_training;
+----
+true

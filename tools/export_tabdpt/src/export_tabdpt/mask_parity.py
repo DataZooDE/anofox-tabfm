@@ -76,8 +76,10 @@ def positional_logits(model, x: torch.Tensor, y_full: torch.Tensor, train_size: 
     """
     y_prefix = y_full[:, :train_size]
     num_features = torch.tensor([model.num_features], dtype=torch.long)
-    out = model(x_src=x, y_src=y_prefix, num_features=num_features)  # (T-S, B, O)
-    return out.transpose(0, 1)  # (B, T-S, O)
+    # (T, B, O) since the head now runs over every data row (it used to be
+    # (T-S, B, O) with the wrapper zero-padding the context rows afterwards).
+    out = model(x_src=x, y_src=y_prefix, num_features=num_features)
+    return out.transpose(0, 1)[:, train_size:, :]  # (B, T-S, O), the query rows
 
 
 def masked_logits(model, x: torch.Tensor, y_full: torch.Tensor, train_size: int) -> torch.Tensor:
