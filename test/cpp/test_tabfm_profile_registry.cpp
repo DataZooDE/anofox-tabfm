@@ -13,6 +13,7 @@
 
 #include "tabfm_profile_registry.hpp"
 #include "tabfm_preprocess.hpp"
+#include "tabfm_manifest.hpp"
 
 #include "duckdb/common/allocator.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
@@ -108,4 +109,31 @@ TEST_CASE("profile registry — tabfm_v1_minimal dispatches correctly", "[tabfm]
 	// Feature matrix must be non-empty (H >= 1 feature)
 	CHECK(batch.H >= 1);
 	CHECK(batch.x.size() == batch.T * batch.H);
+}
+
+//===----------------------------------------------------------------------===//
+// Test 3: Built-in manifests use the registered profile id (CR-01 regression)
+//
+// Guards against a future "tabfm-v1" vs "tabfm_v1_minimal" mismatch: if the
+// built-in manifest JSON is ever edited to use a different profile id string,
+// every production predict call would immediately throw "unknown preprocessing
+// profile" while CI tests pass (since all fixtures override the manifest).
+// This test exercises the BUILT-IN manifest path directly.
+//===----------------------------------------------------------------------===//
+
+TEST_CASE("built-in manifests use the registered preprocessing profile id (CR-01)", "[tabfm][profile_registry]") {
+	// Parse both built-in manifests through the same validation path as production.
+	const ModelManifest cls_manifest = BuiltinTabFMManifest(TabFMTask::CLASSIFICATION);
+	const ModelManifest reg_manifest = BuiltinTabFMManifest(TabFMTask::REGRESSION);
+
+	// The preprocessing_profile field must exactly equal kPreprocessProfileId
+	// (the registry key used in tabfm_profile_registry.cpp).
+	CHECK(cls_manifest.preprocessing_profile == kPreprocessProfileId);
+	CHECK(reg_manifest.preprocessing_profile == kPreprocessProfileId);
+
+	// Also verify that the profile id from the built-in manifest actually
+	// dispatches through the registry without throwing (end-to-end production path).
+	auto coll = BuildTinyCollection();
+	auto specs = BuildTinyColumnSpecs();
+	REQUIRE_NOTHROW(DispatchPreprocess(cls_manifest.preprocessing_profile, coll, specs, PreprocessTask::REGRESSION));
 }

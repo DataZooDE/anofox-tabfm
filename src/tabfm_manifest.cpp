@@ -285,7 +285,7 @@ const char *const BUILTIN_TABFM_V1_CLASSIFICATION = R"json({
 	],
 	"graph": "graph_classification",
 	"tensor_map": "tensor_map_classification.json",
-	"preprocessing_profile": "tabfm-v1",
+	"preprocessing_profile": "tabfm_v1_minimal",
 	"license": "tabfm-non-commercial-v1.0",
 	"engine_profiles": {
 		"cpu": {"dtype": "f32"},
@@ -304,7 +304,7 @@ const char *const BUILTIN_TABFM_V1_REGRESSION = R"json({
 	],
 	"graph": "graph_regression",
 	"tensor_map": "tensor_map_regression.json",
-	"preprocessing_profile": "tabfm-v1",
+	"preprocessing_profile": "tabfm_v1_minimal",
 	"license": "tabfm-non-commercial-v1.0",
 	"engine_profiles": {
 		"cpu": {"dtype": "f32"},
