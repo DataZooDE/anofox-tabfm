@@ -99,3 +99,64 @@ query I
 SELECT count(*) FROM glob('__TEST_DIR__/free_cache/manifest-lock.json')
 ----
 0
+
+# --- Generic per-family gate: a non-hf gated license id (MODL-03) ----------------
+# Reset state from previous sections.
+
+statement ok
+SET anofox_tabfm_accept_hf_license = false
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/weights_test/manifest_gated_other.json'
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/other_cache'
+
+# The per-family option is false by default.
+query I
+SELECT current_setting('anofox_tabfm_accept_tabpfn_v2_cc_by_nc_4_0')
+----
+false
+
+# Gate fires: names the correct per-family SET option (not the legacy hf_license option).
+statement error
+CALL tabfm_download('classification')
+----
+SET anofox_tabfm_accept_tabpfn_v2_cc_by_nc_4_0 = true
+
+# Gate fires before any I/O: no cache dir created.
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/other_cache/*')
+----
+0
+
+# Accepting the matching per-family option clears the gate.
+statement ok
+SET anofox_tabfm_accept_tabpfn_v2_cc_by_nc_4_0 = true
+
+query T
+SELECT status FROM tabfm_download('classification') ORDER BY 1
+----
+downloaded
+
+# --- Fixture-mit license is ungated (no gate fires on the tabpfn_v2 fixture) -------
+# IsGated() treats "fixture-mit" as ungated (same as "none") so tabfm_download passes
+# the license check even with no acceptance SET.
+# The fixture manifest is air-gapped (no download URLs) so the download fails at
+# the I/O step with an "air-gapped" error — never the license gate error.
+
+statement ok
+SET anofox_tabfm_accept_tabpfn_v2_cc_by_nc_4_0 = false
+
+statement ok
+SET anofox_tabfm_model_manifest = 'test/fixtures/tabpfn_v2/manifest.json'
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/fixture_cache'
+
+# tabfm_download on the air-gapped fixture reaches the I/O step (gate did NOT fire).
+# It must fail with "air-gapped manifest" (not a license error substring).
+statement error
+CALL tabfm_download('regression')
+----
+air-gapped manifest

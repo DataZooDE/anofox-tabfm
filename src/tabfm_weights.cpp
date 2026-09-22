@@ -65,7 +65,8 @@ struct WeightsManifest {
 	bool builtin = false;
 
 	bool IsGated() const {
-		return !license.empty() && license != "none";
+		// "none", "" = always ungated; "fixture-mit" = CI/test fixture license, intentionally ungated.
+		return !license.empty() && license != "none" && license != "fixture-mit";
 	}
 	// Cache layout (HLD §5): <cache_dir>/<repo with '/'→'__'>@<revision>/<file path>
 	string CacheSlug(const string &effective_revision) const {
@@ -95,6 +96,43 @@ string GetCacheDir(ClientContext &context) {
 bool LicenseAccepted(ClientContext &context) {
 	Value value;
 	if (!context.TryGetCurrentSetting("anofox_tabfm_accept_hf_license", value) || value.IsNull()) {
+		return false;
+	}
+	return BooleanValue::Get(value.DefaultCastAs(LogicalType::BOOLEAN));
+}
+
+// Lowercases license_id and replaces every non-alphanumeric character with '_'.
+// Must match the pre-sanitized ids in kKnownLicenses (tabfm_settings.cpp) exactly.
+// T-02-08: prevents option-name injection via crafted license ids.
+string SanitizeLicenseId(const string &id) {
+	string result = StringUtil::Lower(id);
+	for (auto &c : result) {
+		if (!isalnum(static_cast<unsigned char>(c))) {
+			c = '_';
+		}
+	}
+	return result;
+}
+
+// Returns true when the user has accepted the license for the given license_id.
+// Empty/"none" ids are always accepted (ungated). The legacy "tabfm-non-commercial-v1.0"
+// family additionally accepts via the old anofox_tabfm_accept_hf_license option (backward compat).
+// All other gated ids look up anofox_tabfm_accept_<sanitized_id> via TryGetCurrentSetting.
+// Options must be pre-registered at Load() time (RESEARCH §6, kKnownLicenses in tabfm_settings.cpp).
+bool GenericLicenseAccepted(ClientContext &context, const string &license_id) {
+	// Ungated license ids: empty, "none", or "fixture-mit" (CI fixture license).
+	if (license_id.empty() || license_id == "none" || license_id == "fixture-mit") {
+		return true;
+	}
+	// Backward compat: legacy hf_license option gates the original tabfm-v1 family.
+	if (license_id == kBuiltinLicense) {
+		if (LicenseAccepted(context)) {
+			return true;
+		}
+	}
+	string opt_name = "anofox_tabfm_accept_" + SanitizeLicenseId(license_id);
+	Value value;
+	if (!context.TryGetCurrentSetting(opt_name, value) || value.IsNull()) {
 		return false;
 	}
 	return BooleanValue::Get(value.DefaultCastAs(LogicalType::BOOLEAN));
@@ -283,14 +321,23 @@ void RemoveDirectoryIfEmpty(FileSystem &fs, const string &dir) {
 //===--------------------------------------------------------------------===//
 
 void RequireLicenseAccepted(ClientContext &context, const WeightsManifest &manifest) {
-	if (!manifest.IsGated() || LicenseAccepted(context)) {
+	if (!manifest.IsGated() || GenericLicenseAccepted(context, manifest.license)) {
 		return;
 	}
 	auto what = manifest.repo.empty() ? manifest.model : manifest.repo;
+	// Backward compat: the original tabfm-v1 family retains the legacy error text so
+	// existing callers and tests that grep for "anofox_tabfm_accept_hf_license" still match.
+	if (manifest.license == kBuiltinLicense) {
+		throw InvalidConfigurationException(
+		    "tabfm_download: weights in '%s' are licensed '%s' (non-commercial, no redistribution). "
+		    "Run: SET anofox_tabfm_accept_hf_license = true;",
+		    what, manifest.license);
+	}
+	// Generic path: names the per-family SET (SQL-API §5, MODL-03, T-02-07).
 	throw InvalidConfigurationException(
-	    "tabfm_download: weights in '%s' are licensed '%s' (non-commercial, no redistribution). "
-	    "Run: SET anofox_tabfm_accept_hf_license = true;",
-	    what, manifest.license);
+	    "tabfm_download: weights for '%s' require accepting license '%s'. "
+	    "Run: SET anofox_tabfm_accept_%s = true;",
+	    what, manifest.license, SanitizeLicenseId(manifest.license));
 }
 
 // Acceptance metadata, written once on the first gated download (FR-2.1).
