@@ -204,8 +204,9 @@ predicts its held-out rows via the two-table (leakage-safe) form, and returns
 per-fold plus aggregate (mean ± std) metric results:
 
 ```sql
-SELECT * FROM tabfm_cross_validate('customers', 'churned', row_key := 'id', k := 5);
--- tabfm_fold_assign('customers', 5, 'id', 42) exposes the fold ids directly
+-- positional: data, target, row_key; then optional named k / seed / task / metric
+SELECT * FROM tabfm_cross_validate('customers', 'churned', 'id', k := 5, seed := 42);
+-- tabfm_fold_assign('customers', 5, 'id', 42) exposes the fold ids directly (data, k, row_key, seed)
 ```
 
 **Predictive distributions & proper scoring rules** — a model that emits a
@@ -221,7 +222,7 @@ WITH d AS (SELECT actual, yhat_dist
                               opts := MAP{'model':'tabpfn_v2','output_mode':'distribution'}))
 SELECT tabfm_crps(actual, yhat_dist)                        AS crps,   -- closed-form CRPS
        tabfm_log_score(actual, yhat_dist)                   AS nll,
-       tabfm_interval_score(actual, yhat_dist, coverage := 0.9) AS is90
+       tabfm_interval_score(actual, yhat_dist, 0.9)             AS is90  -- 3rd arg = coverage, default 0.9
 FROM d;
 ```
 
