@@ -2,18 +2,18 @@
 gsd_state_version: "1.0"
 current_phase: 03
 current_phase_name: Proper Scoring Rules + Cross-Model Comparison
-status: executing
-stopped_at: Completed 03-01 (tabfm_crps tracer)
-last_updated: "2026-09-22T20:02:09.731Z"
+status: verifying
+stopped_at: "Completed 03-02: tabfm_log_score + tabfm_interval_score + tabfm_compare_models"
+last_updated: "2026-09-22T20:34:27.162Z"
 last_activity: 2026-09-22
 last_activity_desc: Phase 03 execution started
-state_head: 26b67b916760e105af47a133237afb4cc031192f
+state_head: ee6ef9de23820797993abd3481142e04b2718ffd
 progress:
   total_phases: 3
-  completed_phases: 1
+  completed_phases: 0
   total_plans: 10
-  completed_plans: 9
-  percent: 33
+  completed_plans: 10
+  percent: 0
 ---
 
 # Project State
@@ -29,10 +29,10 @@ See: .planning/PROJECT.md (updated 2026-09-19)
 
 Phase: 03 (Proper Scoring Rules + Cross-Model Comparison) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-09-22 — Phase 03 execution started
 
-Progress: [███░░░░░░░] 33%
+Progress: [░░░░░░░░░░] 0%
 
 ## Performance Metrics
 
@@ -67,6 +67,7 @@ Progress: [███░░░░░░░] 33%
 | Phase 02-model-generalization-distribution-output-fixture-backed P02 | 15 | 3 tasks | 8 files |
 | Phase 02-model-generalization-distribution-output-fixture-backed P04 | 90 | 2 tasks | 9 files |
 | Phase 03 P01 | 14 | 3 tasks | 9 files |
+| Phase 03-proper-scoring-rules-cross-model-comparison P02 | 26 | 3 tasks | 6 files |
 
 ## Accumulated Context
 
@@ -97,6 +98,10 @@ Recent decisions affecting current work:
 - [Phase 02]: Distribution model backward-compat: model_emits_dist = !out.borders.empty() activates DecodeDistribution regardless of opts.distribution; emit_dist_cols flag suppresses columns when !opts.distribution
 - [Phase 03]: PSR-01-external-linkage: ComputeCRPS given external linkage (declared in header) so Catch2 TU can call directly — same pattern as DistributionMean/DistributionQuantile (Phase 2 decision 02-02)
 - [Phase 03]: PSR-04-overload-order: STRUCT overload registered BEFORE DOUBLE overload so DuckDB overload resolution prefers exact STRUCT match; bind-gate fires only for plain DOUBLE second arg
+- [Phase 03]: PSR-02-external-linkage: ComputeLogScore given external linkage (defined outside anonymous namespace) so Catch2 can call directly — same pattern as ComputeCRPS (PSR-01-external-linkage)
+- [Phase 03]: PSR-02-clip-eps-1e-10: Epsilon = 1e-10 for log-score clip (Assumption A2); larger than classification log-loss 1e-15 because bar distributions can have small mass in wide outer bins
+- [Phase 03]: PSR-03-duckdb-vector-conversion: ComputeIntervalScore takes std::vector<double> for API consistency; converts to duckdb::vector<double> internally before calling DistributionQuantile
+- [Phase 03]: CMP-01-tabfm-v1-psr-null: tabfm-v1 row in compare_models hard-emits NULL for crps/log_score/interval_score because tabfm-v1 has no predictive distribution output
 
 ### Pending Todos
 
@@ -118,6 +123,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-09-22T20:02:09.676Z
-Stopped at: Completed 03-01 (tabfm_crps tracer)
+Last session: 2026-09-22T20:34:27.138Z
+Stopped at: Completed 03-02: tabfm_log_score + tabfm_interval_score + tabfm_compare_models
 Resume file: None

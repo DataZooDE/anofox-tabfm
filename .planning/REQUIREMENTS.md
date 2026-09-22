@@ -53,13 +53,13 @@ columns) and must stay cpu-flavor-clean and weight-free.
 ### Proper Scoring Rules
 
 - [x] **PSR-01**: User can compute CRPS over a regression predictive distribution via a SQL aggregate (energy-score identity for bar distributions)
-- [ ] **PSR-02**: User can compute log-score (NLL) over a regression predictive distribution
-- [ ] **PSR-03**: User can compute interval score at a configurable coverage level
+- [x] **PSR-02**: User can compute log-score (NLL) over a regression predictive distribution
+- [x] **PSR-03**: User can compute interval score at a configurable coverage level
 - [x] **PSR-04**: Proper-scoring-rule functions are bind-gated on distribution input and fail with a named remedy when given point estimates
 
 ### Model Comparison
 
-- [ ] **CMP-01**: User can run the evaluation metrics across multiple model families on their own tables to compare model quality (no bundled datasets)
+- [x] **CMP-01**: User can run the evaluation metrics across multiple model families on their own tables to compare model quality (no bundled datasets)
 
 ## v2 Requirements
 
@@ -120,10 +120,10 @@ Which phases cover which requirements. Populated during roadmap creation.
 | MODL-03 | Phase 2 | Complete |
 | MODL-04 | Phase 2 | Implemented (fixture parity; TabICL parity → v2) |
 | PSR-01 | Phase 3 | Complete |
-| PSR-02 | Phase 3 | Pending |
-| PSR-03 | Phase 3 | Pending |
+| PSR-02 | Phase 3 | Complete |
+| PSR-03 | Phase 3 | Complete |
 | PSR-04 | Phase 3 | Complete |
-| CMP-01 | Phase 3 | Pending |
+| CMP-01 | Phase 3 | Complete |
 
 **Coverage:**
 
