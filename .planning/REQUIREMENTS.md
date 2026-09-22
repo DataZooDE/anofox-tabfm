@@ -47,8 +47,8 @@ columns) and must stay cpu-flavor-clean and weight-free.
 
 - [ ] **MODL-01** *(fixture-scoped — Phase 2)*: TabPFN v2 is available as a first-class model family (manifest + `tabpfn_v2` preprocessing profile + committed weight-free random-init ONNX fixture whose outputs match the confirmed `[n,K]` logits + `[K+1]` non-uniform borders contract), including its bar-distribution regression output. *Real TabPFN v2 ONNX inference export is deferred (upstream-blocked: data-dependent preprocessing + chunked attention — see `.planning/spikes/SPIKE-tabpfn-v2-tensor-contract.md`).*
 - [ ] ~~**MODL-02**: TabICL as a first-class classification family~~ **→ DEFERRED to v2** (ONNX export infeasible on `tabicl 2.2.0`: data-dependent Stage-1 branches; needs upstream PRs — see `.planning/spikes/SPIKE-tabicl-onnx-export.md`)
-- [ ] **MODL-03**: Each non-tabfm-v1 family has its own license-acceptance gate (separate from the existing HF-license flag), enforced before download
-- [ ] **MODL-04** *(fixture-scoped — Phase 2)*: `tools/parity` validates the TabPFN v2 fixture family's ONNX output contract (both distribution tensors) before its C++ decoder is trusted. *TabICL parity deferred with MODL-02.*
+- [x] **MODL-03**: Each non-tabfm-v1 family has its own license-acceptance gate (separate from the existing HF-license flag), enforced before download
+- [x] **MODL-04** *(fixture-scoped — Phase 2)*: `tools/parity` validates the TabPFN v2 fixture family's ONNX output contract (both distribution tensors) before its C++ decoder is trusted. *TabICL parity deferred with MODL-02.*
 
 ### Proper Scoring Rules
 
@@ -117,7 +117,7 @@ Which phases cover which requirements. Populated during roadmap creation.
 | RDIST-02 | Phase 2 | Complete |
 | MODL-01 | Phase 2 | Implemented (fixture-scoped; real export → v2) |
 | MODL-02 | v2 | Deferred (TabICL export infeasible) |
-| MODL-03 | Phase 2 | Pending |
+| MODL-03 | Phase 2 | Complete |
 | MODL-04 | Phase 2 | Implemented (fixture parity; TabICL parity → v2) |
 | PSR-01 | Phase 3 | Pending |
 | PSR-02 | Phase 3 | Pending |
