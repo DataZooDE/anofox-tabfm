@@ -123,6 +123,7 @@ static void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterClassificationMetrics(loader);
 	anofox::RegisterRegressionMetrics(loader);
 	anofox::RegisterCrossValidateMacros(loader);
+	anofox::RegisterScoringFunctions(loader);
 }
 
 void AnofoxTabfmExtension::Load(ExtensionLoader &loader) {

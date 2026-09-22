@@ -16,6 +16,7 @@ void RegisterPredictMacros(ExtensionLoader &loader);       // tabfm_macros.cpp
 void RegisterClassificationMetrics(ExtensionLoader &loader); // tabfm_metrics_classification.cpp
 void RegisterRegressionMetrics(ExtensionLoader &loader);     // tabfm_metrics_regression.cpp
 void RegisterCrossValidateMacros(ExtensionLoader &loader);   // tabfm_crossval.cpp
+void RegisterScoringFunctions(ExtensionLoader &loader);      // tabfm_scoring.cpp
 
 //! Force-link the preprocessing-profile registry TUs so their static
 //! self-registration initializers are not stripped by the linker (T-02-02).
