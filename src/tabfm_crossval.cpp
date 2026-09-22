@@ -307,7 +307,7 @@ R"(
       ' tabfm_interval_score("' || replace(CAST(target AS VARCHAR), '"', '""') || '",'
       '   {''logits'': logits, ''borders'': borders}, '
       || CAST(CAST(coverage AS DOUBLE) AS VARCHAR) || ') AS interval_score'
-      ' FROM tabfm_regress(''' || CAST(data AS VARCHAR) || ''','
+      ' FROM tabfm_regress(''' || replace(CAST(data AS VARCHAR), '''', '''''') || ''','
       '   ''' || replace(CAST(target AS VARCHAR), '''', '''''') || ''','
       '   opts := MAP{''output_mode'': ''distribution''})'
       ' UNION ALL'
@@ -316,7 +316,7 @@ R"(
       ' NULL::DOUBLE AS crps,'
       ' NULL::DOUBLE AS log_score,'
       ' NULL::DOUBLE AS interval_score'
-      ' FROM tabfm_regress(''' || CAST(data AS VARCHAR) || ''','
+      ' FROM tabfm_regress(''' || replace(CAST(data AS VARCHAR), '''', '''''') || ''','
       '   ''' || replace(CAST(target AS VARCHAR), '''', '''''') || ''','
       '   opts := MAP{''model'': ''tabfm-v1''})'
     )
@@ -326,7 +326,7 @@ R"(
     "tabpfn_v2 requires SET anofox_tabfm_model_manifest (fixture or real model); "
     "tabfm-v1 requires CALL tabfm_download('regression') (license must be accepted). "
     "tabfm-v1 has no predictive distribution, so crps/log_score/interval_score are NULL for it. "
-    "The target identifier is safely double-quoted to prevent SQL injection (CMP-01, T-03-06). "
+    "Both data and target are single-quote-escaped to prevent SQL injection (CR-02, CMP-01, T-03-06). "
     "coverage controls the nominal interval score level (default 0.9, must be in (0,1)).",
     "SELECT * FROM tabfm_compare_models('my_table', 'y_value');"
 };
