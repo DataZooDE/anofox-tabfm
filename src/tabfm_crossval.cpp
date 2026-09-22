@@ -399,9 +399,15 @@ unique_ptr<CreateMacroInfo> BuildMacroInfo(const string &name, const CVMacroDef 
 
 void RegisterCVMacroWithAlias(ExtensionLoader &loader, const string &full_name, const string &alias_name,
                               const CVMacroDef &def, const vector<string> &param_names) {
-	// Telemetry: once per registration (at bind/load time) — CLAUDE.md rule #3.
-	// For macros, telemetry fires at load time via registration rather than per-bind
-	// (macros don't have a separate bind callback; see tabfm_macros.cpp pattern).
+	// Telemetry: once per extension load (at registration time) — CLAUDE.md rule #3.
+	// KNOWN LIMITATION (WR-03): DuckDB SQL table macros have no per-invocation bind
+	// callback, so there is no hook available to fire CaptureFunctionExecution at user
+	// invocation time. This pattern fires telemetry once per connection that loads the
+	// extension, underreporting actual usage counts for these macros (contrast with
+	// aggregate scoring functions such as tabfm_crps, which correctly fire at bind
+	// time in their Bind callbacks). A future workaround would require converting these
+	// macros to table functions with explicit bind callbacks — that change is deferred.
+	// The same limitation exists in tabfm_macros.cpp for tabfm_classify/tabfm_regress.
 	PostHogTelemetry::Instance().CaptureFunctionExecution(alias_name.c_str());
 
 	auto primary = BuildMacroInfo(full_name, def, string(), param_names);
