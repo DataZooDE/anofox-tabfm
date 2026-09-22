@@ -307,6 +307,25 @@ SELECT count(*) FROM tabfm_cross_validate('cv_leak', 'label', 'id', k := 3, seed
 ----
 0
 
+# ============================================================================
+# WR-01: metric parameter whitelist — unknown metric names must be rejected
+# ============================================================================
+#
+# tabfm_cross_validate interpolates the `metric` parameter as a SQL function
+# name identifier. Without a whitelist, an attacker could inject arbitrary SQL.
+# The fix replaces the coalesce(nullif(...)) with a CASE whitelist that calls
+# error() for any metric name not in the known tabfm metric function set.
+#
+# We test with a manifestly wrong metric to confirm the error() path fires.
+# (We don't need the model to be loaded — the error is in the macro CASE, which
+# executes during query() string-building before any model inference.)
+
+statement error
+SELECT * FROM tabfm_cross_validate('cv_clf', 'label', 'id',
+  k := 2, seed := 42, metric := 'tabfm_rmse); DROP TABLE cv_clf; SELECT tabfm_rmse')
+----
+tabfm_cross_validate: unknown metric
+
 # Reset to no model (clean state for other tests)
 statement ok
 SET anofox_tabfm_model_manifest = ''

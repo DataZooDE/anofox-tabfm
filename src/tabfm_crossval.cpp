@@ -175,9 +175,21 @@ R"(
                ' m AS metric_value, NULL::DOUBLE AS metric_std'
                ' FROM (SELECT ' ||
                -- metric function (explicit or task-defaulted)
-               coalesce(nullif(CAST(metric AS VARCHAR), ''),
-                 CASE WHEN CAST(task AS VARCHAR) = 'regression'
-                      THEN 'tabfm_rmse' ELSE 'tabfm_accuracy' END) ||
+               -- WR-01: whitelist metric against known tabfm metric function names to prevent
+               -- SQL injection via user-supplied metric identifiers (T-01-04-01 scope extension).
+               -- Unknown metric names raise a named error at macro execution time.
+               CASE
+                 WHEN metric IS NULL OR CAST(metric AS VARCHAR) = ''
+                   THEN CASE WHEN CAST(task AS VARCHAR) = 'regression'
+                              THEN 'tabfm_rmse' ELSE 'tabfm_accuracy' END
+                 WHEN CAST(metric AS VARCHAR) IN (
+                   'tabfm_rmse', 'tabfm_accuracy', 'tabfm_crps',
+                   'tabfm_log_score', 'tabfm_interval_score',
+                   'tabfm_mae', 'tabfm_r2')
+                   THEN CAST(metric AS VARCHAR)
+                 ELSE error('tabfm_cross_validate: unknown metric ' || CAST(metric AS VARCHAR) ||
+                            '. Use one of: tabfm_rmse, tabfm_accuracy, tabfm_crps, tabfm_log_score, tabfm_interval_score, tabfm_mae, tabfm_r2')
+               END ||
                '(orig.__cv_actual, p.yhat) AS m'
                ' FROM ' ||
                -- predict function (classify or regress based on task)
