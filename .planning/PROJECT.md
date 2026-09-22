@@ -31,19 +31,24 @@ more than one model family — without leaving DuckDB.
 - ✓ Composable, model-agnostic **classification metrics** as SQL aggregates (accuracy, precision/recall/F1 with required `avg`, log-loss, ROC-AUC, ECE, confusion matrix) over `(actual, predicted[, proba])` — Phase 1
 - ✓ Composable, model-agnostic **regression metrics** as SQL aggregates (RMSE, MAE, R², MAPE, median abs error) over `(actual, predicted)` — Phase 1
 - ✓ **k-fold cross-validation** macro (`tabfm_cross_validate` + `tabfm_fold_assign`) — leakage-safe two-table predict, deterministic `hash(row_key, seed) % k` folds, per-fold + aggregate (mean ± std) output, safe target-identifier quoting — Phase 1
+- ✓ **Generalized model seam** — self-registering `preprocessing_profile` registry + dispatch; unknown profiles fail with a named error; existing `tabfm-v1` self-registers (backward-compatible) — Phase 2
+- ✓ **Regression predictive-distribution output** — `output_mode='distribution'` emits `yhat_dist STRUCT(logits[], borders[])` + `yhat_quantiles[]` decoded over model-provided **non-uniform** bin borders (FullSupportBarDistribution), backward-compatible default — Phase 2
+- ✓ **Model-output validation** before decode (rank/shape/borders-length/logits-count) rejecting contract violations with named errors — Phase 2
+- ✓ **TabPFN v2 as a first-class family (fixture-scoped)** — manifest + `tabpfn_v2` profile + committed **weight-free** random-init ONNX fixture matching the confirmed `[n,K]`/`[K+1]` contract + `tools/parity` contract validator — Phase 2
+- ✓ **Generic per-family license gate** — manifest-license-keyed acceptance (`SET anofox_tabfm_accept_<id>`), backward-compatible with the existing HF-license flag — Phase 2
 
 ### Active
 
 <!-- This milestone. Hypotheses until shipped and validated. -->
 
-**Evaluation framework (first — phased):**
-- [ ] **Proper scoring rules** (CRPS, log-score, interval score) + calibration — *gated on regression emitting predictive distributions/quantiles* (Phase 3)
+**Evaluation framework:**
+- [ ] **Proper scoring rules** (CRPS, log-score, interval score) — now unblocked: distribution output ships (Phase 2); built/tested against the confirmed contract via the weight-free fixture (Phase 3)
+- [ ] **Cross-model comparison** path that runs the eval primitives across model families **on the user's own tables** (Phase 3)
 
-**Multi-model support (second):**
-- [ ] **Generalize model support** — make `preprocessing_profile` + graph handling pluggable so families beyond `tabfm-v1` are first-class (not just raw custom manifests)
-- [ ] **Add TabPFN v2** — including its native regression predictive distribution (unlocks proper scoring rules)
-- [ ] **Add TabICL** — classification, scales to larger tables
-- [ ] **Cross-model comparison** path that runs the eval primitives across models **on the user's own tables**
+### Deferred (upstream-blocked — see `.planning/spikes/`)
+
+- **Real TabPFN v2 ONNX *inference* export** — blocked (data-dependent preprocessing + chunked attention fail `torch.export`); Phase 2 ships the fixture-scoped family, real inference needs a cleaned export path
+- **Add TabICL** — ONNX export infeasible on `tabicl 2.2.0` (data-dependent Stage-1 branches); needs upstream PRs
 
 ### Out of Scope
 
@@ -78,12 +83,12 @@ more than one model family — without leaving DuckDB.
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Evaluation framework before adding models | Need a way to measure quality before it's meaningful to compare families | — Pending |
+| Evaluation framework before adding models | Need a way to measure quality before it's meaningful to compare families | ✓ Phase 1 metrics/CV, then Phase 2 model seam |
 | Evaluation delivered phased (point metrics + CV → proper scoring rules) | Point metrics are achievable with current outputs (fast win); scoring rules need regression distributions | ✓ Phase 1: point metrics + CV shipped |
 | Composable, model-agnostic metric primitives (not one monolithic eval macro) | Most DuckDB-idiomatic; reusable outside tabfm; CV macro composes them | ✓ Phase 1: 12 metric aggregates + confusion-matrix/CV macros, all `{ANY,…}` model-agnostic |
 | Metric aggregates accept ANY-typed labels (not VARCHAR-only) | DuckDB v1.5.4 does not implicitly cast INTEGER→VARCHAR for aggregate args; VARCHAR-only registration broke integer/float label columns | ✓ Phase 1: registered `{ANY, ANY}` with type-safe `Value` comparison |
 | Comparison on user's own tables, no bundled datasets | Keeps extension lean, avoids dataset licensing, consistent with community-extension goal | — Pending |
-| Prioritize TabPFN v2 + TabICL, plus generalized custom-model support | TabPFN v2 is the field reference and brings regression distributions; TabICL scales; generalization future-proofs onboarding | — Pending |
+| Prioritize TabPFN v2 + TabICL, plus generalized custom-model support | TabPFN v2 is the field reference and brings regression distributions; TabICL scales; generalization future-proofs onboarding | ⚠ Phase 2: generalization + TabPFN v2 distribution shipped fixture-scoped; real TabPFN v2 export + TabICL deferred (ONNX export blocked upstream — spikes) |
 
 ## Evolution
 
@@ -103,4 +108,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-09-21 after Phase 1*
+*Last updated: 2026-09-22 after Phase 2*
