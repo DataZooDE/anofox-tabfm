@@ -326,6 +326,37 @@ SELECT * FROM tabfm_cross_validate('cv_clf', 'label', 'id',
 ----
 tabfm_cross_validate: unknown metric
 
+# ============================================================================
+# WR-01 (data escape): single-quote in data source must not break generated SQL
+# ============================================================================
+#
+# tabfm_cross_validate previously interpolated the `data` parameter bare into
+# three SQL string literals (training subquery, test subquery, join-back subquery).
+# If `data` resolves to a string with a single quote (e.g. a schema-qualified name
+# like "it's_a_table"), the generated SQL literal becomes malformed.
+#
+# The fix applies replace(CAST(data AS VARCHAR), '''', '''''') at all three sites,
+# matching the identical escape used for `target` in this macro and for `data` in
+# tabfm_compare_models (CR-02). We verify by passing a data expression that
+# contains a single quote: the query must fail with a meaningful error (model not
+# loaded / table not found) rather than a SQL parse error, proving the generated
+# SQL literal is well-formed and the quote was escaped rather than passed raw.
+#
+# cv_clf is a simple 2-class table defined earlier in this test file.
+# 'cv_clf'' -- injected' would cause a parse error without the fix; with the fix,
+# the string is escaped to 'cv_clf'''' -- injected' in the generated SQL, and
+# DuckDB reports a table-not-found error (the escaped literal resolves to a
+# nonexistent table name), not a SQL syntax error. Both outcomes mean no injection
+# — but a syntax error here signals the escape is absent.
+
+statement error
+SELECT * FROM tabfm_cross_validate(
+  'cv_clf'' OR 1=1 --',
+  'label', 'id',
+  k := 2, seed := 42)
+----
+tabfm_cross_validate
+
 # Reset to no model (clean state for other tests)
 statement ok
 SET anofox_tabfm_model_manifest = ''

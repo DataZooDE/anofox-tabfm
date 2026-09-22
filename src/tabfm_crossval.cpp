@@ -207,7 +207,9 @@ R"(
                || ', CAST(' || CAST(CAST(seed AS BIGINT) AS VARCHAR) || ' AS BIGINT)'
                -- Emit CAST(k AS UBIGINT) to match fold_assign's modulo expression.
                || ') % CAST(' || CAST(CAST(k AS BIGINT) AS VARCHAR) || ' AS UBIGINT)'
-               || ')::INTEGER AS _cv_fold_id FROM (FROM ' || CAST(data AS VARCHAR) || '))'
+               -- Single-quote-escape data to prevent SQL injection / malformed literals (WR-01).
+               -- Matches the identical escape applied to tabfm_compare_models (CR-02, CMP-01, T-03-06).
+               || ')::INTEGER AS _cv_fold_id FROM (FROM ' || replace(CAST(data AS VARCHAR), '''', '''''') || '))'
                || ' WHERE _cv_fold_id <> ' || CAST(f AS VARCHAR) || ')' ||
                '''' ||
                -- second arg: target column name — bare identifier, tabfm_classify
@@ -222,7 +224,8 @@ R"(
                || '") FROM (SELECT *, (hash(' || CAST(row_key AS VARCHAR)
                || ', CAST(' || CAST(CAST(seed AS BIGINT) AS VARCHAR) || ' AS BIGINT)'
                || ') % CAST(' || CAST(CAST(k AS BIGINT) AS VARCHAR) || ' AS UBIGINT)'
-               || ')::INTEGER AS _cv_fold_id FROM (FROM ' || CAST(data AS VARCHAR) || '))'
+               -- Single-quote-escape data (WR-01); matches CR-02 fix in tabfm_compare_models.
+               || ')::INTEGER AS _cv_fold_id FROM (FROM ' || replace(CAST(data AS VARCHAR), '''', '''''') || '))'
                || ' WHERE _cv_fold_id = ' || CAST(f AS VARCHAR) || ')' ||
                '''' ||
                ') p JOIN ('
@@ -234,7 +237,8 @@ R"(
                ' FROM (SELECT *, (hash(' || CAST(row_key AS VARCHAR)
                || ', CAST(' || CAST(CAST(seed AS BIGINT) AS VARCHAR) || ' AS BIGINT)'
                || ') % CAST(' || CAST(CAST(k AS BIGINT) AS VARCHAR) || ' AS UBIGINT)'
-               || ')::INTEGER AS _cv_fold_id FROM (FROM ' || CAST(data AS VARCHAR) || '))'
+               -- Single-quote-escape data (WR-01); matches CR-02 fix in tabfm_compare_models.
+               || ')::INTEGER AS _cv_fold_id FROM (FROM ' || replace(CAST(data AS VARCHAR), '''', '''''') || '))'
                || ' WHERE _cv_fold_id = ' || CAST(f AS VARCHAR) || ''
                ') orig ON p.' || CAST(row_key AS VARCHAR) || ' = orig.__cv_rk)'
              )
