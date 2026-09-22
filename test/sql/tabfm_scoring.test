@@ -295,6 +295,21 @@ FROM tabfm_regress('dist_data', 'y_val', opts := MAP{'output_mode': 'distributio
 coverage must be in (0, 1)
 
 # =============================================================================
+# IN-02: PSR-04 bind-gate gap — 3-arg (DOUBLE, DOUBLE, DOUBLE) overload
+# =============================================================================
+#
+# Without the 4th overload, tabfm_interval_score(actual, scalar_yhat, 0.9)
+# where scalar_yhat is a plain DOUBLE would produce a generic DuckDB
+# "no function found" error instead of the named PSR-04 remedy.
+# The fix adds Overload 4 with (DOUBLE, DOUBLE, DOUBLE) → bind-gate throw.
+
+statement error
+SELECT tabfm_interval_score(y_val, yhat, 0.9)
+FROM tabfm_regress('dist_data', 'y_val')
+----
+tabfm_interval_score: second argument must be a distribution
+
+# =============================================================================
 # WR-02: NULL elements inside logit/border lists must be skipped, not coerced
 # =============================================================================
 #

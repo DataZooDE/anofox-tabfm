@@ -208,7 +208,13 @@ double ComputeLogScore(double y, const std::vector<double> &probs,
 		}
 	}
 
-	// y is exactly on borders[K] and wasn't caught by the loop (rounding edge case)
+	// This fallback is unreachable (IN-01): the loop covers all bins including the
+	// last one (b_lo = borders[K-1], b_hi = borders[K]), so y == borders[K] is
+	// caught by the last iteration. The only exit-without-return path is when every
+	// bin has zero width (wi < 1e-300), but in that case b_lo == b_hi == y for every
+	// bin and the zero-width guard fires first, returning kMaxPenalty. Mark as
+	// unreachable for debugging rather than silently returning kMaxPenalty.
+	D_ASSERT(false && "ComputeLogScore: unreachable post-loop fallback");
 	return kMaxPenalty;
 }
 
@@ -823,10 +829,11 @@ void RegisterScoringFunctions(ExtensionLoader &loader) {
 	//   IS = (u-l) + (2/alpha) * [(l-y)*1{y<l} + (y-u)*1{y>u}]
 	// alpha = 1 - coverage, l/u = q_{alpha/2} / q_{1-alpha/2} from DistributionQuantile.
 	//
-	// Three overloads (Pitfall 6: STRUCT overloads registered first):
-	//   1. (actual DOUBLE, yhat_dist STRUCT)         → 2-arg with default coverage=0.9
+	// Four overloads (Pitfall 6: STRUCT overloads registered first):
+	//   1. (actual DOUBLE, yhat_dist STRUCT)                  → 2-arg with default coverage=0.9
 	//   2. (actual DOUBLE, yhat_dist STRUCT, coverage DOUBLE) → explicit coverage
-	//   3. (actual DOUBLE, plain_estimate DOUBLE)    → bind-gate throws (PSR-04)
+	//   3. (actual DOUBLE, plain_estimate DOUBLE)             → bind-gate throws (PSR-04)
+	//   4. (actual DOUBLE, plain_estimate DOUBLE, coverage DOUBLE) → bind-gate (IN-02, PSR-04)
 	{
 		LogicalType yhat_dist_type = LogicalType::STRUCT(
 		    {{"logits", LogicalType::LIST(LogicalType::DOUBLE)},
@@ -866,6 +873,25 @@ void RegisterScoringFunctions(ExtensionLoader &loader) {
 		    },
 		    /*state_destroy=*/nullptr);
 		set.AddFunction(fn_point);
+
+		// Overload 4 — PSR-04 bind-gate for 3-arg (DOUBLE, DOUBLE, DOUBLE) call (IN-02).
+		// Without this overload, tabfm_interval_score(actual, scalar_yhat, 0.9) resolves
+		// to a generic DuckDB "no function found" error rather than the named PSR-04 remedy.
+		AggregateFunction fn_point3(
+		    "anofox_tabfm_interval_score",
+		    {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::DOUBLE,
+		    IScoreStateSize, IScoreStateInit, IScoreUpdate, IScoreCombine, IScoreFinalize,
+		    /*simple_update=*/nullptr,
+		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
+		        -> unique_ptr<FunctionData> {
+			    throw InvalidInputException(
+			        "tabfm_interval_score: second argument must be a distribution "
+			        "STRUCT(logits DOUBLE[], borders DOUBLE[]). "
+			        "Use output_mode := 'distribution' in tabfm_regress.");
+			    return nullptr;
+		    },
+		    /*state_destroy=*/nullptr);
+		set.AddFunction(fn_point3);
 
 		FunctionDescription fd;
 		fd.description =
