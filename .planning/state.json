@@ -1,0 +1,28 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": null,
+  "phases": [
+    {
+      "number": "1",
+      "name": "Evaluation Metrics + Cross-Validation",
+      "status": "complete"
+    },
+    {
+      "number": "2",
+      "name": "Model Generalization + Multi-Family Onboarding",
+      "status": "complete"
+    },
+    {
+      "number": "3",
+      "name": "Proper Scoring Rules + Cross-Model Comparison",
+      "status": "complete"
+    }
+  ],
+  "next": {
+    "command": "/gsd:progress",
+    "label": "Show progress",
+    "reason": "Unsure of state — showing progress"
+  },
+  "updated_at": "2026-09-22T21:15:42.556Z"
+}
