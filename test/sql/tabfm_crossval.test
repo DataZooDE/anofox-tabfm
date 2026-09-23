@@ -119,7 +119,15 @@ SELECT count(*) FROM (
 # ============================================================================
 
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
+CALL tabfm_register_model(
+  id := 'cv-fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
+
+statement ok
+SET anofox_tabfm_default_model = 'cv-fixture'
 
 # --- Setup: small classification fixture for k=2 CV ---
 # 8 labeled rows (4 per fold), 2 classes: 'c0', 'c1'.
@@ -190,7 +198,15 @@ true
 # --- CV-02: regression CV using tabfm_rmse ---
 # Switch to regression fixture for this section; restore classification fixture below.
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/regression/manifest.json'
+CALL tabfm_register_model(
+  id := 'cv-reg', base_dir := 'test/fixtures/regression',
+  regression_graph := 'graph_fixture.onnx',
+  regression_weights := 'model.safetensors',
+  regression_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
+
+statement ok
+SET anofox_tabfm_default_model = 'cv-reg'
 
 statement ok
 CREATE TABLE cv_reg AS SELECT * FROM (VALUES
@@ -220,7 +236,7 @@ SELECT count(*) FROM tabfm_cross_validate('cv_reg', 'price', 'id',
 
 # Restore classification fixture for the leakage golden test (uses classification model).
 statement ok
-SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'
+SET anofox_tabfm_default_model = 'cv-fixture'
 
 # ============================================================================
 # CV-02 GATE: NON-NEGOTIABLE leakage-detecting golden test
@@ -359,4 +375,10 @@ tabfm_cross_validate
 
 # Reset to no model (clean state for other tests)
 statement ok
-SET anofox_tabfm_model_manifest = ''
+SET anofox_tabfm_default_model = ''
+
+statement ok
+CALL tabfm_unregister_model('cv-fixture')
+
+statement ok
+CALL tabfm_unregister_model('cv-reg')

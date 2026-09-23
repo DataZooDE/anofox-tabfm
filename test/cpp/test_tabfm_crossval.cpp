@@ -27,10 +27,17 @@ static void load_ext(duckdb::Connection &con) {
 	REQUIRE(!qry(con, "LOAD anofox_tabfm")->HasError());
 }
 
-// Load extension + configure the fixture model manifest.
+// Load extension + register the fixture classification model (replaces Phase-2
+// SET anofox_tabfm_model_manifest which does not exist on main).
 static void setup_cv_db(duckdb::Connection &con) {
 	load_ext(con);
-	REQUIRE(!qry(con, "SET anofox_tabfm_model_manifest = 'test/fixtures/manifest.json'")->HasError());
+	REQUIRE(!qry(con, "CALL tabfm_register_model("
+	                  "  id := 'cv-fixture', base_dir := 'test/fixtures',"
+	                  "  classification_graph := 'graph_fixture.onnx',"
+	                  "  classification_weights := 'model.safetensors',"
+	                  "  classification_tensor_map := 'tensor_map_fixture.json',"
+	                  "  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')")->HasError());
+	REQUIRE(!qry(con, "SET anofox_tabfm_default_model = 'cv-fixture'")->HasError());
 }
 
 // ============================================================================
