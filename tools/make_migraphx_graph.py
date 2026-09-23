@@ -26,6 +26,11 @@ Defaults target tabfm-v1; pass the three paths for any other model (the mitra
 variants in resources/ are produced this way).
 """
 import argparse, json, os, struct, sys
+
+#: A code-generated constant is small by nature (tabdpt's bin_centres is 2048
+#: floats). The cap turns "someone allowlisted something big" into an error
+#: rather than a quietly fattened, possibly weight-bearing resource.
+INLINE_BYTE_CAP = 1 << 20  # 1 MiB
 import onnx
 from onnx import TensorProto, helper, numpy_helper
 import numpy as np
@@ -56,6 +61,10 @@ def externalize(m, weights, tmap, inline_ok=()):
     base = 8 + hlen
     off = {k: v["data_offsets"] for k, v in header.items() if k != "__metadata__"}
     onnx2st = json.load(open(tmap))["initializers"]
+
+    def st_for(name):
+        return onnx2st.get(name) or (name[2:] if name.startswith("m.") else name)
+
     for init in m.graph.initializer:
         if init.name in inline_ok:
             # Materialise it INLINE rather than merely skipping it. The graph is
@@ -65,9 +74,28 @@ def externalize(m, weights, tmap, inline_ok=()):
             # "Failure opening file: ....onnx.data". Reading the bytes and
             # embedding them makes the output self-contained apart from the
             # safetensors it is meant to reference.
+            #
+            # But NEVER for a name the tensor map knows. An allowlisted
+            # checkpoint weight would have its real bytes written into a file
+            # that gets committed to resources/ -- which is precisely the
+            # license wall this repository is built around ("no Google weight
+            # bytes anywhere in the repo"). The flag exists for code-generated
+            # constants; a mapped name is by definition not one.
+            if st_for(init.name) in off:
+                raise SystemExit(
+                    f"REFUSING: --inline-ok names '{init.name}', but it IS a checkpoint weight in the tensor "
+                    f"map. Embedding it would write real weight bytes into a committed graph. The flag is for "
+                    f"code-generated constants only.")
+            size = len(init.raw_data) or sum(len(getattr(init, f)) * 4
+                                             for f in ("float_data", "int32_data", "int64_data", "double_data"))
+            if size > INLINE_BYTE_CAP:
+                raise SystemExit(
+                    f"REFUSING: --inline-ok '{init.name}' is {size} bytes, over the {INLINE_BYTE_CAP}-byte cap "
+                    f"for a code-generated constant. If it is genuinely this large, raise the cap deliberately "
+                    f"rather than by accident.")
             inlined.append(init.name)
             continue
-        st = onnx2st.get(init.name) or (init.name[2:] if init.name.startswith("m.") else init.name)
+        st = st_for(init.name)
         if st not in off:
             missing.append(init.name)
             continue
@@ -80,6 +108,10 @@ def externalize(m, weights, tmap, inline_ok=()):
         for k, v in (("location", "model.safetensors"), ("offset", str(base + b)), ("length", str(e - b))):
             en = init.external_data.add()
             en.key, en.value = k, v
+    unknown = inline_ok - {i.name for i in m.graph.initializer}
+    if unknown:
+        raise SystemExit(f"REFUSING: --inline-ok names initializers that do not exist: {sorted(unknown)}. "
+                         f"A typo here is a silent no-op that leaves a dangling external-data reference.")
     if missing:
         # A stub initializer the tensor map missed keeps its stub bytes and the
         # graph silently predicts garbage -- the one failure mode this tool

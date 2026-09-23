@@ -139,18 +139,44 @@ def compare(cfg_name: str, rows: int, features: int, train_frac: float, seed: in
 
 
 def main(argv=None) -> int:
+    """The whole gate, by default.
+
+    This used to run `compare()` alone, and the `__main__` block sat ABOVE
+    `self_test` and `compare_wrappers` in the file — so `python -m
+    export_tabdpt.mask_parity`, the invocation this module's own docstring
+    documents, exited before either was defined and silently ran only the
+    positive check. A gate whose negative controls are unreachable from its
+    documented entry point is the same failure it exists to prevent, one level
+    up: it reports PASS without having tried to fail.
+
+    Now: controls first (and a non-zero exit if any is NOT caught), then the
+    model-level comparison, then the wrapper-level one for BOTH tasks — the
+    only check that the regression y-standardisation does not leak query
+    labels into the scale of every prediction.
+    """
     ap = argparse.ArgumentParser(prog="mask_parity")
     ap.add_argument("--config", default="fixture", choices=["fixture", "real"])
     ap.add_argument("--rows", type=int, default=64)
     ap.add_argument("--features", type=int, default=8)
     ap.add_argument("--train-frac", type=float, default=0.75)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--only-compare", action="store_true",
+                    help="just the model-level comparison; skips the controls and the "
+                         "wrapper checks (narrowing flag, not the default)")
     args = ap.parse_args(argv)
-    return compare(args.config, args.rows, args.features, args.train_frac, args.seed)
+
+    if args.only_compare:
+        return compare(args.config, args.rows, args.features, args.train_frac, args.seed)
+
+    rc = self_test()
+    if rc != 0:
+        return rc
+    for task in ("classification", "regression"):
+        rc |= compare_wrappers(args.config, task, args.rows, args.features,
+                               args.train_frac, args.seed)
+    return rc
 
 
-if __name__ == "__main__":
-    sys.exit(main())
 
 
 def self_test(argv=None) -> int:
@@ -168,20 +194,29 @@ def self_test(argv=None) -> int:
     shape = ("fixture", 64, 8, 0.75, 0)
     controls = []
 
-    mp.NEG_INF = 0.0  # queries may attend to queries
-    controls.append(("attention mask neutralised", compare(*shape)))
-    mp.NEG_INF = -1e30
-
+    saved_neg_inf = mp.NEG_INF
     original_rows = mp._row_mask_for
-    mp._row_mask_for = lambda data, ctx: _torch.ones_like(data, dtype=bool)
-    controls.append(("normalisation over all rows", compare(*shape)))
-    mp._row_mask_for = original_rows
-
     original_beta = mp.masked_get_scale_param
-    mp.masked_get_scale_param = lambda layer, ts, *, device, dtype: original_beta(
-        layer, _torch.tensor([shape[1]]), device=device, dtype=dtype)
-    controls.append(("scale param given T, not train_size", compare(*shape)))
-    mp.masked_get_scale_param = original_beta
+
+    # try/finally: a control that raises must not leave the module patched for
+    # the positive comparison that follows, which would then "pass" against a
+    # deliberately broken conversion.
+    try:
+        mp.NEG_INF = 0.0  # queries may attend to queries
+        controls.append(("attention mask neutralised", compare(*shape)))
+        mp.NEG_INF = saved_neg_inf
+
+        mp._row_mask_for = lambda data, ctx: _torch.ones_like(data, dtype=bool)
+        controls.append(("normalisation over all rows", compare(*shape)))
+        mp._row_mask_for = original_rows
+
+        mp.masked_get_scale_param = lambda layer, ts, *, device, dtype: original_beta(
+            layer, _torch.tensor([shape[1]]), device=device, dtype=dtype)
+        controls.append(("scale param given T, not train_size", compare(*shape)))
+    finally:
+        mp.NEG_INF = saved_neg_inf
+        mp._row_mask_for = original_rows
+        mp.masked_get_scale_param = original_beta
 
     blind = [name for name, rc in controls if rc == 0]
     for name, rc in controls:
@@ -245,3 +280,8 @@ def compare_wrappers(cfg_name: str, task: str, rows: int, features: int,
     print(f"[{task}] rows={rows} train_size={train_size} shape={tuple(want_q.shape)} "
           f"rel={rel:.3e} {'PASS' if ok else 'FAIL'}")
     return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    # At EOF on purpose: everything main() calls must already be defined.
+    sys.exit(main())
