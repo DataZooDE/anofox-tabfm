@@ -6,10 +6,11 @@
     "--config",
     "real",
     "--out",
-    "../../resources"
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-tabfm/2caded86-0ec1-4d4d-bf13-cd14780ed458/scratchpad/exp"
   ],
   "task": "classification",
   "config": "real",
+  "arch": "v2",
   "model_kwargs": {
     "emsize": 192,
     "nlayers": 12,
@@ -26,7 +27,7 @@
     6,
     10
   ],
-  "graph_bytes": 818550,
+  "graph_bytes": 829592,
   "n_initializers_mapped": 129,
   "unmatched_small_inline": [],
   "parity": {
@@ -34,24 +35,29 @@
     "worst": 2.980232238769531e-07,
     "tol": 0.001,
     "argmax_all_agree": true,
+    "context_rows_constant": true,
     "shapes": [
       {
         "T": 32,
         "H": 12,
         "train": 20,
+        "max_abs_delta": 2.980232238769531e-07,
         "max_abs_delta_test_rows": 2.980232238769531e-07,
+        "max_abs_delta_context_rows": 2.980232238769531e-07,
+        "context_rows_constant": true,
         "argmax_agree": true,
-        "ort_ms": 150.8021354675293
+        "ort_ms": 147.02272415161133
       }
     ]
   },
   "input_signature": {
     "x": "f32[1,T,H]",
-    "y": "f32[1,N] (N=train_size)"
+    "y": "f32[1,N] dense train labels 0..C-1 (N=train_size)"
   },
   "output_signature": {
-    "logits": "f32[1,T,C]"
+    "logits": "f32[1,T,C] class logits on rows >= N"
   },
+  "regression_contract": null,
   "versions": {
     "torch": "2.13.0+cpu",
     "onnx": "1.22.0",

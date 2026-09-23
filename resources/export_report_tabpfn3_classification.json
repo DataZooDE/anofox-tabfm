@@ -1,0 +1,85 @@
+{
+  "command": [
+    "export_tabpfn",
+    "--task",
+    "classification",
+    "--config",
+    "real3",
+    "--out",
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-tabfm/2caded86-0ec1-4d4d-bf13-cd14780ed458/scratchpad/exp"
+  ],
+  "task": "classification",
+  "config": "real3",
+  "arch": "v3",
+  "model_kwargs": {
+    "embed_dim": 128,
+    "nlayers": 24,
+    "dist_embed_num_blocks": 3,
+    "dist_embed_num_heads": 8,
+    "dist_embed_num_inducing_points": 128,
+    "feature_group_size": 3,
+    "feat_agg_num_blocks": 3,
+    "feat_agg_num_heads": 8,
+    "feat_agg_num_cls_tokens": 4,
+    "feat_agg_rope_base": 100000.0,
+    "use_rope": true,
+    "icl_num_heads": 8,
+    "icl_num_kv_heads": null,
+    "icl_num_kv_heads_test": 1,
+    "decoder_head_dim": 64,
+    "decoder_num_heads": 6,
+    "decoder_use_softmax_scaling": true,
+    "ff_factor": 2,
+    "dropout": 0.0,
+    "softmax_scaling_mlp_hidden_dim": 64,
+    "layernorm_elementwise_affine": true,
+    "use_nan_indicators": true,
+    "inference_row_chunk_size": 2048,
+    "inference_col_chunk_size": 4
+  },
+  "n_out": 160,
+  "n_params": 53153144,
+  "seed": 0,
+  "opset": 18,
+  "example_input_THN": [
+    16,
+    6,
+    10
+  ],
+  "graph_bytes": 1230838,
+  "n_initializers_mapped": 509,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 2.384185791015625e-07,
+    "tol": 0.001,
+    "argmax_all_agree": true,
+    "context_rows_constant": false,
+    "shapes": [
+      {
+        "T": 32,
+        "H": 12,
+        "train": 20,
+        "max_abs_delta": 2.384185791015625e-07,
+        "max_abs_delta_test_rows": 2.384185791015625e-07,
+        "max_abs_delta_context_rows": 2.384185791015625e-07,
+        "context_rows_constant": false,
+        "argmax_agree": true,
+        "ort_ms": 273.4856605529785
+      }
+    ]
+  },
+  "input_signature": {
+    "x": "f32[1,T,H]",
+    "y": "f32[1,N] dense train labels 0..C-1 (N=train_size)"
+  },
+  "output_signature": {
+    "logits": "f32[1,T,C] class logits on rows >= N"
+  },
+  "regression_contract": null,
+  "versions": {
+    "torch": "2.13.0+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0"
+  }
+}

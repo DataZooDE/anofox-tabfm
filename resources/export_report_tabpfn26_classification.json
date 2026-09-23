@@ -6,7 +6,7 @@
     "--config",
     "real26",
     "--out",
-    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-tabfm/dc2a44ba-2f5c-46a7-b447-4670fa6bc767/scratchpad/real26"
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-tabfm/2caded86-0ec1-4d4d-bf13-cd14780ed458/scratchpad/exp"
   ],
   "task": "classification",
   "config": "real26",
@@ -31,22 +31,26 @@
     6,
     10
   ],
-  "graph_bytes": 1491604,
+  "graph_bytes": 1493174,
   "n_initializers_mapped": 322,
   "unmatched_small_inline": [],
   "parity": {
     "ok": true,
-    "worst": 8.940696716308594e-08,
+    "worst": 1.7881393432617188e-07,
     "tol": 0.001,
     "argmax_all_agree": true,
+    "context_rows_constant": false,
     "shapes": [
       {
         "T": 32,
         "H": 12,
         "train": 20,
+        "max_abs_delta": 1.7881393432617188e-07,
         "max_abs_delta_test_rows": 8.940696716308594e-08,
+        "max_abs_delta_context_rows": 1.7881393432617188e-07,
+        "context_rows_constant": false,
         "argmax_agree": true,
-        "ort_ms": 579.9384117126465
+        "ort_ms": 247.12371826171875
       }
     ]
   },
