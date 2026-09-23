@@ -16,16 +16,10 @@
 --   cd tools/export_tabicl   && uv run python convert_weights.py classification
 --   cd tools/export_orion_bix && uv run python convert_weights.py
 --
--- tabdpt needs only the download -- no conversion step:
+-- tabdpt appears only in the refusal check at the end, and needs only the
+-- download -- no conversion step:
 --
 --   CALL tabfm_download('classification', model := 'tabdpt');
---   CALL tabfm_download('regression',     model := 'tabdpt');
---
--- It is here because MLX consumes the same `ext_graph` the CUDA plugin does
--- (GpuGraphKindFor), and tabdpt's ext graphs were re-exported for the fitted-
--- values fix. CUDA was re-verified on those graphs directly; MLX reads them
--- through its OWN interpreter (src/tabfm_mlx_graph.cpp), so agreement there is
--- a separate claim and has to be measured separately.
 --
 -- Run with anofox_tabfm_ep_path pointing at the built plugin.
 
@@ -127,16 +121,6 @@ INSERT INTO report SELECT 'orion-bix', 'classification',
     avg((a.yhat = b.yhat)::INT), NULL, count(*)
 FROM c_cpu_orionbix a JOIN c_mlx_orionbix b USING (row_id);
 
-.print '--- tabdpt: classification ---'
-SET anofox_tabfm_device = 'cpu';
-CREATE TABLE c_cpu_tabdpt AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'y', test := 'qry', model := 'tabdpt');
-SET anofox_tabfm_device = 'mlx';
-CREATE TABLE c_mlx_tabdpt AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'y', test := 'qry', model := 'tabdpt');
-INSERT INTO report SELECT 'tabdpt', 'classification',
-    (SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND device LIKE 'mlx%'),
-    avg((a.yhat = b.yhat)::INT), NULL, count(*)
-FROM c_cpu_tabdpt a JOIN c_mlx_tabdpt b USING (row_id);
-
 .print '--- mitra: regression ---'
 SET anofox_tabfm_device = 'cpu';
 CREATE TABLE r_cpu_mitra AS SELECT row_id, yhat FROM tabfm_regress('ctx_r', 'tgt', test := 'qry', model := 'mitra');
@@ -181,47 +165,6 @@ FROM r_cpu_tabiclv2 a JOIN r_mlx_tabiclv2 b USING (row_id);
 -- FullSupportBarDistribution criterion.borders, so convert_weights.py cannot
 -- build the point-estimate head. It fails on cpu too -- not an MLX gap.
 
-.print '--- tabdpt: regression ---'
-SET anofox_tabfm_device = 'cpu';
-CREATE TABLE r_cpu_tabdpt AS SELECT row_id, yhat FROM tabfm_regress('ctx_r', 'tgt', test := 'qry', model := 'tabdpt');
-SET anofox_tabfm_device = 'mlx';
-CREATE TABLE r_mlx_tabdpt AS SELECT row_id, yhat FROM tabfm_regress('ctx_r', 'tgt', test := 'qry', model := 'tabdpt');
-INSERT INTO report SELECT 'tabdpt', 'regression',
-    (SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND device LIKE 'mlx%'),
-    corr(a.yhat, b.yhat), max(abs(a.yhat - b.yhat)), count(*)
-FROM r_cpu_tabdpt a JOIN r_mlx_tabdpt b USING (row_id);
-
--- tabdpt's FITTED rows, which the rest of this file cannot see.
---
--- Every block above compares query rows only. That was sufficient while the
--- exported head ran over query rows alone and the wrapper zero-padded the
--- context rows. It no longer is: the fitted-values fix made the head run over
--- EVERY data row, so the graph's output went from (T-S, B, O) to (T, B, O) and
--- the context rows carry real in-context predictions instead of zeros.
---
--- Those newly-live rows are the entire behavioural change, and a query-row
--- comparison is blind to them by construction -- cpu and mlx would agree
--- perfectly on the query slice while disagreeing on every fitted row. Hence a
--- second comparison over ALL rows, with no test table, where is_training rows
--- are returned.
-.print '--- tabdpt: fitted values (all rows, cpu vs mlx) ---'
-SET anofox_tabfm_device = 'cpu';
-CREATE TABLE f_cpu_tabdpt AS
-SELECT row_id, yhat, is_training FROM tabfm_classify('ctx_c', 'y', model := 'tabdpt');
-SET anofox_tabfm_device = 'mlx';
-CREATE TABLE f_mlx_tabdpt AS
-SELECT row_id, yhat, is_training FROM tabfm_classify('ctx_c', 'y', model := 'tabdpt');
-
-SELECT 'TABDPT_FITTED' AS marker,
-       (SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND device LIKE 'mlx%') AS mlx_device,
-       count(*) AS n_rows,
-       count(*) FILTER (WHERE a.is_training) AS n_fitted,
-       -- A constant column is what the defect produced; > 1 distinct is the
-       -- floor, not the proof. The agreement column is the proof.
-       (SELECT count(DISTINCT yhat) FROM f_mlx_tabdpt WHERE is_training) AS mlx_fitted_distinct,
-       count(*) FILTER (WHERE a.yhat <> b.yhat) AS ROWS_DISAGREEING
-FROM f_cpu_tabdpt a JOIN f_mlx_tabdpt b USING (row_id);
-
 .print ''
 .print '=== every model, cpu vs mlx ==='
 SELECT * FROM report ORDER BY model, task;
@@ -232,3 +175,32 @@ SELECT 'MODELS_DISAGREEING' AS marker,
        count(*) FILTER (WHERE task = 'classification' AND agreement < 1.0) AS classification,
        count(*) FILTER (WHERE task = 'regression' AND max_abs_diff > 1e-3)  AS regression
 FROM report;
+
+-- tabdpt is NOT servable on MLX, and that is the assertion here.
+--
+-- Worth stating plainly because the obvious reading is wrong. tabdpt looks
+-- like it belongs in this file: MLX and CUDA both consume the model's
+-- `ext_graph` (GpuGraphKindFor), and tabdpt has one. But the MLX backend runs
+-- that graph through its OWN interpreter rather than ONNX Runtime, and the
+-- interpreter has no `ConstantOfShape` -- which tabdpt's graph uses 32 times.
+--
+-- Measured, not assumed, on an M3 (macOS 27.0) against the re-exported graphs:
+--
+--   Invalid Input Error: anofox_tabfm: the 'mlx' backend could not be
+--   initialised: ... this graph needs ONNX ops the mlx backend does not
+--   implement (ConstantOfShape). SET anofox_tabfm_device='cpu' ...
+--
+-- The op count is 32 in the graph on `main` AND 32 after the fitted-values
+-- re-export, so this is a pre-existing gap, not something the tabdpt work
+-- changed. It is why this file never listed tabdpt: an incapability, not an
+-- oversight.
+--
+-- Kept as an error contract because the refusal is the valuable behaviour. An
+-- op the interpreter does not implement must raise and name the op, NOT quietly
+-- produce numbers on the CPU -- "cpu and gpu agree" is exactly what a silent
+-- fallback prints (CLAUDE.md). Run this last: it is expected to RAISE, and the
+-- CLI stops here.
+.print '--- tabdpt on mlx must REFUSE, naming the op (expected to raise) ---'
+SET anofox_tabfm_device = 'mlx';
+SELECT 'TABDPT_MLX_SHOULD_NOT_REACH_HERE' AS marker, count(*) AS n
+FROM tabfm_classify('ctx_c', 'y', test := 'qry', model := 'tabdpt');

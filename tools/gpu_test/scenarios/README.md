@@ -27,7 +27,7 @@ reporting a perfect score.
 | `registered_model_gpu.sql` | a **registered** model carrying its own `migraphx_graph` served by the ROCm plugin — the model-provided GPU-graph dispatch (GPU_HARDENING_PLAN P3) that bundled-graph runs never touch. Paths inside are machine-local (the weight cache); adjust `base_dir` before running. | `REGISTERED_SERVED_BY=rocm:0`, `PATHS_DISAGREE=0` |
 | `user_workflow.sql` | a workflow shaped like a user's: `read_csv_auto` with inferred types, categorical columns, NULLs in **both** features and label, then joining predictions back and aggregating by a business dimension. | `cpu` then `rocm:0`, **0 disagreements**, 25 rows joined |
 | `auto_per_model.sql` | per-model `auto` resolving to a *different* device per model in one session — `mitra` and `tabdpt` to the GPU, `tabpfn-v2` to CPU because no MIGraphX graph exists for it, each asserted by `SERVED_BY` plus a `tabfm_backends()` invariant. Re-check the negative model whenever a conversion lands: it silently stops being a negative. | `rocm:0` / `rocm:0` / `cpu`, `AUTO_IS_PER_MODEL=true`, `AUTO_NEVER_UNSUPPORTED=true` |
-| `mlx_all_models.sql` | every registered model on MLX against CPU. MLX runs the model's own ONNX graph through its own interpreter, so coverage is a property of the op table, not of a per-model list — an op-table change can break exactly one model and nothing else would notice. | macOS/arm64 only |
+| `mlx_all_models.sql` | every registered model on MLX against CPU. MLX runs the model's own ONNX graph through its own interpreter, so coverage is a property of the op table, not of a per-model list — an op-table change can break exactly one model and nothing else would notice. Ends with an error contract: tabdpt must be REFUSED by name (`ConstantOfShape`), never silently served on CPU. | M3, macOS 27.0: mitra `mlx:0`, **0/64 disagreeing**; tabdpt refused as expected |
 | `mlx_stress.sql` | MLX at 4000x30, mid-session device switches, reduced precision, and awkward shapes (single class, zero-variance feature, NULLs). | macOS/arm64 only |
 
 Notes worth keeping:
@@ -41,10 +41,15 @@ Notes worth keeping:
   added to the predict surface, grep this directory before assuming it only
   affects user SQL.
 - A scenario that compares only the `test` rows cannot see a change to the
-  *fitted* rows. `mlx_all_models.sql` compared query rows exclusively until
-  `TABDPT_FITTED` was added — and the fitted-values fix changed nothing else.
-  If a change moves output rows the scenario does not select, the scenario
-  passes and means nothing.
+  *fitted* rows. If a change moves output rows the scenario does not select,
+  the scenario passes and means nothing — worth checking whenever a fix changes
+  which rows a graph's head covers.
+- **A model missing from a scenario may be missing because it cannot run.**
+  tabdpt is absent from `mlx_all_models.sql` because the interpreter has no
+  `ConstantOfShape`, which its graph uses 32 times — not because nobody added
+  it. Adding it as an agreement check made the file raise. Check
+  `tabfm_backends()` and the plugin's op table before concluding a gap is an
+  oversight.
 
 - `customers.csv` has `yes`/`no` in the label column, which `read_csv_auto`
   infers as BOOLEAN — so predictions come back `true`/`false`. Comparing

@@ -291,43 +291,53 @@ which was the actual user-facing problem.
 ## Backend verification status of the re-exported graphs
 
 The fitted-values fix re-exported tabdpt's graphs, so every backend that reads
-them has to be re-checked. `GpuGraphKindFor` routes **CUDA and MLX to the same
+them had to be re-checked. `GpuGraphKindFor` routes **CUDA and MLX to the same
 `ext_graph`** and ROCm to the new `migraphx_graph`, which makes the exposure
-wider than "the ROCm spike":
+wider than "the ROCm spike".
 
 | Backend | Reads | Status |
 |---|---|---|
 | CPU | `graph_tabdpt_*.onnx` | verified — `test/sql/tabfm_real_models.test`, 36 assertions incl. the fitted-value and regression oracles |
 | ROCm | `graph_migraphx_tabdpt_*.onnx` | verified on gfx1201 — `rocm:0`, `ALL_ROW_DISAGREE=0`, `AUTO_OK=true` |
 | CUDA | `graph_ext_tabdpt_*.onnx` | verified on an RTX A5000 — `QUERY_DISAGREE=0`, `ALL_ROW_DISAGREE=0`, `FITTED_DISTINCT=3`, regression `MAXDIFF=5.3e-05` |
-| MLX | `graph_ext_tabdpt_*.onnx` | **NOT VERIFIED** |
+| MLX | `graph_ext_tabdpt_*.onnx` | **cannot serve tabdpt at all**, before or after this work — see below |
 
-MLX is open, and the CUDA result does not close it. MLX does not execute the
-graph with ONNX Runtime; it walks the same file through its own interpreter
-(`src/tabfm_mlx_graph.cpp`), so "the ext graph is correct" and "MLX evaluates
-the ext graph correctly" are separate claims.
+### MLX: not a verification gap, an incapability
 
-Static analysis narrows the risk but does not settle it. The new graph's op set
-is a strict subset of the old one plus a single `Cast` (the removed
-`Concat`/`Expand`/`Constant` nodes were the head's zero-padding), `Cast` is in
-the interpreter's table, and the output shape became *simpler* —
-`[1, rows, 16]` in place of the old
-`[1, train + Max(0, rows - Min(rows + 64, train + 64) + 64), 16]`. Nothing
-there predicts a numerical difference. That is an argument, not a measurement,
-and this document's own history is the reason it is not being recorded as one.
+tabdpt does not run on MLX and never did. The MLX backend does not execute the
+`ext_graph` under ONNX Runtime; it walks the file through its own interpreter
+(`src/tabfm_mlx_graph.cpp`), whose op table has no `ConstantOfShape`. tabdpt's
+graph uses that op **32 times**. Measured on an M3 (macOS 27.0) against the
+re-exported graphs:
 
-To close it, on the Mac:
-
-```bash
-CALL tabfm_download('classification', model := 'tabdpt');
-CALL tabfm_download('regression',     model := 'tabdpt');
-duckdb -unsigned -c ".read tools/gpu_test/scenarios/mlx_all_models.sql"
+```
+Invalid Input Error: anofox_tabfm: the 'mlx' backend could not be initialised:
+anofox_tabfm mlx plugin: this graph needs ONNX ops the mlx backend does not
+implement (ConstantOfShape). SET anofox_tabfm_device='cpu' to run it through
+ONNX Runtime, and please report these op names.
 ```
 
-`TABDPT_FITTED` is the row that matters, and it is new. Every other comparison
-in that scenario looks at query rows only — which is precisely the half of the
-output the fitted-values fix did **not** change. A query-row check would agree
-perfectly while every fitted row disagreed.
+The count is 32 on `main` and 32 on this branch, so the re-export did not cause
+it. Since tabdpt's graphs are the *only* ones this branch changed, **this work
+has no MLX exposure whatsoever.**
+
+Two things are worth keeping from how this was established, because the first
+answer was wrong:
+
+* A static op-set diff said the change was safe — the new graph's ops are a
+  strict subset of the old plus one `Cast`, which the interpreter supports.
+  That argument rested on an unstated premise, that the *old* graph ran on MLX.
+  It never did. The unsupported op was pre-existing and therefore invisible to
+  a diff of what changed. Comparing a delta against a capability list only
+  works if the baseline was ever measured against it.
+* The failure is a **hard error naming the op**, not a fallback. Confirmed on
+  the same machine that MLX itself is healthy on this build: mitra served by
+  `mlx:0` with **0 of 64** predictions differing from CPU. So the refusal is
+  tabdpt-specific, and `tools/gpu_test/scenarios/mlx_all_models.sql` now keeps
+  it as an error contract rather than an agreement check.
+
+Making tabdpt MLX-servable is a separate piece of work — implementing
+`ConstantOfShape` in the interpreter — and is not in scope here.
 
 ## Reproducing the committed artifacts
 
