@@ -67,6 +67,10 @@ set(EXTENSION_SOURCES
         src/tabfm_generate_macros.cpp
         src/tabfm_engine.cpp
         src/tabfm_plugin_backend.cpp
+        src/tabfm_metrics_classification.cpp
+        src/tabfm_metrics_regression.cpp
+        src/tabfm_crossval.cpp
+        src/tabfm_scoring.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
 )
 
@@ -267,6 +271,10 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_cuda_plugin.cpp
     test/cpp/test_tabfm_mlx_plugin.cpp
     test/cpp/test_tabfm_cpu_budget.cpp
+    test/cpp/test_tabfm_metrics.cpp
+    test/cpp/test_tabfm_metrics_regression.cpp
+    test/cpp/test_tabfm_crossval.cpp
+    test/cpp/test_tabfm_scoring.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     # Backend-plugin fixtures (docs/DYNAMIC_BACKENDS.md phase 1). The real GPU

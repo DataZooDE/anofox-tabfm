@@ -1,0 +1,181 @@
+# name: test/sql/tabfm_scoring.test
+# description: Proper scoring rule aggregates — tabfm_crps (PSR-01),
+#              tabfm_log_score (PSR-02), tabfm_interval_score (PSR-03).
+#              Bind-gating tests (PSR-04): plain DOUBLE second arg rejected.
+#              NULL / empty group semantics.
+#              Golden values from synthetic K=4 uniform distributions
+#              (no tabpfn_v2 fixture required — Phase-2 golden tests deferred).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# =============================================================================
+# Synthetic distribution helpers
+# Build a tiny table with K=4 equal logits → uniform probs 0.25 each,
+# borders=[0,1,2,3,4], various y observations.
+# =============================================================================
+
+statement ok
+CREATE TABLE dist_synth AS SELECT * FROM (VALUES
+  (1.5, {'logits': [0.0, 0.0, 0.0, 0.0]::DOUBLE[], 'borders': [0.0, 1.0, 2.0, 3.0, 4.0]::DOUBLE[]}),
+  (5.0, {'logits': [0.0, 0.0, 0.0, 0.0]::DOUBLE[], 'borders': [0.0, 1.0, 2.0, 3.0, 4.0]::DOUBLE[]})
+) v(y_val, dist);
+
+# =============================================================================
+# PSR-01: tabfm_crps — single well-formed row
+# K=4 uniform, y=1.5: reference CRPS = 0.395833 (crps_reference.py)
+# =============================================================================
+
+query R
+SELECT round(tabfm_crps(y_val, dist), 6)
+FROM dist_synth
+WHERE y_val = 1.5
+----
+0.395833
+
+# Alias parity
+query R
+SELECT round(anofox_tabfm_crps(y_val, dist), 6)
+FROM dist_synth
+WHERE y_val = 1.5
+----
+0.395833
+
+# =============================================================================
+# PSR-04: bind-gate — plain DOUBLE second argument must error at bind
+# =============================================================================
+
+statement ok
+CREATE TABLE dist_point AS SELECT 1.5::DOUBLE AS y_val, 1.2::DOUBLE AS yhat;
+
+statement error
+SELECT tabfm_crps(y_val, yhat) FROM dist_point
+----
+tabfm_crps: second argument must be a distribution
+
+# =============================================================================
+# NULL / empty group returns NULL
+# =============================================================================
+
+query R
+SELECT tabfm_crps(y_val, dist) FROM dist_synth WHERE 1=0
+----
+NULL
+
+# =============================================================================
+# WR-02: NULL elements inside logit/border lists — row skipped → NULL
+# =============================================================================
+
+query R
+SELECT tabfm_crps(1.0, {'logits': [NULL, 0.5]::DOUBLE[], 'borders': [0.0, 1.0, 2.0]::DOUBLE[]})
+----
+NULL
+
+query R
+SELECT tabfm_crps(1.0, {'logits': [0.5, 0.5]::DOUBLE[], 'borders': [0.0, NULL, 2.0]::DOUBLE[]})
+----
+NULL
+
+# =============================================================================
+# PSR-02: tabfm_log_score
+# =============================================================================
+
+# PSR-04 bind-gate for log_score
+statement error
+SELECT tabfm_log_score(y_val, yhat) FROM dist_point
+----
+tabfm_log_score: second argument must be a distribution
+
+# NULL group returns NULL
+query R
+SELECT tabfm_log_score(y_val, dist) FROM dist_synth WHERE 1=0
+----
+NULL
+
+# NULL in logits skips row → NULL aggregate
+query R
+SELECT tabfm_log_score(1.0, {'logits': [NULL, 0.5]::DOUBLE[], 'borders': [0.0, 1.0, 2.0]::DOUBLE[]})
+----
+NULL
+
+# Alias parity
+query I
+SELECT (tabfm_log_score(y_val, dist) IS NOT NULL)::VARCHAR FROM dist_synth WHERE y_val = 1.5
+----
+true
+
+query I
+SELECT (round(tabfm_log_score(y_val, dist), 10) = round(anofox_tabfm_log_score(y_val, dist), 10))::VARCHAR
+FROM dist_synth WHERE y_val = 1.5
+----
+true
+
+# =============================================================================
+# PSR-03: tabfm_interval_score
+# =============================================================================
+
+# PSR-04 bind-gate for interval_score (2-arg)
+statement error
+SELECT tabfm_interval_score(y_val, yhat) FROM dist_point
+----
+tabfm_interval_score: second argument must be a distribution
+
+# PSR-04 bind-gate for interval_score (3-arg: DOUBLE, DOUBLE, DOUBLE)
+statement error
+SELECT tabfm_interval_score(y_val, yhat, 0.9) FROM dist_point
+----
+tabfm_interval_score: second argument must be a distribution
+
+# Coverage range: 0.0 rejected
+statement error
+SELECT tabfm_interval_score(y_val, dist, 0.0) FROM dist_synth
+----
+coverage must be in (0, 1)
+
+# Coverage range: 1.0 rejected
+statement error
+SELECT tabfm_interval_score(y_val, dist, 1.0) FROM dist_synth
+----
+coverage must be in (0, 1)
+
+# CR-01: NaN coverage rejected
+statement error
+SELECT tabfm_interval_score(y_val, dist, 0.0/0.0) FROM dist_synth
+----
+coverage must be in (0, 1)
+
+# NULL group returns NULL
+query R
+SELECT tabfm_interval_score(y_val, dist) FROM dist_synth WHERE 1=0
+----
+NULL
+
+# NULL in logits skips row → NULL aggregate
+query R
+SELECT tabfm_interval_score(1.0, {'logits': [NULL, 0.5]::DOUBLE[], 'borders': [0.0, 1.0, 2.0]::DOUBLE[]})
+----
+NULL
+
+# Alias parity
+query I
+SELECT (round(tabfm_interval_score(y_val, dist, 0.9), 10) = round(anofox_tabfm_interval_score(y_val, dist, 0.9), 10))::VARCHAR
+FROM dist_synth WHERE y_val = 1.5
+----
+true
+
+# Explicit coverage=0.9 same as default
+query I
+SELECT (round(tabfm_interval_score(y_val, dist), 10) = round(tabfm_interval_score(y_val, dist, 0.9), 10))::VARCHAR
+FROM dist_synth WHERE y_val = 1.5
+----
+true
+
+# coverage=0.5 gives different (smaller) interval than coverage=0.9
+query I
+SELECT (tabfm_interval_score(y_val, dist, 0.5) < tabfm_interval_score(y_val, dist, 0.9))::VARCHAR
+FROM dist_synth WHERE y_val = 1.5
+----
+true

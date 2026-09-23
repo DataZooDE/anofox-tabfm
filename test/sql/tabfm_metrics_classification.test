@@ -1,0 +1,371 @@
+# name: test/sql/tabfm_metrics_classification.test
+# description: Classification metric aggregates — tabfm_accuracy (CMET-01),
+#              tabfm_f1/tabfm_precision/tabfm_recall (CMET-02),
+#              tabfm_log_loss (CMET-03), tabfm_roc_auc (CMET-04),
+#              tabfm_confusion_matrix (CMET-05), tabfm_ece (CMET-06).
+#              Golden values from tools/golden/generate_metric_fixtures.py
+#              (sklearn reference). Tolerance via round(v, 6).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# ========================================================================
+# CMET-01: tabfm_accuracy
+# ========================================================================
+
+# --- 3-class fixture ---
+# actual:    ['cat', 'dog', 'cat']
+# predicted: ['cat', 'cat', 'cat']
+# correct: rows 1 and 3  =>  2/3 = 0.666667
+
+statement ok
+CREATE TABLE preds AS SELECT * FROM (VALUES
+  ('cat', 'cat'),
+  ('dog', 'cat'),
+  ('cat', 'cat')
+) v(actual, predicted);
+
+# Golden value: 2/3 correct = 0.666667 (sklearn accuracy_score)
+query I
+SELECT round(tabfm_accuracy(actual, predicted), 6) FROM preds
+----
+0.666667
+
+# Alias parity: anofox_tabfm_accuracy must return the same value
+query I
+SELECT round(anofox_tabfm_accuracy(actual, predicted), 6) FROM preds
+----
+0.666667
+
+# Alias parity check: both agree on the same row
+query I
+SELECT (round(tabfm_accuracy(actual, predicted), 6) = round(anofox_tabfm_accuracy(actual, predicted), 6))::VARCHAR FROM preds
+----
+true
+
+# --- NULL-skip semantics ---
+# Row with NULL actual is skipped; row with NULL predicted is skipped.
+# Valid pairs: ('cat','cat') and ('dog','dog') => 2/2 = 1.0
+
+statement ok
+CREATE TABLE preds_with_nulls AS SELECT * FROM (VALUES
+  ('cat', 'cat'),
+  (NULL, 'cat'),
+  ('dog', 'dog'),
+  ('cat', NULL)
+) v(actual, predicted);
+
+query I
+SELECT round(tabfm_accuracy(actual, predicted), 6) FROM preds_with_nulls
+----
+1.0
+
+# --- Empty / all-NULL input returns NULL ---
+# preds_empty columns are explicitly typed VARCHAR to avoid DuckDB inferring
+# INTEGER for untyped NULLs, which was causing a Binder Error pre-fix.
+# With the {ANY, ANY} registration this is no longer strictly necessary but
+# preserves intent clarity.
+
+statement ok
+CREATE TABLE preds_empty AS SELECT * FROM (VALUES
+  (NULL::VARCHAR, NULL::VARCHAR),
+  (NULL::VARCHAR, NULL::VARCHAR)
+) v(actual, predicted);
+
+query I
+SELECT tabfm_accuracy(actual, predicted) IS NULL FROM preds_empty
+----
+true
+
+# Empty table (zero rows) also returns NULL
+statement ok
+CREATE TABLE preds_zero AS SELECT * FROM preds WHERE 1=0;
+
+query I
+SELECT tabfm_accuracy(actual, predicted) IS NULL FROM preds_zero
+----
+true
+
+# --- Non-VARCHAR (INTEGER) inputs: ANY-typed binding (CR-01 / Option B fix) ---
+# Registration is {ANY, ANY}; DuckDB binds INTEGER columns directly without
+# requiring an explicit CAST. Label equality uses Value comparison, which is
+# type-safe for all DuckDB types (no raw-byte string_t reinterpretation).
+# actual=[1,2,1], predicted=[1,1,1]  =>  correct rows: 1 and 3  =>  2/3 = 0.666667
+# This test gates the Option B fix: passing INTEGER columns must bind, compute
+# correctly, and not crash or silently corrupt results.
+
+statement ok
+CREATE TABLE preds_int AS SELECT * FROM (VALUES
+  (1, 1),
+  (2, 1),
+  (1, 1)
+) v(actual, predicted);
+
+query I
+SELECT round(tabfm_accuracy(actual, predicted), 6) FROM preds_int
+----
+0.666667
+
+# ========================================================================
+# CMET-02: tabfm_f1 / tabfm_precision / tabfm_recall
+#
+# 3-row fixture: actual=['cat','dog','cat'], predicted=['cat','cat','cat']
+# Per class: cat tp=2,fp=1,fn=0; dog tp=0,fp=0,fn=1
+# sklearn with zero_division=0:
+#   F1 macro=0.400000, weighted=0.533333, micro=0.666667
+#   Precision macro=0.333333, weighted=0.444444, micro=0.666667
+#   Recall macro=0.500000, weighted=0.666667, micro=0.666667
+# ========================================================================
+
+# Missing avg must throw a named InvalidInputException
+statement error
+SELECT tabfm_f1(actual, predicted) FROM preds
+----
+tabfm_f1: 'avg' is required
+
+statement error
+SELECT tabfm_precision(actual, predicted) FROM preds
+----
+tabfm_precision: 'avg' is required
+
+statement error
+SELECT tabfm_recall(actual, predicted) FROM preds
+----
+tabfm_recall: 'avg' is required
+
+# F1 macro
+query I
+SELECT round(tabfm_f1(actual, predicted, 'macro'), 6) FROM preds
+----
+0.4
+
+# F1 weighted
+query I
+SELECT round(tabfm_f1(actual, predicted, 'weighted'), 6) FROM preds
+----
+0.533333
+
+# F1 micro
+query I
+SELECT round(tabfm_f1(actual, predicted, 'micro'), 6) FROM preds
+----
+0.666667
+
+# Precision macro
+query I
+SELECT round(tabfm_precision(actual, predicted, 'macro'), 6) FROM preds
+----
+0.333333
+
+# Precision weighted
+query I
+SELECT round(tabfm_precision(actual, predicted, 'weighted'), 6) FROM preds
+----
+0.444444
+
+# Precision micro
+query I
+SELECT round(tabfm_precision(actual, predicted, 'micro'), 6) FROM preds
+----
+0.666667
+
+# Recall macro
+query I
+SELECT round(tabfm_recall(actual, predicted, 'macro'), 6) FROM preds
+----
+0.5
+
+# Recall weighted
+query I
+SELECT round(tabfm_recall(actual, predicted, 'weighted'), 6) FROM preds
+----
+0.666667
+
+# Recall micro
+query I
+SELECT round(tabfm_recall(actual, predicted, 'micro'), 6) FROM preds
+----
+0.666667
+
+# alias parity: anofox_tabfm_f1 matches tabfm_f1
+query I
+SELECT (round(anofox_tabfm_f1(actual, predicted, 'macro'), 10) = round(tabfm_f1(actual, predicted, 'macro'), 10))::VARCHAR FROM preds
+----
+true
+
+# NULL rows skipped (row 2 has NULL actual -> skip)
+statement ok
+CREATE TABLE preds_f1_null AS SELECT * FROM (VALUES
+  ('cat', 'cat'),
+  (NULL, 'cat'),
+  ('dog', 'dog')
+) v(actual, predicted);
+
+# 2 valid rows: (cat,cat) correct, (dog,dog) correct => perfect predictions for both classes
+# precision macro = (1.0 + 1.0) / 2 = 1.0
+query I
+SELECT round(tabfm_precision(actual, predicted, 'macro'), 6) FROM preds_f1_null
+----
+1.0
+
+# ========================================================================
+# CMET-03: tabfm_log_loss
+#
+# 3-row fixture with proba MAP(VARCHAR, DOUBLE):
+#   Row 1: actual=cat, proba={cat:0.7, dog:0.2, fish:0.1}
+#   Row 2: actual=dog, proba={cat:0.1, dog:0.8, fish:0.1}
+#   Row 3: actual=cat, proba={cat:0.5, dog:0.3, fish:0.2}
+# log_loss (sklearn, eps=1e-15) = 0.424322
+# ========================================================================
+
+statement ok
+CREATE TABLE preds_proba AS SELECT * FROM (VALUES
+  ('cat', MAP {'cat': 0.7, 'dog': 0.2, 'fish': 0.1}),
+  ('dog', MAP {'cat': 0.1, 'dog': 0.8, 'fish': 0.1}),
+  ('cat', MAP {'cat': 0.5, 'dog': 0.3, 'fish': 0.2})
+) v(actual, proba);
+
+# Golden log-loss
+query I
+SELECT round(tabfm_log_loss(actual, proba), 6) FROM preds_proba
+----
+0.424322
+
+# Alias parity
+query I
+SELECT round(anofox_tabfm_log_loss(actual, proba), 6) FROM preds_proba
+----
+0.424322
+
+# Clipping: p=0 for true class must NOT return infinity
+# Row has actual=fish but proba has zero (missing) fish entry -> p=0 -> clip to 1e-15 -> finite loss
+statement ok
+CREATE TABLE preds_zero_prob AS SELECT * FROM (VALUES
+  ('fish', MAP {'cat': 0.7, 'dog': 0.3})
+) v(actual, proba);
+
+query I
+SELECT tabfm_log_loss(actual, proba) < 40.0 AND tabfm_log_loss(actual, proba) > 30.0 FROM preds_zero_prob
+----
+true
+
+# NULL rows skipped
+statement ok
+CREATE TABLE preds_ll_null AS SELECT * FROM (VALUES
+  ('cat', MAP {'cat': 0.7, 'dog': 0.3}),
+  (NULL, MAP {'cat': 0.5, 'dog': 0.5}),
+  ('dog', MAP {'cat': 0.2, 'dog': 0.8})
+) v(actual, proba);
+
+# Only rows 1 and 3 count (row 2 skipped due to NULL actual)
+# ll row1 = -log(0.7) = 0.356675, ll row3 = -log(0.8) = 0.223144
+# avg = (0.356675 + 0.223144) / 2 = 0.289910
+query I
+SELECT round(tabfm_log_loss(actual, proba), 6) FROM preds_ll_null
+----
+0.289910
+
+# ========================================================================
+# CMET-04: tabfm_roc_auc (rank-sum tie handling)
+#
+# 6-row, 3-class fixture WITH tied scores at cat=0.6:
+#   actual = ['cat','cat','dog','dog','fish','fish']
+#   proba[cat]  = [0.8, 0.6, 0.6, 0.2, 0.1, 0.1]  <- tie
+# ROC-AUC OvR macro = 0.958333
+# ROC-AUC OvO macro = 0.958333
+# ========================================================================
+
+statement ok
+CREATE TABLE preds_auc AS SELECT * FROM (VALUES
+  ('cat',  MAP {'cat': 0.8, 'dog': 0.1, 'fish': 0.1}),
+  ('cat',  MAP {'cat': 0.6, 'dog': 0.3, 'fish': 0.1}),
+  ('dog',  MAP {'cat': 0.6, 'dog': 0.3, 'fish': 0.1}),
+  ('dog',  MAP {'cat': 0.2, 'dog': 0.7, 'fish': 0.1}),
+  ('fish', MAP {'cat': 0.1, 'dog': 0.1, 'fish': 0.8}),
+  ('fish', MAP {'cat': 0.1, 'dog': 0.2, 'fish': 0.7})
+) v(actual, proba);
+
+# Missing avg must throw a named InvalidInputException
+statement error
+SELECT tabfm_roc_auc(actual, proba) FROM preds_auc
+----
+tabfm_roc_auc: 'avg' is required
+
+# ROC-AUC OvR macro (rank-sum tie handling)
+query I
+SELECT round(tabfm_roc_auc(actual, proba, 'ovr'), 6) FROM preds_auc
+----
+0.958333
+
+# ROC-AUC OvO macro
+query I
+SELECT round(tabfm_roc_auc(actual, proba, 'ovo'), 6) FROM preds_auc
+----
+0.958333
+
+# Alias parity
+query I
+SELECT (round(anofox_tabfm_roc_auc(actual, proba, 'ovr'), 10) = round(tabfm_roc_auc(actual, proba, 'ovr'), 10))::VARCHAR FROM preds_auc
+----
+true
+
+# ========================================================================
+# CMET-05: tabfm_confusion_matrix
+#
+# From the 3-row fixture (preds table):
+#   (cat, cat): count 2
+#   (dog, cat): count 1
+# Returns tidy (actual, predicted, count) rows
+# ========================================================================
+
+# Confusion matrix on the 3-row fixture
+query III rowsort
+SELECT * FROM tabfm_confusion_matrix('preds', 'actual', 'predicted')
+----
+cat	cat	2
+dog	cat	1
+
+# Alias parity
+query III rowsort
+SELECT * FROM anofox_tabfm_confusion_matrix('preds', 'actual', 'predicted')
+----
+cat	cat	2
+dog	cat	1
+
+# ========================================================================
+# CMET-06: tabfm_ece (Expected Calibration Error, 10-bin)
+#
+# 3-row proba fixture (same as log-loss):
+#   All argmax predictions are correct (cat->cat, dog->dog, cat->cat)
+#   Bins: cat[0]=bin7(conf=0.7), dog[1]=bin8(conf=0.8), cat[2]=bin5(conf=0.5)
+#   ECE = (1/3)*|1.0-0.7| + (1/3)*|1.0-0.8| + (1/3)*|1.0-0.5| = 0.333333
+# ========================================================================
+
+query I
+SELECT round(tabfm_ece(actual, proba), 6) FROM preds_proba
+----
+0.333333
+
+# Alias parity
+query I
+SELECT round(anofox_tabfm_ece(actual, proba), 6) FROM preds_proba
+----
+0.333333
+
+# NULL proba rows skipped
+statement ok
+CREATE TABLE preds_ece_null AS SELECT * FROM (VALUES
+  ('cat', MAP {'cat': 0.7, 'dog': 0.3}),
+  (NULL, MAP {'cat': 0.5, 'dog': 0.5}),
+  ('dog', MAP {'cat': 0.2, 'dog': 0.8})
+) v(actual, proba);
+
+# 2 valid rows: cat (bin 7, correct), dog (bin 8, correct)
+# ECE = (1/2)*|1.0-0.7| + (1/2)*|1.0-0.8| = 0.15 + 0.10 = 0.25
+query I
+SELECT round(tabfm_ece(actual, proba), 6) FROM preds_ece_null
+----
+0.25

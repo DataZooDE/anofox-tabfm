@@ -14,6 +14,10 @@ void RegisterPredictAggFunction(ExtensionLoader &loader);  // tabfm_predict_agg.
 void RegisterPredictMacros(ExtensionLoader &loader);       // tabfm_macros.cpp
 void RegisterGenerateAggFunctions(ExtensionLoader &loader);// tabfm_generate.cpp
 void RegisterGenerateMacros(ExtensionLoader &loader);      // tabfm_generate_macros.cpp
+void RegisterClassificationMetrics(ExtensionLoader &loader); // tabfm_metrics_classification.cpp
+void RegisterRegressionMetrics(ExtensionLoader &loader);     // tabfm_metrics_regression.cpp
+void RegisterCrossValidateMacros(ExtensionLoader &loader);   // tabfm_crossval.cpp
+void RegisterScoringFunctions(ExtensionLoader &loader);      // tabfm_scoring.cpp
 
 } // namespace anofox
 } // namespace duckdb
