@@ -42,6 +42,11 @@ def main(argv=None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
+    ap.add_argument("--contract", choices=["positional", "mask"], default="positional",
+                    help="positional: y is the train prefix and the split is its LENGTH (the shipped "
+                         "CPU/CUDA form). mask: y is full length and the split arrives as a train_size "
+                         "VALUE, so every shape depends on the (T, H) bucket alone -- the only form "
+                         "MIGraphX can compile. See docs/ROCM_TABDPT_SPIKE.md.")
     ap.add_argument("--weights",
                     help="published safetensors; when given, configs.real() is "
                          "checked against its embedded cfg metadata")
@@ -54,20 +59,33 @@ def main(argv=None) -> int:
 
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    graph_path = out / f"graph_{SLUG}_{args.task}.onnx"
+    masked = args.contract == "mask"
+    stem = f"graph_mask_{SLUG}" if masked else f"graph_{SLUG}"
+    graph_path = out / f"{stem}_{args.task}.onnx"
     map_path = out / f"tensor_map_{SLUG}_{args.task}.json"
 
     print(f"[export_tabdpt] building random-weight TabDPT "
           f"({args.config}, {args.task}) ...", flush=True)
     t0 = time.time()
     model = build_model(cfg, seed=args.seed)
-    wrapper = build_wrapper(model, args.task)
+    if masked:
+        from export_tabdpt.tabdpt_mask_patches import apply_migraphx_friendly, build_mask_wrapper
+        # chunk -> slices: MIGraphX's parser implements neither SplitToSequence
+        # nor SequenceAt, and TabDPT's SwiGLU emits 32 of the first and 64 of
+        # the second.
+        apply_migraphx_friendly()
+        wrapper = build_mask_wrapper(model, args.task)
+    else:
+        wrapper = build_wrapper(model, args.task)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[export_tabdpt] {n_params:,} params, n_out={model.n_out}, "
           f"num_features={model.num_features} ({time.time() - t0:.1f}s)", flush=True)
 
     t0 = time.time()
-    export.export_graph(wrapper, graph_path, cfg=cfg)
+    if masked:
+        export.export_mask_graph(wrapper, graph_path, cfg=cfg)
+    else:
+        export.export_graph(wrapper, graph_path, cfg=cfg)
     print(f"[export_tabdpt] dynamo export done ({time.time() - t0:.1f}s)", flush=True)
 
     t0 = time.time()
@@ -80,13 +98,28 @@ def main(argv=None) -> int:
 
     if not args.skip_parity:
         t0 = time.time()
-        rep = export.check_parity(graph_path, wrapper, cfg.parity_shapes,
-                                  tol=cfg.parity_tol)
-        print(f"[export_tabdpt] parity ({time.time() - t0:.1f}s): "
-              f"worst {rep['worst']:.2e} (budget {cfg.parity_tol:g}) -> "
-              f"{'OK' if rep['ok'] else 'FAIL'}", flush=True)
-        if not rep["ok"]:
-            return 1
+        if masked:
+            # check_parity feeds (x, y) only, which is the POSITIONAL contract;
+            # the masked graph declares train_size and d as well, so the
+            # positional check fails with "Required inputs are missing" rather
+            # than telling you anything about the graph. Route to the masked
+            # gate, which also runs its negative controls first.
+            from export_tabdpt.mask_parity import main as mask_gate
+            rc = mask_gate(["--config", args.config])
+            print(f"[export_tabdpt] masked parity gate ({time.time() - t0:.1f}s): "
+                  f"{'OK' if rc == 0 else 'FAIL'}", flush=True)
+            if rc != 0:
+                return rc
+            rep = None
+        else:
+            rep = export.check_parity(graph_path, wrapper, cfg.parity_shapes,
+                                      tol=cfg.parity_tol)
+        if rep is not None:
+            print(f"[export_tabdpt] parity ({time.time() - t0:.1f}s): "
+                  f"worst {rep['worst']:.2e} (budget {cfg.parity_tol:g}) -> "
+                  f"{'OK' if rep['ok'] else 'FAIL'}", flush=True)
+            if not rep["ok"]:
+                return 1
 
     export.delete_weight_data(graph_path)
     export.assert_weight_free(graph_path, tensor_map)

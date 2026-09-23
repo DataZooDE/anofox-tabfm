@@ -1805,28 +1805,10 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	if (context.TryGetCurrentSetting("anofox_tabfm_threads", v) && !v.IsNull()) {
 		ctx.threads = v.GetValue<int64_t>();
 	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_device", v) && !v.IsNull()) {
-		ctx.device = v.ToString();
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", v) && !v.IsNull()) {
-		ctx.gpu_precision = StringUtil::Lower(v.ToString());
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", v) && !v.IsNull()) {
-		ctx.mxr_source = v.ToString();
-	}
-	// ep_path, via the same resolver the predict and download paths use.
-	//
-	// This context is assembled by hand rather than shared with those paths,
-	// so it silently missed the default: precompile refused with "no backend
-	// plugin directory is configured. SET anofox_tabfm_ep_path" on a machine
-	// where tabfm_accelerate() had already installed the plugin and every
-	// predict was using it happily. A fourth site for a setting I had called
-	// three.
-	string ep_setting;
-	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", v) && !v.IsNull()) {
-		ep_setting = v.ToString();
-	}
-	ctx.ep_path = ResolveEpPath(ep_setting, ctx.cache_dir);
+	// device / gpu_precision / ep_path / mxr_source, read the same way as every
+	// other GPU-capable bind. This function used to read them by hand and that
+	// is exactly how it ended up without an ep_path.
+	CaptureGpuDispatchSettings(context, ctx);
 	names = {"task", "rows", "features", "device", "status"};
 	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR,
 	                LogicalType::VARCHAR};

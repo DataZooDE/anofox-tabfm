@@ -25,6 +25,16 @@ import tabpfn.architectures.tabpfn_v2_6 as v26
 
 from export_tabpfn import tabpfn_mask_patches as mp
 
+#: Bound ONCE at import, before anything can install the patch.
+#:
+#: The gate compares upstream's forward against the masked one. If the patch has
+#: already been applied in-process -- which apply_mask_patches does by design --
+#: then looking up AlongColumnAttention.forward at comparison time returns the
+#: PATCH, and the gate compares the patch against itself: a tautology that
+#: reports 0.0 and proves nothing. That is the same class of blindness as the
+#: zero-initialised weights below, arriving by a different route.
+_UPSTREAM_FORWARD = v26.AlongColumnAttention.forward
+
 E, H, D = 32, 4, 8
 SHAPES = ((16, 12), (40, 30), (64, 8))  # last one: mostly test rows
 
@@ -35,6 +45,9 @@ def _layer(seed: int = 0):
                                      device=torch.device("cpu"), dtype=torch.float32).eval()
     # Without this the layer outputs zero for every input and the comparison
     # below cannot distinguish a correct mask from no mask at all.
+    if float(layer.out_projection.weight.abs().sum()) != 0.0:
+        raise RuntimeError("expected out_projection to be zero-initialised; upstream changed, so re-check "
+                           "whether this gate still needs waking — and whether it is still blind without it")
     torch.nn.init.normal_(layer.out_projection.weight, std=0.02)
     return layer
 
@@ -43,9 +56,12 @@ def _relative(layer, rows: int, train_size: int) -> float:
     torch.manual_seed(rows)
     x = torch.randn(1, rows, E)
     with torch.no_grad():
-        want, _ = v26.AlongColumnAttention.forward(layer, x, train_size)
+        want, _ = _UPSTREAM_FORWARD(layer, x, train_size)
         mp.set_train_size(torch.tensor([train_size], dtype=torch.int64))
-        got, _ = mp._patched_along_column_forward(layer, x, None)
+        # Pass the value through as well as stashing it, so the patch's
+        # stash-vs-caller consistency check is actually exercised here rather
+        # than only in production.
+        got, _ = mp._patched_along_column_forward(layer, x, train_size)
     return (want - got).abs().max().item() / max(want.abs().max().item(), 1e-6)
 
 

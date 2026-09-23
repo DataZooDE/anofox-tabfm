@@ -42,7 +42,18 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-NEG_INF = -1e30  # finite, so bf16/fp16 quantisation cannot turn it into a NaN
+#: Additive bias for masked-out keys.
+#:
+#: -1e4, not -1e30. fp16's maximum is 65504, so -1e30 OVERFLOWS to -inf there --
+#: the exact opposite of what the comment here used to claim ("finite so
+#: bf16/fp16 quantisation cannot turn it into a NaN"). -inf happens to be
+#: survivable in this graph only because train_size >= 1 guarantees every query
+#: keeps at least one unmasked key, so no softmax row is entirely -inf; relying
+#: on that is an unstated assumption one refactor away from NaNs.
+#:
+#: -1e4 is exactly representable in fp16 and bf16, and exp(-1e4) underflows to
+#: 0 in every one of them, so the masking is just as absolute without the cliff.
+NEG_INF = -1e4
 
 #: Set by the export wrapper immediately before the forward. A [1] int64 tensor
 #: during tracing, so it becomes a graph input rather than a baked constant.
@@ -81,6 +92,27 @@ def _patched_along_column_forward(self, x_BcRE, single_eval_pos=None, *,
 
     train_size = _TRAIN_SIZE
     Bc, R, _ = x_BcRE.shape
+
+    # The stash and the caller must agree, or this silently answers a different
+    # question than the model asked. Upstream threads single_eval_pos through
+    # its own call graph; taking it from a module global and ignoring the
+    # argument means any caller that adjusts it -- add_thinking_rows does
+    # exactly that, `single_eval_pos += self.num_thinking_rows` -- is quietly
+    # overridden. Checked rather than assumed, because the failure is numbers
+    # that look fine.
+    if single_eval_pos is not None:
+        stashed = int(train_size.reshape(-1)[0])
+        if stashed != int(single_eval_pos):
+            raise RuntimeError(
+                f"tabpfn_mask_patches: caller passed single_eval_pos={int(single_eval_pos)} but the stash holds "
+                f"{stashed}. The stash must be set to the value THIS layer would have received, thinking-row "
+                f"adjustments included.")
+    if single_eval_pos == R:
+        # Upstream's "everything is training" regime: no test rows, so no
+        # multi-query path. The masked form handles it (the bias is all-zero),
+        # but flag it rather than let an untested regime pass silently.
+        raise RuntimeError("tabpfn_mask_patches: single_eval_pos == R (all-training) is not exercised by the "
+                           "export path and has no parity coverage")
     H = self.num_heads
     D = self.head_dim
 

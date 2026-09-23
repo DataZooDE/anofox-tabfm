@@ -5,6 +5,20 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **`is_training` rows now carry real in-context fitted values for `tabdpt`.**
+  They previously carried a single constant: the export ran the model head over
+  the query rows only and zero-padded the context rows, so every training row
+  decoded to `argmax` of that pad. Over 80 context rows `tabdpt` returned ONE
+  distinct label where `tabicl-v2` and `mitra` returned three. The column is
+  documented as "in-context fitted values, handy for a sanity check", and for
+  this model it was neither. **Predictions for scored rows are unchanged** (the
+  head is applied per row, so their values cannot move); only the `is_training`
+  rows differ. Anything that relied on that column being constant — as an
+  is-this-a-training-row signal, say — should use the `is_training` flag
+  instead, which has always been the supported way to ask. `tabpfn-v2-6` still
+  has the old behaviour.
+
 ### Added
 - **Synthetic data generation and imputation** (WS-G): `tabfm_generate(data, n, …)`
   samples new rows from a table's joint distribution, and `tabfm_impute(data, …)`

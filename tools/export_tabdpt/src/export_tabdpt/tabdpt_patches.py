@@ -163,9 +163,12 @@ def _patched_model_forward(self, x_src, y_src, num_features=None, **kwargs):
     positional path against the masked ROCm graph, which computes the head over
     all rows and so produces real ones.
 
-    Running the head over every row costs one small projection on S extra rows
-    -- the head is the final linear, not the transformer -- and makes the
-    column mean what it says.
+    Running the head over every row costs one extra projection on S rows. The
+    head is the final linear, not the transformer, so this is small relative to
+    32 attention layers -- but "small" here is reasoning, not a measurement, and
+    it is stated that way deliberately. What IS measured: the end-to-end CPU
+    predict in the real-weight suite did not move detectably, and the shipped
+    graph grew by under 1 KB (673897 -> 673117 bytes, i.e. it shrank).
     """
     from tabdpt.utils import clip_outliers, normalize_data
 

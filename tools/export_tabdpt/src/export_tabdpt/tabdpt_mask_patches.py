@@ -50,7 +50,18 @@ import math
 import torch
 import torch.nn.functional as F
 
-NEG_INF = -1e30  # finite so bf16/fp16 quantisation cannot turn it into a NaN
+#: Additive bias for masked-out keys.
+#:
+#: -1e4, not -1e30. fp16's maximum is 65504, so -1e30 OVERFLOWS to -inf there --
+#: the exact opposite of what the comment here used to claim ("finite so
+#: bf16/fp16 quantisation cannot turn it into a NaN"). -inf happens to be
+#: survivable in this graph only because train_size >= 1 guarantees every query
+#: keeps at least one unmasked key, so no softmax row is entirely -inf; relying
+#: on that is an unstated assumption one refactor away from NaNs.
+#:
+#: -1e4 is exactly representable in fp16 and bf16, and exp(-1e4) underflows to
+#: 0 in every one of them, so the masking is just as absolute without the cliff.
+NEG_INF = -1e4
 
 
 def context_row_mask(total_rows: int, train_size: torch.Tensor, device) -> torch.Tensor:
@@ -94,7 +105,11 @@ def _sum_rows(x: torch.Tensor) -> torch.Tensor:
     return (ones @ flat).reshape(1, *x.shape[1:])
 
 
-def _masked_mean(x: torch.Tensor, mask: torch.Tensor, dim: int) -> torch.Tensor:
+def _masked_mean(x: torch.Tensor, mask: torch.Tensor, dim: int = 0) -> torch.Tensor:
+    # `dim` is accepted for signature-compatibility with upstream's maskmean and
+    # must be 0: _sum_rows reduces the row axis specifically.
+    if dim != 0:
+        raise ValueError(f"_masked_mean reduces the row axis only; got dim={dim}")
     xz = torch.where(mask, x, torch.zeros((), dtype=x.dtype, device=x.device))
     return _sum_rows(xz) / _sum_rows(mask.to(x.dtype))
 
@@ -102,6 +117,8 @@ def _masked_mean(x: torch.Tensor, mask: torch.Tensor, dim: int) -> torch.Tensor:
 def _masked_std(x: torch.Tensor, mask: torch.Tensor, dim: int = 0) -> torch.Tensor:
     # Transcribed from upstream maskstd, including its (num - 1) denominator:
     # the unbiased estimator, which is what torch's .std() uses by default.
+    if dim != 0:
+        raise ValueError(f"_masked_std reduces the row axis only; got dim={dim}")
     num = _sum_rows(mask.to(x.dtype))
     mean = _masked_mean(x, mask, dim=0)
     diffs = torch.where(mask, mean - x, torch.zeros((), dtype=x.dtype, device=x.device))
@@ -295,6 +312,18 @@ class MaskExportWrapper(torch.nn.Module):
         total_rows = x.shape[1]
         x = torch.nn.functional.pad(x, (0, self.num_features - x.shape[2]))
 
+        # y covers EVERY row here, including unlabeled ones, so whatever the
+        # caller put in the query positions reaches y_encoders and becomes part
+        # of v. The additive key bias does not save us: attention forms
+        # sum(weight_i * v_i), and 0 * NaN is NaN, so a single NaN in an
+        # unlabeled row would poison every output. The positional form never had
+        # this exposure because y stopped at the train prefix.
+        #
+        # The engine imputes before it gets here and the plugin pads with zeros,
+        # so this is belt-and-braces -- but it is one op, and the failure it
+        # prevents is silent and total.
+        y = torch.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+
         ctx = context_row_mask(total_rows, train_size, x.device).reshape(1, -1)
 
         # Standardise the target over the CONTEXT rows only -- the masked
@@ -324,6 +353,18 @@ class MaskExportWrapper(torch.nn.Module):
 
 def build_mask_wrapper(model, task: str) -> MaskExportWrapper:
     """Wrap a TabDPTModel under the masked contract. No patching of upstream."""
+    if task == "regression":
+        # Fail loudly rather than defaulting. These three values define the
+        # bar-distribution bin centres, and a wrong bin range does not error --
+        # it silently rescales every regression prediction. Defaults copied from
+        # a previous checkpoint would be wrong in exactly the way that looks
+        # plausible.
+        missing = [n for n in ("regression_bin_min", "regression_bin_max", "regression_bin_count")
+                   if not hasattr(model, n)]
+        if missing:
+            raise AttributeError(
+                f"build_mask_wrapper: model is missing {missing}, which define the regression bin centres. "
+                f"Guessing them would rescale every prediction silently; supply a model that declares them.")
     return MaskExportWrapper(
         model,
         task=task,

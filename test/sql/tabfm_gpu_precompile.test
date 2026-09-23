@@ -71,3 +71,32 @@ statement error
 CALL tabfm_gpu_precompile('classification', 64, 4);
 ----
 model :=
+
+# The other half of the fix: PrecompileBind assembles its PredictContext by
+# hand, so it silently missed the ep_path default and refused with "no backend
+# plugin directory is configured. SET anofox_tabfm_ep_path" on machines where
+# tabfm_accelerate() had already installed the plugin.
+#
+# Asserted through behaviour available on every runner: with ep_path unset,
+# precompile must NOT fail for a missing plugin directory. On a CPU-only host
+# it succeeds outright; the point is that the empty-ep_path refusal is gone.
+statement ok
+SET anofox_tabfm_ep_path = '';
+
+query IIIII
+CALL tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
+----
+classification	64	4	cpu	compiled
+
+# ...and an explicit ep_path is still honoured rather than overridden by the
+# default.
+statement ok
+SET anofox_tabfm_ep_path = '__TEST_DIR__/precompile_ep';
+
+query IIIII
+CALL tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
+----
+classification	64	4	cpu	compiled
+
+statement ok
+SET anofox_tabfm_ep_path = '';

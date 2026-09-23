@@ -219,6 +219,20 @@ struct PredictContext {
 	string ep_path;
 };
 
+//! Read the settings that steer GPU dispatch into `ctx`.
+//!
+//! Every bind that can reach a GPU needs the same five: device, gpu_precision,
+//! ep_path, cache_dir and mxr_source. They were read independently in four
+//! places, and the fourth (PrecompileBind) silently missed the ep_path default
+//! when it was added -- so precompile refused with "SET anofox_tabfm_ep_path"
+//! on machines where the plugin was installed and every predict was using it.
+//!
+//! Declared here and defined in tabfm_predict_agg.cpp so the next setting that
+//! joins this group joins it once. Callers still set db/threads/limits
+//! themselves: those differ per surface, these do not.
+void CaptureGpuDispatchSettings(ClientContext &context, PredictContext &ctx);
+
+
 struct PredictInput {
 	const vector<vector<Value>> &rows;
 	const LogicalType &row_type;

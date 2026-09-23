@@ -169,10 +169,19 @@ def main():
     weights = a.weights or os.path.join(DEF_CACHE, a.task, "model.safetensors")
     inline_ok = {n for n in a.inline_ok.split(",") if n}
     graph_path = a.graph or f"resources/graph_{a.task}.onnx"
-    # Load external data only when something has to be embedded: the whole point
-    # of the external-data form is to keep multi-GB weights out of the proto, so
-    # this reads them only to write a handful of constant bytes back in.
-    m = onnx.load(graph_path, load_external_data=bool(inline_ok))
+    m = onnx.load(graph_path, load_external_data=False)
+    # Materialise ONLY the allowlisted tensors. load_external_data=True would
+    # pull the ENTIRE checkpoint into the proto -- hundreds of megabytes for a
+    # handful of constant bytes -- and on a committed graph, whose external data
+    # points at a model.safetensors that may not be beside it, it fails outright.
+    if inline_ok:
+        from onnx.external_data_helper import load_external_data_for_tensor
+        base = os.path.dirname(os.path.abspath(graph_path))
+        for init in m.graph.initializer:
+            if init.name in inline_ok and init.data_location == TensorProto.EXTERNAL:
+                load_external_data_for_tensor(init, base)
+                init.data_location = TensorProto.DEFAULT
+                del init.external_data[:]
     inlined = externalize(m, weights, a.tensor_map or f"resources/tensor_map_{a.task}.json",
                           inline_ok=inline_ok)
     if inlined:
