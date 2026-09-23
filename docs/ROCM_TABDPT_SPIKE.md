@@ -288,6 +288,47 @@ the time on MLX and CUDA, which serve the whole catalog today.
 Until then `tabfm_backends()` answers the question honestly for every model,
 which was the actual user-facing problem.
 
+## Backend verification status of the re-exported graphs
+
+The fitted-values fix re-exported tabdpt's graphs, so every backend that reads
+them has to be re-checked. `GpuGraphKindFor` routes **CUDA and MLX to the same
+`ext_graph`** and ROCm to the new `migraphx_graph`, which makes the exposure
+wider than "the ROCm spike":
+
+| Backend | Reads | Status |
+|---|---|---|
+| CPU | `graph_tabdpt_*.onnx` | verified — `test/sql/tabfm_real_models.test`, 36 assertions incl. the fitted-value and regression oracles |
+| ROCm | `graph_migraphx_tabdpt_*.onnx` | verified on gfx1201 — `rocm:0`, `ALL_ROW_DISAGREE=0`, `AUTO_OK=true` |
+| CUDA | `graph_ext_tabdpt_*.onnx` | verified on an RTX A5000 — `QUERY_DISAGREE=0`, `ALL_ROW_DISAGREE=0`, `FITTED_DISTINCT=3`, regression `MAXDIFF=5.3e-05` |
+| MLX | `graph_ext_tabdpt_*.onnx` | **NOT VERIFIED** |
+
+MLX is open, and the CUDA result does not close it. MLX does not execute the
+graph with ONNX Runtime; it walks the same file through its own interpreter
+(`src/tabfm_mlx_graph.cpp`), so "the ext graph is correct" and "MLX evaluates
+the ext graph correctly" are separate claims.
+
+Static analysis narrows the risk but does not settle it. The new graph's op set
+is a strict subset of the old one plus a single `Cast` (the removed
+`Concat`/`Expand`/`Constant` nodes were the head's zero-padding), `Cast` is in
+the interpreter's table, and the output shape became *simpler* —
+`[1, rows, 16]` in place of the old
+`[1, train + Max(0, rows - Min(rows + 64, train + 64) + 64), 16]`. Nothing
+there predicts a numerical difference. That is an argument, not a measurement,
+and this document's own history is the reason it is not being recorded as one.
+
+To close it, on the Mac:
+
+```bash
+CALL tabfm_download('classification', model := 'tabdpt');
+CALL tabfm_download('regression',     model := 'tabdpt');
+duckdb -unsigned -c ".read tools/gpu_test/scenarios/mlx_all_models.sql"
+```
+
+`TABDPT_FITTED` is the row that matters, and it is new. Every other comparison
+in that scenario looks at query rows only — which is precisely the half of the
+output the fitted-values fix did **not** change. A query-row check would agree
+perfectly while every fitted row disagreed.
+
 ## Reproducing the committed artifacts
 
 The MIGraphX graphs in `resources/` were produced by exactly these commands.

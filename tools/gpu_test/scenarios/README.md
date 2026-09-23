@@ -26,8 +26,25 @@ reporting a perfect score.
 | `rocm_fixture.sql` | the **weight-free** ROCm smoke test: the committed fixture's MIGraphX variant compiles + serves in seconds, no download/license. Run before pushing ROCm-path changes. | `FIXTURE_SERVED_BY=rocm:0`, 9 rows |
 | `registered_model_gpu.sql` | a **registered** model carrying its own `migraphx_graph` served by the ROCm plugin — the model-provided GPU-graph dispatch (GPU_HARDENING_PLAN P3) that bundled-graph runs never touch. Paths inside are machine-local (the weight cache); adjust `base_dir` before running. | `REGISTERED_SERVED_BY=rocm:0`, `PATHS_DISAGREE=0` |
 | `user_workflow.sql` | a workflow shaped like a user's: `read_csv_auto` with inferred types, categorical columns, NULLs in **both** features and label, then joining predictions back and aggregating by a business dimension. | `cpu` then `rocm:0`, **0 disagreements**, 25 rows joined |
+| `auto_per_model.sql` | per-model `auto` resolving to a *different* device per model in one session — `mitra` and `tabdpt` to the GPU, `tabpfn-v2` to CPU because no MIGraphX graph exists for it, each asserted by `SERVED_BY` plus a `tabfm_backends()` invariant. Re-check the negative model whenever a conversion lands: it silently stops being a negative. | `rocm:0` / `rocm:0` / `cpu`, `AUTO_IS_PER_MODEL=true`, `AUTO_NEVER_UNSUPPORTED=true` |
+| `mlx_all_models.sql` | every registered model on MLX against CPU. MLX runs the model's own ONNX graph through its own interpreter, so coverage is a property of the op table, not of a per-model list — an op-table change can break exactly one model and nothing else would notice. | macOS/arm64 only |
+| `mlx_stress.sql` | MLX at 4000x30, mid-session device switches, reduced precision, and awkward shapes (single class, zero-variance feature, NULLs). | macOS/arm64 only |
 
 Notes worth keeping:
+
+- **These files are not run by CI, so they rot silently — and they did.** The
+  feature-column guard made a context relation carrying a column the `test`
+  relation lacks a hard error. Both MLX scenarios built one `ctx` holding both
+  label columns and a `qry` holding neither, so after that guard landed every
+  call in both files failed at the *first* block. Nothing reported it, because
+  nothing ran them. They now build one context table per task. When a guard is
+  added to the predict surface, grep this directory before assuming it only
+  affects user SQL.
+- A scenario that compares only the `test` rows cannot see a change to the
+  *fitted* rows. `mlx_all_models.sql` compared query rows exclusively until
+  `TABDPT_FITTED` was added — and the fitted-values fix changed nothing else.
+  If a change moves output rows the scenario does not select, the scenario
+  passes and means nothing.
 
 - `customers.csv` has `yes`/`no` in the label column, which `read_csv_auto`
   infers as BOOLEAN — so predictions come back `true`/`false`. Comparing
