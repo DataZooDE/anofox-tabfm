@@ -1,0 +1,278 @@
+# name: test/sql/tabfm_metrics_regression.test
+# description: tabfm_rmse, tabfm_mae, tabfm_r2, tabfm_mape, tabfm_medae golden values and
+#              edge cases (tools/golden/generate_metric_fixtures.py)
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# ============================================================
+# RMET-01: tabfm_rmse — root-mean-squared error
+#
+# Fixture: 5 rows, actual=[1.0,2.0,3.0,4.0,5.0] predicted=[1.1,2.2,2.9,3.8,5.5]
+# sklearn ref: root_mean_squared_error = 0.264575
+# (tools/golden/generate_metric_fixtures.py §RMET-01)
+# ============================================================
+
+statement ok
+CREATE OR REPLACE TABLE reg_preds AS
+SELECT * FROM (VALUES
+    (1.0, 1.1),
+    (2.0, 2.2),
+    (3.0, 2.9),
+    (4.0, 3.8),
+    (5.0, 5.5)
+) t(actual, predicted)
+
+# Golden RMSE matches sklearn root_mean_squared_error to 6 decimal places
+query I
+SELECT round(tabfm_rmse(actual, predicted), 6) FROM reg_preds
+----
+0.264575
+
+# anofox_tabfm_rmse alias agrees with tabfm_rmse
+query I
+SELECT round(anofox_tabfm_rmse(actual, predicted), 6) FROM reg_preds
+----
+0.264575
+
+# NULL rows are skipped (not counted in numerator or denominator)
+statement ok
+CREATE OR REPLACE TABLE reg_preds_null AS
+SELECT * FROM (VALUES
+    (1.0, 1.1),
+    (2.0, 2.2),
+    (NULL, 2.9),
+    (4.0, NULL),
+    (5.0, 5.5)
+) t(actual, predicted)
+
+# RMSE over only the 3 non-NULL pairs: residuals=[0.1,0.2,0.5], rmse=sqrt(0.30/3)=sqrt(0.1)=0.316228
+query I
+SELECT round(tabfm_rmse(actual, predicted), 6) FROM reg_preds_null
+----
+0.316228
+
+# Empty / all-NULL input returns NULL
+query I
+SELECT tabfm_rmse(actual, predicted) FROM reg_preds WHERE 1=0
+----
+NULL
+
+query I
+SELECT tabfm_rmse(actual, predicted) FROM (
+    SELECT CAST(NULL AS DOUBLE) AS actual, CAST(NULL AS DOUBLE) AS predicted
+)
+----
+NULL
+
+# ============================================================
+# RMET-02: tabfm_mae — mean absolute error
+#
+# Same 5-row fixture: residuals=[0.1,0.2,0.1,0.2,0.5], mae=0.22
+# sklearn ref: mean_absolute_error = 0.22
+# (tools/golden/generate_metric_fixtures.py §RMET-02)
+# ============================================================
+
+# Golden MAE matches sklearn mean_absolute_error to 6 decimal places
+query I
+SELECT round(tabfm_mae(actual, predicted), 6) FROM reg_preds
+----
+0.22
+
+# anofox_tabfm_mae alias agrees
+query I
+SELECT round(anofox_tabfm_mae(actual, predicted), 6) FROM reg_preds
+----
+0.22
+
+# NULL skip: only 3 valid rows: abs=[0.1,0.2,0.5], mae=0.8/3=0.266667
+query I
+SELECT round(tabfm_mae(actual, predicted), 6) FROM reg_preds_null
+----
+0.266667
+
+# Empty / all-NULL input returns NULL
+query I
+SELECT tabfm_mae(actual, predicted) FROM reg_preds WHERE 1=0
+----
+NULL
+
+# ============================================================
+# RMET-03: tabfm_r2 — coefficient of determination (R²)
+#
+# Same 5-row fixture: R² = 1 - SS_res/SS_tot = 0.965
+# sklearn ref: r2_score = 0.965
+#
+# Edge cases (D: R² constant-target convention, sklearn-matching):
+#   - constant target + perfect prediction → 1.0 (never NaN/Inf)
+#   - constant target + imperfect prediction → 0.0 (never NaN/Inf)
+# (tools/golden/generate_metric_fixtures.py §RMET-03)
+# ============================================================
+
+# Golden R² matches sklearn r2_score to 6 decimal places
+query I
+SELECT round(tabfm_r2(actual, predicted), 6) FROM reg_preds
+----
+0.965
+
+# anofox_tabfm_r2 alias agrees
+query I
+SELECT round(anofox_tabfm_r2(actual, predicted), 6) FROM reg_preds
+----
+0.965
+
+# Constant target, perfect prediction → R² = 1.0 (not NaN, not Inf)
+# SS_tot = 0 AND SS_res = 0 → documented sklearn convention returns 1.0
+query I
+SELECT tabfm_r2(actual, predicted) FROM (
+    SELECT * FROM (VALUES
+        (5.0, 5.0),
+        (5.0, 5.0),
+        (5.0, 5.0)
+    ) t(actual, predicted)
+)
+----
+1.0
+
+# Constant target, imperfect prediction → R² = 0.0 (not NaN, not Inf)
+# SS_tot = 0 AND SS_res > 0 → documented sklearn convention returns 0.0
+query I
+SELECT tabfm_r2(actual, predicted) FROM (
+    SELECT * FROM (VALUES
+        (5.0, 4.0),
+        (5.0, 5.0),
+        (5.0, 6.0)
+    ) t(actual, predicted)
+)
+----
+0.0
+
+# NULL skip: R² over non-NULL rows only
+# Valid rows: (1.0,1.1),(2.0,2.2),(5.0,5.5)
+# y_bar=8/3=2.666667, SS_res=0.3, SS_tot=10-3*(8/3)^2=10-64/9=26/9≈2.8889
+# R²=1-0.3/(26/9)=1-2.7/26≈0.965385
+query I
+SELECT round(tabfm_r2(actual, predicted), 6) FROM reg_preds_null
+----
+0.965385
+
+# Empty / all-NULL input returns NULL
+query I
+SELECT tabfm_r2(actual, predicted) FROM reg_preds WHERE 1=0
+----
+NULL
+
+# ============================================================
+# RMET-04a: tabfm_mape — mean absolute percentage error (zero-actual safe)
+#
+# MAPE is returned as a DIMENSIONLESS RATIO (not a percentage — matches
+# sklearn.metrics.mean_absolute_percentage_error which returns a fraction, not %).
+# e.g. 0.076667 means ~7.67% error. The golden value below is a ratio.
+#
+# Same 5-row fixture (no zero actuals):
+#   APE per row: 0.1/1.0=0.1, 0.2/2.0=0.1, 0.1/3.0=0.0333, 0.2/4.0=0.05, 0.5/5.0=0.1
+#   MAPE = (0.1+0.1+0.0333+0.05+0.1)/5 = 0.076667
+# sklearn ref: mean_absolute_percentage_error = 0.076667
+#
+# Zero-actual skip: rows where actual==0 are SKIPPED (no division by zero).
+# All-zero-actual input → NULL (no contributing rows).
+# (tools/golden/generate_metric_fixtures.py §RMET-04)
+# ============================================================
+
+# Golden MAPE matches sklearn mean_absolute_percentage_error to 6 decimal places
+query I
+SELECT round(tabfm_mape(actual, predicted), 6) FROM reg_preds
+----
+0.076667
+
+# anofox_tabfm_mape alias agrees
+query I
+SELECT round(anofox_tabfm_mape(actual, predicted), 6) FROM reg_preds
+----
+0.076667
+
+# Zero-actual rows are SKIPPED; MAPE computed over non-zero rows only.
+# actual=[0.0,1.0,2.0], predicted=[0.5,1.5,2.5]
+# Non-zero rows: (1.0,1.5),(2.0,2.5) → APE=[0.5,0.25] → MAPE=0.375
+query I
+SELECT round(tabfm_mape(actual, predicted), 6) FROM (
+    SELECT * FROM (VALUES
+        (0.0, 0.5),
+        (1.0, 1.5),
+        (2.0, 2.5)
+    ) t(actual, predicted)
+)
+----
+0.375
+
+# All-zero actuals → NULL (no rows contribute)
+query I
+SELECT tabfm_mape(actual, predicted) FROM (
+    SELECT * FROM (VALUES
+        (0.0, 1.0),
+        (0.0, 2.0),
+        (0.0, 3.0)
+    ) t(actual, predicted)
+)
+----
+NULL
+
+# Empty / all-NULL input returns NULL
+query I
+SELECT tabfm_mape(actual, predicted) FROM reg_preds WHERE 1=0
+----
+NULL
+
+# ============================================================
+# RMET-04b: tabfm_medae — median absolute error
+#
+# Same 5-row fixture: sorted residuals = [0.1, 0.1, 0.2, 0.2, 0.5]
+# Median (N=5, index 2) = 0.2
+# sklearn ref: median_absolute_error = 0.2
+#
+# Even N: mean of two middle residuals.
+# 4-row fixture: actual=[1.0,2.0,3.0,4.0], predicted=[1.1,2.2,2.9,3.8]
+#   sorted residuals = [0.1, 0.1, 0.2, 0.2] → median = (0.1+0.2)/2 = 0.15
+# sklearn ref: median_absolute_error = 0.15
+# (tools/golden/generate_metric_fixtures.py §RMET-04)
+# ============================================================
+
+# Golden MedAE matches sklearn median_absolute_error (N=5, odd)
+query I
+SELECT round(tabfm_medae(actual, predicted), 6) FROM reg_preds
+----
+0.2
+
+# anofox_tabfm_medae alias agrees
+query I
+SELECT round(anofox_tabfm_medae(actual, predicted), 6) FROM reg_preds
+----
+0.2
+
+# Even N=4: mean of two middle residuals = (0.1+0.2)/2 = 0.15
+query I
+SELECT round(tabfm_medae(actual, predicted), 6) FROM (
+    SELECT * FROM (VALUES
+        (1.0, 1.1),
+        (2.0, 2.2),
+        (3.0, 2.9),
+        (4.0, 3.8)
+    ) t(actual, predicted)
+)
+----
+0.15
+
+# NULL rows skipped
+query I
+SELECT round(tabfm_medae(actual, predicted), 6) FROM reg_preds_null
+----
+0.2
+
+# Empty / all-NULL input returns NULL
+query I
+SELECT tabfm_medae(actual, predicted) FROM reg_preds WHERE 1=0
+----
+NULL
