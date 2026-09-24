@@ -12,9 +12,11 @@
 #include "catch.hpp"
 #include "duckdb.hpp"
 
-// Helper: load extension on a fresh connection
-static duckdb::Connection make_con() {
-	static duckdb::DuckDB db(nullptr);
+// Helper: load the extension on a connection to a per-test-case database.
+// The DuckDB instance must NOT be a function-local static: a static instance
+// (with the extension loaded) is destroyed by atexit after other process-wide
+// statics (ORT env, telemetry), which segfaults at exit on macOS.
+static duckdb::Connection make_con(duckdb::DuckDB &db) {
 	duckdb::Connection con(db);
 	REQUIRE(!con.Query("LOAD anofox_tabfm")->HasError());
 	return con;
@@ -25,7 +27,8 @@ static duckdb::Connection make_con() {
 // ============================================================
 
 TEST_CASE("tabfm_accuracy: golden value 2/3 matches sklearn", "[tabfm][metrics]") {
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	REQUIRE(!con.Query("CREATE TABLE preds AS SELECT * FROM (VALUES "
 	                   "  ('cat', 'cat'), ('dog', 'cat'), ('cat', 'cat')"
@@ -38,7 +41,8 @@ TEST_CASE("tabfm_accuracy: golden value 2/3 matches sklearn", "[tabfm][metrics]"
 }
 
 TEST_CASE("tabfm_accuracy: NULL rows skipped", "[tabfm][metrics]") {
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	REQUIRE(!con.Query("CREATE TABLE preds_null AS SELECT * FROM (VALUES "
 	                   "  ('cat', 'cat'), (NULL::VARCHAR, 'cat'), ('dog', 'dog'), ('cat', NULL::VARCHAR)"
@@ -51,7 +55,8 @@ TEST_CASE("tabfm_accuracy: NULL rows skipped", "[tabfm][metrics]") {
 }
 
 TEST_CASE("tabfm_accuracy: all-NULL input returns NULL", "[tabfm][metrics]") {
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	REQUIRE(!con.Query("CREATE TABLE preds_empty AS SELECT * FROM (VALUES "
 	                   "  (NULL::VARCHAR, NULL::VARCHAR)"
@@ -64,7 +69,8 @@ TEST_CASE("tabfm_accuracy: all-NULL input returns NULL", "[tabfm][metrics]") {
 }
 
 TEST_CASE("tabfm_accuracy: alias parity with anofox_tabfm_accuracy", "[tabfm][metrics]") {
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	REQUIRE(!con.Query("CREATE TABLE preds_alias AS SELECT * FROM (VALUES "
 	                   "  ('x', 'x'), ('y', 'z'), ('z', 'z')"
@@ -83,7 +89,8 @@ TEST_CASE("tabfm_accuracy: alias parity with anofox_tabfm_accuracy", "[tabfm][me
 // ============================================================
 
 TEST_CASE("tabfm_f1: missing avg throws named exception", "[tabfm][metrics]") {
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	REQUIRE(!con.Query("CREATE TABLE pf AS SELECT * FROM (VALUES ('a','a'),('b','a')) v(actual, predicted)")
 	             ->HasError());
@@ -97,7 +104,8 @@ TEST_CASE("tabfm_f1: missing avg throws named exception", "[tabfm][metrics]") {
 TEST_CASE("tabfm_f1: macro/weighted/micro on 3-class fixture match sklearn", "[tabfm][metrics]") {
 	// Fixture: actual=['cat','dog','cat'], predicted=['cat','cat','cat']
 	// F1 macro=0.4, weighted=0.533333, micro=0.666667
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	REQUIRE(!con.Query("CREATE TABLE f1_preds AS SELECT * FROM (VALUES "
 	                   "  ('cat','cat'), ('dog','cat'), ('cat','cat')"
@@ -126,7 +134,8 @@ TEST_CASE("tabfm_roc_auc: tie handling matches sklearn rank-sum (OvR)", "[tabfm]
 	//   actual=['cat','cat','dog','dog','fish','fish']
 	//   proba[cat] = [0.8, 0.6, 0.6, 0.2, 0.1, 0.1]  <- tie at 0.6
 	// sklearn roc_auc_score(multi_class='ovr', average='macro') = 0.958333
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	REQUIRE(!con.Query("CREATE TABLE auc_preds AS SELECT * FROM (VALUES "
 	                   "  ('cat',  MAP {'cat': 0.8, 'dog': 0.1, 'fish': 0.1}),"
@@ -144,7 +153,8 @@ TEST_CASE("tabfm_roc_auc: tie handling matches sklearn rank-sum (OvR)", "[tabfm]
 }
 
 TEST_CASE("tabfm_roc_auc: OvO matches sklearn", "[tabfm][metrics]") {
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	REQUIRE(!con.Query("CREATE TABLE auc_ovo AS SELECT * FROM (VALUES "
 	                   "  ('cat',  MAP {'cat': 0.8, 'dog': 0.1, 'fish': 0.1}),"
@@ -162,7 +172,8 @@ TEST_CASE("tabfm_roc_auc: OvO matches sklearn", "[tabfm][metrics]") {
 }
 
 TEST_CASE("tabfm_roc_auc: missing avg throws named exception", "[tabfm][metrics]") {
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	REQUIRE(!con.Query("CREATE TABLE auc_noavg AS SELECT * FROM (VALUES "
 	                   "  ('cat', MAP {'cat': 0.8, 'dog': 0.2}),"
@@ -181,7 +192,8 @@ TEST_CASE("tabfm_roc_auc: missing avg throws named exception", "[tabfm][metrics]
 // ============================================================
 
 TEST_CASE("tabfm_log_loss: clipped p=0 never returns infinity", "[tabfm][metrics]") {
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	// actual=fish but MAP has no 'fish' key -> p=0 -> clip to 1e-15 -> finite loss
 	REQUIRE(!con.Query("CREATE TABLE ll_clip AS SELECT * FROM (VALUES "
@@ -198,7 +210,8 @@ TEST_CASE("tabfm_log_loss: clipped p=0 never returns infinity", "[tabfm][metrics
 }
 
 TEST_CASE("tabfm_log_loss: golden value matches sklearn on 3-row proba fixture", "[tabfm][metrics]") {
-	auto con = make_con();
+	duckdb::DuckDB db(nullptr);
+	auto con = make_con(db);
 
 	REQUIRE(!con.Query("CREATE TABLE ll_preds AS SELECT * FROM (VALUES "
 	                   "  ('cat', MAP {'cat': 0.7, 'dog': 0.2, 'fish': 0.1}),"
