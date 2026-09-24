@@ -2063,6 +2063,7 @@ void RegisterSet(ExtensionLoader &loader, const string &full_name, const string 
 		fd.description = description;
 		if (example) {
 			fd.examples = {example};
+			fd.categories = {"tabfm", "weights"};
 		}
 		descriptions.push_back(std::move(fd));
 	}
@@ -2182,6 +2183,7 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 		fd.examples = {"CALL tabfm_register_model(id := 'my', classification_graph := '/p/g.onnx', "
 		               "classification_weights := '/p/w.safetensors', tensor_map := '/p/map.json', "
 		               "license := 'apache-2.0');"};
+		fd.categories = {"tabfm", "weights"};
 		d.push_back(std::move(fd));
 		RegisterTableFunctionSetWithAlias(loader, std::move(set), "tabfm_register_model", std::move(d));
 	}

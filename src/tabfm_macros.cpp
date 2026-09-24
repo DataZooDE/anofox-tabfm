@@ -318,6 +318,7 @@ unique_ptr<CreateMacroInfo> BuildMacroInfo(const string &name, const PredictMacr
 	fd.description = def.description;
 	if (def.example) {
 		fd.examples = {def.example};
+		fd.categories = {"tabfm", "predict"};
 	}
 	info->descriptions.push_back(std::move(fd));
 	return info;

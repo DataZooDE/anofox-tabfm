@@ -1,0 +1,5 @@
+[
+  {"match": "__anofox_tabfm_*",
+   "kind": "internal_underscore",
+   "reason": "The engine aggregates behind the public CLASSIFY/REGRESS/GENERATE/IMPUTE macros. Not callable as a documented surface; the macros that wrap them are what users write."}
+]
