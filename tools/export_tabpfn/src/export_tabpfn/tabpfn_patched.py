@@ -32,9 +32,11 @@ mathematically identical to upstream for the inputs our runtime feeds (dense
 
 train_size is NOT a graph input: TabPFN derives the train/test split from
 `len(y)` (single_eval_pos = y.shape[0]). The wrapper therefore takes y as the
-train-label prefix [1, N]; N is a genuine runtime dimension. Output is padded to
-[1, T, C] so predictions land on rows >= N (matches the engine's read of
-logits[:, train_size:]).
+train-label prefix [1, N]; N is a genuine runtime dimension. Output is [1, T, C]:
+rows >= N are the query predictions (the engine reads logits[:, train_size:]),
+and rows < N are the in-context fitted values for the training rows. Those rows
+used to be a zero pad, which the engine surfaced as `is_training` fitted values
+-- see ExportWrapper._all_row_logits.
 """
 
 from __future__ import annotations
@@ -355,7 +357,10 @@ class ExportWrapper(torch.nn.Module):
       logits [1, T, C]      classification: C = max_classes (class logits).
                             regression:     C = 1, a RAW-space POINT ESTIMATE
                             (the bar-distribution mean, de-standardized).
-                            Predictions occupy rows >= N; rows < N are zero pad.
+                            EVERY row carries a real value: rows >= N are the
+                            query predictions, rows < N the in-context fitted
+                            values for the training rows (they used to be a
+                            zero pad -- see _all_row_logits).
 
     Regression contract (Option A — self-contained, raw-in / raw-out):
       TabPFN's regressor standardizes the target on the TRAIN rows
@@ -389,6 +394,105 @@ class ExportWrapper(torch.nn.Module):
         p = torch.softmax(logits, dim=-1)  # [T-N, 1, num_bars]
         return torch.matmul(p, bucket_means)  # [T-N, 1]
 
+    def _all_row_logits(self, xt, y_used):
+        """Model logits for EVERY data row, context rows included.
+
+        Upstream returns logits for the query rows only -- its decoder slices
+        the row embeddings at the train/test boundary before projecting -- and
+        this wrapper used to zero-pad the context rows back to [T,1,C]. The
+        engine surfaces those rows as `is_training` "in-context fitted values",
+        so what it actually surfaced was the pad: argmax of zeros is one class
+        for every row, and the bar-distribution mean of zeros is one number.
+        Measured across the family on separable data where mitra and tabicl-v2
+        score 1.0, every TabPFN generation scored ~1/3, i.e. chance.
+
+        Nothing upstream is patched to fix it. Asking for the non-standard
+        output already returns `train_embeddings` -- the same per-row embeddings
+        the decoder projects, with any thinking-row prefix already stripped --
+        so the context rows can be projected with the model's OWN head and
+        concatenated.
+
+        That the head is the right one is checked rather than assumed: for all
+        four architectures, re-projecting `test_embeddings` this way reproduces
+        upstream's `standard` output BIT-EXACTLY (max abs diff 0.0). v3
+        multiclass is the one that would have been got wrong by pattern-matching
+        the others -- it has no `output_projection` at all and decodes through
+        `many_class_decoder`, attending the queries against the train rows, so
+        its fitted values come from passing the train embeddings as both.
+
+        Reproducing `standard` proves the HEAD is right. It does not prove the
+        TRAIN embeddings are in the same space as the test ones, and on v2 they
+        are not -- see the branch below.
+        """
+        needs_duplicate = (isinstance(self.m, (v2mod.TabPFNV2, v25mod.TabPFNV2p5))
+                           or self.task == "regression")
+        if needs_duplicate:
+            # v2 and v2.5 need a different route, and which architectures those
+            # are was established by MEASURING each one on real weights. The
+            # embedding route below looks like it should work for them too.
+            #
+            # It does not. Fitted accuracy on three separable classes, real
+            # weights, where every architecture's query rows score 1.00:
+            #
+            #        embedding route   duplicate route
+            #   v2        0.35              1.00
+            #   v2.5      0.68              1.00
+            #   v2.6      1.00              1.00
+            #   v3        1.00              1.00
+            #
+            # For v2 and v2.5 the target-column embedding is not a decodable
+            # posterior, so projecting it yields confident nonsense -- worse
+            # than the zero pad it replaces, because it looks like an answer.
+            # v2's 0.35 is chance; v2.5's 0.68 is the more dangerous number,
+            # since it is high enough to look like a working model.
+            #
+            # REGRESSION always takes the duplicate route, whatever the
+            # architecture. Classification only reads an argmax, which absorbs
+            # small logit error -- on v2.6 the two routes agree to 0.0018 of
+            # probability and pick the same class every time. Regression decodes
+            # the bar distribution to a MEAN, which does not absorb it: v2.6
+            # fitted values correlate 0.79 with the target through the cheap
+            # route and 1.00 through the duplicate one.
+            #
+            # So the cheap route survives exactly where it is measurably right:
+            # v2.6 and v3 CLASSIFICATION -- which is the hot path. The duplicate
+            # route costs ~1.5x wall-clock (measured, v2.6 real dims: 198->318 ms
+            # at T=500, 489->738 ms at T=1000) and there is no reason to charge
+            # that to the most-used models for values already correct.
+            # test_fitted_values_route pins the split so it cannot rot silently.
+            #
+            # Instead, ask the model the actual question: present the training
+            # rows a SECOND time, as queries. Rows >= N are the query section,
+            # so [train ; train ; test] returns predictions for the train rows
+            # evaluated in context and then the real test rows -- exactly [T,1,C].
+            # Measured on real weights: fitted 1.00, query 1.00, and the query
+            # half is BIT-IDENTICAL to the ordinary single-pass call, so this
+            # cannot move a prediction anyone already relies on.
+            #
+            # The cost is a sequence of N+T instead of T, paid only by the
+            # architectures whose cheap route is wrong.
+            n_train = y_used.shape[0]
+            return self.m(torch.cat([xt[:n_train], xt], dim=0), y_used)
+
+        res = self.m(xt, y_used, only_return_standard_out=False)
+        test_out = res["standard"]                 # [T-N, 1, C]
+        train_emb_NBD = res["train_embeddings"]    # [N, 1, D]
+
+        if getattr(self.m, "task_type", None) == "multiclass" and hasattr(
+                self.m, "many_class_decoder"):
+            # (B, R, D) layout, and the train labels the decoder conditions on.
+            tr_BND = train_emb_NBD.transpose(0, 1)
+            fitted = self.m.many_class_decoder(tr_BND, tr_BND, y_used.unsqueeze(0))
+        else:
+            fitted = self.m.output_projection(train_emb_NBD)
+
+        # Mirror upstream's own output guard, so context and query rows are
+        # sanitised the same way rather than only the half it computed.
+        if getattr(self.m, "_nan_safe_output", False):
+            fitted = torch.nan_to_num(fitted, nan=0.0)
+
+        return torch.cat([fitted, test_out], dim=0)  # [T,1,C]
+
     def forward(self, x, y):
         xt = x.permute(1, 0, 2)  # [T,1,H] seq-first
         if self.task == "regression":
@@ -397,13 +501,12 @@ class ExportWrapper(torch.nn.Module):
             # population std (correction=0), matching TabPFN's fit path.
             ystd = torch.clamp(torch.sqrt(((yt - ymean) ** 2).mean()), min=1e-20)
             ynorm = (yt - ymean) / ystd
-            logits = self.m(xt, ynorm)  # [T-N, 1, num_buckets]
-            znorm_mean = self._bardist_mean(logits)  # [T-N, 1] (z-space)
-            raw = znorm_mean * ystd + ymean  # [T-N, 1] (raw space)
-            out = raw.unsqueeze(-1)  # [T-N, 1, 1]
+            logits = self._all_row_logits(xt, ynorm)  # [T, 1, num_buckets]
+            # Over every row now, so context rows decode to real point estimates
+            # instead of the bar mean of a zero vector.
+            znorm_mean = self._bardist_mean(logits)  # [T, 1] (z-space)
+            raw = znorm_mean * ystd + ymean  # [T, 1] (raw space)
+            full = raw.unsqueeze(-1)  # [T, 1, 1]
         else:
-            out = self.m(xt, y[0])  # [T-N, 1, C]
-        pad_rows = xt.shape[0] - out.shape[0]
-        pad = torch.zeros(pad_rows, out.shape[1], out.shape[2], dtype=out.dtype)
-        full = torch.cat([pad, out], dim=0)  # [T,1,C]
+            full = self._all_row_logits(xt, y[0])  # [T, 1, C]
         return full.permute(1, 0, 2)  # [1,T,C]

@@ -30,6 +30,7 @@
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_plugin_artifacts.hpp"
+#include "tabfm_mxr_cache_key.hpp"
 #include "tabfm_state.hpp"
 
 #include "duckdb/common/file_system.hpp"
@@ -766,11 +767,38 @@ bool ReadWeightsHeaderBytes(FileSystem &fs, const string &path, string &header) 
 // Stage a bundled graph next to the weights (idempotent by size) so external-data
 // "model.safetensors" resolves. Returns false if it cannot be written.
 bool StageBundledGraph(FileSystem &fs, const BundledResource &graph, const string &graph_path) {
+	// Freshness by CONTENT, not by size.
+	//
+	// This compared byte sizes alone, which is a stale-graph hazard with a very
+	// quiet failure: a re-export that happens to preserve the size leaves the
+	// old graph on every existing user's disk forever. The .mxr program cache is
+	// keyed on the graph's content hash, so the stale graph would then compile
+	// to a consistently wrong program and keep serving it -- the exact shape of
+	// the bug that made content hashing the .mxr key in the first place.
+	//
+	// The tabdpt re-export in this branch changed sizes (660509 -> 659729
+	// bytes), so it escaped by luck rather than by design. One FNV-1a pass over
+	// a few MB, once per session load, buys that back.
 	try {
 		if (fs.FileExists(graph_path)) {
 			auto h = fs.OpenFile(graph_path, FileFlags::FILE_FLAGS_READ);
-			if (NumericCast<idx_t>(fs.GetFileSize(*h)) == graph.size) {
-				return true;
+			const auto on_disk = NumericCast<idx_t>(fs.GetFileSize(*h));
+			if (on_disk == graph.size) {
+				string existing;
+				existing.resize(on_disk);
+				idx_t read = 0;
+				while (read < on_disk) {
+					auto got = h->Read(const_cast<char *>(existing.data()) + read, on_disk - read);
+					if (got <= 0) {
+						break;
+					}
+					read += NumericCast<idx_t>(got);
+				}
+				if (read == on_disk &&
+				    anofox_tabfm_mxr::Fnv1a64(existing) ==
+				        anofox_tabfm_mxr::Fnv1a64(string(graph.data, NumericCast<size_t>(graph.size)))) {
+					return true;
+				}
 			}
 		}
 	} catch (...) { // NOLINT: any probe failure just means "rewrite"

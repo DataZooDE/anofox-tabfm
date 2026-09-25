@@ -33,8 +33,18 @@ set(_tabfm_inputs
     "graph_ext_mitra_regression.onnx"
     "graph_migraphx_mitra_classification.onnx"
     "graph_migraphx_mitra_regression.onnx"
-    # Catalog ext graphs (CUDA + CPU low-memory; single_eval_pos family — no
-    # migraphx variants, see ExpectedWeightsHeaderShaFor's comment).
+    # TabDPT MIGraphX graphs. The only single_eval_pos model with them: its
+    # train/test split was converted from a positional slice to a train_size
+    # mask (tools/export_tabdpt, docs/ROCM_TABDPT_SPIKE.md), which makes every
+    # shape a function of the (T, H) bucket and so compilable by MIGraphX.
+    # Larger than mitra's (5.9 MB vs 0.6 MB): the masked form has more nodes,
+    # and the exporter's optimize=True would halve it but renames initializers
+    # out of the tensor map, which make_migraphx_graph.py refuses outright.
+    "graph_migraphx_tabdpt_classification.onnx"
+    "graph_migraphx_tabdpt_regression.onnx"
+    # Catalog ext graphs (CUDA + CPU low-memory). The rest of the
+    # single_eval_pos family still has no migraphx variant — see
+    # ExpectedWeightsHeaderShaFor's comment and docs/ROCM_SINGLE_EVAL_POS.md.
     "graph_ext_tabpfn_classification.onnx"
     "graph_ext_tabpfn_regression.onnx"
     "graph_ext_tabpfn25_classification.onnx"

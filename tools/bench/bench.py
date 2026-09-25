@@ -57,7 +57,7 @@ def run_sql(duckdb_bin, sql, timeout, suppressions=None):
     return proc.stdout.strip(), proc.stderr.strip(), proc.returncode == 0
 
 
-def build_sql(model, device, ep_path, precision, n_rows, n_features, n_context, repeats):
+def build_sql(model, device, ep_path, precision, n_rows, n_features, n_context, repeats, setup_sql=None):
     """One session: build the table, warm once, then time `repeats` runs.
 
     The warm-up is not optional and is excluded from the timings. A first call
@@ -69,6 +69,7 @@ def build_sql(model, device, ep_path, precision, n_rows, n_features, n_context, 
         f"((i * {7 + k}) % 97)::DOUBLE AS f{k}" for k in range(n_features)
     )
     settings = [
+        setup_sql or "",
         f"SET anofox_tabfm_device = '{device}';",
         f"SET anofox_tabfm_gpu_precision = '{precision}';",
         f"SET anofox_tabfm_max_rows = {max(n_rows, 10000)};",
@@ -115,7 +116,7 @@ def measure(args, model, device, n_rows, n_features):
 
     def session(repeats):
         sql = build_sql(model, device, args.ep_path, args.precision,
-                        n_rows, n_features, n_context, repeats)
+                        n_rows, n_features, n_context, repeats, args.setup_sql)
         start = time.perf_counter()
         out, err, ok = run_sql(args.duckdb, sql, args.timeout, supp)
         return (time.perf_counter() - start) * 1000.0, out, err, ok
@@ -180,6 +181,9 @@ def main():
     ap.add_argument("--repeats", type=int, default=3, help="timed runs per cell, after one warm-up")
     ap.add_argument("--precision", default="fp32")
     ap.add_argument("--ep-path", default="", help="plugin directory, for GPU devices")
+    ap.add_argument("--setup-sql", default="", help="SQL run before each session (e.g. CALL tabfm_register_model(...) "
+                                                   "for a model that is not built in). Runs in BOTH the timed and "
+                                                   "baseline sessions, so it cancels out of the differenced number.")
     ap.add_argument("--timeout", type=int, default=3600, help="per-cell seconds (MIGraphX cold compile is minutes)")
     args = ap.parse_args()
 

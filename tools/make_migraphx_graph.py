@@ -26,6 +26,11 @@ Defaults target tabfm-v1; pass the three paths for any other model (the mitra
 variants in resources/ are produced this way).
 """
 import argparse, json, os, struct, sys
+
+#: A code-generated constant is small by nature (tabdpt's bin_centres is 2048
+#: floats). The cap turns "someone allowlisted something big" into an error
+#: rather than a quietly fattened, possibly weight-bearing resource.
+INLINE_BYTE_CAP = 1 << 20  # 1 MiB
 import onnx
 from onnx import TensorProto, helper, numpy_helper
 import numpy as np
@@ -34,16 +39,63 @@ DEF_CACHE = os.path.expanduser("~/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorc
 INTMAX = 2**63 - 1
 
 
-def externalize(m, weights, tmap):
+def externalize(m, weights, tmap, inline_ok=()):
+    """Point initializers at the cached safetensors.
+
+    `inline_ok` names initializers that are allowed to stay embedded because
+    they are code-generated constants rather than checkpoint weights --
+    tabdpt's `bin_centres` (the bar-distribution bin midpoints, derived from
+    three config scalars) is the only one today, and the positional exporter
+    documents it as deliberately out of the tensor map.
+
+    Named, not blanket. The refusal below exists because an initializer the
+    tensor map missed keeps its STUB bytes and the graph then predicts garbage
+    while looking healthy; tolerating every leftover would give that failure
+    back. An explicit allowlist keeps the guarantee for everything else.
+    """
     missing = []
+    inlined = []
     with open(weights, "rb") as f:
         hlen = struct.unpack("<Q", f.read(8))[0]
         header = json.loads(f.read(hlen))
     base = 8 + hlen
     off = {k: v["data_offsets"] for k, v in header.items() if k != "__metadata__"}
     onnx2st = json.load(open(tmap))["initializers"]
+
+    def st_for(name):
+        return onnx2st.get(name) or (name[2:] if name.startswith("m.") else name)
+
     for init in m.graph.initializer:
-        st = onnx2st.get(init.name) or (init.name[2:] if init.name.startswith("m.") else init.name)
+        if init.name in inline_ok:
+            # Materialise it INLINE rather than merely skipping it. The graph is
+            # loaded without external data, so this initializer still points at
+            # the exporter's .onnx.data sidecar -- which does not travel with the
+            # converted graph, and MIGraphX then dies at load with
+            # "Failure opening file: ....onnx.data". Reading the bytes and
+            # embedding them makes the output self-contained apart from the
+            # safetensors it is meant to reference.
+            #
+            # But NEVER for a name the tensor map knows. An allowlisted
+            # checkpoint weight would have its real bytes written into a file
+            # that gets committed to resources/ -- which is precisely the
+            # license wall this repository is built around ("no Google weight
+            # bytes anywhere in the repo"). The flag exists for code-generated
+            # constants; a mapped name is by definition not one.
+            if st_for(init.name) in off:
+                raise SystemExit(
+                    f"REFUSING: --inline-ok names '{init.name}', but it IS a checkpoint weight in the tensor "
+                    f"map. Embedding it would write real weight bytes into a committed graph. The flag is for "
+                    f"code-generated constants only.")
+            size = len(init.raw_data) or sum(len(getattr(init, f)) * 4
+                                             for f in ("float_data", "int32_data", "int64_data", "double_data"))
+            if size > INLINE_BYTE_CAP:
+                raise SystemExit(
+                    f"REFUSING: --inline-ok '{init.name}' is {size} bytes, over the {INLINE_BYTE_CAP}-byte cap "
+                    f"for a code-generated constant. If it is genuinely this large, raise the cap deliberately "
+                    f"rather than by accident.")
+            inlined.append(init.name)
+            continue
+        st = st_for(init.name)
         if st not in off:
             missing.append(init.name)
             continue
@@ -56,11 +108,16 @@ def externalize(m, weights, tmap):
         for k, v in (("location", "model.safetensors"), ("offset", str(base + b)), ("length", str(e - b))):
             en = init.external_data.add()
             en.key, en.value = k, v
+    unknown = inline_ok - {i.name for i in m.graph.initializer}
+    if unknown:
+        raise SystemExit(f"REFUSING: --inline-ok names initializers that do not exist: {sorted(unknown)}. "
+                         f"A typo here is a silent no-op that leaves a dangling external-data reference.")
     if missing:
         # A stub initializer the tensor map missed keeps its stub bytes and the
         # graph silently predicts garbage -- the one failure mode this tool
         # must never allow (review finding, 2026-08-22).
         raise SystemExit(f"REFUSING: {len(missing)} initializers not in the tensor map: {missing[:5]}")
+    return inlined
 
 
 def rewrite_shapes(g):
@@ -105,10 +162,30 @@ def main():
     ap.add_argument("--features", type=int, default=8)
     ap.add_argument("--dynamic", action="store_true", help="keep dynamic shapes (backend sets per-bucket)")
     ap.add_argument("--out")
+    ap.add_argument("--inline-ok", default="",
+                    help="comma-separated initializers allowed to stay embedded (code-generated "
+                         "constants, e.g. tabdpt's bin_centres) instead of being externalized")
     a = ap.parse_args()
     weights = a.weights or os.path.join(DEF_CACHE, a.task, "model.safetensors")
-    m = onnx.load(a.graph or f"resources/graph_{a.task}.onnx", load_external_data=False)
-    externalize(m, weights, a.tensor_map or f"resources/tensor_map_{a.task}.json")
+    inline_ok = {n for n in a.inline_ok.split(",") if n}
+    graph_path = a.graph or f"resources/graph_{a.task}.onnx"
+    m = onnx.load(graph_path, load_external_data=False)
+    # Materialise ONLY the allowlisted tensors. load_external_data=True would
+    # pull the ENTIRE checkpoint into the proto -- hundreds of megabytes for a
+    # handful of constant bytes -- and on a committed graph, whose external data
+    # points at a model.safetensors that may not be beside it, it fails outright.
+    if inline_ok:
+        from onnx.external_data_helper import load_external_data_for_tensor
+        base = os.path.dirname(os.path.abspath(graph_path))
+        for init in m.graph.initializer:
+            if init.name in inline_ok and init.data_location == TensorProto.EXTERNAL:
+                load_external_data_for_tensor(init, base)
+                init.data_location = TensorProto.DEFAULT
+                del init.external_data[:]
+    inlined = externalize(m, weights, a.tensor_map or f"resources/tensor_map_{a.task}.json",
+                          inline_ok=inline_ok)
+    if inlined:
+        print(f"  inlined (code-generated constants): {inlined}")
     n = rewrite_shapes(m.graph)
     if not a.dynamic:
         pin_shapes(m.graph, a.rows, a.features)

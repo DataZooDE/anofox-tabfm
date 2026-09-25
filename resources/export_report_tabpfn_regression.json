@@ -6,10 +6,11 @@
     "--config",
     "real",
     "--out",
-    "../../resources"
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-tabfm/2caded86-0ec1-4d4d-bf13-cd14780ed458/scratchpad/exp"
   ],
   "task": "regression",
   "config": "real",
+  "arch": "v2",
   "model_kwargs": {
     "emsize": 192,
     "nlayers": 12,
@@ -26,7 +27,7 @@
     6,
     10
   ],
-  "graph_bytes": 824662,
+  "graph_bytes": 835785,
   "n_initializers_mapped": 130,
   "unmatched_small_inline": [],
   "parity": {
@@ -34,14 +35,18 @@
     "worst": 9.5367431640625e-07,
     "tol": 0.001,
     "argmax_all_agree": true,
+    "context_rows_constant": true,
     "shapes": [
       {
         "T": 32,
         "H": 12,
         "train": 20,
+        "max_abs_delta": 9.5367431640625e-07,
         "max_abs_delta_test_rows": 9.5367431640625e-07,
+        "max_abs_delta_context_rows": 9.5367431640625e-07,
+        "context_rows_constant": true,
         "argmax_agree": true,
-        "ort_ms": 134.92321968078613
+        "ort_ms": 210.91365814208984
       }
     ]
   },

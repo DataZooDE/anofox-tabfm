@@ -52,7 +52,20 @@ FROM range(4000) t(i);
 -- cpu/mlx agreement was still exact -- which is the point: agreement is
 -- insensitive to whether the task is learnable, so the accuracy check has to
 -- be independently meaningful or it is decoration.)
-CREATE TABLE ctx  AS SELECT * FROM big WHERE hash(row_id) % 100 <  62;
+-- One context table PER TASK, and this is not cosmetic.
+--
+-- `qry` drops both label columns, so a single `ctx` carrying both means the
+-- classification call sees a `target` the query side lacks and the regression
+-- call sees a `label` it lacks. Since the feature-column guard landed, that is
+-- a hard error -- every call in this file failed at the first block, which is
+-- why this scenario had silently stopped running.
+--
+-- Dropping the other task's label here, rather than naming `features := [...]`
+-- at each of the call sites below, keeps the feature set derived from the table
+-- instead of restated beside it: adding a feature above cannot then quietly
+-- narrow what these scenarios actually exercise.
+CREATE TABLE ctx_c AS SELECT * EXCLUDE (target) FROM big WHERE hash(row_id) % 100 <  62;
+CREATE TABLE ctx_r AS SELECT * EXCLUDE (label)  FROM big WHERE hash(row_id) % 100 <  62;
 CREATE TABLE qry  AS SELECT * EXCLUDE (label, target) FROM big WHERE hash(row_id) % 100 >= 62;
 CREATE TABLE act  AS SELECT row_id, label, target FROM big WHERE hash(row_id) % 100 >= 62;
 
@@ -61,7 +74,7 @@ CREATE TABLE act  AS SELECT row_id, label, target FROM big WHERE hash(row_id) % 
 SET anofox_tabfm_device = 'cpu';
 .timer on
 CREATE TABLE c_cpu AS
-SELECT row_id, yhat FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'mitra');
+SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'label', test := 'qry', model := 'mitra');
 .timer off
 SELECT 'CPU_SERVED_BY' AS marker, model, device FROM tabfm_models() WHERE loaded;
 
@@ -70,7 +83,7 @@ SELECT 'CPU_SERVED_BY' AS marker, model, device FROM tabfm_models() WHERE loaded
 SET anofox_tabfm_device = 'mlx';
 .timer on
 CREATE TABLE c_mlx AS
-SELECT row_id, yhat FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'mitra');
+SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'label', test := 'qry', model := 'mitra');
 .timer off
 SELECT 'MLX_SERVED_BY' AS marker, model, device, bytes FROM tabfm_models() WHERE loaded;
 
@@ -94,10 +107,10 @@ FROM c_mlx c JOIN act USING (row_id);
 .print '=== 3. alternate devices mid-session (the 70a6800 bug) ==='
 -- Each switch must be honoured on the NEXT call, not on the next session load.
 SET anofox_tabfm_device = 'cpu';
-CREATE TABLE alt1 AS SELECT row_id, yhat FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'mitra');
+CREATE TABLE alt1 AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'label', test := 'qry', model := 'mitra');
 SELECT 'ALT_CPU_SERVED_BY' AS marker, string_agg(DISTINCT device, ',') AS devices FROM tabfm_models() WHERE loaded;
 SET anofox_tabfm_device = 'mlx';
-CREATE TABLE alt2 AS SELECT row_id, yhat FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'mitra');
+CREATE TABLE alt2 AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'label', test := 'qry', model := 'mitra');
 SELECT 'ALT_MLX_SERVED_BY' AS marker, string_agg(DISTINCT device, ',') AS devices FROM tabfm_models() WHERE loaded;
 SELECT 'ALT_STABLE' AS marker,
        count(*) FILTER (WHERE a.yhat IS DISTINCT FROM b.yhat) AS drift
@@ -107,12 +120,12 @@ FROM alt1 a JOIN alt2 b USING (row_id);
 .print '=== 4. regression at scale ==='
 SET anofox_tabfm_device = 'cpu';
 CREATE TABLE r_cpu AS
-SELECT row_id, yhat FROM tabfm_regress('ctx', 'target', test := 'qry', model := 'mitra');
+SELECT row_id, yhat FROM tabfm_regress('ctx_r', 'target', test := 'qry', model := 'mitra');
 SELECT 'REG_CPU_SERVED_BY' AS marker, model, device FROM tabfm_models() WHERE loaded AND device = 'cpu';
 
 SET anofox_tabfm_device = 'mlx';
 CREATE TABLE r_mlx AS
-SELECT row_id, yhat FROM tabfm_regress('ctx', 'target', test := 'qry', model := 'mitra');
+SELECT row_id, yhat FROM tabfm_regress('ctx_r', 'target', test := 'qry', model := 'mitra');
 SELECT 'REG_MLX_SERVED_BY' AS marker, model, device FROM tabfm_models() WHERE loaded AND device LIKE 'mlx%';
 
 SELECT 'REG_AGREEMENT' AS marker,
@@ -125,9 +138,9 @@ FROM r_cpu a JOIN r_mlx b USING (row_id);
 .print '=== 5. reduced precision: class agreement, per the contract ==='
 SET anofox_tabfm_device = 'mlx';
 SET anofox_tabfm_gpu_precision = 'bf16';
-CREATE TABLE c_bf16 AS SELECT row_id, yhat FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'mitra');
+CREATE TABLE c_bf16 AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'label', test := 'qry', model := 'mitra');
 SET anofox_tabfm_gpu_precision = 'fp16';
-CREATE TABLE c_fp16 AS SELECT row_id, yhat FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'mitra');
+CREATE TABLE c_fp16 AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'label', test := 'qry', model := 'mitra');
 SET anofox_tabfm_gpu_precision = 'fp32';
 
 SELECT 'FLIPS_BF16' AS marker, count(*) FILTER (WHERE a.yhat IS DISTINCT FROM b.yhat) AS flips, count(*) AS n
@@ -170,7 +183,7 @@ FROM tabfm_classify('sparse_ctx', 'label', test := 'sparse_q', model := 'mitra')
 -- a passing check whose label said the opposite.
 SET anofox_tabfm_device = 'mlx';
 SELECT 'OTHER_MODEL_SERVED_ON_MLX' AS marker, count(*) AS n
-FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'tabpfn-v2');
+FROM tabfm_classify('ctx_c', 'label', test := 'qry', model := 'tabpfn-v2');
 SELECT 'OTHER_MODEL_SERVED_BY' AS marker, string_agg(DISTINCT device, ',') AS devices
 FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v2';
 
@@ -179,4 +192,4 @@ FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v2';
 .print '-- ep_path unset must error, not silently serve cpu --'
 SET anofox_tabfm_ep_path = '';
 SELECT 'NO_PLUGIN_MUST_ERROR' AS marker, count(*) AS should_not_reach_here
-FROM tabfm_classify('ctx', 'label', test := 'qry', model := 'mitra');
+FROM tabfm_classify('ctx_c', 'label', test := 'qry', model := 'mitra');

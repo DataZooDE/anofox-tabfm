@@ -1,12 +1,14 @@
-# Converting tabdpt to run on ROCm — scoped, costed, not executed
+# Converting tabdpt to run on ROCm — done, measured, 5.6x
 
 `docs/ROCM_SINGLE_EVAL_POS.md` establishes *why* nine of eleven models cannot be
 served on MIGraphX, and recommends `tabdpt` as the one worth converting if any.
 This is the follow-up it asks for: what the conversion actually is, what it
 really costs, and what it would buy.
 
-**Status: scoped against the real export code, not executed.** The blocker is
-stated at the end and is not effort.
+**Status: executed and verified on hardware.** TabDPT serves on ROCm with
+identical predictions to the CPU. What follows is the analysis as it was written
+before the attempt, then what actually happened — kept in that order because the
+gap between them is the useful part.
 
 ---
 
@@ -118,7 +120,139 @@ graphs and re-establishing CUDA and CPU parity, not just adding a ROCm one.
 That is the item to budget, and it is a per-model cost of roughly "one model's
 onboarding", not the cross-catalog bump the review feared.
 
-## Why this is not executed here
+## Measured baseline: what ROCm is actually worth here
+
+Run on the dev box (RX 9070 XT, gfx1201, ROCm 7.2.4 + MIGraphX 7.2.3) with
+`tools/bench/bench.py`, mitra, 3 features, 80% context, warm (shape buckets
+precompiled), every cell confirmed by `served_by`:
+
+| rows | CPU | ROCm | speedup |
+|---:|---:|---:|---:|
+| 100 | 366 ms | *unmeasurable* | — |
+| 1000 | 4035 ms | 443 ms | **9.1x** |
+| 2500 | 14914 ms | 2455 ms | **6.1x** |
+
+Two things to read carefully here.
+
+**The 100-row cell is null, not fast.** The harness reports null when the
+difference is not positive — at that size the inference is lost in process
+startup. It is not evidence that ROCm is slow at 100 rows; it is evidence that
+this method cannot measure it, which is the honest output.
+
+**These are lower than the 20-80x in `docs/DYNAMIC_BACKENDS.md`.** Different
+measurement: that table is tabfm-v1 (a 6.5 GB model) timed around the forward
+pass; this is mitra (300 MB) end-to-end through SQL, including preprocessing
+and decode. Neither is wrong; they answer different questions, and this one is
+the question a user experiences.
+
+### Why this baseline is the right estimate for converted tabdpt
+
+The obvious objection to the conversion is that masking does strictly more
+work: K/V projected over all `T` rows instead of `S`, and attention over `T x T`
+instead of `L x S`, with bucket padding making both worse. At 2500 rows padded
+to the 4096 bucket that is roughly an order of magnitude more attention
+arithmetic. If the GPU only buys 6-9x, the overhead could eat the entire win.
+
+**It does not, and mitra is the proof.** Mitra is already in the
+train_size-scalar family: it declares `train_size` and `d`, pads to the same
+buckets, and masks exactly as converted tabdpt would. The contract this spike
+would give tabdpt is the contract mitra already has. So the 6.1-9.1x above is
+not a speedup that the conversion overhead must still be subtracted from — it
+is a speedup measured *with that overhead already paid*.
+
+That does not make the conversion certain to pay off for tabdpt specifically:
+its architecture differs (retrieval-style attention, a different depth/width
+ratio), and only converting it settles that. But it removes the reason to
+expect it cannot.
+
+## EXECUTED — and the analysis above was incomplete
+
+Done on the dev box (RX 9070 XT gfx1201, ROCm 7.2.4, MIGraphX 7.2.3). **TabDPT
+runs on ROCm.** Classification: `TEST_SERVED_BY=rocm:0`, **zero** query-row
+label disagreements against the CPU, and **103.2 ms → 18.59 ms at 100 rows
+(5.6x)**. Regression: `rocm:0`, max query-row difference 3.4e-05, which is fp32
+GPU noise on continuous outputs.
+
+The conversion is what this document predicted. The *obstacle count* was wrong:
+there were **three** blockers, and the documented one turned out to be the
+least interesting.
+
+### Blocker 1 — the positional split (the one this document is about)
+
+Solved as described: `arange(T) < train_size` instead of a slice. Cheaper than
+the pre-merge review feared, and measurably so — the converted graph has **647
+initializers, the same set as the shipped one**, so the tensor map is unchanged
+and `ExpectedWeightsHeaderShaFor` is untouched. ROCm-only, exactly as the
+correction above claimed.
+
+It hides in FOUR places, not one. Missing any silently changes the answer:
+normalisation/clipping statistics (context rows only), attention K/V, the
+attention scale parameter, and the head slice — which also drops the
+`n_thinking_rows` prefix, so converting only the `eval_pos` half returns
+`T + n_think` rows.
+
+### Blocker 2 — `SplitToSequence`, already in the shipped graph
+
+`u, v = self.up(x).chunk(2, dim=-1)` in SwiGLU exports as `SplitToSequence` +
+`SequenceAt`, and MIGraphX's ONNX parser implements neither. There are 32 and
+64 of them respectively — one chunk per layer — **in the graph TabDPT ships
+today**, with nothing to do with the train/test split.
+
+So this document's recommendation ("convert tabdpt, it is the cheapest") rested
+on an incomplete count. Converting the split was necessary and never
+sufficient. Nothing short of compiling on the hardware could have shown it:
+ONNX Runtime implements sequence ops, so the CPU and CUDA paths have always
+been happy.
+
+Rewritten as two slices; bit-exact for both bias modes.
+
+### Blocker 3 — a MIGraphX code-generation bug
+
+With the parser satisfied, the compiler dies in its own kernel templates:
+
+```
+invalid operands to binary expression
+('reducer<...>::inner_storage<float, 1, integral_constant<unsigned,1>>' and 'float')
+```
+
+four times, then an assertion in `optional<tuning_config>::operator->` and a
+core dump.
+
+Isolated by ablation rather than guesswork: **either masked-statistics block
+compiles alone; two chained ones do not.** TabDPT's preprocessing chains three
+(clip → normalize → clip). No `MIGRAPHX_DISABLE_*` env var avoids it, and four
+hand-built minimal graphs reproducing the pattern all compiled fine — the bug
+only appears in the chained context, so the smallest repro is the fixture-sized
+model, not a toy.
+
+Worked around by expressing the masked sums as `ones[1, T] @ x[T, rest]`: the
+same arithmetic, never entering the broken template, and a GEMM is a shape the
+GPU prefers anyway. **This workaround is reusable by any model that hits the
+same wall**, which is the part most likely to matter beyond TabDPT.
+
+### A misread worth recording
+
+The first end-to-end run showed 53 of 100 rows disagreeing, which reads as a
+broken conversion. It is not: **every query row agrees exactly.** All 53 sit in
+context rows, where the CPU path returns a single constant — `argmax` of the
+zero pad the positional wrapper writes for rows it never computes — and the
+masked graph returns real values.
+
+Chasing that found a pre-existing defect unrelated to ROCm: over 80 context
+rows, `tabdpt` and `tabpfn-v2-6` return ONE distinct fitted value while
+`tabicl-v2` and `mitra` return three. The README calls these "in-context fitted
+values, handy for a sanity check". For those models they are not fitted values
+at all.
+
+### What this means for the other eight
+
+The recipe is proven but not yet shown to be general: blockers 1 and 3 look
+family-wide (every `single_eval_pos` model splits positionally, and any masked
+rewrite chains the same statistics), while blocker 2 is TabDPT's own
+architecture. Converting a second model is what settles that, and it is worth
+doing before anyone commits to the remaining catalog.
+
+## Why the original write-up stopped short
 
 Two reasons, neither of them effort:
 
@@ -153,3 +287,98 @@ the time on MLX and CUDA, which serve the whole catalog today.
 
 Until then `tabfm_backends()` answers the question honestly for every model,
 which was the actual user-facing problem.
+
+## Backend verification status of the re-exported graphs
+
+The fitted-values fix re-exported tabdpt's graphs, so every backend that reads
+them had to be re-checked. `GpuGraphKindFor` routes **CUDA and MLX to the same
+`ext_graph`** and ROCm to the new `migraphx_graph`, which makes the exposure
+wider than "the ROCm spike".
+
+| Backend | Reads | Status |
+|---|---|---|
+| CPU | `graph_tabdpt_*.onnx` | verified — `test/sql/tabfm_real_models.test`, 36 assertions incl. the fitted-value and regression oracles |
+| ROCm | `graph_migraphx_tabdpt_*.onnx` | verified on gfx1201 — `rocm:0`, `ALL_ROW_DISAGREE=0`, `AUTO_OK=true` |
+| CUDA | `graph_ext_tabdpt_*.onnx` | verified on an RTX A5000 — `QUERY_DISAGREE=0`, `ALL_ROW_DISAGREE=0`, `FITTED_DISTINCT=3`, regression `MAXDIFF=5.3e-05` |
+| MLX | `graph_ext_tabdpt_*.onnx` | **cannot serve tabdpt at all**, before or after this work — see below |
+
+### MLX: not a verification gap, an incapability
+
+tabdpt does not run on MLX and never did. The MLX backend does not execute the
+`ext_graph` under ONNX Runtime; it walks the file through its own interpreter
+(`src/tabfm_mlx_graph.cpp`), whose op table has no `ConstantOfShape`. tabdpt's
+graph uses that op **32 times**. Measured on an M3 (macOS 27.0) against the
+re-exported graphs:
+
+```
+Invalid Input Error: anofox_tabfm: the 'mlx' backend could not be initialised:
+anofox_tabfm mlx plugin: this graph needs ONNX ops the mlx backend does not
+implement (ConstantOfShape). SET anofox_tabfm_device='cpu' to run it through
+ONNX Runtime, and please report these op names.
+```
+
+The count is 32 on `main` and 32 on this branch, so the re-export did not cause
+it. Since tabdpt's graphs are the *only* ones this branch changed, **this work
+has no MLX exposure whatsoever.**
+
+Two things are worth keeping from how this was established, because the first
+answer was wrong:
+
+* A static op-set diff said the change was safe — the new graph's ops are a
+  strict subset of the old plus one `Cast`, which the interpreter supports.
+  That argument rested on an unstated premise, that the *old* graph ran on MLX.
+  It never did. The unsupported op was pre-existing and therefore invisible to
+  a diff of what changed. Comparing a delta against a capability list only
+  works if the baseline was ever measured against it.
+* The failure is a **hard error naming the op**, not a fallback. Confirmed on
+  the same machine that MLX itself is healthy on this build: mitra served by
+  `mlx:0` with **0 of 64** predictions differing from CPU. So the refusal is
+  tabdpt-specific, and `tools/gpu_test/scenarios/mlx_all_models.sql` now keeps
+  it as an error contract rather than an agreement check.
+
+Making tabdpt MLX-servable is a separate piece of work — implementing
+`ConstantOfShape` in the interpreter — and is not in scope here.
+
+## Reproducing the committed artifacts
+
+The MIGraphX graphs in `resources/` were produced by exactly these commands.
+Recorded because a committed binary artifact nobody can regenerate is one
+nobody can audit.
+
+```bash
+cd tools/export_tabdpt
+
+# 1. the masked graph (weight-free). --contract mask is the whole difference:
+#    y becomes full-length and the split arrives as a train_size VALUE.
+uv run python -m export_tabdpt.cli --task classification --config real \
+    --contract mask --out /tmp/mask_out
+uv run python -m export_tabdpt.cli --task regression --config real \
+    --contract mask --out /tmp/mask_out
+
+# 2. point it at the cached safetensors and make it MIGraphX-parseable.
+#    --dynamic is required: the plugin pins shapes per (T, H) bucket at compile
+#    time, so a statically pinned graph would serve exactly one bucket.
+#    --inline-ok is needed for regression only: bin_centres is a code-generated
+#    constant (bar-distribution midpoints), not a checkpoint weight.
+cd ../..
+W=~/.cache/anofox-tabfm/Layer6__TabDPT@main/model.safetensors
+python tools/make_migraphx_graph.py classification \
+    --weights $W --graph /tmp/mask_out/graph_mask_tabdpt_classification.onnx \
+    --tensor-map resources/tensor_map_tabdpt_classification.json \
+    --dynamic --out resources/graph_migraphx_tabdpt_classification.onnx
+python tools/make_migraphx_graph.py regression \
+    --weights $W --graph /tmp/mask_out/graph_mask_tabdpt_regression.onnx \
+    --tensor-map resources/tensor_map_tabdpt_regression.json \
+    --dynamic --inline-ok bin_centres \
+    --out resources/graph_migraphx_tabdpt_regression.onnx
+```
+
+Before trusting any of it, run the gate — it proves it can fail before it
+reports a pass:
+
+```bash
+cd tools/export_tabdpt && uv run python -m export_tabdpt.mask_parity
+```
+
+The plain and `ext` graphs are regenerated by the same CLI without
+`--contract mask`, then `tools/make_external_graph.py`.
