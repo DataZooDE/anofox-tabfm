@@ -14,8 +14,33 @@
 
 // Helper: load extension on a fresh connection
 static duckdb::Connection make_con() {
-	static duckdb::DuckDB db(nullptr);
-	duckdb::Connection con(db);
+	// Constructed once, DELIBERATELY NEVER DESTROYED.
+	//
+	// As a plain `static duckdb::DuckDB db(nullptr)` this is torn down by
+	// __cxa_finalize_ranges at process exit, and on macOS/arm64 that teardown
+	// faults every time:
+	//
+	//   ~DuckDB -> ~DatabaseInstance -> ~DBConfig -> ~BlockAllocator
+	//            -> BlockAllocatorThreadLocalState::Initialize
+	//   EXC_BAD_ACCESS (SIGSEGV), KERN_INVALID_ADDRESS, pointer-auth failure
+	//
+	// Every test passes before that runs, so the binary prints "All tests
+	// passed" and *then* exits 139 -- which is exactly how it looks in CI, and
+	// why it reads as a mystery rather than a test failure. It surfaced only on
+	// macOS: a release build there crashed 8/8, and 0/8 with this change.
+	//
+	// It is also load-order sensitive, which is why it looked flaky. The same
+	// commit passed on a machine where the MLX plugin was built and failed
+	// where it was not -- an unrelated dylib shifting teardown order was enough
+	// to hide it. Hosted macOS runners have no MLX, so CI always lost.
+	//
+	// The pointer stays reachable from .bss, so this is "still reachable"
+	// rather than a leak: LeakSanitizer does not report it, and the process is
+	// exiting anyway. Sibling suites (test_tabfm_crossval.cpp) avoid the
+	// problem differently, by giving each TEST_CASE its own stack-local DuckDB
+	// that is destroyed while the runtime is still fully alive.
+	static auto *db = new duckdb::DuckDB(nullptr);
+	duckdb::Connection con(*db);
 	REQUIRE(!con.Query("LOAD anofox_tabfm")->HasError());
 	return con;
 }
