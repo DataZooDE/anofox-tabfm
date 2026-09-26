@@ -14,7 +14,7 @@ Pipeline (mirrors the TabFM S01 shipping pipeline, tools/export_onnx/export.py):
      from the tensor map.
   4. tensor map: ONNX initializer name -> checkpoint-namespace safetensors key.
   5. parity: ORT vs PyTorch fp32 on random weights at shapes != the export
-     example (test rows only).
+     example (EVERY row -- see check_parity).
   6. delete the .onnx.data file — the shipping artifact is graph + map only.
 """
 
@@ -222,11 +222,18 @@ def make_feed(t, h, n, classes=4, seed=1, task="classification"):
 
 def check_parity(graph_path: pathlib.Path, model, shapes, max_classes=4,
                  tol: float = PARITY_TOL, task="classification") -> dict:
-    """ORT vs PyTorch fp32 on random weights. Compares TEST rows (>= N).
+    """ORT vs PyTorch fp32 on random weights. Compares EVERY row.
 
     classification: also checks argmax agreement over class logits.
     regression:     output is a scalar point estimate [1,T,1]; only the numeric
-                    max-abs delta on test rows is meaningful (argmax is trivial).
+                    max-abs delta is meaningful (argmax is trivial).
+
+    This used to compare test rows only -- `[:, n:]` on both sides -- which was
+    defensible while the context rows were a zero pad the wrapper wrote itself:
+    there was nothing there for ORT and PyTorch to disagree about. It also meant
+    the gate could not have caught the defect that made those rows a pad in the
+    first place, and would not catch a wrong fitted value now. The context rows
+    carry real model output, so they are held to the same tolerance as the rest.
     """
     import onnxruntime as ort
 
@@ -242,19 +249,35 @@ def check_parity(graph_path: pathlib.Path, model, shapes, max_classes=4,
         with torch.no_grad():
             pt_out = wrapper(torch.from_numpy(feed["x"]),
                              torch.from_numpy(feed["y"])).numpy()
-        delta = float(np.abs(ort_out[:, n:] - pt_out[:, n:]).max())
+        delta = float(np.abs(ort_out - pt_out).max())
+        delta_test = float(np.abs(ort_out[:, n:] - pt_out[:, n:]).max())
+        delta_ctx = float(np.abs(ort_out[:, :n] - pt_out[:, :n]).max())
         if task == "regression":
             aok = True  # scalar output; argmax not applicable
         else:
-            aok = bool(
-                (ort_out[:, n:].argmax(-1) == pt_out[:, n:].argmax(-1)).all())
+            aok = bool((ort_out.argmax(-1) == pt_out.argmax(-1)).all())
+        # Reported, NOT gated. A constant context block is the shape of the
+        # defect this export fixes, so it is worth recording -- but parity runs
+        # on RANDOM weights, and an untrained model answering one class for
+        # every row is ordinary rather than suspicious. It happens reliably on
+        # the duplicate fitted-values route (v2, v2.5), where gating on it
+        # failed all four of their exports while every delta was ~1e-7.
+        # Distinctness is a real-weight property and is asserted where real
+        # weights exist: test/sql/tabfm_real_models.test.
+        ctx_constant = bool(
+            np.allclose(pt_out[:, :n], pt_out[:, :1], atol=0.0) and n > 1)
         worst = max(worst, delta)
         argmax_ok = argmax_ok and aok
         results.append({"T": t, "H": h, "train": n,
-                        "max_abs_delta_test_rows": delta,
+                        "max_abs_delta": delta,
+                        "max_abs_delta_test_rows": delta_test,
+                        "max_abs_delta_context_rows": delta_ctx,
+                        "context_rows_constant": ctx_constant,
                         "argmax_agree": aok, "ort_ms": ort_ms})
+    any_ctx_constant = any(r["context_rows_constant"] for r in results)
     return {"ok": worst < tol, "worst": worst, "tol": tol,
-            "argmax_all_agree": argmax_ok, "shapes": results}
+            "argmax_all_agree": argmax_ok,
+            "context_rows_constant": any_ctx_constant, "shapes": results}
 
 
 def delete_weight_data(graph_path: pathlib.Path) -> None:

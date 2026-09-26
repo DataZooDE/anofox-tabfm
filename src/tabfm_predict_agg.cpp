@@ -276,6 +276,7 @@ void CheckMemoryCeiling(const PredictBindData &bind) {
 	}
 }
 
+
 unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFunction &function,
                                              vector<unique_ptr<Expression>> &arguments, const string &fname,
                                              bool is_window) {
@@ -839,6 +840,31 @@ void RegisterPredictSet(ExtensionLoader &loader, const string &full_name, bool i
 }
 
 } // anonymous namespace
+
+// Defined past the anonymous namespace: declared in tabfm_predict.hpp so the
+// other GPU-capable binds share it rather than each reading these settings by
+// hand, which is how one of them ended up without an ep_path.
+void CaptureGpuDispatchSettings(ClientContext &context, PredictContext &ctx) {
+	Value setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_cache_dir", setting) && !setting.IsNull()) {
+		ctx.cache_dir = ExpandHomeDirectory(setting.ToString());
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_device", setting) && !setting.IsNull()) {
+		ctx.device = setting.ToString();
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", setting) && !setting.IsNull()) {
+		ctx.gpu_precision = StringUtil::Lower(setting.ToString());
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
+		ctx.mxr_source = setting.ToString();
+	}
+	// ep_path LAST: it defaults off cache_dir, so it must be read after it.
+	string ep_setting;
+	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
+		ep_setting = setting.ToString();
+	}
+	ctx.ep_path = ResolveEpPath(ep_setting, ctx.cache_dir);
+}
 
 // The predict aggregate is the engine boundary the tabfm_classify / tabfm_regress
 // table macros build on (tabfm_macros.cpp). It is registered under an internal

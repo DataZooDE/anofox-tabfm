@@ -287,3 +287,47 @@ def assert_weight_free(graph_path: pathlib.Path, tensor_map: dict) -> None:
         external = (init.data_location == onnx.TensorProto.EXTERNAL)
         if init.name in mapped and not external:
             raise RuntimeError(f"mapped initializer {init.name} is INLINE — weight bytes in graph")
+
+
+def export_mask_graph(wrapper, graph_path, *, cfg,
+                      dim_rows=("rows", 4, 1_000_000),
+                      opset: int = OPSET):
+    """Export TabDPT under the train_size contract (x, y, train_size, d).
+
+    The difference from export_graph is the whole point of the conversion:
+    there is no ``train`` dimension. The positional export declares a dynamic
+    ``S`` for ``y``'s length, which is what makes the context size part of the
+    SHAPE and what a fixed-shape MIGraphX compile cannot bucket. Here ``y`` is
+    as long as ``x`` and the split arrives as a value, so the only dynamic axes
+    left are ``rows`` and ``features`` — precisely the two the existing
+    (T, H) bucket table already covers.
+
+    Exported in EVAL mode for the same reason as the positional path: TabDPT's
+    forward branches on self.training to choose the normalisation window, and
+    train mode normalises over context and queries together, which is a
+    test-time leak that would be baked into the graph.
+    """
+    import torch
+
+    T = torch.export.Dim(dim_rows[0], min=dim_rows[1], max=dim_rows[2])
+    H = torch.export.Dim("features", min=2, max=wrapper.num_features)
+    # train_size and d are [1] scalars: static shape, dynamic VALUE.
+    dyn = ({1: T, 2: H}, {1: T}, None, None)
+
+    t, h, s = cfg.example
+    torch.manual_seed(0)
+    x = torch.randn(1, t, h)
+    y = torch.randint(0, cfg.max_classes, (1, t)).float()  # FULL length
+    train_size = torch.tensor([s], dtype=torch.int64)
+    d = torch.tensor([h], dtype=torch.int64)
+    ex = (x, y, train_size, d)
+
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    with torch.no_grad():
+        torch.onnx.export(
+            wrapper.eval(), ex, str(graph_path),
+            dynamo=True, dynamic_shapes=dyn, opset_version=opset,
+            input_names=["x", "y", "train_size", "d"], output_names=["logits"],
+            external_data=True, optimize=False,
+        )
+    return wrapper

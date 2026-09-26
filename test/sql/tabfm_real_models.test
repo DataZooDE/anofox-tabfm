@@ -233,3 +233,136 @@ SELECT max(abs(a.yhat - b.yhat)) > 1e-6
 FROM r_25 a JOIN r_real25 b USING (row_id)
 ----
 true
+
+# is_training rows must carry REAL in-context fitted values, not a placeholder.
+#
+# Regression: tabdpt's export ran the head over query rows only and the wrapper
+# zero-padded the context rows, so every training row decoded to argmax(zeros)
+# -- one constant label for the whole context. README describes this column as
+# "in-context fitted values, handy for a sanity check"; it was neither fitted
+# nor a sanity check. Found by comparing the CPU path against the masked ROCm
+# graph, which computes the head over all rows.
+#
+# A model that genuinely predicts one class everywhere would also produce 1
+# here, so the data below is built with three well-separated classes.
+# (the file already declares require-env TABFM_REAL_WEIGHTS at the top; a
+# second one mid-file is a PARSER error, not a no-op)
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE fitted_t AS
+SELECT i AS f1, (i % 7)::DOUBLE AS f2, ((i * 13) % 5)::DOUBLE AS f3,
+       CASE WHEN i < 80 THEN ('c' || (i % 3)) ELSE NULL END AS label
+FROM range(100) s(i);
+
+# Oracle 1: the column carries more than one value at all. Necessary, and far
+# from sufficient -- noise passes it.
+query I
+SELECT count(DISTINCT yhat) > 1 FROM tabfm_classify('fitted_t', 'label', model := 'tabdpt')
+WHERE is_training;
+----
+true
+
+# Oracle 2: the real one. On SEPARABLE data an in-context fit should mostly
+# recover the labels it was given. A zero pad scores ~1/3 here (it answers one
+# class for everything); noise scores ~1/3 too. Requiring a majority
+# distinguishes a genuine fit from either, which "> 1 distinct" cannot.
+statement ok
+CREATE TABLE sep_t AS
+SELECT (i % 3)::DOUBLE * 10.0 + (i % 5) * 0.01 AS f1,
+       (i % 3)::DOUBLE * -7.0 AS f2,
+       CASE WHEN i < 80 THEN ('c' || (i % 3)) ELSE NULL END AS label
+FROM range(100) s(i);
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.7
+FROM tabfm_classify('sep_t', 'label', model := 'tabdpt') WHERE is_training;
+----
+true
+
+query I
+SELECT count(DISTINCT yhat) > 1 FROM tabfm_classify('fitted_t', 'label', model := 'tabicl-v2')
+WHERE is_training;
+----
+true
+
+# Oracle 3: regression was untested entirely. A zero pad decodes to a constant,
+# so correlating the fitted values against the targets separates a real fit from
+# one. Pearson r over the context rows, not an exact-match count, because these
+# are continuous.
+statement ok
+CREATE TABLE reg_t AS
+SELECT i::DOUBLE AS f1, (i % 7)::DOUBLE AS f2,
+       CASE WHEN i < 80 THEN (i * 0.7 + 3)::DOUBLE ELSE NULL END AS target
+FROM range(100) s(i);
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'tabdpt') WHERE is_training;
+----
+true
+
+# ---------------------------------------------------------------------------
+# The same defect across the whole TabPFN family.
+#
+# tabdpt's fix above covered tabdpt. Measuring the rest with the same oracles
+# found every TabPFN generation doing it too -- v2, v2.5, v2.6 AND v3, both
+# tasks -- not just v2-6 as the tabdpt commit recorded. On the separable data
+# below, where chance is 1/3 and mitra and tabicl-v2 both score 1.0:
+#
+#   tabpfn-v2  1 distinct, acc 0.338      tabpfn-v2-6  1 distinct, acc 0.338
+#   tabpfn-v2-5  1 distinct, acc 0.338    tabpfn-v3    1 distinct, acc 0.338
+#
+# One cause for all of them: the shared ExportWrapper ran the model's head over
+# query rows only and zero-padded the context rows to restore the shape.
+#
+# The accuracy oracle is the load-bearing one. "> 1 distinct" is necessary but
+# weak -- noise passes it -- while a zero pad answers a single class everywhere
+# and so scores ~1/3, which a majority requirement rejects.
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.7
+FROM tabfm_classify('sep_t', 'label', model := 'tabpfn-v2') WHERE is_training;
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.7
+FROM tabfm_classify('sep_t', 'label', model := 'tabpfn-v2-5') WHERE is_training;
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.7
+FROM tabfm_classify('sep_t', 'label', model := 'tabpfn-v2-6') WHERE is_training;
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.7
+FROM tabfm_classify('sep_t', 'label', model := 'tabpfn-v3') WHERE is_training;
+----
+true
+
+# Regression: a constant column makes corr() return NaN rather than a small
+# number, so `> 0.9` is false either way -- but assert non-constancy separately
+# so a failure says WHICH of the two happened.
+query I
+SELECT count(DISTINCT yhat) > 1 FROM tabfm_regress('reg_t', 'target', model := 'tabpfn-v2')
+WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'tabpfn-v2') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'tabpfn-v2-6') WHERE is_training;
+----
+true

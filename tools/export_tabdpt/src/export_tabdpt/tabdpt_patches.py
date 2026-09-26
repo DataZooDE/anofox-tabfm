@@ -148,6 +148,61 @@ def _patched_get_scale_param(self, eval_pos, *, device, dtype) -> torch.Tensor:
     return beta
 
 
+def _patched_model_forward(self, x_src, y_src, num_features=None, **kwargs):
+    """Upstream TabDPTModel.forward, but the head runs over EVERY data row.
+
+    Upstream ends with ``pred = self.head(src[eval_pos + n_think:])`` -- only
+    the query rows -- and the export wrapper then zero-pads rows below
+    ``eval_pos`` so the output is [1, T, C]. The engine reads those padded rows
+    as the in-context fitted values for training rows, which README describes
+    as "handy for a sanity check".
+
+    They are not fitted values. argmax of a zero pad is a constant, and
+    measurably so: over 80 context rows tabdpt returned ONE distinct label
+    where tabicl-v2 and mitra returned three. Found while comparing this
+    positional path against the masked ROCm graph, which computes the head over
+    all rows and so produces real ones.
+
+    Running the head over every row costs one extra projection on S rows. The
+    head is the final linear, not the transformer, so this is small relative to
+    32 attention layers -- but "small" here is reasoning, not a measurement, and
+    it is stated that way deliberately. What IS measured: the end-to-end CPU
+    predict in the real-weight suite did not move detectably, and the shipped
+    graph grew by under 1 KB (673897 -> 673117 bytes, i.e. it shrank).
+    """
+    from tabdpt.utils import clip_outliers, normalize_data
+
+    x_src = x_src.transpose(0, 1)
+    y_src = y_src.transpose(0, 1)
+    eval_pos = y_src.shape[0]
+    n_think = self.n_thinking_rows
+
+    x_src = clip_outliers(x_src, -1 if self.training else eval_pos, n_sigma=self.clip_sigma)
+    x_src = normalize_data(x_src, -1 if self.training else eval_pos)
+    x_src = clip_outliers(x_src, -1 if self.training else eval_pos, n_sigma=self.clip_sigma)
+    x_src = torch.nan_to_num(x_src, nan=0.0, posinf=0.0, neginf=0.0)
+
+    x_src = self.encoder(x_src)
+    src = self.enc_norm(x_src)
+    if n_think > 0:
+        B = src.shape[1]
+        src = torch.cat([self.thinking_embed.unsqueeze(1).expand(n_think, B, -1), src], dim=0)
+
+    for l, layer in enumerate(self.transformer_encoder):
+        y_emb = self.y_encoders[l](y_src.unsqueeze(-1))
+        if n_think > 0:
+            B = y_emb.shape[1]
+            y_emb = torch.cat([y_emb.new_zeros(n_think, B, y_emb.shape[-1]), y_emb], dim=0)
+        residual = layer(src, y_emb, eval_pos + n_think)
+        src = src + residual
+
+    # Upstream: src[eval_pos + n_think:]. Here: drop only the thinking rows, so
+    # context rows get real predictions instead of a zero pad downstream.
+    if n_think > 0:
+        src = src[n_think:]
+    return self.head(src.float())
+
+
 def apply() -> None:
     """Idempotently install the export monkeypatches on ``tabdpt``."""
     global _APPLIED
@@ -157,6 +212,7 @@ def apply() -> None:
 
     m.TransformerEncoderLayer.forward = _patched_encoder_forward
     m.TransformerEncoderLayer.get_scale_param = _patched_get_scale_param
+    m.TabDPTModel.forward = _patched_model_forward
     _APPLIED = True
 
 
@@ -230,10 +286,11 @@ class ExportWrapper(torch.nn.Module):
             point = (weights * centres).sum(dim=-1, keepdim=True)
             pred = point * std_y.unsqueeze(-1) + mean_y.unsqueeze(-1)
 
-        # Pad back to [1, T, C]: the engine slices rows >= S.
-        C = pred.shape[-1]
-        head = torch.zeros(pred.shape[0], S, C, dtype=pred.dtype, device=pred.device)
-        return torch.cat([head, pred], dim=1)
+        # Already [1, T, C]: _patched_model_forward runs the head over every
+        # data row, so context rows carry real in-context fitted values rather
+        # than the zero pad this used to concatenate. The engine still slices
+        # rows >= S for the predictions themselves.
+        return pred
 
 
 def build_wrapper(model, task: str) -> ExportWrapper:
