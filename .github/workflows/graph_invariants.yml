@@ -7,8 +7,19 @@
 #
 name: Graph invariants
 
+# Only `main` and release tags on push. Without the branch filter a
+# same-repo pull request matches BOTH `push` (refs/heads/<branch>) and
+# `pull_request` (refs/pull/N/merge), so every commit ran this whole workflow
+# TWICE -- two macOS builds, two Windows builds, for identical trees. The
+# concurrency group keys on github.ref, which differs between the two, so
+# nothing deduplicated them and they simply queued against each other.
+#
+# `pull_request` still covers every branch, including forks. `main` and `v*`
+# stay on push because the deploy and plugin-attach jobs key off those refs.
 on:
   push:
+    branches: [main]
+    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
