@@ -396,6 +396,7 @@ unique_ptr<CreateMacroInfo> BuildMacroInfo(const string &name, const CVMacroDef 
 	fd.description = def.description;
 	if (def.example) {
 		fd.examples = {def.example};
+		fd.categories = {"tabfm", "evaluation"};
 	}
 	info->descriptions.push_back(std::move(fd));
 	return info;

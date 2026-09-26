@@ -602,6 +602,7 @@ void RegisterRegressionMetrics(ExtensionLoader &loader) {
 		fd.examples = {
 		    "SELECT tabfm_rmse(actual, predicted) FROM predictions;",
 		    "SELECT round(tabfm_rmse(actual, predicted), 4) FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_rmse", {std::move(fd)});
 	}
 
@@ -623,6 +624,7 @@ void RegisterRegressionMetrics(ExtensionLoader &loader) {
 		fd.examples = {
 		    "SELECT tabfm_mae(actual, predicted) FROM predictions;",
 		    "SELECT round(tabfm_mae(actual, predicted), 4) FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_mae", {std::move(fd)});
 	}
 
@@ -648,6 +650,7 @@ void RegisterRegressionMetrics(ExtensionLoader &loader) {
 		fd.examples = {
 		    "SELECT tabfm_r2(actual, predicted) FROM predictions;",
 		    "SELECT round(tabfm_r2(actual, predicted), 4) FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_r2", {std::move(fd)});
 	}
 
@@ -673,6 +676,7 @@ void RegisterRegressionMetrics(ExtensionLoader &loader) {
 		fd.examples = {
 		    "SELECT tabfm_mape(actual, predicted) FROM predictions;",
 		    "SELECT round(tabfm_mape(actual, predicted) * 100, 2) || '%' FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_mape", {std::move(fd)});
 	}
 
@@ -697,6 +701,7 @@ void RegisterRegressionMetrics(ExtensionLoader &loader) {
 		fd.examples = {
 		    "SELECT tabfm_medae(actual, predicted) FROM predictions;",
 		    "SELECT round(tabfm_medae(actual, predicted), 4) FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_medae", {std::move(fd)});
 	}
 }

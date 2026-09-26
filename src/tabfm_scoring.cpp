@@ -798,6 +798,7 @@ void RegisterScoringFunctions(ExtensionLoader &loader) {
 		fd.examples = {
 		    "SELECT tabfm_crps(actual, yhat_dist) FROM "
 		    "tabfm_regress('tbl', 'y', opts := MAP{'output_mode':'distribution'});"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_crps", {std::move(fd)});
 	}
 
@@ -848,6 +849,7 @@ void RegisterScoringFunctions(ExtensionLoader &loader) {
 		fd.examples = {
 		    "SELECT tabfm_log_score(actual, yhat_dist) FROM "
 		    "tabfm_regress('tbl', 'y', opts := MAP{'output_mode':'distribution'});"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_log_score", {std::move(fd)});
 	}
 
@@ -932,6 +934,7 @@ void RegisterScoringFunctions(ExtensionLoader &loader) {
 		fd.examples = {
 		    "SELECT tabfm_interval_score(actual, yhat_dist, coverage := 0.9) FROM "
 		    "tabfm_regress('tbl', 'y', opts := MAP{'output_mode':'distribution'});"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_interval_score", {std::move(fd)});
 	}
 }

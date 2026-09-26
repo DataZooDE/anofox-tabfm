@@ -1026,6 +1026,7 @@ static unique_ptr<CreateMacroInfo> BuildConfusionMacroInfo(const std::string &na
 	    "double-quote escaped (T-01-02-01). Returns one row per distinct (actual, predicted) "
 	    "combination, ordered by actual then predicted.";
 	fd.examples = {"SELECT * FROM tabfm_confusion_matrix('predictions', 'actual', 'predicted');"};
+	fd.categories = {"tabfm", "metrics"};
 	info->descriptions.push_back(std::move(fd));
 	return info;
 }
@@ -1059,6 +1060,7 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		    "Returns NULL on empty or all-NULL input. Matches sklearn.metrics.accuracy_score(normalize=True).";
 		fd.examples = {"SELECT tabfm_accuracy(actual, predicted) FROM predictions;",
 		               "SELECT round(tabfm_accuracy(actual, predicted), 4) FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_accuracy", {std::move(fd)});
 	}
 
@@ -1092,6 +1094,7 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		    "or 'weighted'. Undefined precision (no predicted positives for a class) returns 0.0 "
 		    "(zero_division=0). NULL rows skipped. Matches sklearn.metrics.precision_score(zero_division=0).";
 		fd.examples = {"SELECT tabfm_precision(actual, predicted, 'macro') FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_precision", {std::move(fd)});
 	}
 
@@ -1122,6 +1125,7 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		    "or 'weighted'. Undefined recall (no actual positives for a class) returns 0.0 "
 		    "(zero_division=0). NULL rows skipped. Matches sklearn.metrics.recall_score(zero_division=0).";
 		fd.examples = {"SELECT tabfm_recall(actual, predicted, 'macro') FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_recall", {std::move(fd)});
 	}
 
@@ -1153,6 +1157,7 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		    "NULL rows skipped. Matches sklearn.metrics.f1_score(average=avg, zero_division=0).";
 		fd.examples = {"SELECT tabfm_f1(actual, predicted, 'macro') FROM predictions;",
 		               "SELECT tabfm_f1(actual, predicted, 'weighted') FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_f1", {std::move(fd)});
 	}
 
@@ -1173,6 +1178,7 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		    "Missing MAP keys are treated as p=0 then clipped. NULL rows skipped. "
 		    "Matches sklearn.metrics.log_loss(normalize=True, eps=1e-15).";
 		fd.examples = {"SELECT tabfm_log_loss(actual, proba) FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_log_loss", {std::move(fd)});
 	}
 
@@ -1207,6 +1213,7 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		    "Tied scores handled via the Mann-Whitney U rank-sum form (no optimistic bias). "
 		    "NULL rows skipped. Matches sklearn.metrics.roc_auc_score(multi_class='ovr'/'ovo').";
 		fd.examples = {"SELECT tabfm_roc_auc(actual, proba, 'ovr') FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_roc_auc", {std::move(fd)});
 	}
 
@@ -1227,6 +1234,7 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		    "ECE = sum_m (|B_m|/N)*|accuracy(B_m) - confidence(B_m)|. NULL rows skipped. "
 		    "Reference: Guo et al. 2017 (On Calibration of Modern Neural Networks).";
 		fd.examples = {"SELECT tabfm_ece(actual, proba) FROM predictions;"};
+		fd.categories = {"tabfm", "metrics"};
 		RegisterAggregateFunctionSetWithAlias(loader, set, "tabfm_ece", {std::move(fd)});
 	}
 

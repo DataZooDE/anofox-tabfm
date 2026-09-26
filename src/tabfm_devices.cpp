@@ -692,6 +692,7 @@ void RegisterDevicesFunctions(ExtensionLoader &loader) {
 	    "row always exists; GPU rows appear only in the matching flavor (cuda/rocm) and report usable=false when a "
 	    "device is present but unsupported.";
 	fd.examples = {"SELECT * FROM tabfm_devices();"};
+	fd.categories = {"tabfm", "meta"};
 	RegisterTableFunctionWithAlias(loader, std::move(func), "tabfm_devices", {std::move(fd)});
 }
 
