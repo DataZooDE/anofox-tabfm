@@ -23,16 +23,19 @@ namespace anofox {
 // this machine is not.
 //===----------------------------------------------------------------------===//
 
-//! The release whose assets carry the built plugins. ONE definition, bumped by
-//! CI on publish (.github/workflows/gpu_plugins.yml asserts the tag exists
-//! before attaching to it).
+//! The release whose assets carry the built plugins. ONE definition, bumped BY
+//! HAND before tagging: gpu_plugins.yml refuses to attach plugins to a release
+//! whose tag is not the one pinned here ("The pinned plugin release must be the
+//! one being published"), so a release always contains code pointing at itself.
+//! Forgetting fails the release rather than shipping a version that quietly
+//! downloads the previous one's plugins.
 //!
 //! A stale tag is safe by construction rather than by vigilance: the loader
 //! checks the plugin's abi_version against TABFM_PLUGIN_ABI_VERSION and
 //! refuses a mismatch (tabfm_plugin_backend.cpp), so an older plugin cannot
 //! silently misbehave. It is NOT derived from the extension version, which
 //! would 404 on every dev or dirty build.
-static constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "v2026.08.29";
+static constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "v2026.09.26";
 
 //! Shared-library suffix for plugins on the platform being asked about.
 inline string PluginLibrarySuffix(const string &os) {
