@@ -20,9 +20,42 @@ operated in SQL: no manifest file, no config.
 ### 1. Install & load
 
 ```sql
-INSTALL httpfs;          -- weights are fetched over HTTPS
-LOAD httpfs;
+INSTALL httpfs;          -- weights are fetched over HTTPS. Install it FIRST, before
+LOAD httpfs;             -- any custom repository is set (see the note below).
+
+INSTALL anofox_tabfm FROM community;
 LOAD anofox_tabfm;
+```
+
+The community build is signed, so no extra flags are needed — but it is
+published by a separate submission and can trail a release by days. To take a
+release the moment it is out, use the anofox repository instead. Those builds
+are **unsigned**, so DuckDB must be started with `-unsigned`:
+
+```bash
+duckdb -unsigned
+```
+```sql
+INSTALL httpfs; LOAD httpfs;   -- FIRST: see below
+SET custom_extension_repository = 'https://get.anofox.com';
+INSTALL anofox_tabfm;
+LOAD anofox_tabfm;
+```
+
+Two things that are easy to hit and give unhelpful errors:
+
+* Without `-unsigned`, installing from `get.anofox.com` fails with *"Attempting
+  to install an extension file that doesn't have a valid signature"*. The
+  community repository needs no flag.
+* `custom_extension_repository` applies to **every** install, including ones
+  DuckDB triggers for you. If it is set before `httpfs` is present, DuckDB
+  autoloads `httpfs` from `get.anofox.com`, which does not serve it, and the
+  failure names `httpfs` rather than the setting. Install `httpfs` first.
+
+Check which build you got:
+
+```sql
+SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox_tabfm';
 ```
 
 ### 2. Pick a model and download its weights (once)
@@ -479,8 +512,10 @@ the weight cache across sessions); `mxr_source` lets a fleet share one
 machine's compiles. CUDA has no analogous cost (~30 s cold start, no long
 compile).
 Released cpu builds are served from the anofox extension repository
-(`SET custom_extension_repository = 'https://get.anofox.com'`) as well as from
-the DuckDB community repository.
+(`SET custom_extension_repository = 'https://get.anofox.com'`, which requires
+`duckdb -unsigned`) as well as from the DuckDB community repository (signed, no
+flag, but published by a separate submission that can trail a release). See
+[Install & load](#1-install--load) for both paths and the `httpfs` ordering.
 
 **Backend support matrix** (what is verified, not what might work):
 
@@ -488,7 +523,7 @@ the DuckDB community repository.
 |---|---|---|---|
 | CPU | Linux x64/arm64, macOS **arm64**, Windows x64 | all 7 built-ins | CI suites + install-smoke with inference on every platform |
 | CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | **all 7 built-ins** | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max |
-| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1 + mitra (train_size-scalar family) | RX 9070 XT: parity, concurrency, user workflow |
+| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1, mitra, **tabdpt** — `SELECT * FROM tabfm_backends()` says which, and why not for the rest | RX 9070 XT: parity, concurrency, user workflow; tabdpt 5.6x CPU with identical predictions |
 | CoreML | — | — | **dropped** — MLX supersedes it on Apple Silicon ([why](docs/DYNAMIC_BACKENDS.md#phase-4--coreml--dropped-2026-09-19)) |
 | MLX (plugin) | macOS arm64 (Apple Silicon) | every model CPU serves (6 verified through SQL; tabfm-v1 via the graph harness) | Apple M3: 10 model×task pairs cpu-compared (0 disagreements), 4000-row stress, device/precision alternation |
 
