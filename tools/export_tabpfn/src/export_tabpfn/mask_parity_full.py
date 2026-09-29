@@ -34,6 +34,7 @@ from tabpfn.preprocessing.torch import ops as opsmod
 
 from export_tabpfn import configs
 from export_tabpfn import tabpfn_mask_forward as mf
+from export_tabpfn import tabpfn_mask_v3 as mv3
 from export_tabpfn.tabpfn_mask_export import MaskExportWrapper
 from export_tabpfn.tabpfn_patched import (ExportWrapper, apply_module_patches,
                                           build_random_model, prepare_model_for_export)
@@ -50,7 +51,8 @@ _UPSTREAM = {(m, k): getattr(m, k).forward
 #: computes" when a constant column is present. This is.
 _TRUE_SELECT = opsmod.select_features
 
-ARCHES = (("v2", "fixture"), ("v2.5", "fixture25"), ("v2.6", "fixture26"))
+ARCHES = (("v2", "fixture"), ("v2.5", "fixture25"), ("v2.6", "fixture26"), ("v3", "fixture3"),
+          ("v3r", "fixture3r"))
 TASKS = ("classification", "regression")
 
 # (real rows, train rows, real features, bucket rows, bucket features, constant col?)
@@ -61,6 +63,9 @@ CASES = (
     (24, 10, 4, 48, 32, "nanconst"),   # constant only after imputation: needs the real row count in normalisation
     (16, 15, 3, 32, 16, False),        # one query row
 )
+#: v3 only: inputs so narrow that the neighbour wrap (shift 1, 2, 4) goes round the
+#: REAL width more than once. Other architectures cannot take d=1 or 2.
+NARROW = ((12, 8, 2, 32, 16, False), (10, 6, 1, 32, 16, False))
 TOL = 1e-4
 
 
@@ -155,11 +160,21 @@ def _rel(ref, got):
     return ((ref - got).abs().max() / ref.abs().max().clamp(min=1e-6)).item()
 
 
+#: Classes actually present in the test data (see `_data`, which draws 3).
+USED_CLASSES = 3
+
+
 def _all_cases(arch, cfgname, task):
     model, cfg = _model(arch, cfgname, task)
     worst, rows = 0.0, []
-    for case in CASES:
+    for case in CASES + (NARROW if arch.startswith("v3") else ()):
         ref, got = _run_pair(model, cfg, task, case)
+        if arch.startswith("v3") and task == "classification":
+            # v3's decoder floors an unused class's logit at log(1e-5 + 3e-5) = -10.13 in
+            # BOTH graphs, and the used classes' logits sit within ~0.01 of each other
+            # on a random-init model. Measured against max|ref| = 10.13 that floor hides
+            # any error under ~1e-3. Compare the classes that carry signal.
+            ref, got = ref[:, :USED_CLASSES], got[:, :USED_CLASSES]
         if ref.shape != got.shape:
             return 9.9, [(case, f"SHAPE {tuple(ref.shape)} vs {tuple(got.shape)}")]
         r = _rel(ref, got)
@@ -203,7 +218,7 @@ def _controls() -> int:
         ("group mask neutralised", every,
          lambda: setattr(mf, "_patched_along_row_forward", no_group_mask),
          lambda: setattr(mf, "_patched_along_row_forward", real_row)),
-        ("column attention mask neutralised", every,
+        ("key masks neutralised", every + ("v3", "v3r"),
          lambda: setattr(mp, "NEG_INF", 0.0),
          lambda: setattr(mp, "NEG_INF", saved_neg)),
         ("real-row counts ignored (padded height)", every,
@@ -214,20 +229,57 @@ def _controls() -> int:
                          lambda x, real, n_real, d: orig_keep(x, torch.ones_like(real), n_real, d)),
          lambda: setattr(mf, "_keep_mask", orig_keep)),
     ]
-    arch_cfg = {"v2": "fixture", "v2.5": "fixture25", "v2.6": "fixture26"}
+    # v3: each mechanism the masked forward replaced, broken on its own.
+    orig_attend, orig_nbr = mv3._attend, mv3._neighbour_index
+    orig_imp, orig_tb, orig_cls = mv3._masked_impute_mean, mv3._transformer_block, mv3._cls_readout
+    v3s, v3r = ("v3", "v3r"), ("v3r",)
+
+    def attend_padded_n(q, k, v, keep, scaling=None, n=None):
+        # softmax scaling reads the PADDED key count, as upstream would off k.shape
+        return orig_attend(q, k, v, keep, scaling, None if scaling is None else torch.tensor(k.shape[1]))
+
+    def attend_no_mqa(q, k, v, keep, scaling=None, n=None):
+        # the test-row branch (one KV head) returns nothing
+        if k.shape[2] == 1 and q.shape[2] > 1:
+            return torch.zeros_like(q)
+        return orig_attend(q, k, v, keep, scaling, n)
+
+    controls += [
+        ("neighbour wrap at padded width", v3s,
+         lambda: setattr(mv3, "_neighbour_index", lambda H, d, s, dev: orig_nbr(H, torch.tensor(H), s, dev)),
+         lambda: setattr(mv3, "_neighbour_index", orig_nbr)),
+        ("softmax scaling over padded rows", v3s,
+         lambda: setattr(mv3, "_attend", attend_padded_n),
+         lambda: setattr(mv3, "_attend", orig_attend)),
+        ("test rows not on one KV head", v3r,
+         lambda: setattr(mv3, "_attend", attend_no_mqa),
+         lambda: setattr(mv3, "_attend", orig_attend)),
+        ("imputation mean over all rows", v3s,
+         lambda: setattr(mv3, "_masked_impute_mean", lambda x, valid: orig_imp(x, torch.ones_like(valid))),
+         lambda: setattr(mv3, "_masked_impute_mean", orig_imp)),
+        ("padded columns not masked", v3s,
+         lambda: (setattr(mv3, "_transformer_block", lambda b, x, r, keep: orig_tb(b, x, r, torch.ones_like(keep))),
+                  setattr(mv3, "_cls_readout", lambda b, q, c, r, keep: orig_cls(b, q, c, r, torch.ones_like(keep)))),
+         lambda: (setattr(mv3, "_transformer_block", orig_tb), setattr(mv3, "_cls_readout", orig_cls))),
+    ]
+    arch_cfg = {"v2": "fixture", "v2.5": "fixture25", "v2.6": "fixture26",
+                "v3": "fixture3", "v3r": "fixture3r"}
 
     blind = []
     for name, archs, install, restore in controls:
         for arch in archs:
-            install()
-            try:
-                worst = _all_cases(arch, arch_cfg[arch], "classification")[0]
-            finally:
-                restore()
-            caught = worst >= TOL * 10
-            print(f"control: {name:42} {arch:5s} rel={worst:.3e} {'caught' if caught else 'NOT CAUGHT'}")
-            if not caught:
-                blind.append(f"{name} [{arch}]")
+            # v3 runs both tasks: regression takes the duplicate-rows route, whose
+            # layout (and so whose masks) differs from classification's.
+            for task in (("classification", "regression") if arch.startswith("v3") else ("classification",)):
+                install()
+                try:
+                    worst = _all_cases(arch, arch_cfg[arch], task)[0]
+                finally:
+                    restore()
+                caught = worst >= TOL * 10
+                print(f"control: {name:42} {arch:5s} {task[:5]} rel={worst:.3e} {'caught' if caught else 'NOT CAUGHT'}")
+                if not caught:
+                    blind.append(f"{name} [{arch}/{task}]")
     if blind:
         print(f"GATE IS BLIND to: {', '.join(blind)}")
         return 2

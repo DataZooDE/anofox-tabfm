@@ -31,7 +31,7 @@ def main(argv=None) -> int:
                     choices=["classification", "regression"])
     ap.add_argument("--config", required=True,
                     choices=["tiny", "fixture", "real", "fixture25", "real25",
-                             "fixture26", "real26", "fixture3", "real3"])
+                             "fixture26", "real26", "fixture3", "fixture3r", "real3"])
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")

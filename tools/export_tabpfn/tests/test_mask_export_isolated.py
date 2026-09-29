@@ -13,7 +13,8 @@ import sys
 
 import pytest
 
-CASES = [("fixture", "v2"), ("fixture25", "v2.5"), ("fixture26", "v2.6")]
+CASES = [("fixture", "v2"), ("fixture25", "v2.5"), ("fixture26", "v2.6"),
+         ("fixture3", "v3"), ("fixture3r", "v3")]
 
 
 @pytest.mark.parametrize("config,arch", CASES)

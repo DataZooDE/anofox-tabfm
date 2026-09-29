@@ -32,9 +32,11 @@ import torch.nn.functional as F
 import tabpfn.architectures.tabpfn_v2 as v2
 import tabpfn.architectures.tabpfn_v2_5 as v25
 import tabpfn.architectures.tabpfn_v2_6 as v26
+import tabpfn.architectures.tabpfn_v3 as v3
 from tabpfn.preprocessing.torch.ops import torch_nanmean
 
 from export_tabpfn import tabpfn_mask_patches as mp
+from export_tabpfn.tabpfn_mask_v3 import masked_rows_v3
 #: The exporter's ONNX-friendly replacements, imported and called DIRECTLY. Each is
 #: also installed on an architecture module by apply_module_patches, but only on the
 #: ONE architecture being exported, so reaching them through another architecture's
@@ -196,6 +198,8 @@ def _masked_rows_v2(model, x_RiBC, y_Ri, train, real, d):
 
 
 def masked_rows(model, x_RiBC, y_Ri, train, real, d):
+    if isinstance(model, v3.TabPFNV3):
+        return masked_rows_v3(model, x_RiBC, y_Ri, train, real, d)
     if isinstance(model, v2.TabPFNV2):
         return _masked_rows_v2(model, x_RiBC, y_Ri, train, real, d)
     return _masked_rows_25(model, x_RiBC, y_Ri, train, real, d)
