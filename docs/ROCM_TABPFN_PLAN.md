@@ -1,6 +1,6 @@
 # TabPFN on ROCm — what the masked graph has to reproduce
 
-Status: **v2, v2.5, v2.6 converted, gated, and proven end to end on ROCm in both tasks; v3 not started; nothing bundled or released.** The attention layer was
+Status: **v2, v2.5, v2.6 converted, gated, and proven end to end on ROCm in both tasks, identical to the CPU to float noise; v3 not started; nothing bundled or released.** The attention layer was
 proven exact in the spike (docs/ROCM_TABDPT_SPIKE.md, tools/export_tabpfn
 `tabpfn_mask_patches.py`, ~2x cost). This is the inventory of everything else,
 made from reading tabpfn 2.x/3 source rather than from the spike.
@@ -94,41 +94,66 @@ One shape only; the ratio should improve with size but that is unmeasured.
 
 ## All six proven on the GPU (gfx1201, released v2026.09.26 CPU as reference)
 
-Same data, warm calls, 128 rows x 16 features. Agreement is over EVERY row,
-context and query. Classification: label disagreements; regression: max |diff|.
+Same data, warm calls, 128 rows x 16 features, run sequentially so nothing else
+competed for the CPU. Agreement is over EVERY row, context and query.
+Classification: label disagreements; regression: max |diff| against the CPU.
 
-| model | task | label / value agreement | CPU warm | ROCm warm | speedup | first-call compile |
+| model | task | agreement | CPU warm | ROCm warm | speedup | first-call compile |
 |---|---|---|---|---|---|---|
-| v2   | cls | 0/30 query, 0/70 context | ~0.50 s | ~0.052 s | ~10x | 177 s |
-| v2   | reg | max 9e-6, corr 1.0       | ~1.5 s  | ~0.053 s | ~28x | 213 s |
-| v2.5 | cls | 0/30 query, 0/70 context | ~0.41 s | ~0.10 s  | ~4x  | 585 s |
-| v2.5 | reg | max 3.7e-3, corr 0.999999| ~0.34 s | ~0.066 s | ~5x  | 329 s |
-| v2.6 | cls | 0/30 query, 0/70 context | ~0.35 s | ~0.072 s | ~4.9x | 568 s |
-| v2.6 | reg | max 3.4e-2, corr 0.99999 | ~0.48 s | ~0.10 s  | ~4.8x | 533 s |
+| v2   | cls | 0/30 query, 0/70 context | ~0.45 s | ~0.063 s | ~7x   | 154 s |
+| v2   | reg | max 9e-6                 | ~0.41 s | ~0.078 s | ~5x   | 162 s |
+| v2.5 | cls | 0/30 query, 0/70 context | ~0.39 s | ~0.11 s  | ~3.5x | 553 s |
+| v2.5 | reg | max 2e-6                 | ~0.33 s | ~0.063 s | ~5x   | 329 s |
+| v2.6 | cls | 0/30 query, 0/70 context | ~0.39 s | ~0.068 s | ~5.7x | 542 s |
+| v2.6 | reg | max 3e-6                 | ~0.48 s | ~0.10 s  | ~4.8x | 534 s |
 
-**The numeric deviation is real and not yet explained.** Labels agree everywhere,
-but class PROBABILITIES on v2.6 differ from the CPU by up to 0.05 (mean 0.001),
-and regression by up to 0.034 on a target range of 4.8. ORT running the same
-masked graph matches PyTorch to 3e-6, so the gap is the GPU. It tracks the
-architecture, not the conversion: v2 is essentially exact (9e-6), v2.5 is 4e-3,
-v2.6 is 3e-2.
+CPU time drops ~40x (0.14 s vs 5.6 s of CPU per call on v2.6). The first call
+on each (rows, features) bucket pays the compile, so a user pays it once per
+bucket they touch; `tabfm_gpu_precompile` moves it off the query path.
 
-Ruled out by measurement, not by argument:
-* **Padding.** Data that exactly fills its bucket (128x64, zero padding) still
-  shows max 0.007 / mean 0.0009 on v2.6.
-* **MIGraphX fast_math** (which defaults ON and rewrites erf-GELU). A plugin built
-  with `set_fast_math(false)`, compiled fresh into its own cache, gives the SAME
-  probabilities to six digits.
-* **RMSNorm alone.** v2.5 uses LayerNorm like v2 but still deviates by 4e-3.
+An earlier table in this file showed v2 regression at ~1.5 s CPU / ~28x. That
+was measured while a concurrent experiment was loading the CPU and was wrong.
 
-Not ruled out: depth/accumulation (v2.5 and v2.6 are deeper), the thinking rows,
-a MIGraphX fusion. `migraphx-driver verify` against MIGraphX's own reference
-implementation would separate kernel numerics from anything model-side.
+## The numeric gap, and what it was
 
-Two practical notes. The compile cost is per (rows, features) bucket and is large
-for the deeper models (330-585 s; v2 is 177-213 s), so users pay it once per
-bucket they touch -- `tabfm_gpu_precompile` exists for that. And the regression
-fitted values agree with the CPU's to the same tolerance as the query rows.
+Before the fix below, v2.5 and v2.6 drifted on the GPU: class probabilities by up
+to 0.05, regression by up to 0.034, raw logits by 1-3% relative (logit scale ~75),
+while v2 was exact. Labels agreed everywhere, which is why it took a look at the
+logits to see it.
+
+**Cause: one integer floor-division, miscomputed by MIGraphX's GPU target.** The
+count of real feature groups, `arange(G) < (n_sel + fpg - 1) // fpg`. For n=8,
+fpg=3 the GPU marks FOUR groups real instead of three, so a padded all-zero group
+was attended to as a real token in every row-attention layer. ORT and MIGraphX's
+own `ref` target both get it right, and materialising the quotient as a separate
+output also gives the right value, which is what made it hard to see. Reproduced
+in ten lines (`j < (n+2)//3` wrong; `j*3 < n` and a float compare both right;
+rank-0 vs rank-1 operand makes no difference).
+
+Fix: the equivalent division-free form, `arange(G) * fpg < n_sel`
+(j < ceil(n/f) <=> j*f < n for integers). Logit error against ORT, same input:
+
+| | context max | query max |
+|---|---|---|
+| before | 0.954 | 2.51 |
+| after | 5.7e-5 | 2.0e-3 |
+| MIGraphX `ref` target (the floor) | 3.8e-5 | 1.8e-3 |
+
+The PyTorch parity gate could not see this, because it never runs on a GPU, so
+there is now a structural guard (`tests/test_mask_export_isolated.py`): no integer
+`Div` that depends on runtime data may appear in a masked graph. Shape arithmetic
+is exempt -- MIGraphX folds it once the bucket is pinned.
+
+How it was found, in the order things were ruled out, because each cheaper
+explanation was wrong: not padding (zero-padded data still drifted); not
+MIGraphX `fast_math` (a plugin built with it off gave identical probabilities to
+six digits); not RMSNorm alone (v2.5 has LayerNorm and drifted); not MLIR, the
+GEMM provider, or fast softmax (each disabled, identical). Then a three-way run
+(ORT / MIGraphX `ref` / MIGraphX GPU) showed the graph survived MIGraphX intact
+and the fault was GPU code generation; exposing the 72 RMSNorm outputs showed the
+drift at the FIRST one; exposing every float tensor before it found the first
+numeric divergence was the group mask at relative error 1.0; a subgraph extract
+compiled in 6 seconds and reproduced it. Worth reporting upstream.
 
 ## Things found along the way that will bite the next person
 
