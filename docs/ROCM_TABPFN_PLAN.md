@@ -1,6 +1,6 @@
 # TabPFN on ROCm — what the masked graph has to reproduce
 
-Status: **v2, v2.5, v2.6 converted, gated, and proven end to end on ROCm in both tasks, identical to the CPU to float noise; v3 not started; nothing bundled or released.** The attention layer was
+Status: **v2, v2.5, v2.6 converted, gated, proven on ROCm in both tasks (identical to the CPU to float noise), and BUNDLED as built-in ROCm graphs. v3 not started. Not yet released: the plugin needs the `n_rows` binding, so the next release must bump `TABFM_PLUGIN_RELEASE_TAG`.** The attention layer was
 proven exact in the spike (docs/ROCM_TABDPT_SPIKE.md, tools/export_tabpfn
 `tabpfn_mask_patches.py`, ~2x cost). This is the inventory of everything else,
 made from reading tabpfn 2.x/3 source rather than from the spike.
@@ -154,6 +154,33 @@ and the fault was GPU code generation; exposing the 72 RMSNorm outputs showed th
 drift at the FIRST one; exposing every float tensor before it found the first
 numeric divergence was the group mask at relative error 1.0; a subgraph extract
 compiled in 6 seconds and reproduced it. Worth reporting upstream.
+
+## What bundling surfaced
+
+Bundling is where the "proven on a GPU" claim met the real code paths, and it
+found two more defects, both silent.
+
+**1. `tabpfn-v2-5-real` got `tabpfn-v2-5`'s answers on ROCm.** The compiled-program
+cache was keyed by the graph's bytes. A graph is weight-free and the compiled
+program bakes the weights in, so two models with one byte-identical graph and
+different checkpoints shared a program. Measured: CPU real vs CPU regular 0.1148,
+GPU real vs GPU regular 0.0, GPU real vs CPU real 0.1148. It was noticed as ONE
+flipped label in 100 with a 0.115 probability gap, against ~1e-3 for every other
+model; the graph-level check could not see it (GPU vs ORT on the real weights
+agreed to 3.5e-5, because that compared a graph to itself). The key now carries a
+weights fingerprint (size + 64 sampled 4 KiB blocks); after the fix GPU real vs CPU
+real is 5e-6. Cost: one recompile per bucket after upgrading.
+
+**2. `tabfm_backends()` judged servability against the wrong weights file.** The
+engine prefers the converted sibling `model.safetensors` over a declared `.ckpt`;
+`tabfm_backends()` preferred the declared file. With both on disk it compared the
+bundled graph's header against a pickle ("does not match"); with only the
+converted file it said "not downloaded". No checkpoint-based model had a GPU graph
+to be misjudged until this.
+
+Also: an OLD plugin refusing a new graph now says to update (it used to surface
+MIGraphX's bare `Parameter not found: n_rows`), and CI now runs
+`tools/check_migraphx_int_div.py` over every committed MIGraphX graph.
 
 ## Things found along the way that will bite the next person
 

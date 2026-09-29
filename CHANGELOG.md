@@ -60,6 +60,33 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   over `arange(T) < train_size`; the rewrite was gated in PyTorch against the
   original before any ONNX was produced.
 
+- **`tabpfn-v2`, `tabpfn-v2-5` and `tabpfn-v2-6` run on ROCm**, both tasks —
+  the ROCm-servable set goes from 3 of 11 catalog models to 6 (`tabpfn-v2-5-real`
+  reuses the 2.5 graphs). On an RX 9070 XT every row, context and query, agrees
+  with the CPU to float noise (classification: 0 label differences in 100 rows;
+  regression: max difference 2e-6 to 9e-6), at **3.5-7x** the CPU wall-clock and
+  about **40x less CPU time** per call. `tabpfn-v3` stays CPU-only: its
+  architecture (inducing points, ICL blocks, a many-class decoder) is not
+  converted, and `tabfm_backends()` says so by name.
+
+  Three things to know:
+
+  - **The first call on each (rows, features) bucket compiles, for 2.5 to 9
+    minutes** (154 s for v2, 330-550 s for v2.5/v2.6). It is paid once per
+    bucket a user touches; `CALL tabfm_gpu_precompile(...)` moves it off the
+    query path.
+  - **The graphs need the matching plugin.** They take a fifth input, `n_rows`
+    (the real row count before bucket padding), that older MIGraphX plugins
+    cannot bind. An old plugin now fails with an instruction to
+    `CALL tabfm_accelerate()` rather than MIGraphX's bare
+    `Parameter not found: n_rows`. `tabfm_accelerate()` fetches the right one.
+  - **MIGraphX's GPU target miscomputes an integer floor-division** —
+    `j < (n + f - 1) // f` marks four groups real where there are three — while
+    ORT and MIGraphX's own reference target are right. It was the entire
+    difference between a first attempt that drifted 1-3% in the logits and the
+    result above, so the graphs avoid integer division on runtime data, and a
+    test enforces that. Worth reporting upstream.
+
 - **Synthetic data generation and imputation** (WS-G): `tabfm_generate(data, n, …)`
   samples new rows from a table's joint distribution, and `tabfm_impute(data, …)`
   fills NULL cells with the conditional best estimate. Both factorize the table
@@ -93,6 +120,26 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   like 2.5. Offline fixture: `test/sql/tabfm_tabpfn3.test`.
 
 ### Fixed
+- **On ROCm, two models sharing one graph but differing in weights silently
+  received each other's compiled program.** The compiled-program cache was keyed
+  by a hash of the graph's bytes, on the reasoning that different models have
+  different graphs. But a graph is weight-*free*, and the compiled program bakes
+  the weight values in, so models with a byte-identical graph and different
+  checkpoints collided: `tabpfn-v2-5-real` on ROCm returned `tabpfn-v2-5`'s
+  answers (GPU real vs GPU regular differed by 0.0, CPU real vs CPU regular by
+  0.115), with no error and a plausible result. It was the same failure mode as
+  the 2026-08-22 mitra/tabfm-v1 incident, which the graph-content hash had only
+  half closed. The key now also carries a fingerprint of the weights the graph
+  reads (file size plus 64 sampled 4 KiB blocks, so ~256 KB of reads even for a
+  6.6 GB checkpoint), identical on every machine holding the same file so
+  `anofox_tabfm_mxr_source` sharing still works. Any model that registers its own
+  `migraphx_graph` next to different weights was exposed too.
+
+  **One-time cost:** the key changed, so previously compiled programs are no
+  longer found and each (rows, features) bucket recompiles once on first use
+  after upgrading. The old `.mxr` files under `<cache_dir>/migraphx/` are
+  orphaned and can be deleted.
+
 - **A feature column present on only one side is now an error.** When the
   context relation and the `test` relation exposed different feature columns,
   the missing side was filled with NULL and the model returned near-chance
