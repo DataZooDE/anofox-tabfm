@@ -17,6 +17,7 @@
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_plugin_artifacts.hpp"
 
+#include <filesystem>
 #include <fstream>
 
 using namespace duckdb;
@@ -231,6 +232,74 @@ TEST_CASE("mxr cache key: different graph content never collides; same content s
 	REQUIRE(here.size() == std::string("graph_migraphx_classification_").size() + 8);
 }
 
+// The SECOND half of the 2026-08-22 bug, which the content hash above did not close.
+//
+// A graph is weight-FREE: it references `model.safetensors` by offset, and the
+// compiled .mxr bakes the weight VALUES in. Hashing the graph bytes therefore
+// separates models whose graphs differ -- and says nothing about two models that
+// share a byte-identical graph and differ only in weights. tabpfn-v2-5 and
+// tabpfn-v2-5-real are exactly that pair: same architecture, same graph, different
+// checkpoint. On ROCm the second one asked for silently received the first one's
+// compiled program -- GPU real vs GPU regular differed by 0.0, CPU real vs CPU
+// regular by 0.115 -- with no error and a plausible answer, which is the failure
+// mode this repo has the most scar tissue around.
+TEST_CASE("mxr cache key: same graph with different weights never collides", "[tabfm][plugin_backend]") {
+	using anofox_tabfm_mxr::Fnv1a64;
+	using anofox_tabfm_mxr::MxrCacheStem;
+	using anofox_tabfm_mxr::WeightsFingerprint;
+	namespace fs = std::filesystem;
+
+	const auto root = fs::temp_directory_path() / "tabfm_weights_fp_test";
+	fs::remove_all(root);
+	fs::create_directories(root / "a");
+	fs::create_directories(root / "b");
+	fs::create_directories(root / "c");
+	auto write = [](const fs::path &p, const std::string &bytes) {
+		std::ofstream(p, std::ios::binary) << bytes;
+	};
+	// Big enough that the fingerprint SAMPLES rather than reading everything, and
+	// large enough that a difference in one block is a real test of the sampling.
+	std::string base(4096 * 200, 'x');
+	auto with_byte_at = [&](size_t at, char c) {
+		auto s2 = base;
+		s2[at] = c;
+		return s2;
+	};
+
+	write(root / "a" / "model.safetensors", base);
+	write(root / "b" / "model.safetensors", base);                          // identical content, other path
+	write(root / "c" / "model.safetensors", with_byte_at(0, 'y'));         // differs in the first block
+	fs::create_directories(root / "d");
+	write(root / "d" / "model.safetensors", base + "extra");               // different SIZE, same prefix
+	fs::create_directories(root / "e");
+	// Differs only in a block the sampler visits (first, last and 62 between).
+	write(root / "e" / "model.safetensors", with_byte_at(base.size() - 1, 'z'));
+
+	const auto fa = WeightsFingerprint((root / "a" / "model.safetensors").string());
+	REQUIRE(fa != 0);
+	// same content anywhere shares (keeps anofox_tabfm_mxr_source working across machines)
+	REQUIRE(fa == WeightsFingerprint((root / "b" / "model.safetensors").string()));
+	// different content, same size, must not
+	REQUIRE(fa != WeightsFingerprint((root / "c" / "model.safetensors").string()));
+	REQUIRE(fa != WeightsFingerprint((root / "e" / "model.safetensors").string()));
+	// different size must not
+	REQUIRE(fa != WeightsFingerprint((root / "d" / "model.safetensors").string()));
+	// a missing file is a defined value, not an exception
+	REQUIRE(WeightsFingerprint((root / "nope").string()) == 0);
+
+	// ...and it must actually reach the key: same graph bytes, different weights.
+	const auto graph = Fnv1a64("one-shared-graph");
+	const auto regular = MxrCacheStem("/w/graph_migraphx_tabpfn25_classification.onnx", graph, fa);
+	const auto real =
+	    MxrCacheStem("/w/graph_migraphx_tabpfn25_classification.onnx", graph,
+	                 WeightsFingerprint((root / "c" / "model.safetensors").string()));
+	const auto regular_elsewhere = MxrCacheStem("/other/graph_migraphx_tabpfn25_classification.onnx", graph,
+	                                            WeightsFingerprint((root / "b" / "model.safetensors").string()));
+	REQUIRE(regular != real);              // the bug
+	REQUIRE(regular == regular_elsewhere); // sharing across machines still works
+	fs::remove_all(root);
+}
+
 TEST_CASE("mxr cache key: stem extraction handles plain names and extensionless paths", "[tabfm][plugin_backend]") {
 	using anofox_tabfm_mxr::MxrCacheStem;
 	REQUIRE(MxrCacheStem("graph.onnx", 1).rfind("graph_", 0) == 0);
@@ -377,4 +446,32 @@ TEST_CASE("plugin_artifacts: sidecar parsing tolerates the formats sha256sum emi
 	REQUIRE(Sha256FromSidecar(hash + "  plug.so", "plug.so") == hash);
 	// uppercase digests compare equal to our lowercase hex
 	REQUIRE(Sha256FromSidecar(StringUtil::Upper(hash) + "  plug.so\n", "plug.so") == hash);
+}
+
+// An OLDER plugin refusing a NEWER graph must say what to do about it.
+//
+// The bundled TabPFN MIGraphX graphs take a fifth input, `n_rows`, that the
+// plugin binds only if the graph declares it. A plugin built before that binding
+// existed compiles the graph fine and then dies on the first predict with MIGraphX's
+// own "Parameter not found: n_rows" -- accurate, and useless to someone who has
+// never heard of n_rows. The likely victim is anyone who updates the extension
+// but keeps an old plugin in a custom anofox_tabfm_ep_path.
+TEST_CASE("plugin_backend: an old plugin refusing a newer graph says to update it", "[tabfm][plugin]") {
+	const string migraphx_msg = "MIGraphX inference failed on gfx1201: "
+	                            "/usr/src/debug/migraphx/migraphx/src/program.cpp:491: operator(): "
+	                            "Parameter not found: n_rows";
+
+	auto hint = PluginFailureHint("migraphx", migraphx_msg);
+	REQUIRE_FALSE(hint.empty());
+	// names the fix, both spellings, and the cause
+	REQUIRE(hint.find("tabfm_accelerate") != string::npos);
+	REQUIRE(hint.find("tabfm_download_runtime") != string::npos);
+	REQUIRE(hint.find("n_rows") != string::npos);
+
+	// only the migraphx backend, and only for this failure: an unrelated
+	// migraphx error must not be blamed on the plugin version, and another
+	// backend that happens to mention n_rows is a different problem.
+	REQUIRE(PluginFailureHint("migraphx", "MIGraphX inference failed on gfx1201: out of memory").empty());
+	REQUIRE(PluginFailureHint("cuda", migraphx_msg).empty());
+	REQUIRE(PluginFailureHint("migraphx", "").empty());
 }

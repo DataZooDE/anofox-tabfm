@@ -249,8 +249,13 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 				SetError(err, err_len, "cannot read the graph for cache keying: " + backend->graph_path);
 				return nullptr;
 			}
-			backend->model_tag =
-			    anofox_tabfm_mxr::MxrCacheStem(backend->graph_path, anofox_tabfm_mxr::Fnv1a64(bytes));
+			// Graph content AND the weights it will read: a graph is weight-free, so
+			// two models sharing one byte-identical graph (tabpfn-v2-5 and
+			// tabpfn-v2-5-real) would otherwise share a compiled program that has
+			// one of them baked in. See tabfm_mxr_cache_key.hpp.
+			backend->model_tag = anofox_tabfm_mxr::MxrCacheStem(
+			    backend->graph_path, anofox_tabfm_mxr::Fnv1a64(bytes),
+			    anofox_tabfm_mxr::DirWeightsFingerprint(backend->weights_dir));
 		}
 		return backend.release();
 	} catch (const std::exception &e) {
