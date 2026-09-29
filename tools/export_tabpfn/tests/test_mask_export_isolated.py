@@ -36,47 +36,17 @@ def test_masked_export_in_a_fresh_process(tmp_path, config, arch, task):
 # was found only by bisecting every intermediate tensor. This is the structural
 # guard: an integer Div in a masked graph is the pattern, whatever it feeds.
 
-_INT = None
-
-
 def int_divs(path):
-    """Integer Divs that depend on RUNTIME DATA (x, y, train_size, n_rows, d).
+    """The shared guard, loaded from tools/ -- one definition, so CI's check of the
+    committed graphs and this check of freshly exported ones cannot drift apart."""
+    import importlib.util
+    import pathlib
 
-    Shape arithmetic is exempt: `num_padded_columns // features_per_group` is an
-    integer Div too, but its inputs come from Shape ops, which MIGraphX folds to
-    constants once the bucket shape is pinned -- it never reaches the GPU as a
-    computation. Only a Div reachable from a graph input through non-Shape ops
-    is evaluated on the device, so only that is the bug's pattern.
-    """
-    import onnx
-    from onnx import TensorProto as TP
-    from onnx import shape_inference
-
-    ints = {TP.INT64, TP.INT32, TP.INT16, TP.INT8, TP.UINT8, TP.UINT16, TP.UINT32, TP.UINT64}
-    m = onnx.load(str(path), load_external_data=False)
-    inferred = shape_inference.infer_shapes(m)
-    ty = {}
-    for vi in list(inferred.graph.value_info) + list(inferred.graph.input):
-        if vi.type.HasField("tensor_type"):
-            ty[vi.name] = vi.type.tensor_type.elem_type
-    for init in m.graph.initializer:
-        ty[init.name] = init.data_type
-    for n in m.graph.node:
-        if n.op_type == "Constant":
-            for a in n.attribute:
-                if a.name == "value":
-                    ty[n.output[0]] = a.t.data_type
-
-    tainted = {i.name for i in m.graph.input}
-    for n in m.graph.node:                      # nodes are in topological order
-        if n.op_type in ("Shape", "Size"):
-            continue                            # shape-only: constant at compile time
-        if any(i in tainted for i in n.input):
-            tainted.update(n.output)
-    return [(n.name, n.output[0]) for n in m.graph.node
-            if n.op_type == "Div"
-            and any(i in tainted for i in n.input)
-            and any(ty.get(i) in ints for i in n.input)]
+    tool = pathlib.Path(__file__).resolve().parents[2] / "check_migraphx_int_div.py"
+    spec = importlib.util.spec_from_file_location("check_migraphx_int_div", tool)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.int_divs(path)
 
 
 @pytest.mark.parametrize("config,arch", CASES)
