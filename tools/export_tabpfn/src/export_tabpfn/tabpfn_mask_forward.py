@@ -35,6 +35,13 @@ import tabpfn.architectures.tabpfn_v2_6 as v26
 from tabpfn.preprocessing.torch.ops import torch_nanmean
 
 from export_tabpfn import tabpfn_mask_patches as mp
+#: The exporter's ONNX-friendly replacements, imported and called DIRECTLY. Each is
+#: also installed on an architecture module by apply_module_patches, but only on the
+#: ONE architecture being exported, so reaching them through another architecture's
+#: module silently gets upstream's unexportable original. That bit twice in one
+#: afternoon (select_features, then the NaN/Inf indicator) and only showed up when an
+#: architecture was exported alone -- see tests/test_mask_export_isolated.py.
+from export_tabpfn.tabpfn_patched import _patched_nan_inf_indicator, _patched_select_features
 
 #: Set by the forward immediately before the blocks run. [C] bool over the
 #: columns the row attention sees (feature groups then the target column);
@@ -129,8 +136,13 @@ def _masked_rows_v2(model, x_RiBC, y_Ri, train, real, d):
     n_real = real.sum()
 
     x, G = v2._pad_and_reshape_feature_groups(x_RiBC, fpg)          # (Ri, B*G, F)
-    x = v2._remove_constant_features(x, _nonconstant(x, real, n_real))
-    indicator = v2._generate_nan_and_inf_indicator(x)
+    # v2._remove_constant_features would do this, but it calls its OWN module's
+    # select_features, which is only the fixed-width one if v2 was the patched
+    # architecture. Same trap as the 2.5 branch; spelled out so it cannot depend on
+    # which module the process happened to patch. (Fixed width, so the trailing
+    # zero-pad upstream applies is always zero columns.)
+    x = _patched_select_features(x, _nonconstant(x, real, n_real).to(torch.bool))
+    indicator = _patched_nan_inf_indicator(x)
 
     train_b = train.reshape(-1, 1, 1)
     nan = torch.full((), float("nan"), dtype=x.dtype, device=dev)
@@ -151,7 +163,7 @@ def _masked_rows_v2(model, x_RiBC, y_Ri, train, real, d):
     emb = model.add_column_embeddings(emb)
 
     y = torch.where(train_b, y_Ri.reshape(Ri, 1, 1), nan)
-    y_ind = v2._generate_nan_and_inf_indicator(y)
+    y_ind = _patched_nan_inf_indicator(y)
     y_mean = torch_nanmean(y, axis=0, include_inf=True)
     y_bad = torch.logical_or(torch.isnan(y), torch.isinf(y))
     y = torch.where(y_bad, y_mean.unsqueeze(0).expand_as(y), y)      # v2: no ceil
@@ -195,14 +207,20 @@ def _masked_rows_25(model, x_RiBC, y_Ri, train, real, d):
     keep = _keep_mask(x_RiBC, real, n_real, d)
     n_sel = keep.sum()
 
-    x = v26.select_features(x_RiBC, keep)                     # fixed width: kept first
+    # The exporter's fixed-width select_features, called DIRECTLY. Reaching it
+    # through an architecture module (v26.select_features) only works if THAT
+    # module happens to have been patched: apply_module_patches("v2.5") patches
+    # v2.5's, so a v2.5 export silently got upstream's data-dependent
+    # torch.all(sel) and failed. The gate never saw it because it patches all
+    # three modules up front.
+    x = _patched_select_features(x_RiBC, keep)                # fixed width: kept first
     # The exporter's select_features moves constants to the BACK but leaves their
     # values. Upstream removes them and pads groups with ZEROS, so a partly-real
     # group must hold zeros past n_sel, not the constant column's value.
     x = torch.where(torch.arange(H, device=dev).reshape(1, 1, H) < n_sel, x, torch.zeros_like(x))
 
     x_RiBgF, G = v26._pad_and_reshape_feature_groups(x, fpg)
-    indicator = v26._generate_nan_and_inf_indicator(x_RiBgF)
+    indicator = _patched_nan_inf_indicator(x_RiBgF)
 
     # -- 2. imputation + standard scaling over TRAIN rows -----------------------
     train_b = train.reshape(-1, 1, 1)
@@ -226,7 +244,7 @@ def _masked_rows_25(model, x_RiBC, y_Ri, train, real, d):
     # -- 4. targets: NaN outside the train rows, exactly as _prepare_targets ----
     y = y_Ri.reshape(Ri, 1, 1)
     y = torch.where(train_b, y, nan)
-    y_ind = v26._generate_nan_and_inf_indicator(y)
+    y_ind = _patched_nan_inf_indicator(y)
     y_mean = torch_nanmean(y, axis=0, include_inf=True)
     y_bad = torch.logical_or(torch.isnan(y), torch.isinf(y))
     y_imp = torch.where(y_bad, y_mean.unsqueeze(0).expand_as(y), y)
