@@ -173,7 +173,18 @@ def _masked_rows_v2(model, x_RiBC, y_Ri, train, real, d):
     x_BRCD = torch.cat([emb, emb_y[:, :, None]], dim=2)
 
     global _GROUP_KEEP
-    real_groups = torch.arange(G, device=dev) < ((d + fpg - 1) // fpg)
+    # Group j is real iff it holds at least one real column, i.e. j*fpg < n. That is
+    # `j < ceil(n / fpg)` without the division, and the division is the point:
+    # MIGraphX's GPU target evaluates the equivalent `j < (n + fpg - 1) // fpg`
+    # WRONG -- for n=8, fpg=3 it marks FOUR groups real instead of three -- while
+    # the ORT and MIGraphX-reference targets get it right, and materialising the
+    # quotient as its own output gives the right value too. It survived the parity
+    # gate (which never runs on a GPU), the ORT check and the label comparison,
+    # and showed up only as a 1-3% relative error in the final logits, traced by
+    # bisecting every intermediate tensor. Reproduced in ten lines; the
+    # multiply form and a float compare are both correct. Keep integer division
+    # out of anything the GPU evaluates.
+    real_groups = torch.arange(G, device=dev) * fpg < d
     _GROUP_KEEP = torch.cat([real_groups, torch.ones(1, dtype=torch.bool, device=dev)])
     mp.set_train_size(train.sum().reshape(1))
     try:
@@ -258,7 +269,18 @@ def _masked_rows_25(model, x_RiBC, y_Ri, train, real, d):
 
     # -- 5. the blocks, with the split and the group mask as values -------------
     global _GROUP_KEEP
-    real_groups = torch.arange(G, device=dev) < ((n_sel + fpg - 1) // fpg)
+    # Group j is real iff it holds at least one real column, i.e. j*fpg < n. That is
+    # `j < ceil(n / fpg)` without the division, and the division is the point:
+    # MIGraphX's GPU target evaluates the equivalent `j < (n + fpg - 1) // fpg`
+    # WRONG -- for n=8, fpg=3 it marks FOUR groups real instead of three -- while
+    # the ORT and MIGraphX-reference targets get it right, and materialising the
+    # quotient as its own output gives the right value too. It survived the parity
+    # gate (which never runs on a GPU), the ORT check and the label comparison,
+    # and showed up only as a 1-3% relative error in the final logits, traced by
+    # bisecting every intermediate tensor. Reproduced in ten lines; the
+    # multiply form and a float compare are both correct. Keep integer division
+    # out of anything the GPU evaluates.
+    real_groups = torch.arange(G, device=dev) * fpg < n_sel
     _GROUP_KEEP = torch.cat([real_groups, torch.ones(1, dtype=torch.bool, device=dev)])
     mp.set_train_size((train.sum() + n_think).reshape(1))
     try:
