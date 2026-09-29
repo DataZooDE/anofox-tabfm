@@ -35,9 +35,13 @@ class MaskExportWrapper(ExportWrapper):
         xt = x.permute(1, 0, 2)                       # [T, 1, H]
         y_R = torch.nan_to_num(y[0], nan=0.0, posinf=0.0, neginf=0.0)
         T = xt.shape[0]
-        ts = train_size.reshape(())
-        nr = n_rows.reshape(())
-        dd = d.reshape(())
+        # Indexing, NOT .reshape(()): a Reshape to an empty dims list exports as a
+        # Reshape whose target is [] and MIGraphX reads that as ZERO elements,
+        # rejecting the graph ("reshape has 0 elements whereas the input has 1").
+        # The same trap is documented in tabpfn_mask_patches.context_row_mask.
+        ts = train_size[0]
+        nr = n_rows[0]
+        dd = d[0]
 
         if self.task == "regression":
             train = torch.arange(T, device=xt.device) < ts

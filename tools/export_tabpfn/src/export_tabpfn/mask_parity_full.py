@@ -26,6 +26,7 @@ import sys
 
 import torch
 
+import tabpfn.architectures.tabpfn_v2 as v2
 import tabpfn.architectures.tabpfn_v2_5 as v25
 import tabpfn.architectures.tabpfn_v2_6 as v26
 
@@ -39,7 +40,7 @@ from export_tabpfn.tabpfn_patched import (ExportWrapper, apply_module_patches,
 
 #: Captured before anything installs a patch.
 _UPSTREAM = {(m, k): getattr(m, k).forward
-             for m in (v25, v26) for k in ("AlongColumnAttention", "AlongRowAttention")}
+             for m in (v2, v25, v26) for k in ("AlongColumnAttention", "AlongRowAttention")}
 
 #: Upstream's own select_features, captured before apply_module_patches replaces
 #: it. The exporter's patched one keeps a constant column (moved to the back, value
@@ -49,7 +50,7 @@ _UPSTREAM = {(m, k): getattr(m, k).forward
 #: computes" when a constant column is present. This is.
 _TRUE_SELECT = opsmod.select_features
 
-ARCHES = (("v2.5", "fixture25"), ("v2.6", "fixture26"))
+ARCHES = (("v2", "fixture"), ("v2.5", "fixture25"), ("v2.6", "fixture26"))
 TASKS = ("classification", "regression")
 
 # (real rows, train rows, real features, bucket rows, bucket features, constant col?)
@@ -66,11 +67,11 @@ TOL = 1e-4
 def _restore_upstream():
     for (mod, name), fwd in _UPSTREAM.items():
         getattr(mod, name).forward = fwd
-    opsmod.select_features = v25.select_features = v26.select_features = _TRUE_SELECT
+    opsmod.select_features = v2.select_features = v25.select_features = v26.select_features = _TRUE_SELECT
 
 
 def _use_patched_select():
-    for arch in ("v2.5", "v2.6"):
+    for arch in ("v2", "v2.5", "v2.6"):
         apply_module_patches(arch)
 
 
@@ -169,47 +170,64 @@ def _all_cases(arch, cfgname, task):
 
 
 def _controls() -> int:
-    """Each must be CAUGHT (the comparison must move) or the gate is blind."""
-    arch, cfgname, task = "v2.6", "fixture26", "classification"
-    caught = []
+    """Each must be CAUGHT on every architecture it applies to, or the gate is blind.
 
-    # 1. group mask neutralised: padded feature groups become real tokens.
-    real = mf._patched_along_row_forward
+    Run per architecture, not once: v2 has its own forward (constant detection per
+    group slot, group count from `d`), so a control that only ever ran against
+    v2.6 proves nothing about v2's code. This gate passed v2 on the first try,
+    which is exactly when to check it could have failed.
+    """
+    import export_tabpfn.tabpfn_mask_patches as mp
+
+    real_row = mf._patched_along_row_forward
+    orig_nc = mf._nonconstant
+    orig_keep = mf._keep_mask
+    orig_norm = mf._masked_normalize_groups
+    saved_neg = mp.NEG_INF
 
     def no_group_mask(self, x):
         saved = mf._GROUP_KEEP
         mf._GROUP_KEEP = torch.ones_like(saved)
         try:
-            return real(self, x)
+            return real_row(self, x)
         finally:
             mf._GROUP_KEEP = saved
 
-    mf._patched_along_row_forward = no_group_mask
-    caught.append(("group mask neutralised", _all_cases(arch, cfgname, task)[0]))
-    mf._patched_along_row_forward = real
+    def padded_nonconstant(x, real, n_real):
+        return orig_nc(x, torch.ones_like(real), torch.tensor(real.shape[0]))
 
-    # 2. constant-feature detection over the PADDED height, i.e. n_rows ignored.
-    orig_keep = mf._keep_mask
-    mf._keep_mask = lambda x, real, n_real, d: orig_keep(x, torch.ones_like(real), n_real, d)
-    caught.append(("constant detection over padded rows", _all_cases(arch, cfgname, task)[0]))
-    mf._keep_mask = orig_keep
+    # name, architectures it applies to, install, restore
+    every = ("v2", "v2.5", "v2.6")
+    later = ("v2.5", "v2.6")
+    controls = [
+        ("group mask neutralised", every,
+         lambda: setattr(mf, "_patched_along_row_forward", no_group_mask),
+         lambda: setattr(mf, "_patched_along_row_forward", real_row)),
+        ("column attention mask neutralised", every,
+         lambda: setattr(mp, "NEG_INF", 0.0),
+         lambda: setattr(mp, "NEG_INF", saved_neg)),
+        ("real-row counts ignored (padded height)", every,
+         lambda: setattr(mf, "_nonconstant", padded_nonconstant),
+         lambda: setattr(mf, "_nonconstant", orig_nc)),
+        ("constant detection over padded rows", later,
+         lambda: setattr(mf, "_keep_mask",
+                         lambda x, real, n_real, d: orig_keep(x, torch.ones_like(real), n_real, d)),
+         lambda: setattr(mf, "_keep_mask", orig_keep)),
+    ]
+    arch_cfg = {"v2": "fixture", "v2.5": "fixture25", "v2.6": "fixture26"}
 
-    # 2b. feature-group normalisation over the PADDED height.
-    orig = mf._masked_normalize_groups
-    mf._masked_normalize_groups = lambda x, f, r, n: orig(x, f, torch.ones_like(r), torch.tensor(r.shape[0]))
-    caught.append(("normalisation over padded rows", _all_cases(arch, cfgname, task)[0]))
-    mf._masked_normalize_groups = orig
-
-    # 3. key bias neutralised in the column attention: queries see queries.
-    import export_tabpfn.tabpfn_mask_patches as mp
-    saved = mp.NEG_INF
-    mp.NEG_INF = 0.0
-    caught.append(("column attention mask neutralised", _all_cases(arch, cfgname, task)[0]))
-    mp.NEG_INF = saved
-
-    blind = [n for n, r in caught if r < TOL * 10]
-    for n, r in caught:
-        print(f"control: {n:38} rel={r:.3e} {'caught' if r >= TOL * 10 else 'NOT CAUGHT'}")
+    blind = []
+    for name, archs, install, restore in controls:
+        for arch in archs:
+            install()
+            try:
+                worst = _all_cases(arch, arch_cfg[arch], "classification")[0]
+            finally:
+                restore()
+            caught = worst >= TOL * 10
+            print(f"control: {name:42} {arch:5s} rel={worst:.3e} {'caught' if caught else 'NOT CAUGHT'}")
+            if not caught:
+                blind.append(f"{name} [{arch}]")
     if blind:
         print(f"GATE IS BLIND to: {', '.join(blind)}")
         return 2

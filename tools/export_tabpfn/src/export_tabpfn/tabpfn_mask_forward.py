@@ -29,6 +29,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
+import tabpfn.architectures.tabpfn_v2 as v2
 import tabpfn.architectures.tabpfn_v2_5 as v25
 import tabpfn.architectures.tabpfn_v2_6 as v26
 from tabpfn.preprocessing.torch.ops import torch_nanmean
@@ -68,23 +69,27 @@ def _patched_along_row_forward(self, x_BrSE):
 
 
 def apply_mask_patches() -> None:
-    """Install the masked attention (both kinds) on both 2.5-line modules."""
-    for mod in (v25, v26):
+    """Install the masked attention (both kinds) on the v2 and 2.5-line modules."""
+    for mod in (v2, v25, v26):
         mp.apply_mask_patches(mod)
         mod.AlongRowAttention.forward = _patched_along_row_forward
 
 
-def _masked_normalize_groups(x_RiBF, features_per_group, real_rows, n_real):
-    """`_normalize_feature_groups` counting only REAL rows.
+def _nonconstant(x, real, n_real):
+    """True where a column is NOT constant over the REAL rows.
 
     Upstream compares every row against row 0 and tests the count against Ri - 1.
     With padding, Ri is the bucket height, so a constant column would look
     non-constant (the padded rows differ from row 0) -- hence `n_real`.
     """
-    eq = x_RiBF[1:] == x_RiBF[0]
-    valid = real_rows[1:].reshape(-1, 1, 1)
-    count = (eq & valid).sum(0)
-    non_constant_mask = count != (n_real - 1)
+    eq = x[1:] == x[0]
+    valid = real[1:].reshape(-1, 1, 1)
+    return (eq & valid).sum(0) != (n_real - 1)
+
+
+def _masked_normalize_groups(x_RiBF, features_per_group, real_rows, n_real):
+    """`_normalize_feature_groups` counting only REAL rows."""
+    non_constant_mask = _nonconstant(x_RiBF, real_rows, n_real)
     used = torch.clip(non_constant_mask.sum(-1).unsqueeze(-1), min=1).to(x_RiBF.device)
     scale = features_per_group / used.to(x_RiBF.dtype)
     x_RiBF = x_RiBF * torch.sqrt(scale)
@@ -110,7 +115,70 @@ def _keep_mask(x_RiBC, real, n_real, d):
     return keep & (torch.arange(H, device=x_RiBC.device) < d).reshape(1, H)
 
 
+def _masked_rows_v2(model, x_RiBC, y_Ri, train, real, d):
+    """TabPFN v2: the same conversion in v2's order of operations.
+
+    v2 differs from the 2.5 line in ways that matter here: it GROUPS features
+    first and removes constants afterwards, per group slot; it has no thinking
+    rows; and it does not ceil imputed class targets. The number of real feature
+    groups therefore comes from `d` directly rather than from a constant count.
+    """
+    dev = x_RiBC.device
+    Ri, B, H = x_RiBC.shape
+    fpg = model.features_per_group
+    n_real = real.sum()
+
+    x, G = v2._pad_and_reshape_feature_groups(x_RiBC, fpg)          # (Ri, B*G, F)
+    x = v2._remove_constant_features(x, _nonconstant(x, real, n_real))
+    indicator = v2._generate_nan_and_inf_indicator(x)
+
+    train_b = train.reshape(-1, 1, 1)
+    nan = torch.full((), float("nan"), dtype=x.dtype, device=dev)
+    means = torch_nanmean(torch.where(train_b, x, nan), axis=0, include_inf=True)
+    bad = torch.logical_or(torch.isnan(x), torch.isinf(x))
+    x = torch.where(bad, means.unsqueeze(0).expand_as(x), x)
+
+    fit = model.standard_scaler.fit(torch.where(train_b, x, nan))
+    fit["std"] = torch.where(train.sum() == 1, torch.ones_like(fit["std"]), fit["std"])
+    x = model.standard_scaler.transform(x, fitted_cache=fit)
+
+    nc = _nonconstant(x, real, n_real)
+    used = torch.clip(nc.sum(-1, keepdim=True), min=1)
+    x = v2._normalize_feature_groups(x, fpg, nc, used)
+
+    x = torch.cat([x, indicator], dim=-1).to(model.feature_group_embedder.weight.dtype)
+    emb = model.feature_group_embedder(x).unflatten(1, [B, G]).transpose(0, 1)
+    emb = model.add_column_embeddings(emb)
+
+    y = torch.where(train_b, y_Ri.reshape(Ri, 1, 1), nan)
+    y_ind = v2._generate_nan_and_inf_indicator(y)
+    y_mean = torch_nanmean(y, axis=0, include_inf=True)
+    y_bad = torch.logical_or(torch.isnan(y), torch.isinf(y))
+    y = torch.where(y_bad, y_mean.unsqueeze(0).expand_as(y), y)      # v2: no ceil
+    y = torch.cat([y, y_ind], dim=-1).to(model.target_embedder.weight.dtype)
+    emb_y = model.target_embedder(y).transpose(0, 1)
+
+    x_BRCD = torch.cat([emb, emb_y[:, :, None]], dim=2)
+
+    global _GROUP_KEEP
+    real_groups = torch.arange(G, device=dev) < ((d + fpg - 1) // fpg)
+    _GROUP_KEEP = torch.cat([real_groups, torch.ones(1, dtype=torch.bool, device=dev)])
+    mp.set_train_size(train.sum().reshape(1))
+    try:
+        for block in model.blocks:
+            x_BRCD, _ = block([x_BRCD], None, None)
+    finally:
+        _GROUP_KEEP = None
+    return model.output_projection(x_BRCD[:, :, -1].transpose(0, 1))
+
+
 def masked_rows(model, x_RiBC, y_Ri, train, real, d):
+    if isinstance(model, v2.TabPFNV2):
+        return _masked_rows_v2(model, x_RiBC, y_Ri, train, real, d)
+    return _masked_rows_25(model, x_RiBC, y_Ri, train, real, d)
+
+
+def _masked_rows_25(model, x_RiBC, y_Ri, train, real, d):
     """Logits for every row of a padded sequence. Returns [Ri, B, C_out].
 
     `train` and `real` are [Ri] bool tensors, so the same code serves the plain
