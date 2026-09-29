@@ -1,6 +1,6 @@
 # TabPFN on ROCm — what the masked graph has to reproduce
 
-Status: **v2, v2.5, v2.6 converted and gated; v2.6 classification measured end to end on ROCm; v3 not started; nothing bundled or released.** The attention layer was
+Status: **v2, v2.5, v2.6 converted, gated, and proven end to end on ROCm in both tasks; v3 not started; nothing bundled or released.** The attention layer was
 proven exact in the spike (docs/ROCM_TABDPT_SPIKE.md, tools/export_tabpfn
 `tabpfn_mask_patches.py`, ~2x cost). This is the inventory of everything else,
 made from reading tabpfn 2.x/3 source rather than from the spike.
@@ -91,6 +91,44 @@ fitted and query accuracy are both 1.0 on CPU and GPU.
 
 About 4.9x and ~40x less CPU. First call on a bucket compiles for **568 s**.
 One shape only; the ratio should improve with size but that is unmeasured.
+
+## All six proven on the GPU (gfx1201, released v2026.09.26 CPU as reference)
+
+Same data, warm calls, 128 rows x 16 features. Agreement is over EVERY row,
+context and query. Classification: label disagreements; regression: max |diff|.
+
+| model | task | label / value agreement | CPU warm | ROCm warm | speedup | first-call compile |
+|---|---|---|---|---|---|---|
+| v2   | cls | 0/30 query, 0/70 context | ~0.50 s | ~0.052 s | ~10x | 177 s |
+| v2   | reg | max 9e-6, corr 1.0       | ~1.5 s  | ~0.053 s | ~28x | 213 s |
+| v2.5 | cls | 0/30 query, 0/70 context | ~0.41 s | ~0.10 s  | ~4x  | 585 s |
+| v2.5 | reg | max 3.7e-3, corr 0.999999| ~0.34 s | ~0.066 s | ~5x  | 329 s |
+| v2.6 | cls | 0/30 query, 0/70 context | ~0.35 s | ~0.072 s | ~4.9x | 568 s |
+| v2.6 | reg | max 3.4e-2, corr 0.99999 | ~0.48 s | ~0.10 s  | ~4.8x | 533 s |
+
+**The numeric deviation is real and not yet explained.** Labels agree everywhere,
+but class PROBABILITIES on v2.6 differ from the CPU by up to 0.05 (mean 0.001),
+and regression by up to 0.034 on a target range of 4.8. ORT running the same
+masked graph matches PyTorch to 3e-6, so the gap is the GPU. It tracks the
+architecture, not the conversion: v2 is essentially exact (9e-6), v2.5 is 4e-3,
+v2.6 is 3e-2.
+
+Ruled out by measurement, not by argument:
+* **Padding.** Data that exactly fills its bucket (128x64, zero padding) still
+  shows max 0.007 / mean 0.0009 on v2.6.
+* **MIGraphX fast_math** (which defaults ON and rewrites erf-GELU). A plugin built
+  with `set_fast_math(false)`, compiled fresh into its own cache, gives the SAME
+  probabilities to six digits.
+* **RMSNorm alone.** v2.5 uses LayerNorm like v2 but still deviates by 4e-3.
+
+Not ruled out: depth/accumulation (v2.5 and v2.6 are deeper), the thinking rows,
+a MIGraphX fusion. `migraphx-driver verify` against MIGraphX's own reference
+implementation would separate kernel numerics from anything model-side.
+
+Two practical notes. The compile cost is per (rows, features) bucket and is large
+for the deeper models (330-585 s; v2 is 177-213 s), so users pay it once per
+bucket they touch -- `tabfm_gpu_precompile` exists for that. And the regression
+fitted values agree with the CPU's to the same tolerance as the query rows.
 
 ## Things found along the way that will bite the next person
 
