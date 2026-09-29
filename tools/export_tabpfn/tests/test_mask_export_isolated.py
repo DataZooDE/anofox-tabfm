@@ -61,3 +61,49 @@ def test_masked_graph_has_no_integer_division(tmp_path, config, arch):
     bad = int_divs(g)
     assert not bad, (f"{arch}: integer Div in a masked graph {bad[:4]} -- MIGraphX's GPU target "
                      f"miscomputes floor-division-derived comparisons; use a multiply/float form")
+
+
+# ---------------------------------------------------------------------------
+# No Reshape to an empty shape.
+#
+# `t.reshape(())` exports as a Reshape whose target is [], and MIGraphX reads that
+# as ZERO elements and refuses to parse the graph ("reshape has 0 elements whereas
+# the input has 1"). ORT accepts it, so neither the parity gate nor an ORT run can
+# see it -- it appears only when the GPU backend first loads the graph. It was hit
+# once for the 2.5 line and again for v3. Index a scalar with `[0]` instead.
+
+def scalar_reshapes(path):
+    import onnx
+    import math
+
+    m = onnx.load(str(path), load_external_data=False)
+    # A shape can be an initializer or a Constant node, and a Constant carries its
+    # value as a tensor (`value`) OR as a list (`value_ints`). The empty target of
+    # `reshape(())` arrives as `value_ints = []`; reading only `value` made this
+    # guard pass on the very graph MIGraphX rejected.
+    # Dims, not values: the weights are external data and may be deleted.
+    sizes = {i.name: math.prod(i.dims) for i in m.graph.initializer}
+    for n in m.graph.node:
+        if n.op_type == "Constant":
+            for a in n.attribute:
+                if a.name == "value":
+                    sizes[n.output[0]] = math.prod(a.t.dims)
+                elif a.name in ("value_ints", "value_floats", "value_strings"):
+                    sizes[n.output[0]] = len(getattr(a, a.name[len("value_"):]))
+                elif a.name in ("value_int", "value_float", "value_string"):
+                    sizes[n.output[0]] = 1
+    return [n.name or n.output[0] for n in m.graph.node
+            if n.op_type == "Reshape" and sizes.get(n.input[1]) == 0]
+
+
+@pytest.mark.parametrize("config,arch", CASES)
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_masked_graph_has_no_scalar_reshape(tmp_path, config, arch, task):
+    r = subprocess.run(
+        [sys.executable, "-m", "export_tabpfn.cli", "--task", task, "--config", config,
+         "--contract", "mask", "--skip-parity", "--out", str(tmp_path)],
+        capture_output=True, text=True, timeout=900)
+    assert r.returncode == 0, r.stderr[-1500:]
+    g = next(tmp_path.glob("graph_mask_*.onnx"))
+    bad = scalar_reshapes(g)
+    assert not bad, f"{arch} {task}: Reshape to [] (MIGraphX reads it as 0 elements): {bad[:5]}"

@@ -183,7 +183,10 @@ def masked_rows_v3(model, x_RiBC, y_Ri, train, real, d):
     # -- 2. the target, over the train rows only --------------------------------
     y = y_Ri.reshape(Ri)
     finite = torch.isfinite(y)
-    y_mean = _masked_impute_mean(y.reshape(Ri, 1), train.reshape(Ri, 1)).reshape(())
+    # Indexed, NOT .reshape(()): a Reshape to an empty dims list makes MIGraphX read
+    # ZERO elements and refuse the graph; ORT accepts it, so only the GPU sees it
+    # (tests/test_mask_export_isolated.py::test_masked_graph_has_no_scalar_reshape).
+    y_mean = _masked_impute_mean(y.reshape(Ri, 1), train.reshape(Ri, 1))[0]
     y_imp = torch.where(finite, y, y_mean)
     if clf:
         y_imp = torch.where(finite, y_imp, y_imp.ceil())      # classes: ceil the imputed
