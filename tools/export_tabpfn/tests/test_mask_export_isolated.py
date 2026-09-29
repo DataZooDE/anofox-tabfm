@@ -107,3 +107,45 @@ def test_masked_graph_has_no_scalar_reshape(tmp_path, config, arch, task):
     g = next(tmp_path.glob("graph_mask_*.onnx"))
     bad = scalar_reshapes(g)
     assert not bad, f"{arch} {task}: Reshape to [] (MIGraphX reads it as 0 elements): {bad[:5]}"
+
+
+# ---------------------------------------------------------------------------
+# No matmul with a contraction dimension of 1.
+#
+# v3's softmax-scaling MLP starts with Linear(1, n) applied to log(n), a [1,1] input.
+# Exported as a K=1 matmul feeding a broadcast Mul, it makes MIGraphX's GPU pipeline
+# die in `simplify_reshapes` ("cannot create std::vector larger than max_size()", an
+# assertion in find_concat_transpose in debug builds) -- at every feature width tried,
+# so it is not a size coincidence. ORT and the MIGraphX reference target are fine, so
+# neither the parity gate nor an ORT run can see it. The elementwise form is
+# bit-identical. Reproduced standalone in ~20 lines; `lognexp` (no matmul) compiles.
+
+def k1_matmuls(path):
+    """Gemm/MatMul (directly or through a Transpose) applied to a [n, 1] weight."""
+    import onnx
+
+    m = onnx.load(str(path), load_external_data=False)
+    dims = {i.name: list(i.dims) for i in m.graph.initializer}
+    k1 = {n for n, d in dims.items() if len(d) == 2 and d[1] == 1}
+    via = {}
+    for n in m.graph.node:
+        if n.op_type == "Transpose" and n.input[0] in k1:
+            via[n.output[0]] = n.input[0]
+    bad = []
+    for n in m.graph.node:
+        if n.op_type in ("Gemm", "MatMul") and any(i in k1 or i in via for i in n.input):
+            bad.append(n.name or n.output[0])
+    return bad
+
+
+@pytest.mark.parametrize("config,arch", CASES)
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_masked_graph_has_no_k1_matmul(tmp_path, config, arch, task):
+    r = subprocess.run(
+        [sys.executable, "-m", "export_tabpfn.cli", "--task", task, "--config", config,
+         "--contract", "mask", "--skip-parity", "--out", str(tmp_path)],
+        capture_output=True, text=True, timeout=900)
+    assert r.returncode == 0, r.stderr[-1500:]
+    g = next(tmp_path.glob("graph_mask_*.onnx"))
+    bad = k1_matmuls(g)
+    assert not bad, f"{arch}: matmul with a contraction dim of 1 (MIGraphX GPU compile dies): {bad[:5]}"

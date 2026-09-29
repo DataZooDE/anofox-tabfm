@@ -49,6 +49,33 @@ def _bias(keep, like):
     return torch.where(keep, zero, neg).reshape(1, 1, 1, -1)
 
 
+def _linear_k1(lin, x):
+    """`nn.Linear(1, n)` as an elementwise multiply: x[..., 1] -> [..., n].
+
+    Exactly what the layer computes, but without a matmul whose contraction
+    dimension is 1. Exported as a matmul it feeding a broadcast Mul kills MIGraphX's
+    GPU compile in `simplify_reshapes` ("cannot create std::vector larger than
+    max_size()"); ORT and the reference target are fine, so only the GPU sees it.
+    Guarded by tests/test_mask_export_isolated.py::test_masked_graph_has_no_k1_matmul.
+    """
+    y = x * lin.weight.reshape(-1)
+    return y if lin.bias is None else y + lin.bias
+
+
+def _scale_queries(scaling, q_BSHD, n):
+    """v3.SoftmaxScalingMLP.forward, with its Linear(1, n) layer done elementwise.
+
+    q * base_mlp(log n) * (1 + tanh(query_mlp(q))), n being the REAL key count as a
+    tensor. Upstream's own `_safe_log_seqlen` is used for the log, so the value is the
+    same code path.
+    """
+    l0, act, l2 = scaling.base_mlp[0], scaling.base_mlp[1], scaling.base_mlp[2]
+    logn = v3._safe_log_seqlen(n, q_BSHD.device, q_BSHD.dtype).reshape(1, 1)
+    base = l2(act(_linear_k1(l0, logn))).view(1, 1, scaling.num_heads, scaling.head_dim)
+    modulation = 1 + torch.tanh(scaling.query_mlp(q_BSHD))
+    return q_BSHD * (base * modulation)
+
+
 def _attend(q_BSHD, k_BKJD, v_BKJD, keep, scaling=None, n=None):
     """Upstream `_batched_scaled_dot_product_attention` with the keys masked.
 
@@ -58,7 +85,7 @@ def _attend(q_BSHD, k_BKJD, v_BKJD, keep, scaling=None, n=None):
     everywhere.
     """
     if scaling is not None:
-        q_BSHD = scaling(q_BSHD, n)
+        q_BSHD = _scale_queries(scaling, q_BSHD, n)
     q = q_BSHD.transpose(1, 2)
     k = k_BKJD.transpose(1, 2)
     v = v_BKJD.transpose(1, 2)
@@ -137,14 +164,24 @@ def _neighbour_index(H, d, shift, dev):
     return torch.clamp(j, min=0, max=H - 1)
 
 
-def _group(model, x_BRC, ind_BRC, d):
+def _group(model, x_RiBC, ind_RiBC, d):
+    """[B, Ri, H, G]: each column's grouped neighbours, from [Ri, B, H] inputs.
+
+    Gathered in the ORIGINAL row-major layout and transposed ONCE, after the
+    concatenation. The obvious order -- transpose to [B, Ri, H] first, gather, then
+    stack -- makes a Concat whose inputs are all Transposes, and MIGraphX's GPU
+    pipeline rewrites that in `find_concat_transpose`, which asserts
+    `s.transposed()` (simplify_reshapes.cpp:845) on this input. Release builds
+    surface it as `simplify_reshapes: cannot create std::vector larger than
+    max_size()`. The reference target never runs that pass, so only the GPU sees it.
+    """
     size = model.feature_group_size
-    H = x_BRC.shape[-1]
-    idx = [_neighbour_index(H, d, 2 ** i, x_BRC.device) for i in range(size)]
-    grouped = torch.stack([x_BRC[:, :, i] for i in idx], dim=-1)
-    if ind_BRC is not None:
-        grouped = torch.cat([grouped, torch.stack([ind_BRC[:, :, i] for i in idx], dim=-1)], dim=-1)
-    return grouped
+    H = x_RiBC.shape[-1]
+    idx = [_neighbour_index(H, d, 2 ** i, x_RiBC.device) for i in range(size)]
+    grouped = torch.stack([x_RiBC[:, :, i] for i in idx], dim=-1)                  # [Ri,B,H,G]
+    if ind_RiBC is not None:
+        grouped = torch.cat([grouped, torch.stack([ind_RiBC[:, :, i] for i in idx], dim=-1)], dim=-1)
+    return grouped.transpose(0, 1)
 
 
 def _masked_impute_mean(x, valid):
@@ -177,8 +214,7 @@ def masked_rows_v3(model, x_RiBC, y_Ri, train, real, d):
     fit["std"] = torch.where(n_train == 1, torch.ones_like(fit["std"]), fit["std"])
     x = model.standard_scaler.transform(x, fitted_cache=fit)
 
-    x_g = _group(model, x.transpose(0, 1),
-                 None if indicator is None else indicator.transpose(0, 1), d)     # [B,Ri,H,G]
+    x_g = _group(model, x, indicator, d)                                              # [B,Ri,H,G]
 
     # -- 2. the target, over the train rows only --------------------------------
     y = y_Ri.reshape(Ri)
@@ -195,7 +231,7 @@ def masked_rows_v3(model, x_RiBC, y_Ri, train, real, d):
     y_use = torch.where(train, y_imp, torch.zeros_like(y_imp))
 
     def embed_y(enc):
-        return enc(y_use.reshape(1, Ri)) if clf else enc(y_use.reshape(1, Ri, 1))
+        return enc(y_use.reshape(1, Ri)) if clf else _linear_k1(enc, y_use.reshape(1, Ri, 1))
 
     train_row = train.reshape(1, Ri, 1)
 
