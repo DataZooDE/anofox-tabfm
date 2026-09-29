@@ -523,7 +523,7 @@ flag, but published by a separate submission that can trail a release). See
 |---|---|---|---|
 | CPU | Linux x64/arm64, macOS **arm64**, Windows x64 | all 7 built-ins | CI suites + install-smoke with inference on every platform |
 | CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | **all 7 built-ins** | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max |
-| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1, mitra, **tabdpt** — `SELECT * FROM tabfm_backends()` says which, and why not for the rest | RX 9070 XT: parity, concurrency, user workflow; tabdpt 5.6x CPU with identical predictions |
+| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1, mitra, **tabdpt**, **tabpfn-v2, tabpfn-v2-5, tabpfn-v2-6** (both tasks) — `SELECT * FROM tabfm_backends()` says which, and why not for the rest | RX 9070 XT: parity, concurrency, user workflow; tabdpt 5.6x CPU with identical predictions; TabPFN v2/v2.5/v2.6 3.5-7x CPU wall-clock and ~40x less CPU time, every row agreeing with the CPU to float noise. **First call per (rows, features) bucket compiles for 2.5-9 min** — `CALL tabfm_gpu_precompile(...)` does it off the query path |
 | CoreML | — | — | **dropped** — MLX supersedes it on Apple Silicon ([why](docs/DYNAMIC_BACKENDS.md#phase-4--coreml--dropped-2026-09-19)) |
 | MLX (plugin) | macOS arm64 (Apple Silicon) | every model CPU serves (6 verified through SQL; tabfm-v1 via the graph harness) | Apple M3: 10 model×task pairs cpu-compared (0 disagreements), 4000-row stress, device/precision alternation |
 

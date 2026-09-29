@@ -6,6 +6,7 @@
 // single-task spec, v2 → a multi-task spec — with total back-compat.
 
 #include "catch.hpp"
+#include <set>
 
 #include "tabfm_model_spec.hpp"
 
@@ -570,4 +571,42 @@ TEST_CASE("servability: under 'auto' a vanished device falls to the CPU, which i
 	// A device explicitly requested by a DIFFERENT name is not this user's
 	// explicit request either.
 	REQUIRE(!VanishedDeviceMustThrow("cuda:0", "rocm"));
+}
+
+// tabfm_backends() must judge servability against the file the ENGINE will read.
+//
+// The engine tries the converted sibling `model.safetensors` FIRST when a model
+// declares a raw `.ckpt` (ResolveWeightsPath), because several checkpoints cannot
+// be injected as-is. tabfm_backends() used ListableArtifactPath, which returns the
+// declared file whenever it exists. So with the raw checkpoint AND the converted
+// weights on disk -- the normal state after convert_weights.py, which leaves the
+// ckpt in place -- the bundled graph's header was compared against a PICKLE and
+// the model was reported "does not match its weights". With only the converted
+// file on disk it was reported "weights not downloaded", while dispatch served it
+// from disk without complaint. Found the moment the TabPFN graphs were bundled:
+// before that no checkpoint-based model had a GPU graph to be wrongly judged.
+TEST_CASE("model_spec: the served artifact is the converted sibling, tried first", "[tabfm][model_spec]") {
+	using duckdb::anofox::ServedArtifactPath;
+	auto exists_in = [](std::set<std::string> present) {
+		return [present](const std::string &p) { return present.count(p) > 0; };
+	};
+	const std::string ckpt = "/c/m/classification/model.ckpt";
+	const std::string safe = "/c/m/classification/model.safetensors";
+
+	// both on disk: the engine reads the converted one
+	REQUIRE(ServedArtifactPath(ckpt, exists_in({ckpt, safe})) == safe);
+	// only the converted file (raw ckpt deleted, or never downloaded)
+	REQUIRE(ServedArtifactPath(ckpt, exists_in({safe})) == safe);
+	// only the raw checkpoint: nothing converted yet, so it is what would be read
+	REQUIRE(ServedArtifactPath(ckpt, exists_in({ckpt})) == ckpt);
+	// nothing
+	REQUIRE(ServedArtifactPath(ckpt, exists_in({})).empty());
+
+	// a manifest that already names a safetensors is authoritative, and its
+	// basename is never rewritten: several fixtures keep both tasks' weights in ONE
+	// directory under different names, and rewriting would silently load the
+	// classification weights for a regression request.
+	const std::string reg = "/c/m/model_regression.safetensors";
+	REQUIRE(ServedArtifactPath(reg, exists_in({reg, "/c/m/model.safetensors"})) == reg);
+	REQUIRE(ServedArtifactPath(reg, exists_in({"/c/m/model.safetensors"})).empty());
 }
