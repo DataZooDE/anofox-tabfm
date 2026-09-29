@@ -291,6 +291,14 @@ TabFMPluginStatus PluginRun(void *handle, const TabFMPluginRunInput *input, TabF
 		}
 		int64_t train_size = input->train_size;
 		int64_t d = input->d;
+		// The REAL row count, before padding to the bucket. Bound only when the
+		// compiled graph declares it. Models whose statistics run over every row
+		// (TabPFN: constant-feature detection, feature-group normalisation)
+		// cannot tell a padded row from a real query row -- both carry the -100
+		// label sentinel -- so without this the padding changes their answer.
+		// Graphs that do not declare it (tabfm-v1, mitra, tabdpt) are unaffected:
+		// unknown parameters are skipped below.
+		int64_t n_rows = input->t;
 
 		migraphx::program_parameters mparams;
 		auto pshapes = prog.get_parameter_shapes();
@@ -308,6 +316,8 @@ TabFMPluginStatus PluginRun(void *handle, const TabFMPluginRunInput *input, TabF
 				ptr = &train_size;
 			} else if (n == "d") {
 				ptr = &d;
+			} else if (n == "n_rows") {
+				ptr = &n_rows;
 			} else {
 				continue; // e.g. a scratch/output parameter migraphx allocates itself
 			}
