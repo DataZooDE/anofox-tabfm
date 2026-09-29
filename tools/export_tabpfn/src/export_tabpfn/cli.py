@@ -35,7 +35,12 @@ def main(argv=None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
+    ap.add_argument("--contract", choices=["positional", "mask"], default="positional",
+                    help="positional: the split is the LENGTH of y (the shipped CPU/CUDA form). "
+                         "mask: y is full length and the split, real row count and real feature "
+                         "count arrive as values, so a fixed-shape MIGraphX compile can bucket it.")
     args = ap.parse_args(argv)
+    masked = args.contract == "mask"
 
     cfg = configs.get(args.config, task=args.task)
     # Each generation's graphs/maps get their own resource stem so they can ship
@@ -46,7 +51,8 @@ def main(argv=None) -> int:
     slug = ARCH_SLUGS[cfg.arch]
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    graph_path = out / f"graph_{slug}_{args.task}.onnx"
+    graph_path = out / (f"graph_mask_{slug}_{args.task}.onnx" if masked
+                        else f"graph_{slug}_{args.task}.onnx")
     map_path = out / f"tensor_map_{slug}_{args.task}.json"
     n_out = cfg.max_classes if args.task == "classification" else cfg.num_buckets
 
@@ -62,8 +68,12 @@ def main(argv=None) -> int:
           f"({time.time()-t0:.1f}s)", flush=True)
 
     t0 = time.time()
-    export.export_graph(model, graph_path, example=cfg.example,
-                        max_classes=cfg.max_classes, task=args.task)
+    if masked:
+        export.export_mask_graph(model, graph_path, example=cfg.example,
+                                 max_classes=cfg.max_classes, task=args.task)
+    else:
+        export.export_graph(model, graph_path, example=cfg.example,
+                            max_classes=cfg.max_classes, task=args.task)
     print(f"[export_tabpfn] dynamo export done ({time.time()-t0:.1f}s)", flush=True)
 
     t0 = time.time()
@@ -76,7 +86,19 @@ def main(argv=None) -> int:
                             safetensors_rel=f"{args.task}/model.safetensors")
 
     parity = None
-    if not args.skip_parity:
+    if masked and not args.skip_parity:
+        # check_parity feeds (x, y) only, which is the POSITIONAL contract; the
+        # masked graph declares three more inputs, so it would die with "Required
+        # inputs are missing" rather than tell us anything. Route to the masked
+        # gate, which compares against upstream on every real row.
+        from export_tabpfn.mask_parity_full import main as mask_gate
+        t0 = time.time()
+        rc = mask_gate()
+        print(f"[export_tabpfn] masked parity gate ({time.time()-t0:.1f}s): "
+              f"{'OK' if rc == 0 else 'FAIL'}", flush=True)
+        if rc != 0:
+            return 1
+    elif not args.skip_parity:
         t0 = time.time()
         parity = export.check_parity(graph_path, model, cfg.parity_shapes,
                                      max_classes=cfg.max_classes, task=args.task)

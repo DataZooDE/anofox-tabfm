@@ -102,7 +102,9 @@ def _keep_mask(x_RiBC, real, n_real, d):
     H = x_RiBC.shape[-1]
     same = (x_RiBC == x_RiBC[0:1]) | ~real.reshape(-1, 1, 1)
     keep = ~same[1:].all(0)
-    keep = torch.where(n_real <= 1, torch.ones_like(keep), keep)
+    # A logical OR, not torch.where: ORT's CPU kernel has no Where for bool, and
+    # `where(c, ones, keep)` is exactly `keep | c`.
+    keep = keep | (n_real <= 1)
     # Padded columns are never real, whatever the rows say (a one-row input makes
     # every column look non-constant, padded ones included).
     return keep & (torch.arange(H, device=x_RiBC.device) < d).reshape(1, H)
