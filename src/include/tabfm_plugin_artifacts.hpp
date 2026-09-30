@@ -35,7 +35,7 @@ namespace anofox {
 //! refuses a mismatch (tabfm_plugin_backend.cpp), so an older plugin cannot
 //! silently misbehave. It is NOT derived from the extension version, which
 //! would 404 on every dev or dirty build.
-static constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "v2026.09.26";
+static constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "v2026.09.30";
 
 //! Shared-library suffix for plugins on the platform being asked about.
 inline string PluginLibrarySuffix(const string &os) {
