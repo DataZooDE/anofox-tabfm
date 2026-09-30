@@ -345,10 +345,12 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		return out;
 	case GpuGraphSource::NONE:
 	default:
-		// The dominant case, and the one worth being precise about: nine of
-		// eleven catalog models have no MIGraphX graph because their context
-		// split is positional, which a fixed-shape compile cannot bucket
-		// (docs/ROCM_SINGLE_EVAL_POS.md).
+		// The case worth being precise about: a model whose context split is
+		// positional (it reads the split from y's length), which a fixed-shape
+		// compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). tabdpt and the
+		// whole TabPFN family (v2, v2.5, v2.6, v3) have had that split converted to
+		// a value and so no longer land here; tabicl-v2 and the orion models still
+		// do, and tabfm_backends() is the source of truth for which.
 		out.reason = "model '" + in.model + "' has no " + in.backend + "-servable graph for task '" + in.task_name +
 		             "': it declares no " + GpuGraphKindFor(in.backend) +
 		             (in.bundled_graph_exists ? " and the bundled GPU graph does not match its weights"
@@ -482,6 +484,33 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 		}
 	}
 	return "";
+}
+
+//! The file the ENGINE will actually read for a declared artifact, or "" when
+//! there is none. For a declared `.ckpt` that is the converted sibling
+//! `model.safetensors` if it exists -- tried FIRST, exactly as ResolveWeightsPath
+//! does -- and only then the declared file. A declared safetensors is
+//! authoritative and its basename is never rewritten (fixtures keep both tasks'
+//! weights in one directory under different names).
+//!
+//! Distinct from ListableArtifactPath on purpose: that one answers "what should
+//! tabfm_models() account this under" and returns the declared file whenever it
+//! exists. Using it to judge GPU servability compared a bundled graph's weights
+//! header against a raw pickle whenever both files were on disk -- the normal
+//! state after convert_weights.py.
+template <typename ExistsFn>
+string ServedArtifactPath(const string &declared_path, ExistsFn exists) {
+	const string suffix = ".ckpt";
+	const bool is_ckpt = declared_path.size() > suffix.size() &&
+	                     declared_path.compare(declared_path.size() - suffix.size(), suffix.size(), suffix) == 0;
+	if (is_ckpt) {
+		auto slash = declared_path.find_last_of('/');
+		auto sibling = declared_path.substr(0, slash + 1) + "model.safetensors";
+		if (exists(sibling)) {
+			return sibling;
+		}
+	}
+	return exists(declared_path) ? declared_path : string();
 }
 
 //! The path tabfm_models() should account a declared artifact under, or ""

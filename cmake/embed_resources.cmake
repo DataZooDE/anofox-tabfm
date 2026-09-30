@@ -42,9 +42,29 @@ set(_tabfm_inputs
     # out of the tensor map, which make_migraphx_graph.py refuses outright.
     "graph_migraphx_tabdpt_classification.onnx"
     "graph_migraphx_tabdpt_regression.onnx"
-    # Catalog ext graphs (CUDA + CPU low-memory). The rest of the
-    # single_eval_pos family still has no migraphx variant — see
-    # ExpectedWeightsHeaderShaFor's comment and docs/ROCM_SINGLE_EVAL_POS.md.
+    # TabPFN v2 / v2.5 / v2.6 MIGraphX graphs, both tasks (tools/export_tabpfn
+    # --contract mask; docs/ROCM_TABPFN_PLAN.md). Unlike tabdpt's they take a
+    # FIFTH input, `n_rows`, the real row count before bucket padding: TabPFN's
+    # constant-feature detection and feature-group normalisation compare every
+    # row against row 0, so a padded row changes the answer. The MIGraphX plugin
+    # binds it only when the graph declares it, so the older graphs are untouched
+    # -- and an OLDER PLUGIN refuses these ("Parameter not found: n_rows"), which
+    # the engine turns into an instruction to update it.
+    # tabpfn-v2-5-real reuses the 2.5 graphs (see BundledGpuGraphId).
+    # TabPFN-3 too, with two differences: it carries NO inline initializer at all
+    # (RoPE, so there is no positional table to keep inline), and its cold
+    # compile is the longest of the family, ~16 min per shape bucket on gfx1201.
+    "graph_migraphx_tabpfn_classification.onnx"
+    "graph_migraphx_tabpfn_regression.onnx"
+    "graph_migraphx_tabpfn25_classification.onnx"
+    "graph_migraphx_tabpfn25_regression.onnx"
+    "graph_migraphx_tabpfn26_classification.onnx"
+    "graph_migraphx_tabpfn26_regression.onnx"
+    "graph_migraphx_tabpfn3_classification.onnx"
+    "graph_migraphx_tabpfn3_regression.onnx"
+    # Catalog ext graphs (CUDA + CPU low-memory). Models with no migraphx
+    # variant are refused on ROCm by name — see ExpectedWeightsHeaderShaFor's
+    # comment, docs/ROCM_SINGLE_EVAL_POS.md and tabfm_backends().
     "graph_ext_tabpfn_classification.onnx"
     "graph_ext_tabpfn_regression.onnx"
     "graph_ext_tabpfn25_classification.onnx"

@@ -1363,9 +1363,9 @@ void ListModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 // tabfm_backends() — which device can serve which model, and why not
 //
 // The question "can model X run on device Y" had no answer short of trying it
-// and reading the error. That is a bad way to learn that nine of eleven models
-// cannot run on ROCm, and an impossible way to learn it for a model you have
-// not downloaded yet.
+// and reading the error. That is a bad way to learn that some models cannot run
+// on ROCm, and an impossible way to learn it for a model you have not
+// downloaded yet.
 //
 // A SEPARATE relation from tabfm_models() on purpose: that one is a *state*
 // relation (loaded, device, bytes) which every tools/gpu_test scenario filters
@@ -1456,7 +1456,28 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 			// dispatch was serving it from disk perfectly well.
 			auto wm = WeightsFromSpec(spec, task);
 			const auto base = wm.source_dir.empty() ? cache_dir + "/" + wm.CacheSlug(wm.revision) : wm.source_dir;
-			const bool downloaded = TaskWeightsComplete(fs, base, wm.files);
+			// "Downloaded" means the engine has something to read: the converted
+			// sibling if present, else the declared file. TaskWeightsComplete alone
+			// demands the DECLARED .ckpt, at its declared size, so a cache holding
+			// only converted weights (convert_weights.py deletes the transient
+			// checkpoint) read as "not downloaded" while dispatch served it fine.
+			// The declared-size integrity check still applies when the declared
+			// file is what will be read.
+			vector<string> served_paths;
+			bool downloaded = !wm.files.empty();
+			for (auto &f : wm.files) {
+				const auto declared = base + "/" + f.path;
+				const auto served = ServedArtifactPath(declared, [&](const string &c) { return fs.FileExists(c); });
+				if (served.empty()) {
+					downloaded = false;
+					break;
+				}
+				if (served == declared && !TaskWeightsComplete(fs, base, {f})) {
+					downloaded = false;
+					break;
+				}
+				served_paths.push_back(served);
+			}
 
 			for (auto &device : devices) {
 				BackendsRow row;
@@ -1514,11 +1535,8 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				// converter rule the engine uses instead; WeightsHeaderMatches
 				// itself ignores anything not named model.safetensors.
 				if (downloaded) {
-					for (auto &f : wm.files) {
-						const auto declared = base + "/" + f.path;
-						const auto actual =
-						    ListableArtifactPath(declared, [&](const string &c) { return fs.FileExists(c); });
-						if (!actual.empty() && WeightsHeaderMatches(fs, actual, spec.id, task)) {
+					for (auto &served : served_paths) {
+						if (WeightsHeaderMatches(fs, served, spec.id, task)) {
 							in.bundled_header_matches = true;
 							break;
 						}

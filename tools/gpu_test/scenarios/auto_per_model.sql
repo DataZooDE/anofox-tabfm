@@ -13,7 +13,7 @@
 -- consulted. Both are failures, and only printing SERVED_BY per model can tell
 -- them apart.
 --
--- The negative example is `tabpfn-v2`, and which model plays that part is NOT
+-- The negative example is `tabicl-v2`, and which model plays that part is NOT
 -- arbitrary. This file used `tabdpt` until the ROCm spike gave tabdpt a
 -- MIGraphX graph; from that commit on, both models resolved to rocm:0 and
 -- `AUTO_IS_PER_MODEL` printed **false** -- the scenario guarding the doctrine
@@ -22,6 +22,12 @@
 -- NONE at the same time, because there was no longer an unsupported row to
 -- explain. Verified by running it: mitra rocm:0, tabdpt rocm:0,
 -- AUTO_IS_PER_MODEL=false.
+--
+-- It has now changed hands three times: tabdpt, then tabpfn-v2 (when the TabPFN
+-- v2 / v2.5 / v2.6 graphs were bundled), then tabpfn-v3 (when its conversion
+-- landed -- docs/ROCM_TABPFN_PLAN.md). tabicl-v2 is now the cheapest model that
+-- still reads its context split from y's length, so it stays unservable until
+-- someone converts it; the orion models are the other candidates.
 --
 -- So when a model gains a GPU graph, check this file. The pair has to be one
 -- servable and one not, and the second half of that stops being true the day
@@ -54,16 +60,16 @@ FROM tabfm_models() WHERE loaded AND model = 'tabdpt';
 --    and must still return answers rather than erroring, because auto never
 --    promised the GPU for it. (Needs its weights present; see the catalog
 --    docs for the download + convert steps.)
-SELECT count(*) AS tabpfn_rows FROM tabfm_classify('ctx', 'label', model := 'tabpfn-v2');
-SELECT 'TABPFNV2_SERVED_BY=' || coalesce(max(device), 'NONE')
-FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v2';
+SELECT count(*) AS tabicl_rows FROM tabfm_classify('ctx', 'label', model := 'tabicl-v2');
+SELECT 'TABICL_SERVED_BY=' || coalesce(max(device), 'NONE')
+FROM tabfm_models() WHERE loaded AND model = 'tabicl-v2';
 
 -- 3. The two must DIFFER. If this prints false on a GPU box, per-model auto is
 --    not happening: either everything fell back to cpu, or the servability
 --    gate was skipped and tabdpt was sent somewhere it cannot run.
 SELECT 'AUTO_IS_PER_MODEL=' ||
        ((SELECT max(device) FROM tabfm_models() WHERE loaded AND model = 'mitra') <>
-        (SELECT max(device) FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v2'))::VARCHAR;
+        (SELECT max(device) FROM tabfm_models() WHERE loaded AND model = 'tabicl-v2'))::VARCHAR;
 
 -- 4. The machine-checkable invariant: no loaded model sits on a device its own
 --    capability row calls unsupported.
@@ -83,12 +89,12 @@ WHERE m.loaded AND b.supported IS NOT TRUE;
 --    model's task rows sorts highest, so the reason printed beside a
 --    CLASSIFICATION run can be the regression row's. Observed doing exactly
 --    that while picking this model.
-SELECT 'TABPFNV2_REASON=' || coalesce(max(reason), 'NONE')
+SELECT 'TABICL_REASON=' || coalesce(max(reason), 'NONE')
 FROM tabfm_backends()
-WHERE model = 'tabpfn-v2' AND task = 'classification' AND backend = 'rocm' AND NOT supported;
+WHERE model = 'tabicl-v2' AND task = 'classification' AND backend = 'rocm' AND NOT supported;
 
 -- 6. An explicit request still hard-errors instead of degrading. Uncomment on
 --    a ROCm box: this must raise, naming the model and the analysis, NOT
 --    return rows on the CPU.
 -- SET anofox_tabfm_device = 'rocm';
--- SELECT count(*) FROM tabfm_classify('ctx', 'label', model := 'tabpfn-v2');
+-- SELECT count(*) FROM tabfm_classify('ctx', 'label', model := 'tabicl-v2');

@@ -58,3 +58,24 @@ jobs:
             resources/graph_*.onnx \
             test/fixtures/graph_*.onnx \
             test/fixtures/*/graph_*.onnx
+
+  migraphx-no-int-div:
+    name: MIGraphX graphs do no integer division on runtime data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - run: pip install --quiet onnx
+
+      # MIGraphX's GPU target miscomputes an integer floor-division
+      # (`j < (n + f - 1) // f` marks four groups real where there are three),
+      # which ORT and MIGraphX's own reference target both get right. It cost a
+      # TabPFN-on-ROCm attempt a 1-3% relative error in the logits while every
+      # label agreed, and no CI runner has an AMD GPU to notice. The glob is the
+      # point: a NEW MIGraphX graph carrying the pattern fails here.
+      - name: No integer Div depends on runtime data
+        run: python tools/check_migraphx_int_div.py resources/graph_migraphx_*.onnx

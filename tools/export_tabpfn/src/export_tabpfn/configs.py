@@ -119,6 +119,33 @@ def fixture3() -> ExportConfig:
     )
 
 
+# The branches the released model takes that `fixture3` does not, at small dims:
+# test rows on ONE key-value head (`icl_num_kv_heads_test=1`), a feature group of 3
+# (shifts 1, 2, 4, so a narrow input wraps more than once), more than one block in
+# the distribution embedder and the aggregator (so the non-last-block loops run),
+# and the many-class decoder with softmax scaling and a class width that needs
+# padding to a multiple of the head dim (3 heads-dims for 4 classes -> 2 chunks).
+# Without this the masked forward could pass its gate while never running the
+# multi-query path -- which is exactly how a gate goes blind.
+_FIXTURE3R_KWARGS = dict(
+    embed_dim=32, nlayers=3, num_buckets=16,
+    dist_embed_num_blocks=2, dist_embed_num_heads=2, dist_embed_num_inducing_points=6,
+    feature_group_size=3, feat_agg_num_blocks=2, feat_agg_num_heads=2,
+    feat_agg_num_cls_tokens=2, feat_agg_rope_base=10000.0, use_rope=True,
+    icl_num_heads=2, icl_num_kv_heads=None, icl_num_kv_heads_test=1,
+    decoder_head_dim=3, decoder_num_heads=2, decoder_use_softmax_scaling=True,
+    softmax_scaling_mlp_hidden_dim=16,
+)
+
+
+def fixture3r() -> ExportConfig:
+    return ExportConfig(
+        name="fixture3r", model_kwargs=dict(_FIXTURE3R_KWARGS), arch="v3",
+        max_classes=4, num_buckets=16,
+        example=(12, 4, 8), parity_shapes=((32, 6, 20),),
+    )
+
+
 # Released TabPFN-3 dims, transcribed from the `config` block of
 # `Prior-Labs/tabpfn_3 :: tabpfn-v3-{classifier,regressor}-v3_default.ckpt`
 # (all 27 architecture fields; the checkpoint itself is never committed).
@@ -210,4 +237,5 @@ def get(name: str, task: str = "classification") -> ExportConfig:
     if name == "real3":
         return real3(task)
     return {"tiny": tiny, "fixture": fixture, "real": real, "fixture25": fixture25,
-            "fixture26": fixture26, "fixture3": fixture3}[name]()
+            "fixture26": fixture26, "fixture3": fixture3,
+            "fixture3r": fixture3r}[name]()

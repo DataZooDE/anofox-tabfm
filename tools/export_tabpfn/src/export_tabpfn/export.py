@@ -102,6 +102,43 @@ def export_graph(model, graph_path: pathlib.Path, *, example=(12, 5, 8),
     return wrapper
 
 
+def export_mask_graph(model, graph_path: pathlib.Path, *, example=(12, 5, 8),
+                      max_classes=4, opset: int = OPSET, task="classification"):
+    """Export under the MASKED contract: (x, y, train_size, n_rows, d).
+
+    The difference from export_graph is the whole point of the conversion: `y` is
+    as long as `x` and the split, the real row count and the real feature count
+    arrive as VALUES. There is no `train` dimension, so the only dynamic axes are
+    rows and features -- the two the (T, H) bucket table already covers.
+    """
+    from export_tabpfn import tabpfn_mask_forward
+    from export_tabpfn.tabpfn_mask_export import MaskExportWrapper
+
+    tabpfn_mask_forward.apply_mask_patches()
+    wrapper = MaskExportWrapper(model, task=task).eval()
+    A = torch.export.Dim.AUTO
+    S = torch.export.Dim.STATIC
+    dyn = ({0: S, 1: A, 2: A}, {0: S, 1: A}, None, None, None)
+    t, h, n = example
+    torch.manual_seed(0)
+    x = torch.randn(1, t, h)
+    if task == "regression":
+        y = torch.randn(1, t, dtype=torch.float32)
+    else:
+        y = torch.arange(t, dtype=torch.float32).remainder(max_classes)[None, :]
+    ex = (x, y, torch.tensor([n], dtype=torch.int64),
+          torch.tensor([t], dtype=torch.int64), torch.tensor([h], dtype=torch.int64))
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    with torch.no_grad():
+        torch.onnx.export(
+            wrapper, ex, str(graph_path),
+            dynamo=True, dynamic_shapes=dyn, opset_version=opset,
+            input_names=["x", "y", "train_size", "n_rows", "d"], output_names=["logits"],
+            external_data=True, optimize=False,
+        )
+    return wrapper
+
+
 def _norm_name(name: str) -> str:
     for pre in ("m.", "p_m_", "b_m_", "p_", "b_"):
         if name.startswith(pre):

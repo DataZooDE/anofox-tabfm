@@ -93,12 +93,14 @@ SELECT count(*) = (SELECT count(*) FROM anofox_tabfm_backends()) FROM tabfm_back
 ----
 true
 
-# The two models that CAN be served on ROCm must never be refused with the
+# The models that CAN be served on ROCm must never be refused with the
 # structural "positional context split" reason — that reason means "no fixed
-# shape can be bucketed for this architecture", which is false for the
-# train_size-scalar family (tabfm-v1, mitra). They may still be unsupported
-# for a situational cause (weights not downloaded), so this asserts the REASON
-# rather than the verdict.
+# shape can be bucketed for this architecture", which is false for every one of
+# these: tabfm-v1 and mitra (train_size-scalar family), and tabdpt, tabpfn-v2,
+# tabpfn-v2-5, tabpfn-v2-6 and tabpfn-v3, whose split was converted to a value (see
+# docs/ROCM_TABDPT_SPIKE.md and docs/ROCM_TABPFN_PLAN.md). They may still be
+# unsupported for a situational cause (weights not downloaded), so this asserts
+# the REASON rather than the verdict.
 #
 # Regression: the first version of this matrix built the weights path by hand
 # as <slug>/model.safetensors and so missed tabfm-v1, whose declared files sit
@@ -106,17 +108,25 @@ true
 # graph at all.
 query I
 SELECT count(*) FROM tabfm_backends()
-WHERE backend = 'rocm' AND model IN ('tabfm-v1', 'mitra')
+WHERE backend = 'rocm'
+  AND model IN ('tabfm-v1', 'mitra', 'tabdpt', 'tabpfn-v2', 'tabpfn-v2-5', 'tabpfn-v2-6', 'tabpfn-v3')
   AND reason IS NOT NULL AND reason LIKE '%ROCM_SINGLE_EVAL_POS%';
 ----
 0
 
-# ...and conversely the nine that genuinely cannot be bucketed must say so
+# ...and conversely the ones that genuinely cannot be bucketed must say so
 # rather than leaving the user to guess, whenever a rocm device is present.
+#
+# This list used to include tabdpt and the whole TabPFN family (v3 was the last). Each left it when
+# its split was converted, and the assertion would have started failing on any
+# ROCm machine with an undownloaded weight -- it only passed elsewhere because
+# CI has no rocm device and so the set is empty. Whoever converts the next model
+# must move it out of this list too.
 query I
 SELECT count(*) = 0 OR bool_and(reason LIKE '%ROCM_SINGLE_EVAL_POS%')
 FROM tabfm_backends()
-WHERE backend = 'rocm' AND model = 'tabdpt' AND NOT supported;
+WHERE backend = 'rocm' AND model IN ('tabicl-v2', 'orion-bix', 'orion-msp')
+  AND NOT supported;
 ----
 true
 

@@ -43,5 +43,18 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 //! callers use it to decide, not to report.
 bool PluginLoadable(const string &library_path, string *error = nullptr);
 
+//! Extra advice to append to a backend failure, or "" when there is none.
+//!
+//! The bundled TabPFN MIGraphX graphs take a fifth input, `n_rows`, which the
+//! plugin binds only when the graph declares it. A plugin built before that
+//! binding existed accepts the graph and then dies on the first predict with
+//! MIGraphX's own "Parameter not found: n_rows" -- correct, and meaningless to
+//! anyone who has not read the plugin source. Recognising it turns "the extension
+//! and the plugin disagree about a graph" into an instruction.
+//!
+//! Deliberately narrow: only the migraphx backend and only this failure, so an
+//! unrelated MIGraphX error is never blamed on the plugin version.
+string PluginFailureHint(const string &backend, const string &error);
+
 } // namespace anofox
 } // namespace duckdb

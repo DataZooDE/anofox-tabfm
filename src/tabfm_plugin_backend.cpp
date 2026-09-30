@@ -139,7 +139,8 @@ public:
 		char err[512] = {0};
 		if (api->run(handle, &in, &out, err, sizeof(err)) != TABFM_PLUGIN_OK) {
 			api->free_output(&out);
-			throw InvalidInputException("anofox_tabfm: the '%s' backend failed: %s", api->name(), err);
+			throw InvalidInputException("anofox_tabfm: the '%s' backend failed: %s%s", api->name(), err,
+			                            PluginFailureHint(api->name(), err));
 		}
 
 		TabFMRunOutput result;
@@ -152,7 +153,8 @@ public:
 	void Precompile(int64_t rows, int64_t features) override {
 		char err[512] = {0};
 		if (api->precompile(handle, rows, features, err, sizeof(err)) != TABFM_PLUGIN_OK) {
-			throw InvalidInputException("anofox_tabfm: the '%s' backend could not precompile: %s", api->name(), err);
+			throw InvalidInputException("anofox_tabfm: the '%s' backend could not precompile: %s%s", api->name(), err,
+			                            PluginFailureHint(api->name(), err));
 		}
 	}
 
@@ -164,6 +166,17 @@ private:
 };
 
 } // namespace
+
+// External linkage (declared in tabfm_plugin_backend.hpp), so it must live OUTSIDE
+// the anonymous namespace above -- inside it the test would fail to link.
+string PluginFailureHint(const string &backend, const string &error) {
+	if (backend != "migraphx" || error.find("Parameter not found: n_rows") == string::npos) {
+		return "";
+	}
+	return " -- the installed MIGraphX plugin predates this model's graph: the graph takes a row-count input "
+	       "(n_rows) that the plugin cannot bind. Update the plugin with CALL tabfm_accelerate() or "
+	       "CALL tabfm_download_runtime(...), or point anofox_tabfm_ep_path at a newer build.";
+}
 
 bool PluginLoadable(const string &library_path, string *error) {
 	auto set_error = [&](string message) {
