@@ -348,8 +348,8 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		// The case worth being precise about: a model whose context split is
 		// positional (it reads the split from y's length), which a fixed-shape
 		// compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). tabdpt and the
-		// TabPFN v2/v2.5/v2.6 family have had that split converted to a value and
-		// so no longer land here; tabpfn-v3, tabicl-v2 and the orion models still
+		// whole TabPFN family (v2, v2.5, v2.6, v3) have had that split converted to
+		// a value and so no longer land here; tabicl-v2 and the orion models still
 		// do, and tabfm_backends() is the source of truth for which.
 		out.reason = "model '" + in.model + "' has no " + in.backend + "-servable graph for task '" + in.task_name +
 		             "': it declares no " + GpuGraphKindFor(in.backend) +

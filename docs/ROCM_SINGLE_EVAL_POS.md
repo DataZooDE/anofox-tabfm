@@ -1,10 +1,10 @@
 # ROCm / MIGraphX and the `single_eval_pos` family
 
-> **Update 2026-09-29.** The TabPFN v2, v2.5 and v2.6 generations were converted
-> and now run on ROCm (docs/ROCM_TABPFN_PLAN.md), joining tabdpt
+> **Update 2026-09-30.** The whole TabPFN family -- v2, v2.5, v2.6 and v3 -- was
+> converted and now runs on ROCm (docs/ROCM_TABPFN_PLAN.md), joining tabdpt
 > (docs/ROCM_TABDPT_SPIKE.md). What remains positional and refused on ROCm:
-> `tabpfn-v3`, `tabicl-v2`, `orion-bix`, `orion-msp`. `tabfm_backends()` is the
-> source of truth.
+> `tabicl-v2`, `orion-bix`, `orion-msp`. `tabfm_backends()` is the source of
+> truth.
 
 
 Why nine of the eleven built-in models cannot be served on ROCm today, what it

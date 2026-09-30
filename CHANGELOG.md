@@ -60,14 +60,25 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   over `arange(T) < train_size`; the rewrite was gated in PyTorch against the
   original before any ONNX was produced.
 
-- **`tabpfn-v2`, `tabpfn-v2-5` and `tabpfn-v2-6` run on ROCm**, both tasks —
-  the ROCm-servable set goes from 3 of 11 catalog models to 6 (`tabpfn-v2-5-real`
-  reuses the 2.5 graphs). On an RX 9070 XT every row, context and query, agrees
+- **`tabpfn-v2`, `tabpfn-v2-5`, `tabpfn-v2-6` and `tabpfn-v3` run on ROCm**, both
+  tasks — the ROCm-servable set goes from 3 of 11 catalog models to 7
+  (`tabpfn-v2-5-real` reuses the 2.5 graphs). On an RX 9070 XT every row, context and query, agrees
   with the CPU to float noise (classification: 0 label differences in 100 rows;
   regression: max difference 2e-6 to 9e-6), at **3.5-7x** the CPU wall-clock and
-  about **40x less CPU time** per call. `tabpfn-v3` stays CPU-only: its
-  architecture (inducing points, ICL blocks, a many-class decoder) is not
-  converted, and `tabfm_backends()` says so by name.
+  about **40x less CPU time** per call.
+
+  **`tabpfn-v3` is the odd one out**, and needs its own line. Its architecture
+  (inducing points, ICL blocks, a many-class decoder, softmax scaling by the
+  number of keys) needed a separate conversion. Measured on the same GPU:
+  classification 0 label differences in 100 rows (30 query, 70 context),
+  regression within 1e-5 on every row, warm calls **about 3-4x** the CPU
+  wall-clock at the sizes tried (0.07-0.15 s against 0.24-0.42 s; CPU time per
+  call was not measured for v3, so no such claim is made). But **its cold compile
+  is about 16 minutes per (rows, features) bucket** (951-992 s measured), against
+  2.5-9 minutes for the rest. It is opt-in like every GPU backend, so nothing
+  changes unless you ask for `rocm`, but plan for it or run
+  `CALL tabfm_gpu_precompile(...)` first. Two MIGraphX GPU compiler failures had
+  to be designed around to get there (below).
 
   Three things to know:
 
@@ -86,6 +97,17 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
     difference between a first attempt that drifted 1-3% in the logits and the
     result above, so the graphs avoid integer division on runtime data, and a
     test enforces that. Worth reporting upstream.
+  - **Two more MIGraphX GPU-compile failures, found on v3, both invisible to ORT
+    and to MIGraphX's own reference target.** Each makes the GPU pipeline die in
+    `simplify_reshapes` with `cannot create std::vector larger than max_size()`
+    (a `find_concat_transpose` assertion in a debug build): a `Concat` whose
+    inputs are all `Transpose`s, and a matmul with a contraction dimension of 1
+    (`Linear(1, n)` on a `[1,1]` input) feeding a broadcast multiply. A third,
+    an empty-shape `Reshape` (`reshape(())`), is read as zero elements and refused
+    at parse time. All three are avoided, and each has a structural test that was
+    shown to fail on the bad graph before it was trusted. The K=1 case was first
+    suspected to be a coincidence between the bucket width and the head dimension;
+    that was tested and is wrong (it fails at every width tried).
 
 - **Synthetic data generation and imputation** (WS-G): `tabfm_generate(data, n, …)`
   samples new rows from a table's joint distribution, and `tabfm_impute(data, …)`

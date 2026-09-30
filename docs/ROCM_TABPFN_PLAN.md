@@ -1,6 +1,6 @@
 # TabPFN on ROCm — what the masked graph has to reproduce
 
-Status: **v2, v2.5, v2.6 converted, gated, proven on ROCm in both tasks (identical to the CPU to float noise), and BUNDLED as built-in ROCm graphs. v3 not started. Not yet released: the plugin needs the `n_rows` binding, so the next release must bump `TABFM_PLUGIN_RELEASE_TAG`.** The attention layer was
+Status: **v2, v2.5, v2.6 and v3 converted, gated, proven on ROCm in both tasks, and BUNDLED as built-in ROCm graphs (v2-v2.6 identical to the CPU to float noise; v3 0 label differences / within 1e-5, and about 16 min to compile per bucket). Not yet released: the plugin needs the `n_rows` binding, so the next release must bump `TABFM_PLUGIN_RELEASE_TAG`.** The attention layer was
 proven exact in the spike (docs/ROCM_TABDPT_SPIKE.md, tools/export_tabpfn
 `tabpfn_mask_patches.py`, ~2x cost). This is the inventory of everything else,
 made from reading tabpfn 2.x/3 source rather than from the spike.
@@ -199,10 +199,65 @@ MIGraphX's bare `Parameter not found: n_rows`), and CI now runs
 * MIGraphX rejects a Reshape to empty dims (`reshape(())`) as zero elements;
   index scalars with `[0]` instead.
 
+## TabPFN-3
+
+`tools/export_tabpfn/src/export_tabpfn/tabpfn_mask_v3.py`. v3 is not the 2.5 line
+renamed, so it has its own masked forward, and it is not a monkeypatch: the blocks
+are re-driven from their own weights, so it cannot depend on which process patched
+which module (the trap the 2.5 path fell into).
+
+**What consumes the split**: the scaler and imputation fit; target imputation; the
+inducing points' keys (train rows only); two target-embedding adds; ICL attention
+(train-row keys, and test rows on ONE KV head); the many-class decoder; and every
+softmax-scaling MLP, which takes log(number of KEYS) -- upstream reads it off a
+tensor shape, here it is a value. **Padded features**: v3 builds each column from
+its neighbours with `torch.roll`, which wraps at the PADDED width, so the wrap is
+redone as an index gather at the real width, by repeated subtraction (no division
+or modulo -- see the MIGraphX int-div bug above).
+
+**The gate.** `fixture3` plus `fixture3r`, which mirrors what the released model does
+differently at small dims (test rows on one KV head, a feature group of 3, more than
+one block in the embedder and the aggregator, the decoder with softmax scaling and a
+class width needing padding), plus d=1 and d=2 inputs that wrap more than once.
+33 negative controls across the family, all caught. Worst error 3.1e-6 in PyTorch and
+3.0e-6 for the exported ONNX under ORT at padded shapes. Two ways it was nearly blind,
+both found by numbers that were too clean: v3 classification logits sit within ~0.01
+of each other on a random-init model with one unused class pinned at the -10.13 clamp
+floor, so classification compares only the classes that carry signal; and `fixture3`
+alone never ran the one-KV-head branch. The weakest control is "softmax scaling over
+padded rows" on `fixture3` classification, at exactly the catch threshold (1.0e-3);
+`fixture3r` catches it at 9e-2.
+
+**Three GPU-only failures, none visible to ORT or the reference target**, found by
+compiling the real graph on the GPU (the gate never runs there):
+
+1. `reshape(())` on a scalar: MIGraphX reads an empty target as zero elements and
+   refuses the graph at parse time. Index with `[0]`.
+2. A `Concat` of `Transpose`s, from gathering after transposing: `simplify_reshapes`
+   dies. Gather in the original layout, transpose once after the concat.
+3. `Linear(1, n)` on a `[1,1]` input, a K=1 matmul feeding a broadcast Mul, kills
+   `simplify_reshapes` at every feature width tried. Reproduced in ~20 lines; the
+   variant without the matmul compiles. Done elementwise, which is bit-identical.
+
+The second and third produce `simplify_reshapes: cannot create std::vector larger than
+max_size()` in a release build and a `find_concat_transpose` assertion
+(`s.transposed()`, `simplify_reshapes.cpp:845`) in a debug one. Each has a structural
+test in `tests/test_mask_export_isolated.py`, shown to FAIL on the bad graph before it
+was trusted: the reshape guard first passed on the broken graph (the empty shape is a
+`Constant` with `value_ints = []`, not a tensor `value`), and its second version
+crashed on external-data initializers. The bucket-width-versus-head-dim explanation
+for #3 was my first hypothesis and is wrong; it fails at widths 8, 12, 16, 17, 24,
+32 and 64.
+
+**Measured (gfx1201, released CPU extension as reference):** classification
+QUERY 0/30 and CONTEXT 0/70 label differences, 3 distinct fitted classes; regression
+query max |diff| 1e-5, context 9e-6, correlation 1.0, 70 distinct fitted values; both
+served by `rocm:0`. Warm calls 0.07-0.15 s on the GPU against 0.24-0.42 s on the CPU.
+**Cold compile 951-992 s (classification) and 961-964 s (regression), per bucket.**
+Small sizes only (100-128 rows, 8-16 features), so the speed-up is not extrapolated.
+
 ## Not done
 
-v3 (a substantially larger conversion: inducing points, ICL blocks, many-class
-decoder, row-count-dependent softmax scaling); regression and v2/v2.5 end to
-end on ROCm (their fitted-values route doubles the sequence again -- unmeasured);
-bundling the graphs as resources with `BundledGpuGraphId`/servability; more shape
-buckets and larger shapes; the plugin release.
+compile time for v3 (about 16 min per bucket; nothing has been tried to reduce it); larger shapes
+and more buckets for any TabPFN generation; MLX for tabdpt and TabPFN (the interpreter lacks
+`ConstantOfShape`); the plugin release.
