@@ -23,8 +23,9 @@ from causilo.data.normalization import Normalizer
 from causilo.execution.runner import ModelRunner
 
 from export_causilo import configs, export
-from export_causilo.causilo_patches import (ExportWrapper, apply, build_model, normalise_features,
-                                            predict, predict_all_rows)
+from export_causilo.causilo_patches import (apply, build_model, normalise_features, predict,
+                                            predict_all_rows)
+from export_causilo.fixture import sensitive, seeded_model
 
 TOL = 1e-4   # float32 vs upstream's float64 normaliser, and summation order
 
@@ -81,7 +82,9 @@ def test_normaliser_test_can_fail():
 @pytest.mark.parametrize("t,h,s", [(20, 5, 12), (33, 8, 10), (18, 3, 17)])
 def test_network_matches_upstream_runner(config, task, t, h, s):
     apply()
-    model = build_model(task, configs.get(config))
+    # sensitive(): a default-initialised model ignores its input, so this comparison would pass
+    # for a wrapper that got the network wrong
+    model = sensitive(build_model(task, configs.get(config)))
     g = torch.Generator().manual_seed(7)
     table = torch.randn(1, t, h, generator=g)
     targets = torch.randint(0, 3, (1, s), generator=g).float() if task == "classification" \
@@ -103,7 +106,7 @@ def test_every_row_is_a_prediction_and_query_rows_are_unchanged(task):
     structure: T outputs, and query rows equal to the single pass.
     """
     apply()
-    model = build_model(task, configs.get("fixture"))
+    model = seeded_model(task)
     g = torch.Generator().manual_seed(3)
     t, h, s = 26, 6, 15
     table = torch.randn(1, t, h, generator=g)
@@ -124,7 +127,7 @@ def test_every_row_is_a_prediction_and_query_rows_are_unchanged(task):
 def exported(request, tmp_path_factory):
     task = request.param
     cfg = configs.get("fixture")
-    model = build_model(task, cfg)
+    model = seeded_model(task)        # responsive AND well-conditioned; see fixture.py
     path = tmp_path_factory.mktemp(task) / "g.onnx"
     classes = cfg.classes if task == "classification" else 0
     wrapper = export.export_graph(model, path, example=cfg.example, classes=classes)
@@ -189,7 +192,7 @@ def test_parity_at_other_shapes_catches_a_baked_length(tmp_path):
     scaling.QueryScale.forward = upstream
     try:
         cfg = configs.get("fixture")
-        model = build_model("classification", cfg)
+        model = seeded_model("classification")
         path = tmp_path / "bad.onnx"
         wrapper = export.export_graph(model, path, example=cfg.example, classes=cfg.classes)
         at_trace = export.check_parity(path, wrapper, (cfg.example,), cfg.classes)

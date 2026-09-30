@@ -4,6 +4,7 @@
 #   uv sync
 #   uv run export_causilo --task classification --config real --out ./out
 #   uv run export_causilo --task regression     --config real --out ./out
+#   uv run make_causilo_fixture ../../test/fixtures/causilo   # builds the CI fixture
 #   uv run pytest
 #
 # torch is pinned to 2.13.0: the `causilo` package requires torch>=2.13, which is
@@ -30,6 +31,7 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 export_causilo = "export_causilo.cli:main"
+make_causilo_fixture = "export_causilo.fixture_cli:main"
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
