@@ -302,6 +302,12 @@ TEST_CASE("model_spec: the whole catalog has (model, task) header hashes for ext
 	        "085731de6a7b33e6fcbda7e1b3cba725d798d30f93ec3cdc91c3ac2c2c762d3f");
 	REQUIRE(ExpectedWeightsHeaderShaFor("tabicl-v2", "regression") ==
 	        "d792dd9433bdf78773eddcd4bda3e0e49550aec0a2df1a0bfa36afebf320e8ae");
+	// Causilo: the ext graphs bake absolute offsets into Nums AI's safetensors, so the hash pins the
+	// header of the checkpoint at the revision the registry names (94f2bd91...). HF main has moved on.
+	REQUIRE(ExpectedWeightsHeaderShaFor("causilo", "classification") ==
+	        "85fb120c90878b69b0d34ff32fcfbdcf457ffd4d2ed7af2a102fe7c2d417d742");
+	REQUIRE(ExpectedWeightsHeaderShaFor("causilo", "regression") ==
+	        "0bbfd6114cbae8d2facfcbf11cb01796c88aa57e0bb57d4589d552ca8accc192");
 	REQUIRE(ExpectedWeightsHeaderShaFor("orion-bix", "classification") ==
 	        "c2b7ff39add2b0c1c2d3ddabbaf413e8c15f433b620f3091f0562f376255d166");
 	REQUIRE(ExpectedWeightsHeaderShaFor("orion-bix", "regression") == "");
@@ -374,6 +380,9 @@ TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the regis
 	REQUIRE(BundledGpuGraphId("tabpfn-v2-5", "ext", "regression") == "graph_ext_tabpfn25_regression");
 	REQUIRE(BundledGpuGraphId("tabpfn-v3", "ext", "classification") == "graph_ext_tabpfn3_classification");
 	REQUIRE(BundledGpuGraphId("tabicl-v2", "ext", "regression") == "graph_ext_tabicl_regression");
+	// causilo's id IS its stem, so it needs no mapping (a wrong one would silently find no graph)
+	REQUIRE(BundledGpuGraphId("causilo", "ext", "classification") == "graph_ext_causilo_classification");
+	REQUIRE(BundledGpuGraphId("causilo", "ext", "regression") == "graph_ext_causilo_regression");
 	REQUIRE(BundledGpuGraphId("orion-bix", "ext", "classification") == "graph_ext_orion_bix_classification");
 	// orion-msp is a separate stem, NOT a fallback onto orion-bix's graphs: the
 	// two are different architectures that happen to share a vendor and licence.

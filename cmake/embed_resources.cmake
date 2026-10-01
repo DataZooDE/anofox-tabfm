@@ -94,6 +94,12 @@ set(_tabfm_inputs
     # (CUDA), no migraphx graph (ROCm; its split is positional, see docs/ROCM_SINGLE_EVAL_POS.md).
     "graph_causilo_classification.onnx"
     "graph_causilo_regression.onnx"
+    # The external-data variants: on CUDA, and on the CPU default path, ORT reads weights off the
+    # cached safetensors by offset instead of copying them in (src/tabfm_engine.cpp
+    # TryExternalDataSession). Valid only for the revision the registry pins; the header hash in
+    # ExpectedWeightsHeaderShaFor decides at load time whether to use them.
+    "graph_ext_causilo_classification.onnx"
+    "graph_ext_causilo_regression.onnx"
     "tensor_map_causilo_classification.json"
     "tensor_map_causilo_regression.json"
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
@@ -131,8 +137,16 @@ foreach(_f ${_tabfm_inputs})
 endforeach()
 
 # Regenerate only when missing or stale (the hex embedding is a few seconds).
+#
+# "Stale" includes THIS FILE changing, not only an input being newer. Adding an entry to the list
+# above whose resource is OLDER than the generated source (the usual order: export the graph, then
+# register it) left the stale source in place, so the new resource silently was not embedded and
+# GetBundledResource() returned null. For an ext graph that means the engine quietly takes the
+# injection path instead: no error, same answers, wrong path. A fresh CI build never sees it.
 set(_tabfm_stale FALSE)
 if(NOT EXISTS "${_tabfm_gen}")
+    set(_tabfm_stale TRUE)
+elseif("${CMAKE_CURRENT_LIST_FILE}" IS_NEWER_THAN "${_tabfm_gen}")
     set(_tabfm_stale TRUE)
 else()
     foreach(_f ${_tabfm_inputs})

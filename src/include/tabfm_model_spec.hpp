@@ -475,6 +475,17 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 			return "fd3f3e255b0d91f7ed6c9d0e9700c39a8797937cb06f0b1c65b239a39113ed25";
 		}
 	}
+	// Causilo (Nums AI). The graphs bake absolute offsets into the checkpoint at the revision the
+	// registry pins (94f2bd91...); HF main has moved past it, which is exactly the situation this
+	// hash exists to catch: a mismatch falls back to the layout-independent injection path.
+	if (model == "causilo") {
+		if (task_name == "classification") {
+			return "85fb120c90878b69b0d34ff32fcfbdcf457ffd4d2ed7af2a102fe7c2d417d742";
+		}
+		if (task_name == "regression") {
+			return "0bbfd6114cbae8d2facfcbf11cb01796c88aa57e0bb57d4589d552ca8accc192";
+		}
+	}
 	if (model == "tabpfn-v3") {
 		if (task_name == "classification") {
 			return "c0f3a23322d1ec039356b618565e5e1c62378613e3081167881220968933f04b";
