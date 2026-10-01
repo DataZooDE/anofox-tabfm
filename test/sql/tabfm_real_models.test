@@ -37,6 +37,11 @@
 #                # keys are already the model's namespace. One file, both tasks:
 #                CALL tabfm_download('classification', model := 'tabdpt');
 #
+#                # Causilo needs NO converter either -- Nums AI publish safetensors whose
+#                # keys are already the model's namespace, and the repo is ungated:
+#                CALL tabfm_download('classification', model := 'causilo');
+#                CALL tabfm_download('regression', model := 'causilo');
+#
 #                TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
 # group: [anofox_tabfm]
 
@@ -364,5 +369,49 @@ true
 query I
 SELECT corr(yhat, target) > 0.9
 FROM tabfm_regress('reg_t', 'target', model := 'tabpfn-v2-6') WHERE is_training;
+----
+true
+
+# ---------------------------------------------------------------------------
+# Causilo (Nums AI): the first block here that also checks the QUERY rows.
+#
+# Every oracle above reads is_training rows, because that is where the constant-pad defect
+# lived. Causilo's context rows come from a second pass (the context presented again as queries),
+# so a regression could break the query rows instead, which those oracles cannot see. On sep_t the
+# true class of every row is recoverable from f1 (round(f1 / 10) = i % 3), including the 20 query
+# rows whose label is NULL.
+#
+# Parity with upstream is exercised out-of-band, where upstream's own estimator is available:
+# tools/export_causilo/tests/test_real_weights.py (n_estimators=1; probabilities within 1e-4).
+# The engine's default softmax_temperature is 0.9 for every model, which sharpens probabilities
+# relative to Causilo's own temperature of 1; labels are unaffected.
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'causilo') WHERE is_training;
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = 'c' || round(f1 / 10)::INTEGER THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'causilo') WHERE NOT is_training;
+----
+true
+
+query I
+SELECT count(DISTINCT yhat) > 1 FROM tabfm_classify('fitted_t', 'label', model := 'causilo')
+WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'causilo') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, f1) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'causilo') WHERE NOT is_training;
 ----
 true

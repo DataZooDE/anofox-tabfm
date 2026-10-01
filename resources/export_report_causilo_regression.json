@@ -1,0 +1,78 @@
+{
+  "command": [
+    "export_causilo",
+    "--task",
+    "regression",
+    "--config",
+    "real",
+    "--out",
+    "../../resources"
+  ],
+  "task": "regression",
+  "config": "real",
+  "model": {
+    "width": 128,
+    "expansion": 2,
+    "group_size": 3,
+    "frequencies": 16,
+    "column_latents": 128,
+    "column_heads": 4,
+    "column_depths": [
+      3,
+      3
+    ],
+    "row_heads": 8,
+    "row_latents": 4,
+    "row_depths": [
+      3,
+      3
+    ],
+    "prediction_heads": 4,
+    "prediction_depth": 12
+  },
+  "outputs": 999,
+  "n_params": 37083799,
+  "seed": 0,
+  "opset": 18,
+  "input_signature": {
+    "x": "[1,T,H] f32: engine-preprocessed (encoded, finite), NOT normalised",
+    "y": "[1,S] f32: training targets only (S = train_size); class ids, or RAW regression targets"
+  },
+  "output": {
+    "logits": "[1,T,1] RAW-space point estimate per row: the mean over the 999 output channels, inverse target StandardScaler applied in-graph; rows < S are in-context fitted values. The engine feeds RAW train targets and reads the output directly."
+  },
+  "in_graph_preprocessing": "Causilo single-estimator ('none') normaliser: train-prefix z-score, two-stage 4-sigma bounds, arcsinh tails; NaN restored",
+  "split": "positional: S = len(y); no train_size, cat_mask or d input",
+  "graph_bytes": 1344336,
+  "n_initializers_mapped": 697,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 1.4901161193847656e-08,
+    "tol": 0.0001,
+    "shapes": [
+      {
+        "T": 32,
+        "H": 12,
+        "train": 20,
+        "max_abs_delta_context_rows": 1.4901161193847656e-08,
+        "max_abs_delta_query_rows": 7.450580596923828e-09,
+        "ort_ms": 179.3515682220459
+      },
+      {
+        "T": 24,
+        "H": 7,
+        "train": 15,
+        "max_abs_delta_context_rows": 7.450580596923828e-09,
+        "max_abs_delta_query_rows": 7.450580596923828e-09,
+        "ort_ms": 134.57608222961426
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.13.0+cpu",
+    "onnx": "1.23.1",
+    "onnxruntime": "1.30.0",
+    "onnxscript": "0.7.2"
+  }
+}

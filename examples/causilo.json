@@ -1,0 +1,92 @@
+{
+  "schema_version": 2,
+  "id": "causilo",
+  "display_name": "Causilo (Nums AI)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "causilo-license-v1.0",
+    "commercial": false,
+    "redistributable": false,
+    "gate_setting": "accept_hf_license",
+    "attribution": "Causilo by Nums AI Inc. Code Apache-2.0; weights Causilo License v1.0 — non-commercial research/evaluation only. Commercial or production use, and hosted/API/SaaS services whether paid or free, require a separate license: contact@nums.world. Checkpoints: HF nums-ai/causilo."
+  },
+  "preprocessing_profile": "causilo_v1_raw",
+  "weights": {
+    "classification": {
+      "repo": "nums-ai/causilo",
+      "revision": "94f2bd91db0737d4da59f347910662905ecb5a09",
+      "files": [
+        {
+          "path": "classification/model.safetensors",
+          "bytes": 144385448,
+          "url": "https://huggingface.co/nums-ai/causilo/resolve/94f2bd91db0737d4da59f347910662905ecb5a09/classifier/model.safetensors"
+        }
+      ]
+    },
+    "regression": {
+      "repo": "nums-ai/causilo",
+      "revision": "94f2bd91db0737d4da59f347910662905ecb5a09",
+      "files": [
+        {
+          "path": "regression/model.safetensors",
+          "bytes": 148417316,
+          "url": "https://huggingface.co/nums-ai/causilo/resolve/94f2bd91db0737d4da59f347910662905ecb5a09/regressor/model.safetensors"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "../resources/graph_causilo_classification.onnx",
+    "regression": "../resources/graph_causilo_regression.onnx",
+    "tensor_map": {
+      "classification": "../resources/tensor_map_causilo_classification.json",
+      "regression": "../resources/tensor_map_causilo_regression.json"
+    }
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 10000,
+    "max_features": 500,
+    "max_classes": 10
+  },
+  "_note": "Causilo exported at the released architecture, weight-free (opset 18). (x, y)-only: y carries ONLY the training targets, so its length S IS train_size; no cat_mask / d input. The graph normalises its own features (train-prefix z-score, two-stage 4-sigma bounds, arcsinh tails) and, for regression, standardises the target and inverts the scaler, so the engine feeds RAW targets and features and reads the output directly. Output [1,T,C]: every row is a prediction; rows < S are in-context fitted values (the context presented a second time as queries -- the cheap alternative measured fitted R2 0.50 on a clean linear problem where query R2 was 0.999). C = 10 for classification; for regression C = 1, the mean over the 999 output channels. Verified against upstream CausiloClassifier/CausiloRegressor with n_estimators=1 on real weights: probabilities within 1e-5, identical labels. The leaderboard figure is an 8-member ensemble, which the engine does not run.",
+  "_weights_note": "No converter: nums-ai/causilo publishes safetensors. CALL tabfm_download('classification', model := 'causilo'); after SET anofox_tabfm_accept_hf_license = true;",
+  "compute": {
+    "cpu": "f32"
+  }
+}

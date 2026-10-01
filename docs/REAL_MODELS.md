@@ -26,6 +26,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes** |
 | **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); ckpt→safetensors convert required |
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
+| **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
 | **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
 
 ### TabPFN-3 — done
@@ -371,6 +372,55 @@ the inverse-transform). Real weights: `california_housing` R² 0.827 (agent
 parity), `mstz/wine` MSE **0.482** vs 0.860 baseline. The bucket borders live in
 the checkpoint (`regression_borders`), so the classification and regression graphs
 have different initializers — the manifest uses a **per-task** `graph.tensor_map`.
+
+## Causilo (Nums AI) — shipped (classify + regress)
+
+A TabICL-style column-then-row model (36.1 M classifier / 37.1 M regressor parameters, native
+10-class head) with an extra row-refinement stage. Code is Apache-2.0; the **weights are under
+the Causilo License v1.0**: non-commercial research and evaluation only, and *commercial or
+production use, and hosted/API/SaaS services whether paid or free, require a separate license*
+(contact@nums.world). It is registered like the other non-commercial entries: `commercial: false`,
+gated by `SET anofox_tabfm_accept_hf_license = true`, with that clause in the attribution. The
+Hugging Face repo itself is ungated.
+
+Like TabICL its graph is `(x, y)`-only, so the engine needs no model-specific code
+(`tools/export_causilo`). Nums AI publish safetensors whose keys are already the model's own
+namespace, so there is **no converter**: `CALL tabfm_download('classification', model := 'causilo')`.
+The weights are pinned to the commit the graph was exported from (`94f2bd91…`); Hugging Face `main`
+has moved past it, and a moving ref would pair a newer checkpoint with this graph.
+
+The graph does Causilo's own preprocessing itself (train-prefix z-score, two-stage 4-sigma tail
+bounds, arcsinh tail compression, and for regression the target StandardScaler and its inverse), so
+the engine's `causilo_v1_raw` profile only encodes and imputes.
+
+**What is verified, on the real weights.** Against upstream's `CausiloClassifier` /
+`CausiloRegressor` with `n_estimators=1`: iris 45/45 and wine 54/54 query labels identical,
+probabilities within 1e-5 at temperature 1; diabetes regression within 4e-4 on a scale of 157
+(query R² 0.359, the same as upstream). That comparison ran through the built-in path end to end
+(the engine downloading the weights itself), not only through the exporter.
+
+**Fitted values.** The `is_training` rows are in-context values, taken by presenting the context
+rows a second time as queries. The cheap alternative, running the last prediction layer over all
+rows, is measurably wrong on the real model: fitted R² 0.50 on a clean linear problem where the
+query R² is 0.999, and fitted accuracy 0.457 on a 5-class problem where query accuracy is 0.717.
+The second pass gives 1.000 on both and leaves query rows unchanged. It costs `S` extra rows per call.
+
+**What this does not claim.**
+- The engine runs **one estimator**. The TabArena figure (Elo 1785) is an 8-member ensemble that
+  cycles four normalisations and permutes features; `n_estimators=1` is upstream's own single-member
+  path, and that is what is reproduced.
+- The engine mean-imputes missing cells before the graph, so Causilo's missing-value embedding is
+  unused. Tables with NULLs are answered, but not with upstream's missing-value signal.
+- The engine's default `softmax_temperature` is 0.9 for every model; Causilo's own is 1, so default
+  probabilities are slightly sharper than upstream's (about 2e-2 on top-class probability). Labels
+  are unaffected; pass `opts := MAP {'softmax_temperature': '1.0'}` to match upstream.
+- More than 10 classes (upstream handles them with error-correcting output codes) is not supported;
+  the engine's class ceiling is the head width.
+- ROCm: refused by name like `tabicl-v2` (positional split; `docs/ROCM_SINGLE_EVAL_POS.md`).
+
+CPU speed (ORT, intra-op threads): about 0.15 s at 150 rows x 4 features (4 threads), about 2.2 s at
+1000 x 50, against 0.9 s for upstream's PyTorch single pass on the same machine. The ONNX graph is
+slower than eager PyTorch here (Transpose is 36% of the time); set `anofox_tabfm_threads` to 4-8.
 
 ## TabICL v2 — shipped (classification)
 

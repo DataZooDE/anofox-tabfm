@@ -125,7 +125,7 @@ WHERE backend = 'rocm'
 query I
 SELECT count(*) = 0 OR bool_and(reason LIKE '%ROCM_SINGLE_EVAL_POS%')
 FROM tabfm_backends()
-WHERE backend = 'rocm' AND model IN ('tabicl-v2', 'orion-bix', 'orion-msp')
+WHERE backend = 'rocm' AND model IN ('tabicl-v2', 'orion-bix', 'orion-msp', 'causilo')
   AND NOT supported;
 ----
 true
