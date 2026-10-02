@@ -3,7 +3,8 @@
 > **Update 2026-09-30.** The whole TabPFN family -- v2, v2.5, v2.6 and v3 -- was
 > converted and now runs on ROCm (docs/ROCM_TABPFN_PLAN.md), joining tabdpt
 > (docs/ROCM_TABDPT_SPIKE.md). What remains positional and refused on ROCm:
-> `tabicl-v2`, `orion-bix`, `orion-msp` and `causilo` (added later, same family).
+> `tabicl-v2`, `orion-bix`, `orion-msp`, `causilo` and `limix-2m` (added later, same family: `limix-2m`'s
+> graph reads the split from `len(y)` exactly like TabICL's).
 > `tabfm_backends()` is the source of truth.
 
 

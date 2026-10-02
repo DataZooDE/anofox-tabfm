@@ -27,6 +27,18 @@
 --   CALL tabfm_download('classification', model := 'causilo');
 --   CALL tabfm_download('regression', model := 'causilo');
 --
+-- limix-2m needs only the download as well: ONE 9.5 MB checkpoint serves both tasks, and the engine's
+-- native reader takes the .ckpt directly (no converter). Its weights are under the Stable AI Technology
+-- Co., Ltd. License v1.0 (commercial use permitted; "Built with StableAI LimiX" attribution applies if you
+-- distribute or make available a product built on it), gated by the accept_hf_license setting above.
+-- NOT RUN ON MLX by whoever added it: no Mac was available. A static check says all 54 distinct ops in its
+-- four graphs are in the interpreter's table, which predicts servable, not correct. Read the printed device
+-- first. LimiX's numeric tokenizer is hypersensitive to a standardised feature value near zero (and treats an
+-- exact zero as its own token), so a rare label that differs from CPU on this sin/cos table is worth checking
+-- against that before it is called an MLX bug: see docs/REAL_MODELS.md.
+--
+--   CALL tabfm_download('classification', model := 'limix-2m');
+--
 -- Run with anofox_tabfm_ep_path pointing at the built plugin.
 
 INSTALL httpfs; LOAD httpfs;
@@ -127,6 +139,16 @@ INSERT INTO report SELECT 'causilo', 'classification',
     avg((a.yhat = b.yhat)::INT), NULL, count(*)
 FROM c_cpu_causilo a JOIN c_mlx_causilo b USING (row_id);
 
+.print '--- limix-2m: classification ---'
+SET anofox_tabfm_device = 'cpu';
+CREATE TABLE c_cpu_limix AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'y', test := 'qry', model := 'limix-2m');
+SET anofox_tabfm_device = 'mlx';
+CREATE TABLE c_mlx_limix AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'y', test := 'qry', model := 'limix-2m');
+INSERT INTO report SELECT 'limix-2m', 'classification',
+    (SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND model = 'limix-2m' AND device LIKE 'mlx%'),
+    avg((a.yhat = b.yhat)::INT), NULL, count(*)
+FROM c_cpu_limix a JOIN c_mlx_limix b USING (row_id);
+
 .print '--- orion-bix: classification ---'
 SET anofox_tabfm_device = 'cpu';
 CREATE TABLE c_cpu_orionbix AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'y', test := 'qry', model := 'orion-bix');
@@ -186,6 +208,16 @@ INSERT INTO report SELECT 'causilo', 'regression',
     (SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND model = 'causilo' AND device LIKE 'mlx%'),
     corr(a.yhat, b.yhat), max(abs(a.yhat - b.yhat)), count(*)
 FROM r_cpu_causilo a JOIN r_mlx_causilo b USING (row_id);
+
+.print '--- limix-2m: regression ---'
+SET anofox_tabfm_device = 'cpu';
+CREATE TABLE r_cpu_limix AS SELECT row_id, yhat FROM tabfm_regress('ctx_r', 'tgt', test := 'qry', model := 'limix-2m');
+SET anofox_tabfm_device = 'mlx';
+CREATE TABLE r_mlx_limix AS SELECT row_id, yhat FROM tabfm_regress('ctx_r', 'tgt', test := 'qry', model := 'limix-2m');
+INSERT INTO report SELECT 'limix-2m', 'regression',
+    (SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND model = 'limix-2m' AND device LIKE 'mlx%'),
+    corr(a.yhat, b.yhat), max(abs(a.yhat - b.yhat)), count(*)
+FROM r_cpu_limix a JOIN r_mlx_limix b USING (row_id);
 
 -- tabpfn-v3 REGRESSION is absent on purpose: its released checkpoint carries no
 -- FullSupportBarDistribution criterion.borders, so convert_weights.py cannot

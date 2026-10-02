@@ -27,6 +27,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); ckpt→safetensors convert required |
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
 | **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
+| **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; ROCm refused by name |
 | **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
 
 ### TabPFN-3 — done
@@ -435,6 +436,141 @@ Causilo blocks that print the serving device beside the agreement).
 CPU speed (ORT, intra-op threads): about 0.15 s at 150 rows x 4 features (4 threads), about 2.2 s at
 1000 x 50, against 0.9 s for upstream's PyTorch single pass on the same machine. The ONNX graph is
 slower than eager PyTorch here (Transpose is 36% of the time); set `anofox_tabfm_threads` to 4-8.
+
+## LimiX-2M (StableAI) — shipped (classify + regress)
+
+> **Built with StableAI LimiX.** (The attribution Section 10 of the weights licence asks for; see
+> "Licence" below.)
+
+LimiX-2M is the small variant of StableAI's LimiX family: 2.38 M parameters, 12 layers, embedding 96,
+axis-wise attention over samples and features, and a numeric tokenizer that encodes each value as a
+decimal sign, exponent and mantissa. It is **not** LimiX-2, the 400 M-parameter model that tops the
+TabArena board: this extension does not ship that one. An export spike showed LimiX-2 exports and matches
+upstream, but at about 3 GB of weights and about 12 GB at 1000 rows x 50 features it is a different
+proposition, and the spike's recommendation was not to ship it (that is a recommendation, not a measurement
+of the model's quality). We have not measured LimiX-2M on TabArena, so no leaderboard figure is claimed for
+it.
+
+### Licence
+
+The sources disagree, and the registry follows the newest one.
+
+| source | what it says about the weights |
+|---|---|
+| `vendor/limix` README (the pinned upstream code repo) | "fully available for academic research and may be used commercially upon obtaining proper authorization" |
+| the Hugging Face model card (`stable-ai/LimiX-2M`) | internally inconsistent: front matter `license: other` (`limix-2m-license-v1.0`), body "all model resources are open-sourced under the Apache 2.0 License" |
+| `LICENSE.txt` in the weights repo, added 2026-09-15 | the **Stable AI Technology Co., Ltd. License v1.0**: Apache-2.0 plus one added Section 10; **commercial use is permitted** |
+
+The model is therefore registered `commercial: true`, **gated by the licence acknowledgement**
+(`SET anofox_tabfm_accept_hf_license = true`), not by a commercial restriction. Section 10 treats the
+weights as part of the "Work" and says:
+
+- if you distribute or make available the Work, a Derivative Work, or any product or service that
+  incorporates it, you must (a) provide a copy of the License or a reasonably accessible link to it, and
+  (b) prominently display **"Built with StableAI LimiX"** where appropriate to the medium (website, UI,
+  documentation);
+- if you use the weights to create, train, fine-tune, distil or otherwise improve an AI model that is then
+  made available to a third party, **"LimiX" must be at the beginning of that model's name**;
+- activities **solely for internal research, evaluation, benchmarking or testing**, without making the Work,
+  a derivative or a resulting model available to a third party, do not trigger either requirement;
+- you may not use the name or the phrase to imply endorsement, sponsorship or affiliation.
+
+License text: https://huggingface.co/stable-ai/LimiX-2M/blob/main/LICENSE.txt.
+
+**Open item, not settled by us:** whether shipping weight-free ONNX graphs that load the user's own
+downloaded weights at run time counts as "distributing the Work" under Section 10 has **not been confirmed
+with StableAI or counsel**. The attribution is shown here, in the README and in the registry's `attribution`
+field in the meantime. The stance on commercial use above is our reading of `LICENSE.txt`; it is not legal
+advice.
+
+### How it runs
+
+Like TabICL and Causilo its graph is `(x, y)`-only (the split is the length of `y`), so the engine needs no
+model-specific code (`tools/export_limix`). **One** checkpoint, `LimiX-2M.ckpt` (9,558,253 bytes), serves
+both tasks and is downloaded once: `CALL tabfm_download('classification', model := 'limix-2m')`. It is pinned
+to the commit the graphs were exported from (`641d8b81…`); the file's LFS sha256 (`16f385d5…`) is identical in
+every commit since its November 2025 release. **No converter is needed**: the engine's native checkpoint
+reader takes the pickle (a `{config, state_dict}` dict) directly, unlike Orion. A one-time
+`convert_limix_weights` (to `model.safetensors` beside it) additionally enables the external-data graphs
+(CUDA and the CPU low-memory path); the engine's answers are byte-identical either way.
+
+The model standardises its own features, and the export wrapper standardises the regression target in-graph
+and inverts it (the model itself does not: an un-normalised target scored query R² -4.2 on diabetes against
++0.36 once standardised), so the engine's `limix_v1_raw` profile only encodes and imputes. The engine
+mean-imputes missing cells **before** the graph, so LimiX's own missing-value encoding is unused.
+
+### What is verified, on the real weights
+
+Built-in path, CPU, against upstream's own eager single forward on the same split:
+
+- iris **45/45** and wine **54/54** query labels identical to upstream; diabetes query R² **0.3638**
+  (upstream 0.36380679), engine vs eager worst absolute difference 3.8e-2, mean 8.6e-3, on a target spread of
+  about 220 (float32 reduction order).
+- Three weight paths agree **byte for byte** over 832 rows (the three datasets plus 300 synthetic
+  classification and 300 synthetic regression rows): the external-data graph, forced injection
+  (`TABFM_DISABLE_EXTERNAL_DATA=1`), and injection straight from the checkpoint. Which path ran is
+  observable: the engine stages `graph_ext_limix2m_*.onnx` beside the weights when it uses them.
+- The `is_training` rows are real in-context values, taken by presenting the context rows a second time as
+  queries. Decoding every row from one pass is measurably wrong on the real model: context accuracy 0.111 on a
+  5-class problem against 1.000 for the second pass, and linear-regression context R² 0.50 against 0.993.
+  Query rows are identical either way. It costs `S` extra rows per call.
+
+### What it does not claim, and two behaviours to know
+
+- **One estimator.** The engine runs a single forward. Upstream's own packaged no-retrieval default
+  (`cls_default_noretrieval.json`, `reg_default_noretrieval.json`) runs **4 pipelines for classification and 8
+  for regression** (quantile or power transforms, feature shuffles) and combines them, and its `*_2M_retrieval`
+  variants add retrieval on top; this is none of those, and the engine rejects `n_estimators > 1`. LimiX-2M is
+  also the small model, so do not expect the leaderboard figures quoted for the family.
+- **It saturates when extrapolating.** On a table whose query rows lie beyond the training range (query
+  f1 80..99 after training on 0..79) its predictions span 59.2..64.7 where the truth reaches 72.3
+  (correlation 0.83). Upstream's own forward gives the identical numbers, so this is the model. Inside the
+  training range it is accurate (correlation 0.9998, worst error 0.99 on a target spanning 3..72).
+- **A feature value exactly at the training mean is handled badly.** The tokenizer encodes an *exact*
+  standardised zero as its own token, and a standardised value near zero is hypersensitive in proportion to
+  1/|z|. On a symmetric table the row sitting exactly on the mean was predicted 25.1 against a truth of 37.3
+  while its neighbours at z = ±0.17 were off by 0.3–0.4. Discrete and symmetric columns (a binary column with
+  mean 0.5, a column of equally spaced integers) can trigger it. It is upstream's behaviour, reproduced by the
+  engine, and pinned by `tools/export_limix/tests/test_real_weights.py`.
+- **The same sensitivity explains the one unexplained number from the spike.** At (T=33, H=9, S=21) the
+  exported graph in ORT differed from PyTorch by 1.2e-3 where every other shape agrees to ~1e-5. Over 200 random
+  inputs the median ORT-vs-torch difference is 3.3e-5 and exactly one input exceeds 5e-4: the only one whose
+  smallest standardised value is below 1e-5. That input is chaotic in eager PyTorch alone (1-ulp noise moves
+  its logits 8e-3, against 3e-5 for a normal input), the first layer where it moves is the tokenizer, and
+  nudging one raw element by 0.37 takes the gap from 5.4e-3 to 1.4e-5. So it is the model's input encoding,
+  not an export defect. (An earlier guess, the float16 round-trip in the target embedding, was refuted: turning
+  every fp16 cast into fp32 left the sensitivity unchanged.)
+- More than 10 classes is not supported (the head width is the engine's class ceiling).
+
+### Size and speed (CPU, default threads, 200 query rows)
+
+| rows x features | wall | peak RSS |
+|---|---|---|
+| 500 x 20 | 7 s | |
+| 1000 x 20 | 16 s | 1.3 GB |
+| 1000 x 100 | 39 s | 4.6 GB |
+| 2000 x 20 | 39 s | 3.7 GB |
+| 3000 x 20 | 52 s | 6.2 GB |
+| 3000 x 50 | 142 s | 14.3 GB |
+| 5000 x 20 | 132 s | 15.3 GB |
+
+Memory grows roughly with rows^1.7 and linearly with features. The engine caps the model at **5,000 rows and
+100 features**, which are independent limits: their corner (5000 x 100) would need on the order of 70 GB, so
+check the table above against your machine. (The first cap, 10,000 x 500, was a guess and was wrong.)
+
+### Platforms
+
+- **CPU:** verified on Linux x86-64 (this section's numbers). macOS arm64 and Windows x64 build in CI like every
+  model but nobody ran LimiX there; the fixture SQL test is `notwindows`, as for the other ORT-forward tests.
+- **ROCm:** refused by name, like `tabicl-v2` and `causilo` (positional split;
+  `docs/ROCM_SINGLE_EVAL_POS.md`). Verified on a real gfx1201: `SET anofox_tabfm_device = 'rocm'` fails with
+  the reason and `SET anofox_tabfm_device = 'cpu'` as the fix; `auto` runs on the CPU and reports it.
+- **CUDA:** the external-data graphs and their header hash are bundled, but **no CUDA device was available,
+  so none of this was run on CUDA.**
+- **MLX:** a static check finds all 54 distinct ops in the four shipped graphs in the interpreter's table (the
+  export removes `Unique` and `Relu`, which it lacked). That predicts servable, not correct. **Not run on a
+  Mac**; `tools/gpu_test/scenarios/mlx_all_models.sql` has LimiX blocks that print the serving device beside the
+  agreement.
 
 ## TabICL v2 — shipped (classification)
 

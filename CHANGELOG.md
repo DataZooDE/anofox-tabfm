@@ -39,7 +39,36 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
     the interpreter has no `ConstantOfShape`, which that graph uses 32 times.
     The request is refused by name rather than served on the CPU.
 
+- **A model that is commercial but gated no longer gets a "non-commercial" error.** `tabfm_download` said
+  "(non-commercial, no redistribution)" for every gated model, which for `tabpfn-v2` and now `limix-2m` is the
+  opposite of their licences. It now says the weights require accepting their terms and where to read them; the
+  wording for genuinely non-commercial models is unchanged.
+
 ### Added
+- **`limix-2m` (StableAI) is a built-in model**, both tasks. The small LimiX variant (2.4 M parameters), with
+  **no conversion step**: one 9.5 MB checkpoint serves both tasks, downloaded once, and the engine reads its
+  `.ckpt` directly. **Its weights permit commercial use**: the Stable AI Technology Co., Ltd. License v1.0
+  (the weights repo's `LICENSE.txt`, 2026-09) is Apache-2.0 plus a Section 10 that requires the attribution
+  "Built with StableAI LimiX" when you distribute or make available a product built on it, and a "LimiX"
+  prefix on the name of any model derived from the weights. It is registered `commercial: true`, gated by
+  `SET anofox_tabfm_accept_hf_license = true` (the gate is the acknowledgement, not a restriction). The older
+  upstream README says "academic, commercial with authorization" and the model card contradicts itself
+  (`license: other` against an Apache-2.0 body); the newest `LICENSE.txt` governs. **Whether this extension
+  "distributes the Work" under Section 10 (it ships weight-free graphs and loads weights at run time) has not
+  been confirmed with StableAI or counsel.** On the real weights, against upstream's own eager forward, iris
+  and wine labels are identical (45/45, 54/54) and diabetes query R² is 0.3638 (upstream 0.36380679).
+
+  What to know: the engine runs **one estimator**, while upstream's packaged default combines 4 (classification)
+  or 8 (regression) preprocessing pipelines. The model **saturates when extrapolating** beyond the training
+  range (identical in upstream's own forward) and handles a feature value **exactly at the training mean**
+  badly, because its tokenizer gives an exact standardised zero its own token; both are measured and
+  documented. The engine fills missing cells before the model, so LimiX's own missing-value encoding is unused.
+  More than 10 classes is not supported. CPU memory grows roughly with rows^1.7 and linearly with features
+  (15 GB at 5000 x 20, 14 GB at 3000 x 50), so the cap is 5,000 rows and 100 features and the table in
+  `docs/REAL_MODELS.md` is worth reading. **It is refused on ROCm** by name, like `tabicl-v2`. The CUDA/CPU
+  external-data graphs are bundled (CPU results are byte-identical to the injection path on real weights);
+  **CUDA and MLX were not run**, and a static check finds every op in the MLX interpreter's table.
+
 - **`causilo` (Nums AI) is a built-in model**, both tasks. A TabICL-style column-then-row model
   (36.1 M classifier / 37.1 M regressor, TabArena Elo 1785), with **no conversion step**: Nums AI
   publish safetensors and the Hugging Face repo is ungated. **The weights are non-commercial**
