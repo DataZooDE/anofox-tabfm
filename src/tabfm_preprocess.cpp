@@ -11,7 +11,8 @@
 //     -> UniqueFeatureFilter (drop <=1 unique on train)
 //     -> CustomStandardScaler (z-score, std ddof=0 + 1e-6, clip [-100,100])
 //     -> OutlierRemover (two-stage 4-sigma, log1p clipping)
-// All statistics are fit on TRAIN rows (rows with a non-NULL target); the
+// All statistics are fit on TRAIN rows (rows with a USABLE target: see
+// ClassifyTargetValue in tabfm_preprocess.hpp); the
 // transform is then applied to [train; test] and the target padded to T with
 // -100.0. This equals EnsembleGenerator(n_estimators=1, norm=['none']) member 0
 // with the identity feature permutation.
@@ -196,20 +197,21 @@ TargetValueKind ClassifyTargetValue(const Value &value) {
 	case LogicalTypeId::DATE:
 		return Date::IsFinite(DateValue::Get(value)) ? TargetValueKind::USABLE : TargetValueKind::INFINITE;
 	case LogicalTypeId::TIMESTAMP:
-		return Timestamp::IsFinite(TimestampValue::Get(value)) ? TargetValueKind::USABLE : TargetValueKind::INFINITE;
 	case LogicalTypeId::TIMESTAMP_SEC:
 	case LogicalTypeId::TIMESTAMP_MS:
 	case LogicalTypeId::TIMESTAMP_NS:
 	case LogicalTypeId::TIMESTAMP_TZ: {
-		// The native units differ, so ask DuckDB: infinity survives the cast to TIMESTAMP.
-		Value as_timestamp;
-		string error;
-		if (!value.DefaultTryCastAs(LogicalType::TIMESTAMP, as_timestamp, &error)) {
-			return TargetValueKind::USABLE; // cannot be infinity if it does not even cast
-		}
-		return Timestamp::IsFinite(TimestampValue::Get(as_timestamp)) ? TargetValueKind::USABLE
-		                                                              : TargetValueKind::INFINITE;
+		// Every flavour is an int64 in its own unit and reserves the same two values for +/-infinity, so
+		// read the native value: no cast (a finite TIMESTAMP_SEC beyond the microsecond range would make a
+		// cast throw), no allocation per row, and no dependence on the session time zone or ICU.
+		const int64_t raw = value.GetValueUnsafe<int64_t>();
+		return (raw == timestamp_t::infinity().value || raw == timestamp_t::ninfinity().value)
+		           ? TargetValueKind::INFINITE
+		           : TargetValueKind::USABLE;
 	}
+	case LogicalTypeId::UHUGEINT:
+		// the one integer type whose maximum (2^128 - 1) exceeds FLT_MAX
+		return IsFloat32Finite(value.GetValue<double>()) ? TargetValueKind::USABLE : TargetValueKind::FLOAT32_OVERFLOW;
 	default:
 		return TargetValueKind::USABLE; // integers, DECIMAL, BOOLEAN, VARCHAR (a label), ENUM, ...
 	}
@@ -283,10 +285,9 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 	ColumnDataRowCollection rows = data.GetRows();
 
 	// Train rows = usable target (in order), then to-score rows = MISSING target (NULL or NaN).
-	// An Infinity (or a double beyond float32) is neither: it is an error, reported once with the
-	// column, the category, the count and the first row. This is the SAME rule the aggregate, the window
-	// path, generate/impute and the metrics apply (ClassifyTargetValue), so no entry point can call a row
-	// "context" that another calls "query".
+	// An Infinity, or for REGRESSION a double beyond float32, is neither: it is an error, reported once
+	// with the column, the category, the count and the first row. (A class label is a string, never a
+	// float tensor, so a huge double label is fine.)
 	vector<idx_t> train_rows, test_rows;
 	idx_t infinite_count = 0, infinite_first = 0, overflow_count = 0, overflow_first = 0;
 	for (idx_t r = 0; r < n_rows; r++) {
@@ -303,8 +304,12 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 			}
 			break;
 		case TargetValueKind::FLOAT32_OVERFLOW:
-			if (overflow_count++ == 0) {
-				overflow_first = r + 1;
+			if (task == PreprocessTask::REGRESSION) {
+				if (overflow_count++ == 0) {
+					overflow_first = r + 1;
+				}
+			} else {
+				train_rows.push_back(r); // a class label is a string, never a float tensor
 			}
 			break;
 		}
@@ -312,7 +317,7 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 	if (infinite_count > 0) {
 		ThrowInvalidTarget(columns[target_col].name, TargetValueKind::INFINITE, infinite_count, infinite_first);
 	}
-	if (overflow_count > 0) {
+	if (overflow_count > 0 && task == PreprocessTask::REGRESSION) {
 		ThrowInvalidTarget(columns[target_col].name, TargetValueKind::FLOAT32_OVERFLOW, overflow_count,
 		                   overflow_first);
 	}

@@ -86,13 +86,15 @@ static constexpr int kMinCatFrequency = 2;
 //!
 //!   NULL, or NaN in FLOAT/DOUBLE                   -> MISSING: the row is to be PREDICTED
 //!   +/-Infinity in FLOAT/DOUBLE, DATE, TIMESTAMP*  -> INFINITE: an error for a model target
-//!   a finite double with abs(v) > FLT_MAX          -> FLOAT32_OVERFLOW: it would become
-//!                                                     Infinity in the float32 graph input
+//!   a finite double (or UHUGEINT) with abs(v) > FLT_MAX
+//!                                                  -> FLOAT32_OVERFLOW: it would become Infinity in
+//!                                                     the float32 graph input
 //!   anything else                                  -> USABLE
 //!
 //! A string is a LABEL, never a missing marker: 'nan' and 'inf' stay legitimate class names.
-//! FLOAT32_OVERFLOW is an error only where the value feeds a float32 tensor; operands of the
-//! metrics compute in double, so they treat it as USABLE.
+//! FLOAT32_OVERFLOW is an error only where the value feeds a float32 tensor, i.e. a REGRESSION
+//! target. A class label is a string, and operands of the metrics compute in double, so both treat
+//! it as USABLE.
 //!
 //! Before this predicate a NaN target was a non-NULL value and so a TRAINING row: regression
 //! answered NaN for every row with no error, and classification made 'nan' an extra class.
@@ -107,9 +109,10 @@ TargetValueKind ClassifyTargetValue(const Value &value);
 //! discard NaN rows (they are legal: they mean "predict this row"). `kind` must be an invalid kind.
 [[noreturn]] void ThrowInvalidTarget(const string &column, TargetValueKind kind, idx_t count, idx_t first_row);
 
-//! True for the kinds that are an error as a MODEL target.
-inline bool IsInvalidModelTarget(TargetValueKind kind) {
-	return kind == TargetValueKind::INFINITE || kind == TargetValueKind::FLOAT32_OVERFLOW;
+//! True for the kinds that are an error as a MODEL target. `regression` is whether the value feeds a
+//! float32 tensor (a REGRESSION target); a class label never does, so an overflow is fine there.
+inline bool IsInvalidModelTarget(TargetValueKind kind, bool regression) {
+	return kind == TargetValueKind::INFINITE || (regression && kind == TargetValueKind::FLOAT32_OVERFLOW);
 }
 
 //! True iff `value` survives the double -> float32 cast of the graph input as a finite number.

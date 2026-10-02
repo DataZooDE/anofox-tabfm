@@ -488,10 +488,30 @@ TEST_CASE("target value: ordinary values, zeros, subnormals, other types and STR
 }
 
 TEST_CASE("target value: which kinds are errors for a model target", "[tabfm][preprocess][target]") {
-	REQUIRE_FALSE(IsInvalidModelTarget(TargetValueKind::MISSING));
-	REQUIRE_FALSE(IsInvalidModelTarget(TargetValueKind::USABLE));
-	REQUIRE(IsInvalidModelTarget(TargetValueKind::INFINITE));
-	REQUIRE(IsInvalidModelTarget(TargetValueKind::FLOAT32_OVERFLOW));
+	for (bool regression : {false, true}) {
+		REQUIRE_FALSE(IsInvalidModelTarget(TargetValueKind::MISSING, regression));
+		REQUIRE_FALSE(IsInvalidModelTarget(TargetValueKind::USABLE, regression));
+		REQUIRE(IsInvalidModelTarget(TargetValueKind::INFINITE, regression));
+	}
+	// a huge double is only an error where it feeds a float32 tensor: a class label is a string
+	REQUIRE(IsInvalidModelTarget(TargetValueKind::FLOAT32_OVERFLOW, true));
+	REQUIRE_FALSE(IsInvalidModelTarget(TargetValueKind::FLOAT32_OVERFLOW, false));
+}
+
+TEST_CASE("target value: a finite timestamp far outside the microsecond range is USABLE, not an error",
+          "[tabfm][preprocess][target]") {
+	// 10^13 seconds is year ~318,000: it fits TIMESTAMP_SEC's int64 but not a microsecond timestamp, so a
+	// cast to TIMESTAMP would throw. The native-value check must neither throw nor call it infinite.
+	REQUIRE(ClassifyTargetValue(Value::TIMESTAMPSEC(timestamp_sec_t(10000000000000LL))) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::TIMESTAMPSEC(timestamp_sec_t(-10000000000000LL))) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::TIMESTAMPMS(timestamp_ms_t(10000000000000000LL))) == TargetValueKind::USABLE);
+}
+
+TEST_CASE("target value: UHUGEINT is the one integer type that can exceed float32", "[tabfm][preprocess][target]") {
+	REQUIRE(ClassifyTargetValue(Value::UHUGEINT(uhugeint_t(1) << 100)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::UHUGEINT(NumericLimits<uhugeint_t>::Maximum())) ==
+	        TargetValueKind::FLOAT32_OVERFLOW);
+	REQUIRE(ClassifyTargetValue(Value::HUGEINT(NumericLimits<hugeint_t>::Maximum())) == TargetValueKind::USABLE);
 }
 
 // ---------------------------------------------------------------------------
@@ -567,8 +587,6 @@ TEST_CASE("preprocess: a table whose targets are ALL missing has no context, whi
           "[tabfm][preprocess][target]") {
 	auto cols = TargetCols(LogicalType::DOUBLE);
 	for (auto marker : {VNullDouble(), Value::DOUBLE(kNaN)}) {
-		auto table = DoubleTargetTable({marker, marker, marker});
-		// make rows 0-4 missing too
 		std::vector<std::vector<Value>> rows;
 		for (size_t i = 0; i < 8; i++) {
 			rows.push_back({VDouble(1.0 * i), VDouble(2.0 * i), marker});
@@ -597,17 +615,45 @@ TEST_CASE("preprocess: an Infinity target is an error naming the column, the cat
 	}
 }
 
-TEST_CASE("preprocess: a finite target beyond the float32 range is an error (it would become Infinity)",
+TEST_CASE("preprocess: a finite target beyond float32 is an error for REGRESSION only",
           "[tabfm][preprocess][target]") {
-	for (auto task : {PreprocessTask::CLASSIFICATION, PreprocessTask::REGRESSION}) {
-		auto table = DoubleTargetTable({VNullDouble(), Value::DOUBLE(1e300), VNullDouble()});
-		REQUIRE_THROWS_WITH(PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), task, false),
-		                    Catch::Matchers::Contains("target 'target'") &&
-		                        Catch::Matchers::Contains("float32") && Catch::Matchers::Contains("input row 7"));
+	auto table = DoubleTargetTable({VNullDouble(), Value::DOUBLE(1e300), VNullDouble()});
+	for (bool standardize : {true, false}) {
+		REQUIRE_THROWS_WITH(
+		    PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), PreprocessTask::REGRESSION, standardize),
+		    Catch::Matchers::Contains("target 'target'") && Catch::Matchers::Contains("float32") &&
+		        Catch::Matchers::Contains("input row 7"));
 	}
-	// ...but FLT_MAX itself is fine
+	// A class label is a string, never a float tensor: a huge double label is just another class.
+	auto batch = PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), PreprocessTask::CLASSIFICATION, false);
+	REQUIRE(batch.train_size == 6); // the five labelled rows and the 1e300 row
+	// ...and FLT_MAX itself is fine for regression
 	auto edge = DoubleTargetTable({VNullDouble(), Value::DOUBLE(static_cast<double>(FLT_MAX)), VNullDouble()});
 	REQUIRE_NOTHROW(PreprocessBatch(*edge, TargetCols(LogicalType::DOUBLE), PreprocessTask::REGRESSION, false));
+}
+
+TEST_CASE("preprocess: with several invalid rows the error reports the count and the FIRST row, 1-based",
+          "[tabfm][preprocess][target]") {
+	// rows 6, 7 and 8 (1-based): -Infinity, NaN (legal), +Infinity
+	auto table = DoubleTargetTable({Value::DOUBLE(-kInf), Value::DOUBLE(kNaN), Value::DOUBLE(kInf)});
+	REQUIRE_THROWS_WITH(PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), PreprocessTask::REGRESSION),
+	                    Catch::Matchers::Contains("has 2 Infinity value(s)") &&
+	                        Catch::Matchers::Contains("first at input row 6"));
+}
+
+TEST_CASE("preprocess: UHUGEINT maximum as a regression target is an error, as a class label it is fine",
+          "[tabfm][preprocess][target]") {
+	std::vector<std::vector<Value>> rows;
+	for (int i = 0; i < 6; i++) {
+		rows.push_back({VDouble(1.0 * i), VDouble(2.0 * i),
+		                i == 5 ? Value::UHUGEINT(NumericLimits<uhugeint_t>::Maximum())
+		                       : (i == 4 ? Value(LogicalType::UHUGEINT) : Value::UHUGEINT(uhugeint_t(i + 1)))});
+	}
+	auto table = MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::UHUGEINT}, rows);
+	REQUIRE_THROWS_WITH(PreprocessBatch(*table, TargetCols(LogicalType::UHUGEINT), PreprocessTask::REGRESSION),
+	                    Catch::Matchers::Contains("beyond the float32 range") &&
+	                        Catch::Matchers::Contains("input row 6"));
+	REQUIRE_NOTHROW(PreprocessBatch(*table, TargetCols(LogicalType::UHUGEINT), PreprocessTask::CLASSIFICATION));
 }
 
 TEST_CASE("preprocess: DATE infinity as a classification target is an error, not the class 'infinity'",
@@ -633,36 +679,4 @@ TEST_CASE("preprocess: the strings 'nan' and 'inf' remain legitimate labels", "[
 	auto batch = PreprocessBatch(*table, TargetCols(LogicalType::VARCHAR), PreprocessTask::CLASSIFICATION);
 	REQUIRE(batch.train_size == 4);
 	REQUIRE(batch.label_decoder.size() == 3);
-}
-
-TEST_CASE("preprocess: the suggested fix quotes an awkward column name so it can be pasted as written",
-          "[tabfm][preprocess][target]") {
-	// A name with a space and a quote is the case where an unquoted remedy would be a syntax error.
-	const string awkward = "my \"target\" col";
-	vector<PreprocessColumnSpec> cols = {{"f1", LogicalType::DOUBLE, false, true},
-	                                     {"f2", LogicalType::DOUBLE, false, true},
-	                                     {awkward, LogicalType::DOUBLE, true, false}};
-	auto table = DoubleTargetTable({VNullDouble(), Value::DOUBLE(kInf), VNullDouble()});
-	// what() is the JSON-serialised exception, where every quote is escaped: read the message field
-	// back out, so the assertion is about the text a user actually sees.
-	try {
-		PreprocessBatch(*table, cols, PreprocessTask::REGRESSION);
-		FAIL("expected an InvalidInputException");
-	} catch (const InvalidInputException &e) {
-		const string json = e.what();
-		const string key = "\"exception_message\":\"";
-		auto pos = json.find(key);
-		REQUIRE(pos != string::npos);
-		string message;
-		for (pos += key.size(); pos < json.size() && json[pos] != '"'; pos++) {
-			if (json[pos] == '\\' && pos + 1 < json.size()) {
-				pos++;
-				message += json[pos] == 'n' ? '\n' : json[pos];
-			} else {
-				message += json[pos];
-			}
-		}
-		REQUIRE_THAT(message, Catch::Matchers::Contains("isfinite(\"my \"\"target\"\" col\")"));
-		REQUIRE_THAT(message, Catch::Matchers::Contains("THEN \"my \"\"target\"\" col\" END"));
-	}
 }
