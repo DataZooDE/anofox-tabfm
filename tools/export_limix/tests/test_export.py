@@ -160,3 +160,70 @@ def test_every_checkpoint_tensor_is_a_graph_initializer(tmp_path, task):
     # ...and ORT accepts the graph with them present, and still agrees with PyTorch
     r = export.check_parity(path, wrapper, ((24, 7, 10),), max_classes=cfg.max_classes, task=task)
     assert r["ok"], r
+
+
+# --- the classification graph must not contain `Unique` -------------------------------------------
+#
+# Upstream's MulticlassTargetEncoder ranks each label among the DISTINCT training labels with torch.unique,
+# which exports as an ONNX `Unique`: a data-dependent output shape, absent from the MLX interpreter's op table
+# (so the model would be refused on MLX by name) and hostile to graph-compiling backends.
+
+def test_the_classification_graph_has_no_unique_op(tmp_path):
+    import onnx
+
+    _, path, _ = _export(tmp_path, "classification")
+    ops = {n.op_type for n in onnx.load(str(path), load_external_data=False).graph.node}
+    assert "Unique" not in ops, "the label-rank encoder still exports a data-dependent Unique"
+
+
+def _labels(rng, s, t, classes, with_gaps):
+    """[1, T, 1] float labels: S training labels (duplicates, optionally gaps in the class ids), then a NaN
+    pad for the test rows, as the model's own y encoder produces it."""
+    pool = rng.choice(np.arange(0, 3 * classes, 3 if with_gaps else 1), size=classes, replace=False)
+    y = rng.choice(pool, size=s).astype(np.float32)
+    x = np.full((1, t, 1), np.nan, dtype=np.float32)
+    x[0, :s, 0] = y
+    return torch.from_numpy(x)
+
+
+@pytest.mark.parametrize("seed", range(6))
+@pytest.mark.parametrize("with_gaps", [False, True])
+def test_the_unique_free_label_rank_equals_upstreams(seed, with_gaps):
+    """The replacement must give upstream's exact ranks: duplicated labels, gaps between class ids, a class
+    that appears once, and the NaN pad of the test rows (which upstream ranks as 0 because NaN > x is False)."""
+    from export_limix.limix_patches import apply
+    apply()
+    from model import encoders as emod
+
+    rng = np.random.default_rng(seed)
+    for s, t, classes in ((12, 20, 3), (7, 9, 5), (30, 41, 10), (5, 8, 1)):
+        x = _labels(rng, s, t, classes, with_gaps)
+        enc = emod.MulticlassTargetEncoder()
+        want = emod.MulticlassTargetEncoder._upstream_forward(enc, {"data": x.clone(), "eval_pos": s})["data"]
+        got = enc({"data": x.clone(), "eval_pos": s})["data"]
+        assert torch.equal(want, got), (s, t, classes, want.flatten().tolist(), got.flatten().tolist())
+
+
+# --- ReLU: the MLX interpreter's op table has no `Relu` -------------------------------------------
+
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_the_graph_has_no_relu_op(tmp_path, task):
+    """`Relu` is absent from the MLX interpreter's op table, so the model would be refused on MLX by name over a
+    one-node activation. clamp(x, min=0) is the same function (NaN included) and exports as `Clip`."""
+    import onnx
+
+    _, path, _ = _export(tmp_path, task)
+    ops = {n.op_type for n in onnx.load(str(path), load_external_data=False).graph.node}
+    assert "Relu" not in ops
+
+
+def test_the_clamp_activation_equals_relu_including_nan_and_negative_zero():
+    cfg = configs.fixture()
+    model = build_model(cfg.model_config, seed=0)
+    relus = [m for m in model.modules() if type(m).__name__ == "ReLU"]
+    assert relus, "the fixture config has no ReLU to patch: the test would pass vacuously"
+    x = torch.tensor([-3.0, -0.0, 0.0, 0.5, 7.0, float("nan"), float("-inf"), float("inf")])
+    want = torch.relu(x)
+    for m in relus:
+        got = m(x)
+        assert torch.equal(torch.nan_to_num(got, nan=-123.0), torch.nan_to_num(want, nan=-123.0)), (got, want)

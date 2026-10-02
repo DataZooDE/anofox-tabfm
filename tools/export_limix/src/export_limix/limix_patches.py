@@ -259,6 +259,29 @@ def apply() -> None:
 
     emod.NanEncoder.forward = _nan_encoder_forward
 
+    # --- Patch 6: MulticlassTargetEncoder without torch.unique -------------
+    # Upstream ranks every label among the DISTINCT training labels with torch.unique plus an in-place loop over
+    # the batch. `Unique` has a data-dependent output shape: it is absent from the MLX interpreter's op table
+    # (the model would be refused on MLX by name) and hostile to graph-compiling backends. The same value
+    # without it: rank_i = #distinct training labels < x_i = sum_j [a_j < x_i] * [j is the first occurrence of
+    # its value], an O(S^2) boolean table. NaN test rows rank 0 in both, because NaN > a is False.
+    # test_the_unique_free_label_rank_equals_upstreams proves it against upstream's own forward.
+    emod.MulticlassTargetEncoder._upstream_forward = emod.MulticlassTargetEncoder.forward
+
+    def _multiclass_target_encoder_forward(self, input):
+        x = input[self.in_keys[0]]                                   # [B, T, 1]
+        eval_pos = input["eval_pos"]
+        a = x[:, :eval_pos, 0]                                       # [B, S] training labels
+        idx = torch.arange(a.shape[1], device=a.device)
+        earlier = idx.view(1, 1, -1) < idx.view(1, -1, 1)            # [1, j, k]: k < j
+        has_earlier_dup = ((a.unsqueeze(2) == a.unsqueeze(1)) & earlier).any(dim=-1)   # [B, S]
+        first = ~has_earlier_dup
+        rank = ((x[:, :, 0].unsqueeze(2) > a.unsqueeze(1)) & first.unsqueeze(1)).sum(dim=-1)   # [B, T]
+        input[self.out_key] = rank.unsqueeze(-1).to(x.dtype)
+        return input
+
+    emod.MulticlassTargetEncoder.forward = _multiclass_target_encoder_forward
+
     _APPLIED = True
 
 
@@ -340,7 +363,25 @@ def build_model(config: dict, seed: int = 0):
 
     torch.manual_seed(seed)
     model = _build(dict(config))
+    _replace_relu(model)
     return model.eval()
+
+
+def _replace_relu(model) -> None:
+    """Patch 7: every nn.ReLU instance computes clamp(x, min=0) instead.
+
+    The MLX interpreter's op table has no `Relu`, so a one-node activation would get the whole model refused on
+    MLX by name. clamp(x, min=0) is the same function (NaN stays NaN; the sign of a zero may differ, and -0.0
+    and 0.0 compare equal and cannot change any downstream value) and exports as `Clip`, which the interpreter has. Per INSTANCE, not on nn.ReLU: the class is shared with every
+    other library in the process. test_the_clamp_activation_equals_relu_including_nan_and_negative_zero."""
+    import types
+
+    def _forward(self, input):
+        return torch.clamp(input, min=0.0)
+
+    for module in model.modules():
+        if type(module) is torch.nn.ReLU:
+            module.forward = types.MethodType(_forward, module)
 
 
 def load_real_config(ckpt_path: str) -> dict:
