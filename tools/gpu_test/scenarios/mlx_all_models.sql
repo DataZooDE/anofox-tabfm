@@ -21,6 +21,12 @@
 --
 --   CALL tabfm_download('classification', model := 'tabdpt');
 --
+-- causilo needs only the download too (Nums AI publish safetensors; the repo is ungated, the
+-- weights are non-commercial and need the accept_hf_license setting above):
+--
+--   CALL tabfm_download('classification', model := 'causilo');
+--   CALL tabfm_download('regression', model := 'causilo');
+--
 -- Run with anofox_tabfm_ep_path pointing at the built plugin.
 
 INSTALL httpfs; LOAD httpfs;
@@ -111,6 +117,16 @@ INSERT INTO report SELECT 'tabicl-v2', 'classification',
     avg((a.yhat = b.yhat)::INT), NULL, count(*)
 FROM c_cpu_tabiclv2 a JOIN c_mlx_tabiclv2 b USING (row_id);
 
+.print '--- causilo: classification ---'
+SET anofox_tabfm_device = 'cpu';
+CREATE TABLE c_cpu_causilo AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'y', test := 'qry', model := 'causilo');
+SET anofox_tabfm_device = 'mlx';
+CREATE TABLE c_mlx_causilo AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'y', test := 'qry', model := 'causilo');
+INSERT INTO report SELECT 'causilo', 'classification',
+    (SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND model = 'causilo' AND device LIKE 'mlx%'),
+    avg((a.yhat = b.yhat)::INT), NULL, count(*)
+FROM c_cpu_causilo a JOIN c_mlx_causilo b USING (row_id);
+
 .print '--- orion-bix: classification ---'
 SET anofox_tabfm_device = 'cpu';
 CREATE TABLE c_cpu_orionbix AS SELECT row_id, yhat FROM tabfm_classify('ctx_c', 'y', test := 'qry', model := 'orion-bix');
@@ -160,6 +176,16 @@ INSERT INTO report SELECT 'tabicl-v2', 'regression',
     (SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND device LIKE 'mlx%'),
     corr(a.yhat, b.yhat), max(abs(a.yhat - b.yhat)), count(*)
 FROM r_cpu_tabiclv2 a JOIN r_mlx_tabiclv2 b USING (row_id);
+
+.print '--- causilo: regression ---'
+SET anofox_tabfm_device = 'cpu';
+CREATE TABLE r_cpu_causilo AS SELECT row_id, yhat FROM tabfm_regress('ctx_r', 'tgt', test := 'qry', model := 'causilo');
+SET anofox_tabfm_device = 'mlx';
+CREATE TABLE r_mlx_causilo AS SELECT row_id, yhat FROM tabfm_regress('ctx_r', 'tgt', test := 'qry', model := 'causilo');
+INSERT INTO report SELECT 'causilo', 'regression',
+    (SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND model = 'causilo' AND device LIKE 'mlx%'),
+    corr(a.yhat, b.yhat), max(abs(a.yhat - b.yhat)), count(*)
+FROM r_cpu_causilo a JOIN r_mlx_causilo b USING (row_id);
 
 -- tabpfn-v3 REGRESSION is absent on purpose: its released checkpoint carries no
 -- FullSupportBarDistribution criterion.borders, so convert_weights.py cannot

@@ -418,6 +418,20 @@ The second pass gives 1.000 on both and leaves query rows unchanged. It costs `S
   the engine's class ceiling is the head width.
 - ROCm: refused by name like `tabicl-v2` (positional split; `docs/ROCM_SINGLE_EVAL_POS.md`).
 
+**Ext graphs (CUDA, and the CPU default).** `graph_ext_causilo_*` reference the cached safetensors
+by offset, so ORT reads weights off disk instead of copying them in; the engine uses them on CUDA
+and as the default CPU path whenever the weights' header hash matches the pinned revision. On the
+real checkpoints the two paths give **bit-identical** answers (0.0 difference over 770 rows,
+classification and regression), checked by forcing the injection path with
+`TABFM_DISABLE_EXTERNAL_DATA=1`. **CUDA is prepared but has not been run on a CUDA device**: the
+graph and hash are bundled and `tabfm_backends()` should list it, but `SERVED_BY=cuda:0` and
+agreement with the CPU still need a GPU box (`tools/gpu_test`).
+
+**MLX.** The interpreter has no per-model code; all 50 distinct ops in Causilo's four graphs are in
+its 68-entry op table, so it should not be refused at session creation. That predicts servable, not
+correct: numerical agreement needs a Mac (`tools/gpu_test/scenarios/mlx_all_models.sql` now has
+Causilo blocks that print the serving device beside the agreement).
+
 CPU speed (ORT, intra-op threads): about 0.15 s at 150 rows x 4 features (4 threads), about 2.2 s at
 1000 x 50, against 0.9 s for upstream's PyTorch single pass on the same machine. The ONNX graph is
 slower than eager PyTorch here (Transpose is 36% of the time); set `anofox_tabfm_threads` to 4-8.
