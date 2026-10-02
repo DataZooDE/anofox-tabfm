@@ -45,6 +45,7 @@ dev = ["pytest>=8"]
 [project.scripts]
 export_limix = "export_limix.cli:main"
 make_limix_fixture = "export_limix.fixture_cli:main"
+convert_limix_weights = "export_limix.convert:main"
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
