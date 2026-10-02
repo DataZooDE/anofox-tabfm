@@ -1,8 +1,8 @@
 """LimiX-2M on the REAL checkpoint: the contracts random weights cannot check.
 
 Skipped unless TABFM_REAL_WEIGHTS is set. It downloads stable-ai/LimiX-2M (about 9.5 MB) into the Hugging
-Face cache, never into this repo. The weights are non-commercial without StableAI's authorization, so
-running this is evaluation. Eager PyTorch only: the exported graph is covered by test_export.py, and the
+Face cache, never into this repo. The weights are under the Stable AI Technology Co., Ltd. License v1.0
+(Apache-2.0 + a Section 10 attribution clause); this is internal evaluation, which that clause exempts. Eager PyTorch only: the exported graph is covered by test_export.py, and the
 real-weights ORT comparison lives in the spike notes.
 """
 

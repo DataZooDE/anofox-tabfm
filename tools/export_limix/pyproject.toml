@@ -1,8 +1,6 @@
-# WS-A (LimiX): INCOMPLETE export spike — see README.md.
-# NOT wired into the registry or the build; the exported graph is not yet
-# shape-correct (T and S get unified in the feature-grouping reshape).
+# WS-A (LimiX): LimiX-2M exporter — see README.md.
 #
-# Intended pipeline — weight-free ONNX graph + tensor map for
+# Pipeline — weight-free ONNX graph + tensor map for
 # StableAI's LimiX-2M (axis-wise sample/feature attention tabular ICL model).
 #
 #   uv sync
@@ -16,10 +14,13 @@
 # `limix_patches` puts the submodule on sys.path and patches at RUNTIME, the
 # same approach as tools/export_tabicl and tools/export_orion_bix.
 #
-# Upstream CODE is Apache-2.0 (vendor/limix/LICENSE.txt). The WEIGHTS are not:
-# "fully open for academic research, commercial use requires official
-# authorization from StableAI" — hence commercial:false + a license gate in the
-# built-in manifest.
+# Upstream CODE is Apache-2.0 (vendor/limix/LICENSE.txt). The WEIGHTS are under the "Stable AI Technology
+# Co., Ltd. License v1.0" (stable-ai/LimiX-2M LICENSE.txt, 2026-09): Apache-2.0 plus one added Section 10,
+# which permits commercial use but requires the attribution "Built with StableAI LimiX" and a "LimiX" prefix
+# on the name of any AI model derived from the weights. The older upstream README (vendor/limix) says
+# "academic research, commercial with authorization" and the model card is internally inconsistent
+# (front matter `license: other`, body "Apache 2.0"); the registry follows the newest LICENSE.txt:
+# commercial:true, gated by the licence acknowledgement (accept_hf_license).
 #
 # torch is pinned to the CPU index so no CUDA wheels are pulled.
 [project]
