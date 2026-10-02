@@ -658,16 +658,24 @@ void PredictAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_dat
 		}
 		vector<vector<Value>> rows;
 		rows.reserve(row_values.size());
+		// One reading of every target, shared with PreprocessBatch: NULL and NaN are MISSING (a row to
+		// predict), anything else is context. An Infinity counts as context HERE only so that the engine,
+		// which owns the task and so the float32 rule, raises the error with the column and the count.
+		vector<bool> is_context;
+		is_context.reserve(row_values.size());
 		bool has_context = false;
 		for (auto &row_value : row_values) {
 			rows.push_back(RowChildren(row_value, bind.row_type));
-			has_context = has_context || !rows.back()[bind.target_idx].IsNull();
+			const bool context = ClassifyTargetValue(rows.back()[bind.target_idx]) != TargetValueKind::MISSING;
+			is_context.push_back(context);
+			has_context = has_context || context;
 		}
 		if (!has_context) {
-			// FR-3.4 / SQL-API §5 (the no-NULL-targets case, in contrast, is a
+			// FR-3.4 / SQL-API §5 (the no-missing-targets case, in contrast, is a
 			// valid result: every row comes back with is_training = true)
-			throw InvalidInputException("tabfm: target '%s' has no non-NULL rows to use as context",
-			                            bind.target);
+			throw InvalidInputException(
+			    "tabfm: target '%s' has no non-NULL rows to use as context (a NaN target counts as NULL)",
+			    bind.target);
 		}
 
 		CheckMemoryCeiling(bind);
@@ -684,7 +692,7 @@ void PredictAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_dat
 			struct_fields.emplace_back("cols", row_values[j]);
 			struct_fields.emplace_back("yhat", predictions.yhat[j]);
 			struct_fields.emplace_back("yhat_score", predictions.yhat_score[j]);
-			struct_fields.emplace_back("is_training", Value::BOOLEAN(!rows[j][bind.target_idx].IsNull()));
+			struct_fields.emplace_back("is_training", Value::BOOLEAN(is_context[j]));
 			if (emit_proba) {
 				struct_fields.emplace_back("proba", predictions.proba[j]);
 			}
@@ -778,8 +786,12 @@ void PredictWinWindow(AggregateInputData &aggr_input_data, const WindowPartition
 			}
 			auto row_value = state.reader->Read(partition, r);
 			auto children = RowChildren(row_value, bind.row_type);
-			if (children[bind.target_idx].IsNull()) {
-				continue; // NULL-target rows cannot train the context
+			const auto kind = ClassifyTargetValue(children[bind.target_idx]);
+			if (kind == TargetValueKind::MISSING) {
+				continue; // NULL / NaN target rows cannot train the context
+			}
+			if (kind == TargetValueKind::INFINITE) {
+				ThrowInvalidTarget(bind.target, kind, 1, r + 1);
 			}
 			rows.push_back(std::move(children));
 		}
@@ -793,6 +805,10 @@ void PredictWinWindow(AggregateInputData &aggr_input_data, const WindowPartition
 
 	// append the scored row with its target hidden (never leaks into context)
 	auto scored_children = RowChildren(state.reader->Read(partition, scored_row), bind.row_type);
+	// Validate BEFORE hiding: once the target is nulled an Infinity here could never be seen again.
+	if (ClassifyTargetValue(scored_children[bind.target_idx]) == TargetValueKind::INFINITE) {
+		ThrowInvalidTarget(bind.target, TargetValueKind::INFINITE, 1, scored_row + 1);
+	}
 	scored_children[bind.target_idx] = Value(bind.target_type);
 	rows.push_back(std::move(scored_children));
 

@@ -18,7 +18,7 @@
 #              is a path the matrix cannot protect):
 #                [x] tabfm_classify / tabfm_regress, single relation
 #                [ ] tabfm_classify / tabfm_regress, two-table form (NULL/NaN in `data`)
-#                [ ] window prediction
+#                [x] window prediction
 #                [ ] tabfm_cross_validate, tabfm_compare_models
 #                [ ] tabfm_impute, tabfm_generate (including a path with no engine call)
 #                [ ] regression metrics, tabfm_crps / tabfm_log_score / tabfm_interval_score
@@ -174,3 +174,85 @@ SELECT count(*), count(*) FILTER (WHERE is_training)
 FROM tabfm_classify('cls_str', 'y', model := 'nf-raw')
 ----
 20	12
+
+# An aggregate group whose targets are ALL missing has no context, whichever marker is used.
+statement ok
+CREATE TABLE all_nan AS SELECT f1, f2, f3, 'nan'::DOUBLE AS y FROM base;
+
+statement ok
+CREATE TABLE all_null AS SELECT f1, f2, f3, NULL::DOUBLE AS y FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_regress('all_nan', 'y', model := 'nf-raw')
+----
+no non-NULL rows to use as context
+
+statement error
+SELECT count(*) FROM tabfm_regress('all_null', 'y', model := 'nf-raw')
+----
+no non-NULL rows to use as context
+
+# ---------------------------------------------------------------------------------------------
+# window prediction: row i is scored from the rows BEFORE it, its own target hidden
+# ---------------------------------------------------------------------------------------------
+
+# Rolling regression over 12 labelled rows, then 8 rows whose target is missing. Only row 0 has no history
+# (soft NULL); rows 1-19 are scored from the usable rows before them, and the history of a late row
+# contains missing targets, which must be skipped exactly like NULL.
+statement ok
+CREATE TABLE w_null AS SELECT id, f1, f2, f3, CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE w_nan AS SELECT id, f1, f2, f3, CASE WHEN id < 12 THEN tgt ELSE 'nan'::DOUBLE END AS y FROM base;
+
+query II
+SELECT count(*) FILTER (WHERE p IS NULL), count(*) FILTER (WHERE p IS NOT NULL)
+FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p
+      FROM w_null t)
+----
+1	19
+
+# NULL-marked and NaN-marked tables answer every row the same way: NULL where there is no usable history
+# (the first rows), and the same prediction elsewhere. Compared on yhat, the part that cannot differ.
+query II
+SELECT count(*), count(*) FILTER (WHERE a.p.yhat IS DISTINCT FROM b.p.yhat)
+FROM (SELECT id, __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_null t) a
+JOIN (SELECT id, __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_nan t) b USING (id)
+----
+20	0
+
+# A frame whose every target is missing is the soft NULL ("no history yet"), not an error and not a
+# prediction made from NaN context. (Baseline: the NaN rows counted as context and were predicted from.)
+query I
+SELECT count(*) FILTER (WHERE p IS NOT NULL)
+FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p
+      FROM (SELECT id, f1, f2, f3, 'nan'::DOUBLE AS y FROM base) t)
+----
+0
+
+# Infinity in the HISTORY is an error...
+statement ok
+CREATE TABLE w_inf_hist AS SELECT id, f1, f2, f3, CASE WHEN id = 3 THEN 'infinity'::DOUBLE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement error
+SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_inf_hist t)
+----
+Infinity value
+
+# ...and so is Infinity in the SCORED row, whose target the window path hides from the engine. It sits in the
+# LAST row (id 19) on purpose: anywhere earlier it would also be history for the rows after it, and the
+# history check would catch it, hiding a missing scored-row check (a mutation test showed exactly that).
+# Without the check before hiding, this would be answered as an ordinary query row.
+statement ok
+CREATE TABLE w_inf_scored AS SELECT id, f1, f2, f3, CASE WHEN id = 19 THEN 'infinity'::DOUBLE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement error
+SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_inf_scored t)
+----
+Infinity value
