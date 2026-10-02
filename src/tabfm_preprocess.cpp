@@ -416,12 +416,14 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 		idx_t cnt = 0;
 		for (idx_t i = 0; i < n_train; i++) {
 			Value v = rows.GetValue(fc.source_col, train_rows[i]);
-			// A non-finite value (NaN/Inf) is non-NULL but would poison the mean
-			// and, downstream, the z-score statistics for the whole column — treat
-			// it as missing, exactly like NULL (SimpleImputer skips it).
+			// A value the float32 graph input cannot hold (NaN, +/-Inf, or a finite double beyond
+			// FLT_MAX, which would become Infinity at the cast) is non-NULL but would poison the mean
+			// and, downstream, the z-score statistics for the whole column. It is MISSING for a
+			// feature -- imputed, never an error -- and it is decided HERE, before the fit: a check at
+			// the final cast would be too late, the value would already have shifted the mean.
 			if (!v.IsNull()) {
 				double dv = v.GetValue<double>();
-				if (std::isfinite(dv)) {
+				if (IsFloat32Finite(dv)) {
 					sum += dv;
 					cnt++;
 				}
@@ -442,7 +444,7 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 				return mean;
 			}
 			double dv = v.GetValue<double>();
-			return std::isfinite(dv) ? dv : mean; // impute NaN/Inf like NULL
+			return IsFloat32Finite(dv) ? dv : mean; // impute like NULL
 		};
 		for (idx_t i = 0; i < n_train; i++) {
 			stages.encoded_train[i * n_encoded + out_col] = encode(train_rows[i]);
@@ -460,7 +462,9 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 		idx_t cnt = 0;
 		for (idx_t i = 0; i < n_train; i++) {
 			Value v = rows.GetValue(fc.source_col, train_rows[i]);
-			if (v.IsNull()) {
+			// A date/timestamp infinity is a sentinel, not a moment: fed to the day arithmetic it gives a
+			// nonsense year and, entering the mean, shifts the fill for every NULL row. Missing, like NULL.
+			if (v.IsNull() || ClassifyTargetValue(v) == TargetValueKind::INFINITE) {
 				continue;
 			}
 			double epoch_ns;
@@ -488,7 +492,7 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 
 		auto encode = [&](idx_t source_row, double *out5) {
 			Value v = rows.GetValue(fc.source_col, source_row);
-			if (v.IsNull()) {
+			if (v.IsNull() || ClassifyTargetValue(v) == TargetValueKind::INFINITE) {
 				DatetimeFeatures(fill_day, fill_epoch_ns, out5);
 			} else {
 				double epoch_ns;

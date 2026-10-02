@@ -428,3 +428,55 @@ JOIN tabfm_cross_validate('cv_nan', 'y', 'id', k := 2, seed := 42, task := 'regr
   USING (fold_id)
 ----
 3	0	0
+
+# ---------------------------------------------------------------------------------------------
+# FEATURES: nothing is an error. A value the float32 graph input cannot hold (beyond FLT_MAX, +/-Infinity,
+# NaN) and a date infinity are MISSING and mean-imputed, decided before the mean is fitted, so a 1e300 in a
+# feature gives exactly the answer a NULL there gives. (Baseline: 1e300 reached the float32 cast as
+# Infinity, and a date infinity became a nonsense year.)
+# ---------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE ft_null AS SELECT f1, (CASE WHEN id IN (3, 15) THEN NULL ELSE f2 END)::DOUBLE AS f2, f3,
+  CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE ft_big AS SELECT f1, (CASE WHEN id IN (3, 15) THEN 1e300 ELSE f2 END)::DOUBLE AS f2, f3,
+  CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE ft_inf AS SELECT f1, (CASE WHEN id = 3 THEN 'infinity'::DOUBLE WHEN id = 15 THEN '-infinity'::DOUBLE ELSE f2 END)::DOUBLE AS f2, f3,
+  CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+foreach tbl ft_big ft_inf
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat IS DISTINCT FROM b.yhat OR isnan(b.yhat) OR b.yhat IS NULL)
+FROM tabfm_regress('ft_null', 'y', model := 'nf-raw') a
+JOIN tabfm_regress('${tbl}', 'y', model := 'nf-raw') b
+  ON a.f1 = b.f1 AND a.f3 = b.f3 AND a.is_training = b.is_training
+----
+20	0
+
+endloop
+
+# a DATE feature: infinity is a sentinel, not a moment
+statement ok
+CREATE TABLE ft_date_null AS SELECT f1, f3, (DATE '2024-01-01' + CAST(id AS INTEGER) * 3) AS d, CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+UPDATE ft_date_null SET d = NULL WHERE f1 = (SELECT f1 FROM base WHERE id = 3) AND f3 = (SELECT f3 FROM base WHERE id = 3);
+
+statement ok
+CREATE TABLE ft_date_inf AS SELECT * FROM ft_date_null;
+
+statement ok
+UPDATE ft_date_inf SET d = 'infinity'::DATE WHERE d IS NULL;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat IS DISTINCT FROM b.yhat OR b.yhat IS NULL OR isnan(b.yhat))
+FROM tabfm_regress('ft_date_null', 'y', model := 'nf-raw') a
+JOIN tabfm_regress('ft_date_inf', 'y', model := 'nf-raw') b
+  ON a.f1 = b.f1 AND a.f3 = b.f3 AND a.is_training = b.is_training
+----
+20	0

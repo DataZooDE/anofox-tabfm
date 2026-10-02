@@ -680,3 +680,112 @@ TEST_CASE("preprocess: the strings 'nan' and 'inf' remain legitimate labels", "[
 	REQUIRE(batch.train_size == 4);
 	REQUIRE(batch.label_decoder.size() == 3);
 }
+
+// ---------------------------------------------------------------------------
+// FEATURES follow the rule from the other side: nothing here is an error, everything unusable is MISSING
+// and mean-imputed, decided at the SOURCE, before the mean is fitted. A value beyond float32 or a date
+// infinity used to reach the fit (shifting the mean and every other row) and then the float32 cast.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+unique_ptr<ColumnDataCollection> FeatureTable(const LogicalType &type, const std::vector<Value> &feature) {
+	std::vector<std::vector<Value>> rows;
+	for (size_t i = 0; i < feature.size(); i++) {
+		rows.push_back({feature[i], VDouble(10.0 - 0.5 * i), i < 6 ? VDouble(1.0 * (i % 3)) : VNullDouble()});
+	}
+	return MakeCollection({type, LogicalType::DOUBLE, LogicalType::DOUBLE}, rows);
+}
+
+vector<PreprocessColumnSpec> FeatureCols(const LogicalType &type) {
+	return {{"feat", type, false, true}, {"other", LogicalType::DOUBLE, false, true},
+	        {"target", LogicalType::DOUBLE, true, false}};
+}
+
+} // namespace
+
+TEST_CASE("preprocess feature: a double beyond float32 is mean-imputed, exactly like NULL",
+          "[tabfm][preprocess][feature]") {
+	auto base = [](Value marker_train, Value marker_test) {
+		return std::vector<Value> {VDouble(1.0), VDouble(2.0), marker_train, VDouble(4.0), VDouble(5.0), VDouble(6.0),
+		                           VDouble(7.0), marker_test};
+	};
+	auto cols = FeatureCols(LogicalType::DOUBLE);
+	for (bool standardize : {true, false}) {
+		INFO("standardize " << standardize);
+		auto null_table = FeatureTable(LogicalType::DOUBLE, base(VNullDouble(), VNullDouble()));
+		auto reference = PreprocessBatch(*null_table, cols, PreprocessTask::REGRESSION, standardize);
+		for (double marker : {1e300, -1e300, static_cast<double>(FLT_MAX) * 1.0000001, kInf, -kInf, kNaN}) {
+			INFO("marker " << marker);
+			auto table = FeatureTable(LogicalType::DOUBLE, base(Value::DOUBLE(marker), Value::DOUBLE(marker)));
+			auto batch = PreprocessBatch(*table, cols, PreprocessTask::REGRESSION, standardize);
+			CheckVec(batch.x, reference.x, 1e-12, 1e-12);
+			for (double v : batch.x) {
+				REQUIRE(std::isfinite(v));
+				REQUIRE(std::fabs(v) <= static_cast<double>(FLT_MAX));
+			}
+		}
+		// ...and FLT_MAX itself is an ordinary finite value, NOT imputed
+		auto edge = FeatureTable(LogicalType::DOUBLE,
+		                         base(Value::DOUBLE(static_cast<double>(FLT_MAX)), VNullDouble()));
+		auto edge_batch = PreprocessBatch(*edge, cols, PreprocessTask::REGRESSION, false);
+		bool differs = false;
+		for (size_t i = 0; i < edge_batch.x.size(); i++) {
+			differs = differs || std::fabs(edge_batch.x[i] - reference.x[i]) > 1e-9;
+		}
+		REQUIRE(differs);
+	}
+}
+
+TEST_CASE("preprocess feature: UHUGEINT beyond float32 is imputed too", "[tabfm][preprocess][feature]") {
+	std::vector<Value> feat;
+	for (int i = 0; i < 8; i++) {
+		feat.push_back(i == 2 ? Value::UHUGEINT(NumericLimits<uhugeint_t>::Maximum())
+		                      : (i == 7 ? Value(LogicalType::UHUGEINT) : Value::UHUGEINT(uhugeint_t(i + 1))));
+	}
+	std::vector<Value> null_feat = feat;
+	null_feat[2] = Value(LogicalType::UHUGEINT);
+	auto cols = FeatureCols(LogicalType::UHUGEINT);
+	auto batch = PreprocessBatch(*FeatureTable(LogicalType::UHUGEINT, feat), cols, PreprocessTask::REGRESSION, false);
+	auto reference =
+	    PreprocessBatch(*FeatureTable(LogicalType::UHUGEINT, null_feat), cols, PreprocessTask::REGRESSION, false);
+	CheckVec(batch.x, reference.x, 1e-12, 1e-12);
+}
+
+TEST_CASE("preprocess feature: a date or timestamp infinity is imputed like NULL, never expanded",
+          "[tabfm][preprocess][feature]") {
+	// A sentinel passed to the day-index arithmetic yields a nonsense year/month/day, and entering the
+	// mean fit it shifts the fill for every NULL row.
+	struct Flavour {
+		LogicalType type;
+		Value finite, infinity, ninfinity, null;
+	};
+	std::vector<Flavour> flavours = {
+	    {LogicalType::DATE, VDate(2023, 6, 1), Value::DATE(date_t::infinity()), Value::DATE(date_t::ninfinity()),
+	     VNullDate()},
+	    {LogicalType::TIMESTAMP, Value::TIMESTAMP(timestamp_t(1700000000000000LL)),
+	     Value::TIMESTAMP(timestamp_t::infinity()), Value::TIMESTAMP(timestamp_t::ninfinity()),
+	     Value(LogicalType::TIMESTAMP)},
+	    {LogicalType::TIMESTAMP_TZ, Value::TIMESTAMPTZ(timestamp_tz_t(1700000000000000LL)),
+	     Value::TIMESTAMPTZ(timestamp_tz_t(timestamp_t::infinity())),
+	     Value::TIMESTAMPTZ(timestamp_tz_t(timestamp_t::ninfinity())), Value(LogicalType::TIMESTAMP_TZ)},
+	};
+	for (auto &f : flavours) {
+		INFO(f.type.ToString());
+		auto series = [&](const Value &marker) {
+			std::vector<Value> v;
+			for (int i = 0; i < 8; i++) {
+				v.push_back(i == 2 || i == 7 ? marker : f.finite);
+			}
+			// make the finite ones differ so there is something to average
+			return v;
+		};
+		auto cols = FeatureCols(f.type);
+		auto reference = PreprocessBatch(*FeatureTable(f.type, series(f.null)), cols, PreprocessTask::REGRESSION, false);
+		for (const Value &marker : {f.infinity, f.ninfinity}) {
+			auto batch = PreprocessBatch(*FeatureTable(f.type, series(marker)), cols, PreprocessTask::REGRESSION, false);
+			CheckVec(batch.x, reference.x, 1e-9, 1e-9);
+			REQUIRE(batch.H == reference.H);
+		}
+	}
+}
