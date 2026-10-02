@@ -415,6 +415,13 @@ static const char *const BUILTIN_CAUSILO = R"json({
 // What this does NOT reproduce, so the docs do not over-claim: the engine runs ONE estimator, while
 // upstream's leaderboard figures come from a feature-view / retrieval ensemble; and the engine
 // mean-imputes missing cells before the graph, so LimiX's own missing-value encoding is unused.
+//
+// size_regime is an engine cap chosen from MEASUREMENT, not an upstream claim (upstream states none).
+// CPU, default threads, 200 query rows (rows x features -> wall, peak RSS): 500x20 7 s; 1000x20 16 s /
+// 1.3 GB; 1000x50 24 s; 1000x100 39 s / 4.6 GB; 2000x20 39 s / 3.7 GB; 3000x20 52 s / 6.2 GB;
+// 3000x50 142 s / 14.3 GB; 5000x20 132 s / 15.3 GB. Memory grows roughly with rows^1.7 and linearly in
+// features, so the corner of the cap (5000x100) would need on the order of 70 GB: the two limits are
+// independent, and docs/REAL_MODELS.md gives the table. The first guess (10000 x 500) was wrong.
 static const char *const BUILTIN_LIMIX2M = R"json({
   "schema_version": 2, "id": "limix-2m", "display_name": "LimiX-2M (StableAI)",
   "family": "icl-transformer",
@@ -436,7 +443,7 @@ static const char *const BUILTIN_LIMIX2M = R"json({
   "capabilities": ["classify", "regress"],
   "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
                       "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
-  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+  "size_regime": {"max_rows": 5000, "max_features": 100, "max_classes": 10}
 })json";
 
 vector<ModelSpec> BuiltinModelSpecs() {

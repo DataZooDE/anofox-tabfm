@@ -116,3 +116,17 @@ query I
 SELECT count(*) FROM glob('__TEST_DIR__/free_cache/manifest-lock.json')
 ----
 0
+
+# --- A COMMERCIAL model can still be gated ------------------------------------
+#
+# LimiX-2M's licence (Stable AI Technology Co., Ltd. License v1.0 = Apache-2.0 + a Section 10 attribution
+# clause) permits commercial use, so the gate is the licence ACKNOWLEDGEMENT. The message must not call it
+# "non-commercial": that would tell a user the opposite of what the licence says. It still names the SET that
+# fixes it and where to read the terms.
+statement ok
+SET anofox_tabfm_accept_hf_license = false
+
+statement error
+CALL tabfm_download('classification', model := 'limix-2m')
+----
+licensed 'limix-2m-license-v1.0' and require you to accept its terms before they are downloaded (read the licence in that Hugging Face repo, and docs/REAL_MODELS.md for what it asks of you). Run: SET anofox_tabfm_accept_hf_license = true;

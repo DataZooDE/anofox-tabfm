@@ -114,3 +114,90 @@ def test_converted_weights_map_onto_the_exported_graph_strictly(tmp_path, task):
     assert any(k.startswith("feature_decoder.") for k in unused)
     assert any(k.startswith(other_task) for k in unused)
     assert len(keys) == 137, f"the checkpoint has {len(keys)} tensors, the spike notes say 137"
+
+
+def test_a_feature_value_exactly_at_the_training_mean_is_predicted_badly_by_upstream_too(wrappers):
+    """LimiX encodes a standardised value as (sign, decimal exponent, mantissa) and an EXACT zero as its own
+    token. On a symmetric table a row sitting exactly on the training mean standardises to exactly 0.0, and
+    the real model gets that row badly wrong: 25.1 against a truth of 37.3, while its neighbours at z = +-0.17
+    are off by ~0.3-0.4. The engine reproduces it (it matches upstream eager on this table to float noise), so
+    this is the MODEL's behaviour. It is pinned here so a change in upstream or in the exporter is noticed, and
+    so docs/REAL_MODELS.md has a measured sentence to point at."""
+    i = np.arange(100)
+    tr, te = i[i % 5 != 4], i[i % 5 == 4]
+    x = torch.tensor(np.stack([np.concatenate([tr, te]), np.concatenate([tr, te]) % 7], 1), dtype=torch.float32)[None]
+    y = torch.tensor(tr * 0.7 + 3, dtype=torch.float32)[None]
+    with torch.no_grad():
+        out = wrappers["regression"](x, y)[0, :, 0].numpy()[len(tr):]
+    err = np.abs(out - (te * 0.7 + 3))
+    assert tr.mean() == 49.0 and 49 in te, "the table must put a held-out row exactly on the training mean"
+    at_mean = err[list(te).index(49)]
+    neighbours = np.abs(err[[list(te).index(44), list(te).index(54)]])
+    assert at_mean > 5.0, f"the exact-mean row is now fine ({at_mean:.2f}); update the docs, this was a known flaw"
+    assert neighbours.max() < 1.0, neighbours
+
+    # ...and the same model on a holdout with NO row on the mean is excellent
+    tr2, te2 = i[i % 5 != 3], i[i % 5 == 3]
+    x2 = torch.tensor(np.stack([np.concatenate([tr2, te2]), np.concatenate([tr2, te2]) % 7], 1),
+                      dtype=torch.float32)[None]
+    y2 = torch.tensor(tr2 * 0.7 + 3, dtype=torch.float32)[None]
+    with torch.no_grad():
+        out2 = wrappers["regression"](x2, y2)[0, :, 0].numpy()[len(tr2):]
+    assert np.abs(out2 - (te2 * 0.7 + 3)).max() < 1.5
+
+
+def test_the_ort_outlier_is_the_tokenizers_near_zero_sensitivity_not_an_export_defect(tmp_path):
+    """The spike left one unexplained number: at (T=33, H=9, S=21) the exported graph in ORT differed from
+    PyTorch by 1.2e-3 where every other shape agrees to ~1e-5. Measured here, on the real weights:
+
+      * the input that produces it (make_feed seed 5) is chaotic in EAGER PyTorch too: 1-ulp input noise moves
+        its logits by ~8e-3 median (seed 0: 3e-5), so ORT and torch rounding differences are amplified, not
+        introduced, by the graph;
+      * the amplifier is the numeric tokenizer: it encodes |z| as (decimal exponent, mantissa), so a
+        standardised value near zero is hypersensitive in proportion to 1/|z|. This input contains one at
+        3.2e-6 (the next smallest of 200 inputs is 2.3e-5, and only this one exceeds 5e-4);
+      * nudging ONE raw element by 0.37 (min |z| -> 2.3e-4) takes the ORT-vs-torch gap from 5.4e-3 to 1.4e-5.
+
+    So it is a property of the model's input encoding, not of the export. (An earlier guess, the float16
+    round-trip in the target embedding, was refuted: turning every fp16 cast into fp32 left the sensitivity
+    unchanged, and for classification that embedding is an exact table lookup.)"""
+    import onnxruntime as ort
+    from huggingface_hub import hf_hub_download
+
+    from export_limix import export
+
+    sd = torch.load(hf_hub_download("stable-ai/LimiX-2M", "LimiX-2M.ckpt"), map_location="cpu",
+                    weights_only=False)["state_dict"]
+    cfg = configs.real()
+    model = build_model(cfg.model_config, seed=0)
+    model.load_state_dict(sd, strict=True)
+    model.eval()
+    path = tmp_path / "g.onnx"
+    wrapper = export.export_graph(model, path, dim_rows=cfg.dim_rows, dim_train=cfg.dim_train,
+                                  dim_features=cfg.dim_features, example=cfg.example,
+                                  max_classes=cfg.max_classes, task="classification")
+    sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+    tok = dict(model.named_modules())["encoder_x.0.numeric_mlp"]
+
+    def delta_and_min_z(feed):
+        store = {}
+        hook = tok.register_forward_pre_hook(lambda m, i: store.__setitem__("x", i[0].detach().double()))
+        with torch.no_grad():
+            ref = wrapper(torch.from_numpy(feed["x"]), torch.from_numpy(feed["y"])).numpy()
+        hook.remove()
+        (got,) = sess.run(["logits"], feed)
+        z = store["x"].abs().flatten()
+        return float(np.abs(got - ref).max()), float(z[z > 0].min())
+
+    t, h, s = 33, 9, 21
+    ordinary, _ = delta_and_min_z(export.make_feed(t, h, s, 10, seed=0))
+    assert ordinary < 2e-4, ordinary
+
+    feed = export.make_feed(t, h, s, 10, seed=5)
+    outlier, min_z = delta_and_min_z(feed)
+    assert min_z < 1e-5 and outlier > 1e-3, (outlier, min_z)
+
+    nudged = {k: v.copy() for k, v in feed.items()}
+    nudged["x"][0, 0, 5] += 0.37
+    fixed, min_z2 = delta_and_min_z(nudged)
+    assert min_z2 > 1e-4 and fixed < 1e-4 and outlier / fixed > 50, (fixed, min_z2)
