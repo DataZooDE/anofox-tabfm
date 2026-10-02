@@ -1,0 +1,42 @@
+# SPIKE (go/no-go, not a shipping effort): LimiX-2 (stable-ai/LimiX-2, 406M params) -> ONNX.
+# Upstream (limix-ldm-ai/LimiX @ 516bf39) is NOT vendored here: the v2_0 tree is cloned outside the repo
+# (see LIMIX2_SRC in limix2_patches.py). Weights are NON-COMMERCIAL and live only in the HF cache.
+[project]
+name = "export-limix2"
+version = "0.0.1"
+description = "LimiX-2 export spike"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "torch==2.12.1",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "onnxscript>=0.2",
+    "einops>=0.7",
+    "numpy",
+    "scikit-learn",
+    "safetensors",
+    "huggingface_hub",
+    "nvtx",       # imported at module top level by upstream's v2_0 code
+    "triton",     # imported UNGUARDED by upstream's rmsnorm operators package
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/export_limix2"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
