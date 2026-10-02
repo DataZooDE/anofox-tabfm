@@ -20,7 +20,7 @@
 #                [x] tabfm_classify / tabfm_regress, two-table form (NULL/NaN in `data`)
 #                [x] window prediction
 #                [ ] tabfm_cross_validate, tabfm_compare_models
-#                [ ] tabfm_impute, tabfm_generate (including a path with no engine call)
+#                [x] tabfm_impute, tabfm_generate (including a path with no engine call)
 #                [ ] regression metrics, tabfm_crps / tabfm_log_score / tabfm_interval_score
 #                [ ] classification metrics (typed operands only; VARCHAR-bound ones cannot tell
 #                    a numeric NaN from the string 'nan', and that limit is documented)
@@ -311,3 +311,97 @@ query I
 SELECT count(*) FROM tabfm_classify('cls_str', 'y', test := 'two_test', model := 'nf-raw')
 ----
 5
+
+# ---------------------------------------------------------------------------------------------
+# tabfm_impute / tabfm_generate: a NaN cell is a MISSING cell, exactly like NULL
+# ---------------------------------------------------------------------------------------------
+
+# (cast to DOUBLE: 'nan'::DOUBLE makes the NaN-marked column DOUBLE, and a DECIMAL column would round the fill)
+statement ok
+CREATE TABLE imp_null AS SELECT id, (CASE WHEN id IN (3, 7, 11) THEN NULL ELSE f1 END)::DOUBLE AS f1, f2, f3 FROM base;
+
+statement ok
+CREATE TABLE imp_nan AS SELECT id, CASE WHEN id IN (3, 7, 11) THEN 'nan'::DOUBLE ELSE f1 END AS f1, f2, f3 FROM base;
+
+# Baseline: a NaN cell was "not missing", so it was never filled and stayed NaN in the output.
+query II
+SELECT count(*) FILTER (WHERE isnan(f1)), count(*) FILTER (WHERE f1 IS NULL)
+FROM tabfm_impute('imp_nan', columns := ['f1'], model := 'nf-raw', opts := MAP{'seed': '7'})
+----
+0	0
+
+# ...and the fills are the same ones the NULL-marked table gets.
+query II
+SELECT count(*), count(*) FILTER (WHERE a.f1 IS DISTINCT FROM b.f1)
+FROM tabfm_impute('imp_null', columns := ['f1'], model := 'nf-raw', opts := MAP{'seed': '7'}) a
+JOIN tabfm_impute('imp_nan', columns := ['f1'], model := 'nf-raw', opts := MAP{'seed': '7'}) b USING (id)
+----
+20	0
+
+# Default target selection: a column whose only gaps are NaN is picked up without naming it.
+query I
+SELECT count(*) FILTER (WHERE isnan(f1))
+FROM tabfm_impute('imp_nan', model := 'nf-raw', opts := MAP{'seed': '7'})
+----
+0
+
+# A NaN in a column that is NOT being filled is left exactly as it was: impute never rewrites a cell it
+# was not asked to fill (here f2 stays NaN while f1 is filled), and it is still just a feature.
+statement ok
+CREATE TABLE imp_mixed AS SELECT id, CASE WHEN id = 3 THEN NULL ELSE f1 END AS f1,
+                                 CASE WHEN id = 5 THEN 'nan'::DOUBLE ELSE f2 END AS f2, f3 FROM base;
+
+query II
+SELECT count(*) FILTER (WHERE isnan(f2)), count(*) FILTER (WHERE f1 IS NULL)
+FROM tabfm_impute('imp_mixed', columns := ['f1'], model := 'nf-raw', opts := MAP{'seed': '7'})
+----
+1	0
+
+# Infinity in a column that is being filled is an error naming the column; as a plain feature it is not.
+statement ok
+CREATE TABLE imp_inf AS SELECT id, CASE WHEN id = 3 THEN NULL WHEN id = 4 THEN 'infinity'::DOUBLE ELSE f1 END AS f1, f2, f3 FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_impute('imp_inf', columns := ['f1'], model := 'nf-raw')
+----
+Infinity value
+
+# An all-NaN column is the same as an all-NULL one: nothing to learn from, so the fill is NULL, never a
+# constant NaN.
+statement ok
+CREATE TABLE imp_allnan AS SELECT id, 'nan'::DOUBLE AS f1, f2, f3 FROM base;
+
+statement ok
+CREATE TABLE imp_allnull AS SELECT id, NULL::DOUBLE AS f1, f2, f3 FROM base;
+
+query II
+SELECT count(*) FILTER (WHERE isnan(f1)), count(f1)
+FROM tabfm_impute('imp_allnan', columns := ['f1'], model := 'nf-raw')
+----
+0	0
+
+query II
+SELECT count(*) FILTER (WHERE isnan(f1)), count(f1)
+FROM tabfm_impute('imp_allnull', columns := ['f1'], model := 'nf-raw')
+----
+0	0
+
+# generate: the same plan (so the same sample for a fixed seed) whichever marker the gaps carry. This path
+# also covers the plan itself, which needs no engine call for a constant or marginal column.
+query II
+SELECT count(*), count(*) FILTER (WHERE a.f1 IS DISTINCT FROM b.f1 OR a.f2 IS DISTINCT FROM b.f2)
+FROM (SELECT row_number() OVER () AS rn, * FROM tabfm_generate('imp_null', 6, model := 'nf-raw', opts := MAP{'seed': '7'})) a
+JOIN (SELECT row_number() OVER () AS rn, * FROM tabfm_generate('imp_nan', 6, model := 'nf-raw', opts := MAP{'seed': '7'})) b USING (rn)
+----
+6	0
+
+# a generated NaN is never produced from a NaN-only column
+query I
+SELECT count(*) FILTER (WHERE isnan(f1)) FROM tabfm_generate('imp_allnan', 6, model := 'nf-raw', opts := MAP{'seed': '7'})
+----
+0
+
+statement error
+SELECT count(*) FROM tabfm_generate('imp_inf', 6, model := 'nf-raw')
+----
+Infinity value

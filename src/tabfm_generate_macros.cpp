@@ -109,7 +109,8 @@ R"(
     )
 )",
     "Fill the NULL cells of `data` with a tabular foundation model, conditioning each missing value on the other "
-    "columns of its row. Returns the same columns as `data`, with non-NULL cells untouched, so it round-trips: "
+    "columns of its row. A NaN in a FLOAT/DOUBLE column being filled counts as missing, like NULL; +/-Infinity there "
+    "is an error. Returns the same columns as `data`, with every other cell untouched, so it round-trips: "
     "CREATE TABLE clean AS SELECT * FROM tabfm_impute('raw'). Unlike tabfm_generate this does not sample — it takes "
     "the conditional best estimate (classification argmax, regression point estimate), so continuous columns keep "
     "full precision. Optional `columns` restricts which columns are filled; `opts` accepts seed, rounds (MICE-style "
