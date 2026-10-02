@@ -26,6 +26,13 @@ class ExportConfig:
     channels: int                  # regression output channels
     example: tuple                 # (T, H, S) used for tracing
     parity_shapes: tuple           # (T, H, S), all different from `example`
+    weight_gain: float = 2.0       # fixture.sensitive(): attention/feed-forward scale; see its docstring
+    mask_example: tuple = (32, 12, 20)    # (T, H, train_size) used for tracing the masked contract
+    # (n, N, d, T, H): real rows, train rows, real features, bucket rows, bucket features. Every one differs
+    # from `mask_example` in every coordinate, and they include features that fill and do not fill their group
+    # of 3, an entirely padded group, a single query row and a single training row.
+    mask_parity_cases: tuple = ((20, 12, 5, 32, 16), (40, 30, 9, 64, 16), (16, 15, 3, 32, 18),
+                                (12, 8, 2, 32, 16), (14, 1, 5, 32, 16), (9, 2, 7, 16, 24))
 
     def model_config(self, task: str) -> ModelConfig:
         outputs = self.classes if task == "classification" else self.channels
@@ -70,8 +77,9 @@ def fixture() -> ExportConfig:
 
 
 def real() -> ExportConfig:
+    # weight_gain 1.5, not the fixtures' 2.0: measured at real depth, see fixture.sensitive
     return ExportConfig("real", dict(_REAL), classes=10, channels=999,
-                        example=(16, 6, 10), parity_shapes=((32, 12, 20), (24, 7, 15)))
+                        example=(16, 6, 10), parity_shapes=((32, 12, 20), (24, 7, 15)), weight_gain=1.5)
 
 
 def get(name: str) -> ExportConfig:

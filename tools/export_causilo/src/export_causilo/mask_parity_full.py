@@ -106,8 +106,8 @@ def _all_cases(cfg_name, task):
     return worst, rows
 
 
-def _controls() -> int:
-    """Each must be CAUGHT on every config and task, or the gate is blind to that mechanism."""
+def controls():
+    """[(name, install, restore)]: one wrong version of each mechanism. Each must be CAUGHT by the gate."""
     seams = {n: getattr(cmf, n) for n in
              ("_row_keep", "_group_keep", "_n_keys_rows", "_n_keys_groups", "_stat_rows", "_inject_keep")}
     saved_neg = cmf.NEG_INF
@@ -118,7 +118,7 @@ def _controls() -> int:
     def padded_groups(group_keep, latents):     # the key count reads the PADDED group count
         return torch.tensor(float(group_keep.shape[0] + latents))
 
-    controls = [
+    return [
         ("row key mask off (non-train rows are keys)",
          lambda: setattr(cmf, "_row_keep", lambda train: torch.ones_like(train)),
          lambda: setattr(cmf, "_row_keep", seams["_row_keep"])),
@@ -142,8 +142,11 @@ def _controls() -> int:
          lambda: setattr(cmf, "NEG_INF", saved_neg)),
     ]
 
+
+def _controls() -> int:
+    """Each must be CAUGHT on every config and task, or the gate is blind to that mechanism."""
     blind = []
-    for name, install, restore in controls:
+    for name, install, restore in controls():
         for cfg_name in CONFIGS:
             for task in TASKS:
                 install()

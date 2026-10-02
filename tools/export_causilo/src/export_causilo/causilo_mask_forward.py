@@ -141,6 +141,23 @@ def _attend(att, query, context, keep, n):
     return att.output(merged)
 
 
+def _prepare_context(att, rows):
+    """`Attention.prepare_context` without `chunk`: the K and V halves of the packed projection as two slices.
+
+    Upstream splits the packed projection with `packed.chunk(2, dim=-1)`, which exports as ONNX
+    `SplitToSequence` + `SequenceAt`, and MIGraphX's ONNX parser has no such operator ("Unknown operator:
+    SplitToSequence": the masked graph cannot even be LOADED on ROCm). Slices are exactly equivalent and
+    supported. Head splitting and the optional per-head RMS normalisation are upstream's own `_keys`.
+    """
+    packed = F.linear(rows, att.projection.weight[att.width:], att.projection.bias[att.width:])
+    return att._keys(packed[..., :att.width], packed[..., att.width:])
+
+
+def _layer_prepare(layer, rows):
+    """`AttentionLayer.prepare`: normalise, then project to K/V."""
+    return _prepare_context(layer.attention, layer.attention_norm(rows))
+
+
 def _layer_query(layer, rows, context, keep, n):
     """`AttentionLayer.query`: the full residual layer against prepared K/V, keys masked."""
     projected = layer.attention.prepare_query(layer.attention_norm(rows))
@@ -223,17 +240,17 @@ def _column_block(block, rows_BGRD, keep, n):
         latents = layer.latents.expand(*rows_BGRD.shape[:-2], *layer.latents.shape)
         gather = layer.gather
         projected = gather.attention.prepare_query(gather.attention_norm(latents))
-        context = gather.attention.prepare_context(gather.attention_norm(rows_BGRD))
+        context = _prepare_context(gather.attention, gather.attention_norm(rows_BGRD))
         compressed = gather._finish(latents, _attend(gather.attention, projected, context, keep, n))
         # the broadcast attention has no QueryScale and its keys are the fixed latents: unchanged upstream code
-        rows_BGRD = layer.broadcast.query(rows_BGRD, layer.broadcast.prepare(compressed))
+        rows_BGRD = layer.broadcast.query(rows_BGRD, _layer_prepare(layer.broadcast, compressed))
     return rows_BGRD
 
 
 def _feature_update(fu, rows, latents):
     """`FeatureUpdate.forward`: keys are the L latents, an architectural constant, so no mask."""
     projected = fu.read.prepare_query(fu.context_norm(rows))
-    context = fu.read.prepare_context(fu.context_norm(latents))
+    context = _prepare_context(fu.read, fu.context_norm(latents))
     return rows + _attend(fu.read, projected, context, None, latents.shape[-2])
 
 
@@ -242,7 +259,7 @@ def _latent_update(lu, latents, features, group_keep, n_keys):
     count = latents.shape[-2]
     context = lu.context_norm(torch.cat((latents, features), dim=-2))
     projected = lu.read.prepare_query(context[..., :count, :])
-    kv = lu.read.prepare_context(context)
+    kv = _prepare_context(lu.read, context)
     keep = torch.cat([torch.ones(count, dtype=torch.bool, device=group_keep.device), group_keep])
     latents = latents + _attend(lu.read, projected, kv, keep, n_keys)
     return latents + lu.feedforward(lu.output_norm(latents))
@@ -297,7 +314,7 @@ def _predict_rows(model, table, targets, train, d):
     rows = _row_pool(model.pool, features, group_keep, n_groups)                # [1, R, L*D]
     rows = _inject(rows, _target_embed(model.row_target, y_use), inject)
     for layer in model.prediction.layers:
-        rows = _layer_query(layer, rows, layer.prepare(rows), row_keep, n_rows)
+        rows = _layer_query(layer, rows, _layer_prepare(layer, rows), row_keep, n_rows)
     return _head(model.head, rows)
 
 

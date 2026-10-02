@@ -129,3 +129,49 @@ def test_duplicate_route_leaves_query_rows_unchanged(classifier):
         single = predict(classifier, normalise_features(x, labels), labels)[0]
         every = ExportWrapper(classifier)(x, labels)[0, s:]
     assert (single - every).abs().max().item() < 1e-3
+
+
+# --- the MASKED graph on the real weights, padded to a bucket, against upstream's own estimators -------------
+
+def _masked_session(model, tmp_path, classes):
+    """Export the masked graph WITH the real weights (never written to the repo) and open it in ORT."""
+    import onnxruntime as ort
+    from export_causilo import configs, export
+
+    path = tmp_path / "graph_mask_real.onnx"
+    export.export_mask_graph(model, path, example=configs.get("real").mask_example, classes=classes)
+    return ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+
+
+@pytest.mark.parametrize("name,X,y", list(_classification_sets()), ids=lambda v: v if isinstance(v, str) else "")
+def test_masked_graph_on_real_weights_matches_upstream_classifier(classifier, tmp_path, name, X, y):
+    from export_causilo import export
+
+    Xtr, Xte, ytr, _ = train_test_split(X, y, test_size=0.3, random_state=0, stratify=y)
+    est = CausiloClassifier(n_estimators=1, device="cpu").fit(Xtr, ytr)
+    want = est.predict_proba(Xte)
+    n_classes = len(est.classes_)
+    sess = _masked_session(classifier, tmp_path, 10)
+    x = np.vstack([Xtr, Xte]).astype(np.float32)
+    labels = np.searchsorted(est.classes_, ytr).astype(np.float32)
+    # a bucket larger than the table in BOTH axes: padded rows, and padded feature GROUPS (the case that matters)
+    bucket = (int(2 ** np.ceil(np.log2(len(x)))), int(3 * (np.ceil(X.shape[1] / 3) + 2)))
+    (out,) = sess.run(["logits"], export.padded_feed(x, labels, bucket))
+    got = torch.softmax(torch.from_numpy(out[0, len(ytr):len(x), :n_classes]), -1).numpy()
+    assert bucket[1] > 3 * np.ceil(X.shape[1] / 3), "the bucket must add whole padded groups to test the mask"
+    assert np.abs(got - want).max() < 1e-4
+    assert (got.argmax(-1) == want.argmax(-1)).all()
+
+
+def test_masked_graph_on_real_weights_matches_upstream_regressor(regressor, tmp_path):
+    from export_causilo import export
+
+    X, y = load_diabetes(return_X_y=True)
+    Xtr, Xte, ytr, _ = train_test_split(X, y, test_size=0.3, random_state=0)
+    want = CausiloRegressor(n_estimators=1, device="cpu").fit(Xtr, ytr).predict(Xte)
+    sess = _masked_session(regressor, tmp_path, 0)
+    x = np.vstack([Xtr, Xte]).astype(np.float32)
+    bucket = (512, 18)
+    (out,) = sess.run(["logits"], export.padded_feed(x, ytr.astype(np.float32), bucket))
+    got = out[0, len(ytr):len(x), 0]
+    assert np.abs(got - want).max() < 1e-4 * np.abs(want).mean()

@@ -1,7 +1,7 @@
 # Causilo on ROCm: what the masked graph has to reproduce
 
-Status: **inventory + masked forward + parity gate, no GPU run yet.** Nothing here has been compiled
-by MIGraphX. This is the Causilo counterpart of `docs/ROCM_TABPFN_PLAN.md`; read that for why the
+Status: **inventory, masked forward, parity gate, masked export and structural guards done; no GPU compile yet.**
+MIGraphX has only PARSED and reference-compiled the graph (CPU), which cannot see the failures that matter most. This is the Causilo counterpart of `docs/ROCM_TABPFN_PLAN.md`; read that for why the
 split must become a value (MIGraphX compiles one program per fixed `(T, H)` bucket, so a split read from
 `y`'s length would need one compile per distinct training size).
 
@@ -93,9 +93,10 @@ alone (inert for the partial group) never exposes.
 3. **The duplicate route stays.** The context rows are presented a second time as queries
    (`[x ; x]` with `train = idx < N`), so the answer for row `i` is `out[T + i]`. Statistics are computed once
    on the original `x`, before duplicating, as in the positional wrapper.
-4. **Four MIGraphX GPU-only failures are guarded structurally from the start** (none is visible to ORT or to
-   MIGraphX's reference target): integer division on runtime data, `Reshape` to `[]`, a `Concat` whose
-   inputs are all `Transpose`s, and a matmul with contraction dimension 1. Causilo has the last one in
+4. **Five MIGraphX failures are guarded structurally from the start.** Four are GPU-pipeline-only and invisible
+   to ORT and to MIGraphX's reference target: integer division on runtime data, `Reshape` to `[]`, a `Concat`
+   whose inputs are all `Transpose`s, and a matmul with contraction dimension 1. The fifth is new, found on
+   Causilo, and fails at PARSE time: ONNX Sequence operators (see "What parsing found" below). Causilo has the last one in
    **two places per attention layer**: `QueryScale.length` and `QueryScale.correction` both start with
    `Linear(1, n)` on a `[1, 1]` input, plus the regression `TargetEmbedding` (`Linear(1, width)`).
    Each is written elementwise (`causilo_mask_forward._linear_k1`).
@@ -114,7 +115,72 @@ A gate that cannot fail is worse than none, and this codebase has been blinded b
   head) at small width, so no branch is unexercised;
 * each mechanism has a negative control that must be **caught** (see the table the gate prints).
 
+## Results (CPU only)
+
+Gate (`mask_parity_full`, 11 cases x {fixture, fixture_r} x {classification, regression}, reference = the unpadded
+positional wrapper): worst **7.0e-6** classification, **1.7e-5** regression, against a 1e-4 budget. All 28 negative
+controls caught (7 mechanisms x 2 configs x 2 tasks), relative errors 0.54 to 2.2 against a 1e-3 threshold.
+
+Exported masked ONNX under ORT at padded shapes, every row, against the unpadded reference: fixture classification
+1.1e-5, regression 9.5e-7; **real dimensions** classification **4.5e-6**, regression **9.5e-7**. Every case differs
+from the trace in train size, feature count and bucket; includes d = 2, one query row and one training row.
+
+`pytest`: 110 passed, 6 skipped (the real-weights tests, gated on `TABFM_REAL_WEIGHTS`; run separately below).
+
+**Real weights, padded, against upstream's own estimators** (`tests/test_real_weights.py`, gated on
+`TABFM_REAL_WEIGHTS`; the weights are exported into a pytest tmp dir and never into the repo). The masked graph
+with the actual Nums AI checkpoints, run in ORT with the table padded in BOTH axes, the bucket adding whole padded
+feature groups (asserted), against `CausiloClassifier` / `CausiloRegressor` with `n_estimators=1`: iris, wine and a
+5-class table agree to within 1e-4 in probability with identical labels; diabetes regression within 1e-4 of the
+prediction scale. Random weights cannot tell a scrambled weight mapping from a right one; this can.
+
+### A parity budget that was not loosened, and why it nearly was
+
+The first real-dimension export FAILED parity at 1.42e-4 against 1e-4. Separating the sources at real dims showed
+all three comparisons (masked-PyTorch vs unpadded, ORT vs masked-PyTorch, ORT vs unpadded) at 1e-5 to 1.7e-4, i.e.
+**ORT and PyTorch disagreed with each other by 1.1e-4 on the same masked model**: float32 noise amplified through
+a deep, sharply-attending network, not a mask error. The fix was to the TEST MODEL, not the budget:
+`fixture.sensitive()` scales projections by 2, which at the released depth (12 prediction layers) amplifies 1e-6
+relative input noise to 1.2e-4; a gain of 1.5 is still responsive (classification row spread 0.245, label
+sensitivity 0.20) and amplifies it to 8.8e-6. `ExportConfig.weight_gain` carries the measured value (1.5 for
+`real`). Regression at real dims is much less responsive in absolute terms (row spread 0.0105, outputs ~0.05); a
+masking bug would still move it by orders of magnitude more than 1e-4.
+
+### What parsing found: ONNX Sequence operators
+
+Parsing the real masked graph with `migraphx-driver` failed in 3 seconds: **`Unknown operator: SplitToSequence`**.
+Upstream's `Attention.prepare_context` does `packed.chunk(2, dim=-1)`, which exports to `SplitToSequence` +
+`SequenceAt` (verified on a tiny module, static and dynamic shapes), and MIGraphX's ONNX parser has neither: the
+masked graph could not even be LOADED on ROCm. ORT, the PyTorch gate and the MLX op-table check all accept it.
+`_prepare_context` now takes the K and V halves as two slices (`Slice` is supported); the gate numbers are identical
+to the digit. After the fix MIGraphX parses and reference-compiles both real graphs (rc 0, 38-43 s, bucket
+T=128 H=16, CPU). The positional graphs that already ship on CPU/CUDA still contain `SplitToSequence`; that is
+fine for ORT and for MLX (its interpreter implements both ops) and is not touched.
+
+### What the MIGraphX checks CANNOT see (measured, not assumed)
+
+* The reference target does **not** reproduce the GPU-pipeline failures: the known-bad TabPFN-3 K=1 repro compiles
+  on `--ref`.
+* There is no GPU-free target to substitute: `--cpu` fails here with `libmigraphx_cpu.so: cannot open shared
+  object file`.
+* So parse + reference compile is **necessary, not sufficient**. The structural guards (1-5) are the only
+  pre-GPU evidence for the four pipeline failures, and each was shown to flag a deliberately bad graph. Whether the
+  real graph has a sixth, unknown failure is exactly what the GPU run is for.
+
+### Size, as a compile-time proxy
+
+Masked real graphs: 9,398 (classification) / 9,436 (regression) nodes, against 8,573 / 8,585 positional and 10,480
+for TabPFN-3, which took about 16 min per (T, H) bucket (Causilo's compile time is NOT measured). The duplicate
+route processes `2T` rows, so run time (not node count) roughly doubles against the positional graph.
+
+### The masked graph reuses the shipped tensor map
+
+`tensor_map_causilo_<task>.json` from the masked export is byte-identical to the one already bundled, so the
+weights-header hash (`ExpectedWeightsHeaderShaFor("causilo", ...)`) and the tensor map need no change.
+
 ## What is not done
 
-No GPU compile, no `make_migraphx_graph`, no bundling, no `tabfm_backends()` change, no timing. Whether
-MIGraphX accepts the graph is unknown; the TabPFN conversion found four such failures only on the GPU.
+No GPU compile, no bundling (nothing under `resources/`, no `cmake/embed_resources.cmake` entry), no
+`tabfm_backends()` or test-list change, no timing on any device, no plugin involvement. `make_migraphx_graph.py` was
+run only into a scratch directory to feed the parser. Whether the GPU pipeline accepts the graph is unknown; the
+TabPFN conversion found four such failures only on the GPU.
