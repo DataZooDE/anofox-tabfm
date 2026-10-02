@@ -218,3 +218,46 @@ TEST_CASE("registry: Orion-MSP is classify-only alongside its Orion-BiX sibling"
 	REQUIRE(msp.tasks.at(TabFMTask::CLASSIFICATION).repo !=
 	        bix.tasks.at(TabFMTask::CLASSIFICATION).repo);
 }
+
+TEST_CASE("registry: Causilo ships built in, non-commercial and gated, pinned to the release it was exported from",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("causilo"));
+	auto &m = reg.Get("causilo");
+
+	// Weights are under the Causilo License v1.0: non-commercial research/evaluation, and
+	// hosted/API/SaaS use needs a separate license. The attribution must say so where a user
+	// sees it, and the model must be gated like the other non-commercial entries.
+	REQUIRE(m.license.id == "causilo-license-v1.0");
+	REQUIRE(m.license.commercial == false);
+	REQUIRE(m.license.redistributable == false);
+	REQUIRE(m.license.gate_setting == "accept_hf_license");
+	REQUIRE_THAT(m.license.attribution, Contains("Nums AI"));
+	REQUIRE_THAT(m.license.attribution, Contains("hosted"));
+	REQUIRE_THAT(m.license.attribution, Contains("contact@nums.world"));
+
+	REQUIRE(m.HasCapability("classify"));
+	REQUIRE(m.HasCapability("regress"));
+	// the graph normalises in-graph (train-prefix z-score, tail bounds), so the engine must not
+	REQUIRE(m.preprocessing_profile == "causilo_v1_raw");
+	// the head is 10 classes wide; the engine's ceiling comes from here
+	REQUIRE(m.size_regime.max_classes == 10);
+
+	// The graph and tensor map were exported against ONE checkpoint, and the safetensors header
+	// is not stable across upstream's later commits (HF main has moved past this one). A moving
+	// ref would silently pair a new checkpoint with an old graph, so the revision is a commit.
+	for (auto task : {TabFMTask::CLASSIFICATION, TabFMTask::REGRESSION}) {
+		auto &t = m.tasks.at(task);
+		REQUIRE(t.repo == "nums-ai/causilo");
+		REQUIRE(t.revision == "94f2bd91db0737d4da59f347910662905ecb5a09");
+		REQUIRE(t.files.size() == 1);
+		REQUIRE_THAT(t.files[0].url, Contains("/resolve/94f2bd91db0737d4da59f347910662905ecb5a09/"));
+		REQUIRE_THAT(t.files[0].path, Catch::Matchers::EndsWith("model.safetensors"));
+	}
+	// Both tasks live in one HF repo, so their cache paths must differ (see the 2.5-real test).
+	REQUIRE(m.tasks.at(TabFMTask::CLASSIFICATION).files[0].path !=
+	        m.tasks.at(TabFMTask::REGRESSION).files[0].path);
+	// Exact sizes: the engine treats a size mismatch as "not downloaded".
+	REQUIRE(m.tasks.at(TabFMTask::CLASSIFICATION).files[0].bytes == 144385448);
+	REQUIRE(m.tasks.at(TabFMTask::REGRESSION).files[0].bytes == 148417316);
+}

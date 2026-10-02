@@ -6,11 +6,11 @@ classification and regression become a single SQL statement. No Python, no
 training loop, no MLOps: the model reads your labelled rows as context and
 predicts the rest.
 
-**Eleven models are built in and selectable by name** — `mitra` (AWS AutoGluon,
+**Twelve models are built in and selectable by name** — `mitra` (AWS AutoGluon,
 Apache-2.0), `tabdpt` (Layer 6 AI, Apache-2.0), `tabpfn-v2`, `tabpfn-v2-5`,
 `tabpfn-v2-5-real`, `tabpfn-v2-6` and `tabpfn-v3` (Prior Labs), `tabicl-v2`
-(Inria), `orion-bix` and `orion-msp` (Lexsi Labs, MIT), and `tabfm-v1` (Google
-TabFM) — and you can register your own entirely in SQL. Everything is
+(Inria), `causilo` (Nums AI), `orion-bix` and `orion-msp` (Lexsi Labs, MIT), and
+`tabfm-v1` (Google TabFM) — and you can register your own entirely in SQL. Everything is
 operated in SQL: no manifest file, no config.
 
 ---
@@ -253,7 +253,7 @@ Runnable samples: [`examples/generate_synthetic.sql`](examples/generate_syntheti
 ## Multiple models (the registry)
 
 `anofox_tabfm` is one entrypoint for many **tabular foundation models** — "TabFM"
-is the *category*, not a single model. Eleven models are **built in** and usable by
+is the *category*, not a single model. Twelve models are **built in** and usable by
 name with no config, no manifest file:
 
 ```sql
@@ -273,6 +273,7 @@ SELECT * FROM tabfm_list_models();          -- the registry: every known model
 | `tabpfn-v2-5-real` | Prior Labs | TabPFN-2.5 (non-commercial, gated) | `false` |
 | `tabpfn-v2-6` | Prior Labs | TabPFN-2.6 (non-commercial, gated) | `false` |
 | `tabpfn-v3` | Prior Labs | TabPFN-3 (non-commercial, gated) | `false` |
+| `causilo` | Nums AI | Causilo License v1.0 (non-commercial, gated; hosted/API/SaaS use needs a separate license) | `false` |
 
 Pick a model per call (a first-class argument, promoted out of `opts`), or set a
 session default; precedence is **per-call → `anofox_tabfm_default_model` → a

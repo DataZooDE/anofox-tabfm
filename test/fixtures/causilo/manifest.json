@@ -1,0 +1,90 @@
+{
+  "schema_version": 2,
+  "id": "causilo-fixture",
+  "display_name": "Causilo CI fixture (random init, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "apache-2.0",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "causilo_v1_raw",
+  "weights": {
+    "classification": {
+      "repo": "local:test/fixtures/causilo",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model_classification.safetensors",
+          "bytes": 357388,
+          "sha256": "4a48fde3d2baca58e7e368b8382ac748b9d9a0d3ca982fda0df6ccfea08196ae"
+        }
+      ]
+    },
+    "regression": {
+      "repo": "local:test/fixtures/causilo",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model_regression.safetensors",
+          "bytes": 360384,
+          "sha256": "3de40b2d55c7cdaa6a928f6a335df978e6b30840791d8769d0d05cdcb29a66c9"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_causilo_classification.onnx",
+    "regression": "graph_causilo_regression.onnx",
+    "tensor_map": {
+      "classification": "tensor_map_causilo_classification.json",
+      "regression": "tensor_map_causilo_regression.json"
+    }
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 3
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init Causilo fixture (Apache-2.0 architecture, our weights). H is DYNAMIC; y carries train targets only (length = train_size); no cat_mask/d/train_size inputs. The graph normalises features in-graph, so the engine profile is *_raw. classification outputs are class logits (C = max_classes); regression outputs are a SINGLE RAW-space point estimate (C = 1). Rows < S are in-context fitted values (context rows presented a second time as queries)."
+}

@@ -351,6 +351,48 @@ static const char *const BUILTIN_ORION_BIX = R"json({
   "size_regime": {"max_rows": 100000, "max_features": 512, "max_classes": 10}
 })json";
 
+// Causilo (Nums AI Inc.; TabArena Elo 1785), a TabICL-style column-then-row model with an extra
+// row-refinement stage: 36.1M (classifier) / 37.1M (regressor) parameters, plain torch, native
+// 10-class head. Code is Apache-2.0; the WEIGHTS are under the Causilo License v1.0 --
+// non-commercial research/evaluation, and "Commercial or production use, and hosted/API/SaaS
+// services whether paid or free, require separate licenses" -- so it is registered like the other
+// non-commercial entries (commercial:false + accept_hf_license) with that clause in the
+// attribution. The HF repo itself is ungated; no token is needed.
+//
+// Its graph is (x, y)-only like TabICL's: the split is the length of y, so the engine needs no
+// model-specific code (tools/export_causilo). The graph normalises its own features, hence a
+// *_raw profile. Weights are already safetensors with the keys the tensor map names, so there is
+// no converter, and they are pinned to the commit the graph was exported from: HF main has moved
+// past it, and a moving ref would pair a newer checkpoint with this graph.
+//
+// What this does NOT reproduce, so the docs do not over-claim: the engine runs ONE estimator, while
+// the leaderboard figure is an 8-member ensemble (n_estimators=1 is upstream's own single-member
+// path), and the engine mean-imputes missing cells before the graph, so Causilo's missing-value
+// embedding is unused.
+static const char *const BUILTIN_CAUSILO = R"json({
+  "schema_version": 2, "id": "causilo", "display_name": "Causilo (Nums AI)",
+  "family": "icl-transformer",
+  "license": {"id": "causilo-license-v1.0", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "Causilo by Nums AI Inc. Code Apache-2.0; weights Causilo License v1.0 — non-commercial research/evaluation only. Commercial or production use, and hosted/API/SaaS services whether paid or free, require a separate license: contact@nums.world. Checkpoints: HF nums-ai/causilo."},
+  "preprocessing_profile": "causilo_v1_raw",
+  "weights": {
+    "classification": {"repo": "nums-ai/causilo", "revision": "94f2bd91db0737d4da59f347910662905ecb5a09",
+      "files": [{"path": "classification/model.safetensors", "bytes": 144385448,
+                 "url": "https://huggingface.co/nums-ai/causilo/resolve/94f2bd91db0737d4da59f347910662905ecb5a09/classifier/model.safetensors"}]},
+    "regression": {"repo": "nums-ai/causilo", "revision": "94f2bd91db0737d4da59f347910662905ecb5a09",
+      "files": [{"path": "regression/model.safetensors", "bytes": 148417316,
+                 "url": "https://huggingface.co/nums-ai/causilo/resolve/94f2bd91db0737d4da59f347910662905ecb5a09/regressor/model.safetensors"}]}
+  },
+  "graph": {"classification": "graph_causilo_classification", "regression": "graph_causilo_regression",
+    "tensor_map": {"classification": "tensor_map_causilo_classification.json",
+                   "regression": "tensor_map_causilo_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+})json";
+
 vector<ModelSpec> BuiltinModelSpecs() {
 	// Merge the two per-task built-in TabFM v1 manifests into one multi-task
 	// model spec (id "tabfm-v1"). Each task keeps its own graph/tensor-map/repo.
@@ -380,6 +422,7 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_ORION_BIX, "(built-in orion-bix)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABDPT, "(built-in tabdpt)"));
 	specs.push_back(ParseModelSpec(BUILTIN_ORION_MSP, "(built-in orion-msp)"));
+	specs.push_back(ParseModelSpec(BUILTIN_CAUSILO, "(built-in causilo)"));
 	return specs;
 }
 

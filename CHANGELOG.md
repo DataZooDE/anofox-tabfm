@@ -40,6 +40,24 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
     The request is refused by name rather than served on the CPU.
 
 ### Added
+- **`causilo` (Nums AI) is a built-in model**, both tasks. A TabICL-style column-then-row model
+  (36.1 M classifier / 37.1 M regressor, TabArena Elo 1785), with **no conversion step**: Nums AI
+  publish safetensors and the Hugging Face repo is ungated. **The weights are non-commercial**
+  (Causilo License v1.0); hosted/API/SaaS use needs a separate license from Nums AI, so it is
+  registered like the other non-commercial models (`commercial: false`, gated by
+  `SET anofox_tabfm_accept_hf_license = true`). On the real weights, against upstream's own
+  single-estimator path, iris and wine labels are identical and probabilities agree to 1e-5.
+  It runs on the CPU on every platform the extension builds for.
+
+  What to know: the engine runs **one estimator**, while the leaderboard figure is an 8-member
+  ensemble, so the leaderboard number is not what you get. The engine fills missing cells before
+  the model sees them, so Causilo's own missing-value signal is unused. The engine's default
+  `softmax_temperature` of 0.9 makes probabilities slightly sharper than upstream's (about 2e-2;
+  labels are unaffected). More than 10 classes is not supported. **It is refused on ROCm** by name,
+  like `tabicl-v2`. Its `is_training` rows are real in-context values; the cheaper route to them
+  measured fitted R² 0.50 where the query R² is 0.999, which is why each call evaluates the context
+  rows a second time.
+
 - **`CALL tabfm_accelerate()` — GPU acceleration without configuring anything.**
   Discovers the hardware, downloads the right backend plugin to the default
   `ep_path`, verifies it by `dlopen` + ABI check, and reports what is left to do
