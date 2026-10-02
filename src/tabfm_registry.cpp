@@ -393,6 +393,52 @@ static const char *const BUILTIN_CAUSILO = R"json({
   "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
 })json";
 
+// LimiX-2M (StableAI), 2.38M parameters, 12 layers, embedding 96: axis-wise sample/feature attention with
+// a decimal (sign, exponent, mantissa) numeric tokenizer. Upstream CODE is Apache-2.0. The WEIGHTS carry the
+// Stable AI Technology Co., Ltd. License v1.0 (stable-ai/LimiX-2M LICENSE.txt, 2026-09), which is Apache-2.0
+// plus one added Section 10: commercial use is permitted, subject to the attribution "Built with StableAI
+// LimiX" when the Work or a product/service incorporating it is distributed or made available, and to a
+// "LimiX" prefix on the name of any AI model created from the weights. Internal evaluation is exempt.
+//
+// The sources disagree and the registry follows the newest: the older upstream README (vendor/limix)
+// says "academic research; commercial use upon authorization", and the Hugging Face model card is
+// internally inconsistent (front matter `license: other`, body "Apache 2.0"). LICENSE.txt, added
+// 2026-09-15, is the governing text, so this is commercial:true gated by the licence ACKNOWLEDGEMENT
+// (accept_hf_license). Whether shipping weight-free graphs that load the weights at runtime counts as
+// "distributing the Work" under Section 10 has NOT been confirmed with StableAI; docs/REAL_MODELS.md says so.
+//
+// Its graph is (x, y)-only like TabICL's and Causilo's: the split is the length of y, so the engine needs
+// no model-specific code (tools/export_limix), and ROCm refuses it by name (docs/ROCM_SINGLE_EVAL_POS.md).
+// The model standardises its own features and the export wrapper standardises the regression target
+// in-graph, hence a *_raw profile. ONE checkpoint serves both tasks, so both name the same file.
+//
+// What this does NOT reproduce, so the docs do not over-claim: the engine runs ONE estimator, while
+// upstream's leaderboard figures come from a feature-view / retrieval ensemble; and the engine
+// mean-imputes missing cells before the graph, so LimiX's own missing-value encoding is unused.
+static const char *const BUILTIN_LIMIX2M = R"json({
+  "schema_version": 2, "id": "limix-2m", "display_name": "LimiX-2M (StableAI)",
+  "family": "icl-transformer",
+  "license": {"id": "limix-2m-license-v1.0", "commercial": true, "redistributable": true,
+              "gate_setting": "accept_hf_license",
+              "attribution": "LimiX-2M by Stable AI Technology Co., Ltd. Code Apache-2.0; weights under the Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 plus Section 10), which permits commercial use. Section 10 requires, if you distribute or make available the Work, a Derivative Work, or any product or service that incorporates it: (a) a copy of or link to the License, and (b) the attribution \"Built with StableAI LimiX\". An AI model created, trained, fine-tuned or distilled from the weights and made available to a third party must include \"LimiX\" at the beginning of the name of such AI model. Internal research, evaluation, benchmarking or testing is exempt. License: https://huggingface.co/stable-ai/LimiX-2M/blob/main/LICENSE.txt. Checkpoint: HF stable-ai/LimiX-2M."},
+  "preprocessing_profile": "limix_v1_raw",
+  "weights": {
+    "classification": {"repo": "stable-ai/LimiX-2M", "revision": "641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e",
+      "files": [{"path": "model.ckpt", "bytes": 9558253,
+                 "url": "https://huggingface.co/stable-ai/LimiX-2M/resolve/641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e/LimiX-2M.ckpt"}]},
+    "regression": {"repo": "stable-ai/LimiX-2M", "revision": "641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e",
+      "files": [{"path": "model.ckpt", "bytes": 9558253,
+                 "url": "https://huggingface.co/stable-ai/LimiX-2M/resolve/641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e/LimiX-2M.ckpt"}]}
+  },
+  "graph": {"classification": "graph_limix2m_classification", "regression": "graph_limix2m_regression",
+    "tensor_map": {"classification": "tensor_map_limix2m_classification.json",
+                   "regression": "tensor_map_limix2m_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+})json";
+
 vector<ModelSpec> BuiltinModelSpecs() {
 	// Merge the two per-task built-in TabFM v1 manifests into one multi-task
 	// model spec (id "tabfm-v1"). Each task keeps its own graph/tensor-map/repo.
@@ -423,6 +469,7 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_TABDPT, "(built-in tabdpt)"));
 	specs.push_back(ParseModelSpec(BUILTIN_ORION_MSP, "(built-in orion-msp)"));
 	specs.push_back(ParseModelSpec(BUILTIN_CAUSILO, "(built-in causilo)"));
+	specs.push_back(ParseModelSpec(BUILTIN_LIMIX2M, "(built-in limix-2m)"));
 	return specs;
 }
 

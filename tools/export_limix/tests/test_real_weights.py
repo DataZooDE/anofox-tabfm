@@ -101,11 +101,14 @@ def test_converted_weights_map_onto_the_exported_graph_strictly(tmp_path, task):
                 shape = shape[::-1]
             assert shape == want, f"{init}: safetensors {shape} != graph {want}"
             assert f.get_tensor(key).dtype == np.float32, f"{key} is not float32"
-        unused = sorted(keys - set(tensor_map["initializers"].values()))
-    # buffers the graph constant-folded away are legitimate; list them so a real gap cannot hide in the count
-    print(task, "- checkpoint tensors the graph does not read:", unused)
+        # every checkpoint tensor is now a graph initializer (the engine injects them all by name); which of
+        # them the graph actually READS is what distinguishes a mapped weight from a declared-but-unused one
+        assert set(tensor_map["initializers"].values()) == keys, "the map must cover the whole checkpoint"
+    consumed = {x for n in proto.graph.node if not n.name.startswith("keep_") for x in n.input}
+    unused = sorted(k for i, k in tensor_map["initializers"].items() if i not in consumed)
+    print(task, "- checkpoint tensors the graph declares but does not read:", unused)
     # Exactly these are unread: the imputation head (both tasks) and the OTHER task's target encoder/decoder.
-    # Anything else unread would be a checkpoint tensor the graph silently left at its trace-time value.
+    # Anything else unread would be a checkpoint tensor the graph silently ignores.
     other_task = "reg_y_" if task == "classification" else "cls_y_"
     assert all(k.startswith(("feature_decoder.", other_task)) for k in unused), unused
     assert any(k.startswith("feature_decoder.") for k in unused)

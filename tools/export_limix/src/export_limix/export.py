@@ -158,6 +158,25 @@ def postprocess(graph_path: pathlib.Path, state_dict: dict) -> dict:
 
     tensor_map = build_tensor_map(model_proto, state_dict)
 
+    # The engine injects EVERY tensor in the weights file by name, and ONNX Runtime rejects one the graph does
+    # not have ("Failed to find existing initializer"). LimiX's single checkpoint holds both tasks' heads and
+    # an imputation head, none of which one task graph reads. An initializer no node consumes is pruned when
+    # ORT LOADS the graph, which is BEFORE the engine injects, so declaring it is not enough: each unread tensor
+    # also feeds an Identity whose output nothing uses (named keep_*). ORT's dead-code removal runs only after
+    # injection, MLX's Identity is a free shared tensor, and the values here are the random-init trace values:
+    # like every mapped initializer they are externalised and their bytes are never shipped.
+    read = set(tensor_map["initializers"].values())
+    for key, value in state_dict.items():
+        if CKPT_KEY_PREFIX + key in read:
+            continue
+        arr = value.detach().cpu().numpy()
+        assert arr.dtype == np.float32, f"{key}: unread tensor is {arr.dtype}, the engine injects float32"
+        name = "m." + key
+        model_proto.graph.initializer.append(onnx.numpy_helper.from_array(arr, name))
+        model_proto.graph.node.append(
+            onnx.helper.make_node("Identity", [name], [f"keep_alive.{key}"], name=f"keep_{key}"))
+        tensor_map["initializers"][name] = CKPT_KEY_PREFIX + key
+
     data_name = graph_path.name + ".data"
     data_path = graph_path.with_name(data_name)
     mapped = set(tensor_map["initializers"])

@@ -389,6 +389,10 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 		stem = "orion_bix";
 	} else if (model == "orion-msp") {
 		stem = "orion_msp";
+	} else if (model == "limix-2m") {
+		// "limix2m", not "limix": LimiX-2 (400M) is a different model, and a bare stem would hand its graphs
+		// to the wrong one
+		stem = "limix2m";
 	}
 	return "graph_" + kind + "_" + stem + "_" + task_name;
 }
@@ -484,6 +488,15 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 		}
 		if (task_name == "regression") {
 			return "0bbfd6114cbae8d2facfcbf11cb01796c88aa57e0bb57d4589d552ca8accc192";
+		}
+	}
+	// LimiX-2M: ONE checkpoint serves both tasks, so both share a header sha. It pins the header of the
+	// safetensors that tools/export_limix's convert_limix_weights writes from LimiX-2M.ckpt (137 tensors,
+	// byte-deterministic). The ext graphs bake offsets into THAT file; without it, the loader falls back to
+	// the layout-independent injection path, which reads the checkpoint natively.
+	if (model == "limix-2m") {
+		if (task_name == "classification" || task_name == "regression") {
+			return "0c6a868493ea16aaa88bd604b7f769b34018e82941eae90abd9d16072cf283eb";
 		}
 	}
 	if (model == "tabpfn-v3") {

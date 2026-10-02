@@ -129,3 +129,34 @@ def test_a_deep_model_exports_in_reasonable_time(tmp_path):
     """)
     r = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, timeout=240)
     assert r.returncode == 0, r.stderr[-800:]
+
+
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_every_checkpoint_tensor_is_a_graph_initializer(tmp_path, task):
+    """The engine injects EVERY tensor of the weights file by name, and ONNX Runtime rejects one the graph
+    does not have ("Failed to find existing initializer with name m.feature_decoder.1.bias"). LimiX's one
+    checkpoint holds both tasks' heads plus an imputation head, none of which a single task graph reads, so
+    the exporter must declare the unread ones as (unused) initializers. ORT must still run the graph."""
+    import onnx
+
+    cfg, path, wrapper = _export(tmp_path, task)
+    model = build_model(cfg.model_config, seed=0)
+    tensor_map = export.postprocess(path, dict(model.state_dict()))
+
+    assert set(tensor_map["initializers"].values()) == set(model.state_dict()), (
+        "the map must cover the whole checkpoint, or the engine's injection hits a name the graph lacks")
+    proto = onnx.load(str(path), load_external_data=False)
+    graph_names = {i.name for i in proto.graph.initializer}
+    assert set(tensor_map["initializers"]) <= graph_names
+    # the unread ones really are unused: only a keep_* Identity (whose output nothing uses) consumes them
+    used = {x for n in proto.graph.node if not n.name.startswith("keep_") for x in n.input}
+    unused = sorted(set(tensor_map["initializers"]) - used)
+    keepers = {n.input[0]: n.output[0] for n in proto.graph.node if n.name.startswith("keep_")}
+    assert set(keepers) == set(unused), "every unread tensor needs exactly one keep_* Identity"
+    consumed_outputs = {x for n in proto.graph.node for x in n.input}
+    assert not (set(keepers.values()) & consumed_outputs), "a keep_* output feeds something"
+    assert any("feature_decoder" in n for n in unused), unused
+    assert len(unused) >= 10, f"expected the imputation head and the other task's heads unused, got {unused}"
+    # ...and ORT accepts the graph with them present, and still agrees with PyTorch
+    r = export.check_parity(path, wrapper, ((24, 7, 10),), max_classes=cfg.max_classes, task=task)
+    assert r["ok"], r

@@ -1,0 +1,164 @@
+# name: test/sql/tabfm_limix.test
+# description: LimiX-2M (StableAI; commercial under the Stable AI Technology Co., Ltd. License v1.0,
+#              gated by the licence acknowledgement) onboarded as a real model. Like TabICL and Causilo
+#              its ONNX graph is (x, y)-only, so the engine's y-as-train-prefix inference drives it with
+#              no model-specific code, and the model standardises its own features (profile limix_v1_raw).
+#              Uses the committed random-init fixture: offline, zero StableAI weight bytes.
+#
+#              This test PINS A VALUE FOR EVERY ROW, context and query. "The output is non-NULL" cannot
+#              tell a right answer from a wrong one, and the context rows (`is_training`) are where an
+#              earlier family of models silently returned one constant. The expected values come from
+#              test/fixtures/limix/golden_<task>.json, computed by PyTorch from inputs that are exact in
+#              binary floating point and so identical here; the fixture builder asserts there are no
+#              near-ties AND no feature value that standardises to (or near) zero, because LimiX's decimal
+#              tokenizer treats an exact zero as its own token and is hypersensitive near it (see
+#              tools/export_limix/src/export_limix/fixture.py). Real-weight accuracy is exercised
+#              out-of-band (test/sql/tabfm_real_models.test, examples/limix2m.json).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# ONE weights file serves both tasks (LimiX is a single model; the task is the export wrapper's).
+statement ok
+CALL tabfm_register_model(
+  id := 'limix-fixture', base_dir := 'test/fixtures/limix',
+  classification_graph := 'graph_limix_classification.onnx',
+  regression_graph := 'graph_limix_regression.onnx',
+  classification_weights := 'model.safetensors',
+  regression_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_limix_classification.json',
+  regression_tensor_map := 'tensor_map_limix_regression.json',
+  license := 'apache-2.0', commercial := true,
+  weights_repo := 'local:test/fixtures/limix', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'limix_v1_raw',
+  max_rows := 4096, max_features := 64, max_classes := 3)
+
+query TTT
+SELECT model, family, capabilities FROM tabfm_list_models() WHERE model = 'limix-fixture'
+----
+limix-fixture	icl-transformer	classify, regress
+
+# The table is built from the same formulas the fixture builder used (fixture.sql_inputs):
+#   x[i][j] = ((i*7 + j*3 + (i*j) % 5) % 11) * 0.25 - 1.0 + ((i*13 + j*5 + (i*j) % 3) % 7) * 0.0625
+#             exact in float32; the sixteenths term keeps every standardised value away from zero
+#   label   = 'c' || ((i*5 + i//3) % 3)   for the first 12 rows (context); NULL after (query)
+statement ok
+CREATE TABLE t AS SELECT i AS id,
+  ((i*7 + 0*3 + (i*0) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 0*5 + (i*0) % 3) % 7) * 0.0625 AS f1,
+  ((i*7 + 1*3 + (i*1) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 1*5 + (i*1) % 3) % 7) * 0.0625 AS f2,
+  ((i*7 + 2*3 + (i*2) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 2*5 + (i*2) % 3) % 7) * 0.0625 AS f3,
+  ((i*7 + 3*3 + (i*3) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 3*5 + (i*3) % 3) % 7) * 0.0625 AS f4,
+  ((i*7 + 4*3 + (i*4) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 4*5 + (i*4) % 3) % 7) * 0.0625 AS f5,
+  CASE WHEN i < 12 THEN 'c' || ((i*5 + i // 3) % 3) END AS label
+FROM range(20) r(i);
+
+# every row is answered: 12 context rows flagged is_training, 8 query rows
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'limix-fixture')
+----
+20	12	0
+
+# the exact predicted label for ALL 20 rows, context and query alike. The result carries the selected
+# feature columns but not `id`, so rows are matched on their five feature values (exact binary fractions,
+# unique per row; the first query asserts that, so a duplicate cannot hide).
+statement ok
+CREATE TABLE exp_cls AS SELECT t.f1, t.f2, t.f3, t.f4, t.f5, e.expected FROM t JOIN
+  (VALUES (0,'c2'),(1,'c2'),(2,'c2'),(3,'c1'),(4,'c2'),(5,'c2'),(6,'c2'),(7,'c2'),(8,'c1'),(9,'c2'),(10,'c2')
+             ,(11,'c2'),(12,'c2'),(13,'c0'),(14,'c2'),(15,'c2'),(16,'c2'),(17,'c2'),(18,'c2'),(19,'c2'))
+  e(id, expected) USING (id);
+
+query II
+SELECT count(*), count(DISTINCT (f1, f2, f3, f4, f5)) FROM exp_cls
+----
+20	20
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat <> e.expected)
+FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'limix-fixture') a
+JOIN exp_cls e ON a.f1 = e.f1 AND a.f2 = e.f2 AND a.f3 = e.f3 AND a.f4 = e.f4 AND a.f5 = e.f5
+----
+20	0
+
+# the fixture predicts all three classes, so a model that collapsed to one label would fail above
+query I
+SELECT count(DISTINCT yhat)
+FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'limix-fixture')
+----
+3
+
+# the context rows are real in-context values, not a pad: they are not one constant. (The golden has
+# 2 distinct labels among the 12 context rows and all three overall; every row is pinned above.)
+query I
+SELECT count(DISTINCT yhat)
+FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'limix-fixture')
+WHERE is_training
+----
+2
+
+# regression: RAW-space point estimate for ALL 20 rows (the wrapper standardises the targets and inverts
+# the scaler in-graph, so the engine feeds raw targets and reads the output directly)
+statement ok
+CREATE TABLE r AS SELECT i AS id,
+  ((i*7 + 0*3 + (i*0) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 0*5 + (i*0) % 3) % 7) * 0.0625 AS f1,
+  ((i*7 + 1*3 + (i*1) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 1*5 + (i*1) % 3) % 7) * 0.0625 AS f2,
+  ((i*7 + 2*3 + (i*2) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 2*5 + (i*2) % 3) % 7) * 0.0625 AS f3,
+  ((i*7 + 3*3 + (i*3) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 3*5 + (i*3) % 3) % 7) * 0.0625 AS f4,
+  ((i*7 + 4*3 + (i*4) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 4*5 + (i*4) % 3) % 7) * 0.0625 AS f5,
+  CASE WHEN i < 12 THEN ((i*37) % 17) * 0.25 - 2.0 END AS target
+FROM range(20) r(i);
+
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_regress('r', 'target', features := ['f1','f2','f3','f4','f5'], model := 'limix-fixture')
+----
+20	12	0
+
+statement ok
+CREATE TABLE exp_reg AS SELECT r.f1, r.f2, r.f3, r.f4, r.f5, e.expected FROM r JOIN
+  (VALUES (0,-1.860358),(1,-3.458144),(2,-2.105774),(3,-3.146369),(4,-2.148288),(5,-3.054482),(6,-1.527663),(7
+             ,-3.8378),(8,-4.475314),(9,-1.744851),(10,-1.981701),(11,-3.190621),(12,-2.90768),(13,-2.97296),(14
+             ,-1.666005),(15,-2.177509),(16,-1.985876),(17,-2.069984),(18,-2.717401),(19,-2.476731))
+  e(id, expected) USING (id);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE abs(a.yhat - e.expected) > 1e-3)
+FROM tabfm_regress('r', 'target', features := ['f1','f2','f3','f4','f5'], model := 'limix-fixture') a
+JOIN exp_reg e ON a.f1 = e.f1 AND a.f2 = e.f2 AND a.f3 = e.f3 AND a.f4 = e.f4 AND a.f5 = e.f5
+----
+20	0
+
+# the fitted (context) values vary: a zero-padded context would decode to a single number
+query I
+SELECT count(DISTINCT round(yhat, 4))
+FROM tabfm_regress('r', 'target', features := ['f1','f2','f3','f4','f5'], model := 'limix-fixture')
+WHERE is_training
+----
+12
+
+# A missing feature cell is mean-imputed by the engine before the graph, so it is answered.
+# (LimiX's own missing-value encoding is therefore unused; docs/REAL_MODELS.md says so.)
+statement ok
+CREATE TABLE tn AS SELECT id, CASE WHEN id = 14 THEN NULL ELSE f1 END AS f1, f2, f3, f4, f5, label FROM t;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_classify('tn', 'label', features := ['f1','f2','f3','f4','f5'], model := 'limix-fixture')
+----
+20	0
+
+# error path: more classes than the model's head is a property of the model, and the message names the
+# model, the count and where to look
+statement ok
+CREATE TABLE t4 AS SELECT id, f1, f2, f3, f4, f5,
+  CASE WHEN id < 12 THEN 'k' || (id % 4) END AS label FROM t;
+
+statement error
+SELECT count(*) FROM tabfm_classify('t4', 'label', features := ['f1','f2','f3','f4','f5'], model := 'limix-fixture')
+----
+supports at most 3 classes
