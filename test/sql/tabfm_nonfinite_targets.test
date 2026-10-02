@@ -17,7 +17,7 @@
 #              ENTRY-POINT INVENTORY (every one needs a section here; a path that is not listed
 #              is a path the matrix cannot protect):
 #                [x] tabfm_classify / tabfm_regress, single relation
-#                [ ] tabfm_classify / tabfm_regress, two-table form (NULL/NaN in `data`)
+#                [x] tabfm_classify / tabfm_regress, two-table form (NULL/NaN in `data`)
 #                [x] window prediction
 #                [ ] tabfm_cross_validate, tabfm_compare_models
 #                [ ] tabfm_impute, tabfm_generate (including a path with no engine call)
@@ -256,3 +256,58 @@ SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf
              OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_inf_scored t)
 ----
 Infinity value
+
+# ---------------------------------------------------------------------------------------------
+# two-table form: ONLY the `test` rows come back. A row of `data` whose target is missing (NULL or NaN)
+# is neither context nor output. (Baseline: those rows were scored AND returned, so a context table with
+# 8 missing targets and a 5-row test relation answered 13 rows, and the flag hid which were which.)
+# ---------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE two_test AS SELECT f1, f2, f3 FROM base WHERE id >= 15;
+
+# data: 12 labelled rows, 4 NULL-target rows and 4 NaN-target rows
+statement ok
+CREATE TABLE two_data AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab WHEN id < 16 THEN NULL ELSE 'nan'::DOUBLE END AS y FROM base;
+
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_classify('two_data', 'y', test := 'two_test', model := 'nf-raw')
+----
+5	0	0
+
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_regress('two_data', 'y', test := 'two_test', model := 'nf-raw')
+----
+5	0	0
+
+# the answers for the test rows do not depend on HOW the missing data rows are marked
+statement ok
+CREATE TABLE two_data_null AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab END AS y FROM base;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat IS DISTINCT FROM b.yhat)
+FROM tabfm_classify('two_data', 'y', test := 'two_test', model := 'nf-raw') a
+JOIN tabfm_classify('two_data_null', 'y', test := 'two_test', model := 'nf-raw') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+----
+5	0
+
+# a `data` with NO usable target is still the no-context error, not an empty result
+statement error
+SELECT count(*) FROM tabfm_classify('all_nan', 'y', test := 'two_test', model := 'nf-raw')
+----
+no non-NULL rows to use as context
+
+# Infinity in `data` is still an error in this form
+statement error
+SELECT count(*) FROM tabfm_regress('reg_inf', 'y', test := 'two_test', model := 'nf-raw')
+----
+Infinity value
+
+# VARCHAR 'nan' labels in `data` are labels, so those rows are context and are NOT dropped
+query I
+SELECT count(*) FROM tabfm_classify('cls_str', 'y', test := 'two_test', model := 'nf-raw')
+----
+5
