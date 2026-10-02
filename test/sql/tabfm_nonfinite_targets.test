@@ -1,0 +1,174 @@
+# name: test/sql/tabfm_nonfinite_targets.test
+# description: What a NaN or Infinity in a TARGET means, on every entry point.
+#
+#              THE RULE (docs and CHANGELOG state it the same way):
+#                NULL or NaN  -> missing: the row is to be PREDICTED, is_training = false
+#                +/-Infinity  -> an error naming the column, with a fix that keeps the NaN rows
+#
+#              Before this rule a NaN target was a non-NULL value, so the row became a TRAINING
+#              row: regression answered NaN for EVERY row with no error (the mean/std were NaN),
+#              and classification made 'nan' an extra class (an all-context table that succeeds
+#              silently, or a misleading "supports at most N classes" error at a model's ceiling).
+#
+#              The tests compare NULL-marked and NaN-marked tables on predictions, flags and row
+#              counts. They cannot compare whole results: the output keeps the source row in
+#              `cols`, where NULL and NaN necessarily differ.
+#
+#              ENTRY-POINT INVENTORY (every one needs a section here; a path that is not listed
+#              is a path the matrix cannot protect):
+#                [x] tabfm_classify / tabfm_regress, single relation
+#                [ ] tabfm_classify / tabfm_regress, two-table form (NULL/NaN in `data`)
+#                [ ] window prediction
+#                [ ] tabfm_cross_validate, tabfm_compare_models
+#                [ ] tabfm_impute, tabfm_generate (including a path with no engine call)
+#                [ ] regression metrics, tabfm_crps / tabfm_log_score / tabfm_interval_score
+#                [ ] classification metrics (typed operands only; VARCHAR-bound ones cannot tell
+#                    a numeric NaN from the string 'nan', and that limit is documented)
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# The committed random-init TabICL fixture, registered twice: with a *_raw profile (the graph
+# normalises, so the engine feeds raw targets) and with a standardising one (the engine z-scores
+# the target, so a NaN would poison the mean and std). Both preprocessing branches are exercised.
+statement ok
+CALL tabfm_register_model(
+  id := 'nf-raw', base_dir := 'test/fixtures/tabicl',
+  classification_graph := 'graph_tabicl_classification.onnx', regression_graph := 'graph_tabicl_regression.onnx',
+  classification_weights := 'model_classification.safetensors', regression_weights := 'model_regression.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json', license := 'bsd-3-clause', commercial := true,
+  weights_repo := 'local:test/fixtures/tabicl', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'tabicl_v2_raw', max_rows := 4096, max_features := 64, max_classes := 3)
+
+statement ok
+CALL tabfm_register_model(
+  id := 'nf-std', base_dir := 'test/fixtures/tabicl',
+  classification_graph := 'graph_tabicl_classification.onnx', regression_graph := 'graph_tabicl_regression.onnx',
+  classification_weights := 'model_classification.safetensors', regression_weights := 'model_regression.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json', license := 'bsd-3-clause', commercial := true,
+  weights_repo := 'local:test/fixtures/tabicl', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'tabicl_v2_minimal', max_rows := 4096, max_features := 64, max_classes := 3)
+
+# 20 rows, the first 12 labelled. Features are unique per row (residues mod 11, 7 and 13), so rows
+# can be matched across tables on their feature values: the output carries the selected feature
+# columns, not an unselected id.
+statement ok
+CREATE TABLE base AS SELECT i AS id,
+  ((i*7) % 11) * 0.25 AS f1, ((i*3) % 7) * 0.5 AS f2, ((i*5) % 13) * 0.5 AS f3,
+  (i % 3)::DOUBLE AS lab, ((i*5) % 13) * 0.5 + (i % 3) AS tgt
+FROM range(20) r(i);
+
+query II
+SELECT count(*), count(DISTINCT (f1, f2, f3)) FROM base
+----
+20	20
+
+# The same 12 labelled rows; the 8 rows to predict are marked NULL in one table and NaN in the other.
+statement ok
+CREATE TABLE cls_null AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab END AS y FROM base;
+
+statement ok
+CREATE TABLE cls_nan AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab ELSE 'nan'::DOUBLE END AS y FROM base;
+
+statement ok
+CREATE TABLE reg_null AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE reg_nan AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN tgt ELSE 'nan'::DOUBLE END AS y FROM base;
+
+# ---------------------------------------------------------------------------------------------
+# tabfm_classify / tabfm_regress, single relation
+# ---------------------------------------------------------------------------------------------
+
+# Sanity: the NULL-marked table is the reference. 12 context rows, 8 to predict.
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_classify('cls_null', 'y', model := 'nf-raw')
+----
+20	12	0
+
+# NaN means "predict this row": the SAME 12 context rows, not an all-context table.
+# (Baseline: all 20 rows were is_training, and 'nan' was a fourth class.)
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_classify('cls_nan', 'y', model := 'nf-raw')
+----
+20	12	0
+
+# ...and the answers are the same as when the rows are marked NULL, row for row.
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat <> b.yhat OR a.is_training <> b.is_training)
+FROM tabfm_classify('cls_null', 'y', model := 'nf-raw') a
+JOIN tabfm_classify('cls_nan', 'y', model := 'nf-raw') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+----
+20	0
+
+# Regression: the baseline answered NaN for EVERY row, with no error.
+query IIII
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE isnan(yhat) OR yhat IS NULL),
+       count(*) FILTER (WHERE NOT is_training AND yhat IS NOT NULL)
+FROM tabfm_regress('reg_nan', 'y', model := 'nf-raw')
+----
+20	12	0	8
+
+query II
+SELECT count(*), count(*) FILTER (WHERE abs(a.yhat - b.yhat) > 1e-9 OR a.is_training <> b.is_training)
+FROM tabfm_regress('reg_null', 'y', model := 'nf-raw') a
+JOIN tabfm_regress('reg_nan', 'y', model := 'nf-raw') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+----
+20	0
+
+# The standardising branch is the one where a NaN poisons the mean and std of the whole target.
+query IIII
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE isnan(yhat) OR yhat IS NULL),
+       count(*) FILTER (WHERE NOT is_training AND yhat IS NOT NULL)
+FROM tabfm_regress('reg_nan', 'y', model := 'nf-std')
+----
+20	12	0	8
+
+query II
+SELECT count(*), count(*) FILTER (WHERE abs(a.yhat - b.yhat) > 1e-9 OR a.is_training <> b.is_training)
+FROM tabfm_regress('reg_null', 'y', model := 'nf-std') a
+JOIN tabfm_regress('reg_nan', 'y', model := 'nf-std') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+----
+20	0
+
+# Infinity is an error, with the category named and a fix that does not delete the NaN rows.
+statement ok
+CREATE TABLE reg_inf AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN tgt WHEN id = 12 THEN 'infinity'::DOUBLE END AS y FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_regress('reg_inf', 'y', model := 'nf-raw')
+----
+Infinity value
+
+statement error
+SELECT count(*) FROM tabfm_regress('reg_inf', 'y', model := 'nf-std')
+----
+Infinity value
+
+statement ok
+CREATE TABLE cls_inf AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab WHEN id = 12 THEN '-infinity'::DOUBLE END AS y FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('cls_inf', 'y', model := 'nf-raw')
+----
+Infinity value
+
+# VARCHAR 'nan' is a legitimate label, not a missing marker: strings are left alone.
+statement ok
+CREATE TABLE cls_str AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN CASE WHEN id % 3 = 0 THEN 'nan' WHEN id % 3 = 1 THEN 'a' ELSE 'b' END END AS y FROM base;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE is_training)
+FROM tabfm_classify('cls_str', 'y', model := 'nf-raw')
+----
+20	12
