@@ -4,7 +4,7 @@ Two functions, both built on the same idea and the same engine:
 
 ```sql
 tabfm_generate(data, n [, features] [, opts] [, model])   -- sample new rows
-tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
+tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill missing cells (NULL, or NaN in a column being filled)
 ```
 
 Neither one trains anything. They call the same in-context prediction engine as

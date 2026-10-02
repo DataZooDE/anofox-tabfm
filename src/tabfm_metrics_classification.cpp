@@ -109,9 +109,12 @@ void AccuracyUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_
 
 		const Value actual_label = inputs[0].GetValue(i);
 		const Value predicted_label = inputs[1].GetValue(i);
-		if (SkipMissingLabel(actual_label, "tabfm_accuracy", "actual") ||
-		    SkipMissingLabel(predicted_label, "tabfm_accuracy", "predicted")) {
-			continue; // a NaN label is missing, like NULL; Infinity throws
+		// Both operands are checked before deciding to skip: an Infinity in one must not be hidden by a
+		// NaN in the other.
+		const bool actual_missing = SkipMissingLabel(actual_label, "tabfm_accuracy", "actual");
+		const bool predicted_missing = SkipMissingLabel(predicted_label, "tabfm_accuracy", "predicted");
+		if (actual_missing || predicted_missing) {
+			continue; // NaN is missing, like NULL; Infinity throws
 		}
 
 		auto &state = *states[sidx];
@@ -291,9 +294,12 @@ void F1Update(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector
 
 		const Value actual_label = inputs[0].GetValue(i);
 		const Value predicted_label = inputs[1].GetValue(i);
-		if (SkipMissingLabel(actual_label, "tabfm_precision/recall/f1", "actual") ||
-		    SkipMissingLabel(predicted_label, "tabfm_precision/recall/f1", "predicted")) {
-			continue; // a NaN label is missing, like NULL; Infinity throws
+		// Both operands are checked before deciding to skip: an Infinity in one must not be hidden by a
+		// NaN in the other.
+		const bool actual_missing = SkipMissingLabel(actual_label, "tabfm_precision/recall/f1", "actual");
+		const bool predicted_missing = SkipMissingLabel(predicted_label, "tabfm_precision/recall/f1", "predicted");
+		if (actual_missing || predicted_missing) {
+			continue; // NaN is missing, like NULL; Infinity throws
 		}
 
 		auto &slot = *slots[sidx];

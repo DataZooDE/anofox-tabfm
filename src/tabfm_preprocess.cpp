@@ -230,7 +230,7 @@ void ThrowInvalidTarget(const string &column, TargetValueKind kind, idx_t count,
 	// INFINITE: floats and DATE/TIMESTAMP alike. isfinite() is false for NaN and +/-infinity, and NULL is what
 	// "predict this row" means, so one remedy serves every type.
 	throw InvalidInputException(
-	    "tabfm: target '%s' has %llu Infinity value(s) (first at input row %llu, 1-based within the group). NaN "
+	    "tabfm: target '%s' has %llu Infinity value(s) (first at input row %llu: its 1-based position among the rows this call received, for a window the position in the partition). NaN "
 	    "means \"predict this row\" and is fine, but Infinity is not a usable label or value. Replace it with NULL "
 	    "to have the row predicted, e.g. CASE WHEN isfinite(%s) THEN %s END.",
 	    column, static_cast<unsigned long long>(count), static_cast<unsigned long long>(first_row), quoted, quoted);

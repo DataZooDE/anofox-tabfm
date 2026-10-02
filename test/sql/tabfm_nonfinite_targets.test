@@ -150,12 +150,12 @@ CREATE TABLE reg_inf AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN tgt WHEN id = 
 statement error
 SELECT count(*) FROM tabfm_regress('reg_inf', 'y', model := 'nf-raw')
 ----
-Infinity value
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
 
 statement error
 SELECT count(*) FROM tabfm_regress('reg_inf', 'y', model := 'nf-std')
 ----
-Infinity value
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
 
 statement ok
 CREATE TABLE cls_inf AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab WHEN id = 12 THEN '-infinity'::DOUBLE END AS y FROM base;
@@ -163,7 +163,7 @@ CREATE TABLE cls_inf AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab WHEN id = 
 statement error
 SELECT count(*) FROM tabfm_classify('cls_inf', 'y', model := 'nf-raw')
 ----
-Infinity value
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
 
 # VARCHAR 'nan' is a legitimate label, not a missing marker: strings are left alone.
 statement ok
@@ -242,7 +242,7 @@ statement error
 SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
              OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_inf_hist t)
 ----
-Infinity value
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
 
 # ...and so is Infinity in the SCORED row, whose target the window path hides from the engine. It sits in the
 # LAST row (id 19) on purpose: anywhere earlier it would also be history for the rows after it, and the
@@ -255,7 +255,7 @@ statement error
 SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
              OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_inf_scored t)
 ----
-Infinity value
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
 
 # ---------------------------------------------------------------------------------------------
 # two-table form: ONLY the `test` rows come back. A row of `data` whose target is missing (NULL or NaN)
@@ -304,7 +304,7 @@ no non-NULL rows to use as context
 statement error
 SELECT count(*) FROM tabfm_regress('reg_inf', 'y', test := 'two_test', model := 'nf-raw')
 ----
-Infinity value
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
 
 # VARCHAR 'nan' labels in `data` are labels, so those rows are context and are NOT dropped
 query I
@@ -364,7 +364,7 @@ CREATE TABLE imp_inf AS SELECT id, CASE WHEN id = 3 THEN NULL WHEN id = 4 THEN '
 statement error
 SELECT count(*) FROM tabfm_impute('imp_inf', columns := ['f1'], model := 'nf-raw')
 ----
-Infinity value
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
 
 # An all-NaN column is the same as an all-NULL one: nothing to learn from, so the fill is NULL, never a
 # constant NaN.
@@ -404,7 +404,7 @@ SELECT count(*) FILTER (WHERE isnan(f1)) FROM tabfm_generate('imp_allnan', 6, mo
 statement error
 SELECT count(*) FROM tabfm_generate('imp_inf', 6, model := 'nf-raw')
 ----
-Infinity value
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
 
 # ---------------------------------------------------------------------------------------------
 # cross-validation: NaN-marked missing targets behave exactly like NULL-marked ones, and the fold
@@ -480,3 +480,34 @@ JOIN tabfm_regress('ft_date_inf', 'y', model := 'nf-raw') b
   ON a.f1 = b.f1 AND a.f3 = b.f3 AND a.is_training = b.is_training
 ----
 20	0
+
+# Window: an invalid SCORED target is not swallowed by the "no history yet" soft NULL, and a finite value
+# beyond float32 in a regression scored row is an error rather than being hidden from the engine.
+# one row: the Infinity is ONLY ever a scored target, never history for a later row
+statement ok
+CREATE TABLE w_first_inf AS SELECT id, f1, f2, f3, 'infinity'::DOUBLE AS y FROM base WHERE id = 0;
+
+statement error
+SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_first_inf t)
+----
+Infinity value
+
+# all-NaN history, then an Infinity scored row: still an error, not a soft NULL
+statement ok
+CREATE TABLE w_nan_then_inf AS SELECT id, f1, f2, f3, CASE WHEN id = 5 THEN 'infinity'::DOUBLE ELSE 'nan'::DOUBLE END AS y FROM base WHERE id < 6;
+
+statement error
+SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_nan_then_inf t)
+----
+Infinity value
+
+statement ok
+CREATE TABLE w_big_scored AS SELECT id, f1, f2, f3, CASE WHEN id = 19 THEN 1e300 WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement error
+SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_big_scored t)
+----
+float32 range

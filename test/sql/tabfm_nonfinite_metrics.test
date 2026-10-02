@@ -151,3 +151,28 @@ statement error
 SELECT tabfm_f1(a, p, 'macro') FROM (VALUES (1.0, 1.0), (2.0, '-infinity'::DOUBLE)) v(a, p)
 ----
 the predicted argument contains an Infinity value
+
+# An Infinity is never hidden by a NaN in the OTHER operand: both are checked before a row is skipped.
+foreach fn tabfm_rmse tabfm_mae tabfm_r2 tabfm_mape tabfm_medae
+
+statement error
+SELECT ${fn}(a, p) FROM (VALUES (1.0, 1.5), ('nan'::DOUBLE, 'infinity'::DOUBLE)) v(a, p)
+----
+the predicted argument contains an Infinity value
+
+statement error
+SELECT ${fn}(a, p) FROM (VALUES (1.0, 1.5), ('infinity'::DOUBLE, 'nan'::DOUBLE)) v(a, p)
+----
+the actual argument contains an Infinity value
+
+endloop
+
+statement error
+SELECT tabfm_accuracy(a, p) FROM (VALUES (1.0, 1.0), ('nan'::DOUBLE, 'infinity'::DOUBLE)) v(a, p)
+----
+the predicted argument contains an Infinity value
+
+statement error
+SELECT tabfm_f1(a, p, 'macro') FROM (VALUES (1.0, 1.0), ('infinity'::DOUBLE, 'nan'::DOUBLE)) v(a, p)
+----
+the actual argument contains an Infinity value

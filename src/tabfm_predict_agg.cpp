@@ -796,19 +796,24 @@ void PredictWinWindow(AggregateInputData &aggr_input_data, const WindowPartition
 			rows.push_back(std::move(children));
 		}
 	}
+	// Read and validate the scored row FIRST, before the empty-history return below: the soft NULL for "no
+	// history yet" must not swallow an invalid scored target, and once the target is hidden from the engine
+	// an invalid value could never be seen again. Infinity is always an error; a finite value beyond float32
+	// is one for a regression target, whose value would otherwise be nulled before PreprocessBatch sees it.
+	auto scored_children = RowChildren(state.reader->Read(partition, scored_row), bind.row_type);
+	const auto scored_kind = ClassifyTargetValue(scored_children[bind.target_idx]);
+	if (IsInvalidModelTarget(scored_kind, bind.options.task == TabFMTask::REGRESSION)) {
+		ThrowInvalidTarget(bind.target, scored_kind, 1, scored_row + 1);
+	}
+
 	if (rows.empty()) {
-		// empty frame / all-NULL-target frame: a soft NULL, not an error —
+		// empty frame / all-missing-target frame: a soft NULL, not an error —
 		// rolling predictions legitimately start with no history
 		WriteWindowNull(result, rid, bind);
 		return;
 	}
 
 	// append the scored row with its target hidden (never leaks into context)
-	auto scored_children = RowChildren(state.reader->Read(partition, scored_row), bind.row_type);
-	// Validate BEFORE hiding: once the target is nulled an Infinity here could never be seen again.
-	if (ClassifyTargetValue(scored_children[bind.target_idx]) == TargetValueKind::INFINITE) {
-		ThrowInvalidTarget(bind.target, TargetValueKind::INFINITE, 1, scored_row + 1);
-	}
 	scored_children[bind.target_idx] = Value(bind.target_type);
 	rows.push_back(std::move(scored_children));
 
