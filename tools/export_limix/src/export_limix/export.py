@@ -192,10 +192,12 @@ def make_feed(t, h, s, max_classes, seed=1, task="classification"):
 def check_parity(graph_path: pathlib.Path, wrapper: ExportWrapper,
                  shapes, max_classes=10, task="classification",
                  tol: float = PARITY_TOL) -> dict:
-    """ORT vs PyTorch fp32 on random weights. Compares TEST rows (>= train_size).
+    """ORT vs PyTorch fp32 on random weights, over EVERY row.
 
-    ``shapes`` = ((T, H, S), ...), all different from the export example so the
-    dynamic dims are genuinely exercised.
+    ``shapes`` = ((T, H, S), ...), all different from the export example so the dynamic dims are
+    genuinely exercised. Context rows (< S) and query rows (>= S) are reported separately so a failure
+    says which half is wrong. (This used to compare the query rows only, which could not have noticed
+    a wrong context row; the wrapper then padded them with zeros and the engine decoded a constant.)
     """
     import onnxruntime as ort
 
@@ -208,10 +210,13 @@ def check_parity(graph_path: pathlib.Path, wrapper: ExportWrapper,
         ort_ms = (time.time() - t0) * 1e3
         with torch.no_grad():
             pt_out = wrapper(torch.from_numpy(feed["x"]), torch.from_numpy(feed["y"])).numpy()
-        delta = float(np.abs(ort_out[:, s:] - pt_out[:, s:]).max())
-        worst = max(worst, delta)
-        results.append({"T": t, "H": h, "train": s,
-                        "max_abs_delta_test_rows": delta, "ort_ms": ort_ms})
+        if ort_out.shape != pt_out.shape:
+            raise RuntimeError(f"shape mismatch at (T,H,S)=({t},{h},{s}): ORT {ort_out.shape} vs torch {pt_out.shape}")
+        ctx = float(np.abs(ort_out[:, :s] - pt_out[:, :s]).max())
+        qry = float(np.abs(ort_out[:, s:] - pt_out[:, s:]).max()) if t > s else 0.0
+        worst = max(worst, ctx, qry)
+        results.append({"T": t, "H": h, "train": s, "max_abs_delta_context_rows": ctx,
+                        "max_abs_delta_query_rows": qry, "ort_ms": ort_ms})
     return {"ok": worst < tol, "worst": worst, "tol": tol, "shapes": results}
 
 

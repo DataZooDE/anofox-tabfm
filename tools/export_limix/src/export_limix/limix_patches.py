@@ -151,14 +151,18 @@ def apply() -> None:
         x = {"data": x, "mask": torch.isnan(x).to(torch.int32).to(x.device)}
         y = {"data": y}
 
-        feature_to_add = num_feature % self.features_per_group
-        if feature_to_add > 0:
+        # Upstream: `feature_to_add = num_feature % fpg; if feature_to_add > 0: cat zeros`. A Python
+        # branch on a symbolic width is decided AT TRACE TIME: traced at an even H it records "no
+        # padding" and every odd-width table then fails the grouping reshape (a blocker the README
+        # never listed; its three shapes all have even H). Instead: always append the maximum
+        # padding (fpg - 1 zero columns, a static width) and slice to the grouped width
+        # ceil(H / fpg) * fpg, which is H itself when H divides evenly. Same values as upstream.
+        fpg = self.features_per_group
+        if fpg > 1:
+            grouped_width = ((num_feature + fpg - 1) // fpg) * fpg
             for k in x:
-                x[k] = torch.cat(
-                    (x[k], torch.zeros(batch_size, seq_len, feature_to_add,
-                                       device=x[k].device, dtype=x[k].dtype)),
-                    dim=-1,
-                )
+                zeros = torch.zeros_like(x[k][:, :, :1]).expand(-1, -1, fpg - 1)
+                x[k] = torch.cat((x[k], zeros), dim=-1)[:, :, :grouped_width]
         for k in x:
             x[k] = x[k].reshape(batch_size, seq_len,
                                 x[k].shape[2] // self.features_per_group,
@@ -170,14 +174,15 @@ def apply() -> None:
 
         for k in y:
             y[k] = y[k].unsqueeze(-1)
-            if y[k].shape[1] < x["data"].shape[1]:
-                y[k] = torch.cat(
-                    (y[k],
-                     torch.nan * torch.zeros(
-                         y[k].shape[0], x["data"].shape[1] - y[k].shape[1],
-                         y[k].shape[2], device=y[k].device, dtype=y[k].dtype)),
-                    dim=1,
-                )
+            # Upstream pads y out to T rows with `nan * zeros(B, T - S, 1)` under a Python
+            # `if S < T`. Traced, the pad length T - S is concretised at the example (20 - 12 = 8)
+            # and baked in as a CONSTANT; the later equality "padded y has T rows" then makes
+            # torch.export rewrite T as S + 8 everywhere, including the feature-grouping reshape
+            # (ORT: "cannot reshape {1,20,6} to {1,23,3,2}", 23 = 20 + (15 - 12)). The pad is
+            # taken instead as the TAIL of a T-long tensor, so its length is T - S by
+            # construction, and S == T gives an empty tail rather than a different branch.
+            nan_rows = torch.full_like(x["data"][:, :, :1, 0], float("nan")).to(y[k].dtype)
+            y[k] = torch.cat((y[k], nan_rows[:, y[k].shape[1]:, :]), dim=1)
         # Upstream: y["data"][:, eval_pos:] = torch.nan  (in-place, shape-baking).
         rows = torch.arange(y["data"].shape[1], device=y["data"].device)
         test_rows = (rows >= eval_pos).reshape(1, -1, 1)
@@ -197,12 +202,33 @@ def apply() -> None:
             embedded_all, feature_atten_mask=None, eval_pos=eval_pos, **kwargs)[0]
         encoder_out = self.encoder_out_norm(encoder_out)
 
-        test_encoder_out = encoder_out[:, eval_pos:, -1]
-        test_y_type = y_type[:, eval_pos:]
+        # `_decode_from_row` is an export-time switch, default eval_pos (upstream's behaviour: decode the
+        # test rows only). 0 decodes EVERY row, which is how the fitted-value routes are measured.
+        first = getattr(self, "_decode_from_row", None)
+        first = eval_pos if first is None else first
+        test_encoder_out = encoder_out[:, first:, -1]
+        test_y_type = y_type[:, first:]
         cls_output, reg_output = self.y_decoder(test_encoder_out, test_y_type)
         return cls_output if task_type == "cls" else reg_output
 
     tmod.FeaturesTransformer.forward = _forward
+
+    # --- Patch 5: y_decoder without the data-dependent y_type split --------
+    # Same family as patch 2. Upstream flattens the test rows, selects the classification and
+    # regression rows with boolean-mask indexing (`idx[flat_test_y_type == 0]`) and reshapes each
+    # group back to (-1, seq_len, emb). Traced, the selection becomes GatherND with the row count
+    # baked in (ORT: "invalid index found, index = 8", 8 = T - S at the example), so the graph
+    # only works at the traced T - S. `forward` builds y_type uniform, so the split is the
+    # identity and only one decoder is live; the other output is never read. The upstream function
+    # is kept as `_upstream_y_decoder` so a test can prove the replacement exact.
+    tmod.FeaturesTransformer._upstream_y_decoder = tmod.FeaturesTransformer.y_decoder
+
+    def _y_decoder(self, test_encoder_out, test_y_type):
+        if getattr(self, "_export_task", "cls") == "cls":
+            return self.cls_y_decoder(test_encoder_out), None
+        return None, self.reg_y_decoder(test_encoder_out)
+
+    tmod.FeaturesTransformer.y_decoder = _y_decoder
 
     # --- Patch 4: branchless NaN/Inf imputation ----------------------------
     import model.encoders as emod
@@ -239,19 +265,37 @@ def apply() -> None:
 class ExportWrapper(torch.nn.Module):
     """Pins LimiX to a fixed 2-input ONNX signature.
 
-    Inputs (B fixed to 1 — one table per call):
-      x  [1, T, H] float32   preprocessed features (all rows; H is dynamic)
-      y  [1, S]    float32   TRAINING labels/targets only (S = eval_pos <= T)
+    Inputs (B fixed to 1 -- one table per call):
+      x  [1, T, H] float32   features (all rows; H is dynamic)
+      y  [1, S]    float32   TRAINING targets only (S = eval_pos <= T): dense class ids, or RAW
+                             regression targets
     Output:
-      logits [1, T, C]       classification: C = num_classes (class logits).
-                             regression:     C = 1, a point estimate.
-                             Predictions occupy rows >= S; rows < S are zero pad.
+      [1, T, C]              classification: class logits (C = num_classes, 10). Regression: C = 1,
+                             a RAW-space point estimate. EVERY row is a prediction; rows < S are
+                             in-context fitted values.
 
-    ``eval_pos`` is implicit as ``S = y.shape[1]`` — upstream pads the label
-    tensor with NaN out to T and masks the test positions itself, so feeding the
-    train prefix is exactly upstream's own inference call. That makes this the
-    same ``(x, y)``-only contract the engine already drives for TabPFN, TabICL
-    and Orion-BiX.
+    The split is positional (S = len(y)), the same (x, y)-only contract as TabPFN / TabICL.
+
+    Fitted values. The engine decodes every row and surfaces the context rows as `is_training`
+    values. Upstream predicts only the rows after the context, and this wrapper used to pad zeros for
+    the rest, so every context row decoded to one constant. Two routes to real values were MEASURED on
+    the real LimiX-2M weights (spike, 2026-10-02):
+
+        route                        5-class context acc   linear-regression context R2
+        decode all rows, one pass          0.111                     0.500
+        context presented again            1.000                     0.993
+
+    so the context is presented a second time as queries: the sequence `[context ; all rows]` with
+    eval_pos = S, whose rows >= S are every row of the table. Query rows are unchanged by it (single
+    pass vs this route: identical to 5e-7 on every dataset tried, `seq_attn_isolated` keeps queries
+    independent). It costs S extra rows per call. The values are in-context consistency checks, not
+    out-of-sample estimates, as for every other model here.
+
+    Regression target. The model does NOT normalise its target: every upstream example z-scores y,
+    predicts, and inverts (README, examples/demo_regression.py), and on a target with a scale of 79 the
+    un-normalised call scores R2 -4.2 where a scale-3 target scores 0.99. The engine feeds RAW targets
+    and reads the output as raw, so the standardisation (population std, numpy's default, as in the
+    upstream examples; a scale at rounding level -> 1) and its inverse live in the graph.
     """
 
     def __init__(self, model, task: str = "classification"):
@@ -260,17 +304,27 @@ class ExportWrapper(torch.nn.Module):
             raise ValueError(f"task must be classification|regression, got {task!r}")
         self.m = model
         self.task = task
-        # Patch 2 reads this to pick the single live y encoder.
+        # Patches 2 and 5 read this to pick the single live y encoder / decoder.
         model._export_task = "cls" if task == "classification" else "reg"
 
     def forward(self, x, y):
-        eval_pos = y.shape[1]
-        out = self.m(x, y, eval_pos=eval_pos,
+        s = y.shape[1]
+        if self.task == "regression":
+            mean_y = y.mean(dim=1, keepdim=True)
+            std_y = ((y - mean_y) ** 2).mean(dim=1, keepdim=True).sqrt()
+            std_y = torch.where(std_y < 1e-6, torch.ones_like(std_y), std_y)
+            y_in = (y - mean_y) / std_y
+        else:
+            y_in = y
+        # [context ; all rows], eval_pos = S: rows >= S are every row of the table.
+        table = torch.cat([x[:, :s], x], dim=1)
+        out = self.m(table, y_in, eval_pos=s,
                      task_type="cls" if self.task == "classification" else "reg")
-        if out.dim() == 2:  # regression point estimate [1, T-S] -> [1, T-S, 1]
+        if out.dim() == 2:  # regression point estimate [1, T] -> [1, T, 1]
             out = out.unsqueeze(-1)
-        pad = torch.zeros(out.shape[0], eval_pos, out.shape[2], dtype=out.dtype)
-        return torch.cat([pad, out], dim=1)
+        if self.task == "regression":
+            out = out * std_y.unsqueeze(-1) + mean_y.unsqueeze(-1)
+        return out
 
 
 def build_model(config: dict, seed: int = 0):
