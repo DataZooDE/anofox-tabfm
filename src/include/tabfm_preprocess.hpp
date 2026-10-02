@@ -57,6 +57,9 @@
 #pragma once
 
 #include "duckdb/common/types/column/column_data_collection.hpp"
+#include <cfloat>
+#include <cmath>
+
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/vector.hpp"
@@ -75,6 +78,37 @@ static constexpr double kTargetPadSentinel = -100.0;
 
 //! min_frequency for CategoricalOrdinalEncoder (TransformToNumerical default).
 static constexpr int kMinCatFrequency = 2;
+
+//! What a TARGET value means. This is the ONE predicate every train/query decision uses (the
+//! preprocessor's split, the aggregate's is_training flag and has-context check, the window
+//! path, generate/impute, the metrics), so NULL and NaN can never be told apart in one place
+//! and not in another.
+//!
+//!   NULL, or NaN in FLOAT/DOUBLE                   -> MISSING: the row is to be PREDICTED
+//!   +/-Infinity in FLOAT/DOUBLE, DATE, TIMESTAMP*  -> INFINITE: an error for a model target
+//!   a finite double with abs(v) > FLT_MAX          -> FLOAT32_OVERFLOW: it would become
+//!                                                     Infinity in the float32 graph input
+//!   anything else                                  -> USABLE
+//!
+//! A string is a LABEL, never a missing marker: 'nan' and 'inf' stay legitimate class names.
+//! FLOAT32_OVERFLOW is an error only where the value feeds a float32 tensor; operands of the
+//! metrics compute in double, so they treat it as USABLE.
+//!
+//! Before this predicate a NaN target was a non-NULL value and so a TRAINING row: regression
+//! answered NaN for every row with no error, and classification made 'nan' an extra class.
+enum class TargetValueKind : uint8_t { MISSING, USABLE, INFINITE, FLOAT32_OVERFLOW };
+
+TargetValueKind ClassifyTargetValue(const Value &value);
+
+//! True for the kinds that are an error as a MODEL target.
+inline bool IsInvalidModelTarget(TargetValueKind kind) {
+	return kind == TargetValueKind::INFINITE || kind == TargetValueKind::FLOAT32_OVERFLOW;
+}
+
+//! True iff `value` survives the double -> float32 cast of the graph input as a finite number.
+inline bool IsFloat32Finite(double value) {
+	return std::isfinite(value) && std::fabs(value) <= static_cast<double>(FLT_MAX);
+}
 
 //! Prediction task; upstream picks this from the target field type (FR-3.2).
 enum class PreprocessTask : uint8_t { CLASSIFICATION, REGRESSION };

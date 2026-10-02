@@ -18,7 +18,9 @@
 #include "duckdb/common/allocator.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/date.hpp"
+#include "duckdb/common/types/timestamp.hpp"
 
+#include <cfloat>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -394,4 +396,100 @@ TEST_CASE("preprocess: regression_dates golden parity", "[tabfm][preprocess]") {
 
 	REQUIRE(batch.target_mean == Approx(131.875).epsilon(1e-9));
 	REQUIRE(batch.target_scale == Approx(26.21277121938846).epsilon(1e-9));
+}
+
+// ---------------------------------------------------------------------------
+// What a TARGET value means (the shared predicate every train/query decision uses).
+//
+//   NULL, or NaN in FLOAT/DOUBLE      -> MISSING   (the row is to be predicted)
+//   +/-Infinity (FLOAT/DOUBLE, DATE, TIMESTAMP[...])  -> INFINITE  (an error for a model target)
+//   a finite double beyond FLT_MAX    -> FLOAT32_OVERFLOW (it would become Infinity in the graph input)
+//   anything else, INCLUDING the strings 'nan' / 'inf'  -> USABLE
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kInf = std::numeric_limits<double>::infinity();
+Value TsFromText(const char *text, const LogicalType &type) {
+	return Value(string(text)).DefaultCastAs(type);
+}
+} // namespace
+
+TEST_CASE("target value: NULL and NaN are MISSING, in every type that can be NULL", "[tabfm][preprocess][target]") {
+	REQUIRE(ClassifyTargetValue(VNullDouble()) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(VNullStr()) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(VNullBool()) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(VNullDate()) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(Value(LogicalType::BIGINT)) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(kNaN)) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(-kNaN)) == TargetValueKind::MISSING); // sign bit set
+	REQUIRE(ClassifyTargetValue(Value::FLOAT(std::numeric_limits<float>::quiet_NaN())) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(std::numeric_limits<double>::signaling_NaN())) ==
+	        TargetValueKind::MISSING);
+}
+
+TEST_CASE("target value: Infinity is INFINITE for floats and for temporal types", "[tabfm][preprocess][target]") {
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(kInf)) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(-kInf)) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::FLOAT(std::numeric_limits<float>::infinity())) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::FLOAT(-std::numeric_limits<float>::infinity())) == TargetValueKind::INFINITE);
+	// DuckDB has date/timestamp infinity; ToString() would make it the class label "infinity"
+	REQUIRE(ClassifyTargetValue(Value::DATE(date_t::infinity())) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::DATE(date_t::ninfinity())) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::TIMESTAMP(timestamp_t::infinity())) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::TIMESTAMP(timestamp_t::ninfinity())) == TargetValueKind::INFINITE);
+	// every temporal flavour, through its own text form (the native units differ)
+	for (auto id : {LogicalTypeId::TIMESTAMP, LogicalTypeId::TIMESTAMP_TZ, LogicalTypeId::TIMESTAMP_SEC,
+	                LogicalTypeId::TIMESTAMP_MS, LogicalTypeId::TIMESTAMP_NS}) {
+		const LogicalType type(id);
+		INFO("type " << type.ToString());
+		REQUIRE(ClassifyTargetValue(TsFromText("infinity", type)) == TargetValueKind::INFINITE);
+		REQUIRE(ClassifyTargetValue(TsFromText("-infinity", type)) == TargetValueKind::INFINITE);
+		REQUIRE(ClassifyTargetValue(TsFromText("2023-06-30 12:00:00", type)) == TargetValueKind::USABLE);
+	}
+	REQUIRE(ClassifyTargetValue(TsFromText("infinity", LogicalType::DATE)) == TargetValueKind::INFINITE);
+}
+
+TEST_CASE("target value: the float32 range boundary for a double model target", "[tabfm][preprocess][target]") {
+	const double fmax = static_cast<double>(FLT_MAX);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(fmax)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(-fmax)) == TargetValueKind::USABLE);
+	// the very next representable double no longer fits float32 and would become Infinity in the graph
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(std::nextafter(fmax, kInf))) == TargetValueKind::FLOAT32_OVERFLOW);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(std::nextafter(-fmax, -kInf))) == TargetValueKind::FLOAT32_OVERFLOW);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(1e300)) == TargetValueKind::FLOAT32_OVERFLOW);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(DBL_MAX)) == TargetValueKind::FLOAT32_OVERFLOW);
+	// a FLOAT column cannot overflow float32 by construction
+	REQUIRE(ClassifyTargetValue(Value::FLOAT(FLT_MAX)) == TargetValueKind::USABLE);
+	REQUIRE(IsFloat32Finite(fmax));
+	REQUIRE_FALSE(IsFloat32Finite(std::nextafter(fmax, kInf)));
+	REQUIRE_FALSE(IsFloat32Finite(kInf));
+	REQUIRE_FALSE(IsFloat32Finite(kNaN));
+	REQUIRE(IsFloat32Finite(0.0));
+	REQUIRE(IsFloat32Finite(-0.0));
+}
+
+TEST_CASE("target value: ordinary values, zeros, subnormals, other types and STRINGS are USABLE",
+          "[tabfm][preprocess][target]") {
+	for (double v : {0.0, -0.0, 1.0, -1.5, DBL_MIN, std::numeric_limits<double>::denorm_min(), 3.4e38}) {
+		INFO("value " << v);
+		REQUIRE(ClassifyTargetValue(Value::DOUBLE(v)) == TargetValueKind::USABLE);
+	}
+	REQUIRE(ClassifyTargetValue(Value::BIGINT(42)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::HUGEINT(hugeint_t(1) << 100)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::DECIMAL(int32_t(12345), 7, 2)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(VBool(true)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(VDate(2023, 1, 15)) == TargetValueKind::USABLE);
+	// A string is a LABEL, never a missing marker: 'nan' and 'inf' stay legitimate class names
+	for (const char *label : {"nan", "NaN", "inf", "-inf", "infinity", "", "NULL"}) {
+		INFO("label '" << label << "'");
+		REQUIRE(ClassifyTargetValue(VStr(label)) == TargetValueKind::USABLE);
+	}
+}
+
+TEST_CASE("target value: which kinds are errors for a model target", "[tabfm][preprocess][target]") {
+	REQUIRE_FALSE(IsInvalidModelTarget(TargetValueKind::MISSING));
+	REQUIRE_FALSE(IsInvalidModelTarget(TargetValueKind::USABLE));
+	REQUIRE(IsInvalidModelTarget(TargetValueKind::INFINITE));
+	REQUIRE(IsInvalidModelTarget(TargetValueKind::FLOAT32_OVERFLOW));
 }

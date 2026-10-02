@@ -169,6 +169,51 @@ struct FeatureCol {
 
 } // namespace
 
+TargetValueKind ClassifyTargetValue(const Value &value) {
+	if (value.IsNull()) {
+		return TargetValueKind::MISSING;
+	}
+	switch (value.type().id()) {
+	case LogicalTypeId::FLOAT: {
+		// a FLOAT cannot overflow float32 by construction
+		const float f = FloatValue::Get(value);
+		if (std::isnan(f)) {
+			return TargetValueKind::MISSING;
+		}
+		return std::isinf(f) ? TargetValueKind::INFINITE : TargetValueKind::USABLE;
+	}
+	case LogicalTypeId::DOUBLE: {
+		const double d = DoubleValue::Get(value);
+		if (std::isnan(d)) {
+			return TargetValueKind::MISSING;
+		}
+		if (std::isinf(d)) {
+			return TargetValueKind::INFINITE;
+		}
+		return IsFloat32Finite(d) ? TargetValueKind::USABLE : TargetValueKind::FLOAT32_OVERFLOW;
+	}
+	case LogicalTypeId::DATE:
+		return Date::IsFinite(DateValue::Get(value)) ? TargetValueKind::USABLE : TargetValueKind::INFINITE;
+	case LogicalTypeId::TIMESTAMP:
+		return Timestamp::IsFinite(TimestampValue::Get(value)) ? TargetValueKind::USABLE : TargetValueKind::INFINITE;
+	case LogicalTypeId::TIMESTAMP_SEC:
+	case LogicalTypeId::TIMESTAMP_MS:
+	case LogicalTypeId::TIMESTAMP_NS:
+	case LogicalTypeId::TIMESTAMP_TZ: {
+		// The native units differ, so ask DuckDB: infinity survives the cast to TIMESTAMP.
+		Value as_timestamp;
+		string error;
+		if (!value.DefaultTryCastAs(LogicalType::TIMESTAMP, as_timestamp, &error)) {
+			return TargetValueKind::USABLE; // cannot be infinity if it does not even cast
+		}
+		return Timestamp::IsFinite(TimestampValue::Get(as_timestamp)) ? TargetValueKind::USABLE
+		                                                              : TargetValueKind::INFINITE;
+	}
+	default:
+		return TargetValueKind::USABLE; // integers, DECIMAL, BOOLEAN, VARCHAR (a label), ENUM, ...
+	}
+}
+
 PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
                                   const vector<PreprocessColumnSpec> &columns,
                                   PreprocessTask task, bool standardize) {
