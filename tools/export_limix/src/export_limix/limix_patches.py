@@ -309,6 +309,12 @@ class ExportWrapper(torch.nn.Module):
 
     def forward(self, x, y):
         s = y.shape[1]
+        # Tell the exporter S <= T. Without it every per-layer slice `x[:, :eval_pos]` / `x[:, eval_pos:]`
+        # yields a Min(S, T) expression that sympy re-simplifies in every layer, and export time explodes
+        # with depth: on the small config 1/2/4 layers took 30/20/32 s, 6 layers 79-126 s, 8 layers more
+        # than 480 s, and the real model has 12 (the original code did not finish 4 layers in 15 minutes).
+        # With the assertion the slices are exact and 4 and 6 layers cost the same (28 s).
+        torch._check(s <= x.shape[1])
         if self.task == "regression":
             mean_y = y.mean(dim=1, keepdim=True)
             std_y = ((y - mean_y) ** 2).mean(dim=1, keepdim=True).sqrt()

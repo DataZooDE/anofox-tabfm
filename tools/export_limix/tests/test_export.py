@@ -105,3 +105,27 @@ def test_regression_is_raw_in_raw_out():
         base = w(x, y)
         scaled = w(x, y * a + b)
     assert (scaled - (base * a + b)).abs().max().item() < 1e-3 * (abs(a) * base.abs().max().item() + abs(b))
+
+
+def test_a_deep_model_exports_in_reasonable_time(tmp_path):
+    """Export time must not explode with depth. The real model has 12 layers.
+
+    Without `torch._check(S <= T)` in the wrapper each per-layer slice yields a Min(S, T) that sympy
+    re-simplifies in every layer: on the small config 8 layers took more than 480 s (and the ORIGINAL
+    code did not finish 4 layers in 15 minutes), against 32 s with it. Run in a subprocess so a regression
+    fails in minutes instead of hanging the suite.
+    """
+    import subprocess
+    import sys
+    import textwrap
+    code = textwrap.dedent("""
+        import copy, pathlib, sys
+        from export_limix import configs, export
+        from export_limix.limix_patches import build_model
+        cfg = configs.fixture(); mc = copy.deepcopy(cfg.model_config); mc["nlayers"] = 8
+        export.export_graph(build_model(mc, seed=0), pathlib.Path(sys.argv[1]) / "g.onnx", dim_rows=cfg.dim_rows,
+                            dim_train=cfg.dim_train, dim_features=cfg.dim_features, example=(20, 6, 12),
+                            max_classes=3, task="classification")
+    """)
+    r = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, timeout=240)
+    assert r.returncode == 0, r.stderr[-800:]

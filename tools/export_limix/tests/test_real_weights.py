@@ -1,0 +1,64 @@
+"""LimiX-2M on the REAL checkpoint: the contracts random weights cannot check.
+
+Skipped unless TABFM_REAL_WEIGHTS is set. It downloads stable-ai/LimiX-2M (about 9.5 MB) into the Hugging
+Face cache, never into this repo. The weights are non-commercial without StableAI's authorization, so
+running this is evaluation. Eager PyTorch only: the exported graph is covered by test_export.py, and the
+real-weights ORT comparison lives in the spike notes.
+"""
+
+from __future__ import annotations
+
+import os
+
+import numpy as np
+import pytest
+import torch
+
+pytestmark = pytest.mark.skipif(not os.environ.get("TABFM_REAL_WEIGHTS"),
+                                reason="needs the real LimiX-2M checkpoint (set TABFM_REAL_WEIGHTS=1)")
+
+from sklearn.datasets import load_diabetes, make_classification  # noqa: E402
+from sklearn.model_selection import train_test_split  # noqa: E402
+
+from export_limix import configs  # noqa: E402
+from export_limix.limix_patches import ExportWrapper, build_model  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def wrappers():
+    from huggingface_hub import hf_hub_download
+    sd = torch.load(hf_hub_download("stable-ai/LimiX-2M", "LimiX-2M.ckpt"), map_location="cpu",
+                    weights_only=False)["state_dict"]
+    out = {}
+    for task in ("classification", "regression"):
+        m = build_model(configs.real().model_config, seed=0)
+        m.load_state_dict(sd, strict=True)
+        out[task] = ExportWrapper(m.eval(), task=task).eval()
+    return out
+
+
+def test_context_rows_are_in_context_values_not_a_constant(wrappers):
+    """5-class problem: decoding every row from one pass scored context accuracy 0.111 here, and the
+    second-pass route 1.000 (spike measurement). Pin the number that chose the route."""
+    X, y = make_classification(n_samples=400, n_features=20, n_informative=8, n_classes=5, random_state=1)
+    Xtr, Xte, ytr, _ = train_test_split(X, y, test_size=0.3, random_state=0, stratify=y)
+    x = torch.from_numpy(np.vstack([Xtr, Xte]).astype(np.float32))[None]
+    classes = np.unique(ytr)
+    labels = np.searchsorted(classes, ytr)
+    with torch.no_grad():
+        out = wrappers["classification"](x, torch.from_numpy(labels.astype(np.float32))[None])
+    fitted = out[0, :len(ytr), :len(classes)].argmax(-1).numpy()
+    assert (fitted == labels).mean() > 0.95
+    assert len(set(fitted.tolist())) == len(classes)
+
+
+def test_regression_takes_raw_targets(wrappers):
+    """Diabetes has a target scale of 79 (mean ~150). Called un-normalised the model scored query R2
+    -4.2; with the standardisation in the wrapper it scores ~0.36, as upstream does on the same split."""
+    X, y = load_diabetes(return_X_y=True)
+    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.3, random_state=0)
+    x = torch.from_numpy(np.vstack([Xtr, Xte]).astype(np.float32))[None]
+    with torch.no_grad():
+        out = wrappers["regression"](x, torch.from_numpy(ytr.astype(np.float32))[None])[0, :, 0].numpy()
+    r2 = 1 - ((out[len(ytr):] - yte) ** 2).sum() / ((yte - yte.mean()) ** 2).sum()
+    assert r2 > 0.2, f"query R2 {r2:.3f}: the target is not being standardised"
