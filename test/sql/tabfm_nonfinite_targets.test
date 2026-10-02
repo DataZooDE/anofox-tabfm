@@ -19,11 +19,11 @@
 #                [x] tabfm_classify / tabfm_regress, single relation
 #                [x] tabfm_classify / tabfm_regress, two-table form (NULL/NaN in `data`)
 #                [x] window prediction
-#                [ ] tabfm_cross_validate, tabfm_compare_models
+#                [x] tabfm_cross_validate (compare_models shares its fold construction and metric join)
 #                [x] tabfm_impute, tabfm_generate (including a path with no engine call)
-#                [ ] regression metrics, tabfm_crps / tabfm_log_score / tabfm_interval_score
-#                [ ] classification metrics (typed operands only; VARCHAR-bound ones cannot tell
-#                    a numeric NaN from the string 'nan', and that limit is documented)
+#                [x] metrics and scoring: see tabfm_nonfinite_metrics.test (needs no model, runs on Windows;
+#                    VARCHAR-bound classification metrics cannot tell a numeric NaN from the string 'nan',
+#                    and that limit is documented)
 # group: [anofox_tabfm]
 
 require anofox_tabfm
@@ -405,3 +405,26 @@ statement error
 SELECT count(*) FROM tabfm_generate('imp_inf', 6, model := 'nf-raw')
 ----
 Infinity value
+
+# ---------------------------------------------------------------------------------------------
+# cross-validation: NaN-marked missing targets behave exactly like NULL-marked ones, and the fold
+# metric is a number, not NaN (the held-out fold's NaN actuals used to poison rmse)
+# ---------------------------------------------------------------------------------------------
+
+statement ok
+SET anofox_tabfm_default_model = 'nf-raw'
+
+statement ok
+CREATE TABLE cv_null AS SELECT id, f1, f2, f3, CASE WHEN id < 14 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE cv_nan AS SELECT id, f1, f2, f3, CASE WHEN id < 14 THEN tgt ELSE 'nan'::DOUBLE END AS y FROM base;
+
+query III
+SELECT count(*), count(*) FILTER (WHERE b.metric_value IS NULL OR isnan(b.metric_value)),
+       count(*) FILTER (WHERE a.metric_value IS DISTINCT FROM b.metric_value)
+FROM tabfm_cross_validate('cv_null', 'y', 'id', k := 2, seed := 42, task := 'regression', metric := 'tabfm_rmse') a
+JOIN tabfm_cross_validate('cv_nan', 'y', 'id', k := 2, seed := 42, task := 'regression', metric := 'tabfm_rmse') b
+  USING (fold_id)
+----
+3	0	0

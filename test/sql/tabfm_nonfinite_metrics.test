@@ -1,0 +1,153 @@
+# name: test/sql/tabfm_nonfinite_metrics.test
+# description: NaN and Infinity in the operands of the regression metrics and the distribution scoring
+#              functions. The same rule as the targets (tabfm_nonfinite_targets.test), stated for operands:
+#                NULL or NaN  -> missing: the row is SKIPPED, exactly like NULL always was
+#                +/-Infinity  -> an error naming the function and the argument
+#              Before this, a NaN actual or prediction was an ordinary number: one NaN row made rmse, mae,
+#              r2, mape and medae NaN for the whole group, and the scoring functions skipped only NULL.
+#              Needs no model, so unlike the prediction tests it also runs on Windows.
+#
+#              Scope note: only TYPED operands can follow the rule. The classification metrics that bind
+#              their labels as VARCHAR (log-loss, ROC-AUC, ECE) cannot tell a numeric NaN from the string
+#              'nan', and that is documented rather than guessed at.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CREATE TABLE m_null AS SELECT * FROM (VALUES
+  (1.0, 1.5), (2.0, 2.5), (4.0, 3.0), (6.0, 7.0), (NULL, 3.0), (4.0, NULL)) v(a, p);
+
+# the same rows with the gaps marked NaN, on either side
+statement ok
+CREATE TABLE m_nan AS SELECT * FROM (VALUES
+  (1.0, 1.5), (2.0, 2.5), (4.0, 3.0), (6.0, 7.0), ('nan'::DOUBLE, 3.0), (4.0, 'nan'::DOUBLE)) v(a, p);
+
+statement ok
+CREATE TABLE m_clean AS SELECT * FROM (VALUES (1.0, 1.5), (2.0, 2.5), (4.0, 3.0), (6.0, 7.0)) v(a, p);
+
+# every regression metric: NaN-marked == NULL-marked == the clean rows alone
+foreach fn tabfm_rmse tabfm_mae tabfm_r2 tabfm_mape tabfm_medae
+
+query I
+SELECT (SELECT ${fn}(a, p) FROM m_nan) IS NOT DISTINCT FROM (SELECT ${fn}(a, p) FROM m_null)
+   AND (SELECT ${fn}(a, p) FROM m_nan) IS NOT DISTINCT FROM (SELECT ${fn}(a, p) FROM m_clean)
+   AND (SELECT ${fn}(a, p) FROM m_nan) IS NOT NULL
+   AND NOT isnan((SELECT ${fn}(a, p) FROM m_nan))
+----
+true
+
+# Infinity is an error that names the function and the argument, on either side
+statement error
+SELECT ${fn}(a, p) FROM (VALUES (1.0, 1.5), ('infinity'::DOUBLE, 2.0)) v(a, p)
+----
+<REGEX>:.*tabfm_[a-z0-9_]+: the actual argument contains an Infinity value.*
+
+statement error
+SELECT ${fn}(a, p) FROM (VALUES (1.0, 1.5), (2.0, '-infinity'::DOUBLE)) v(a, p)
+----
+<REGEX>:.*tabfm_[a-z0-9_]+: the predicted argument contains an Infinity value.*
+
+endloop
+
+# a group that is ALL NaN has nothing to score: NULL, not NaN, like an all-NULL group
+query I
+SELECT tabfm_rmse(a, p) IS NULL FROM (VALUES ('nan'::DOUBLE, 1.0), (2.0, 'nan'::DOUBLE)) v(a, p)
+----
+true
+
+# ---------------------------------------------------------------------------------------------
+# distribution scoring: the ACTUAL is the operand (K=4 uniform, borders 0..4)
+# ---------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE s_null AS SELECT * FROM (VALUES
+  (1.5, {'logits': [0.0, 0.0, 0.0, 0.0]::DOUBLE[], 'borders': [0.0, 1.0, 2.0, 3.0, 4.0]::DOUBLE[]}),
+  (2.5, {'logits': [0.0, 0.0, 0.0, 0.0]::DOUBLE[], 'borders': [0.0, 1.0, 2.0, 3.0, 4.0]::DOUBLE[]}),
+  (NULL, {'logits': [0.0, 0.0, 0.0, 0.0]::DOUBLE[], 'borders': [0.0, 1.0, 2.0, 3.0, 4.0]::DOUBLE[]})
+) v(y_val, dist);
+
+statement ok
+CREATE TABLE s_nan AS SELECT * FROM (VALUES
+  (1.5, {'logits': [0.0, 0.0, 0.0, 0.0]::DOUBLE[], 'borders': [0.0, 1.0, 2.0, 3.0, 4.0]::DOUBLE[]}),
+  (2.5, {'logits': [0.0, 0.0, 0.0, 0.0]::DOUBLE[], 'borders': [0.0, 1.0, 2.0, 3.0, 4.0]::DOUBLE[]}),
+  ('nan'::DOUBLE, {'logits': [0.0, 0.0, 0.0, 0.0]::DOUBLE[], 'borders': [0.0, 1.0, 2.0, 3.0, 4.0]::DOUBLE[]})
+) v(y_val, dist);
+
+foreach fn tabfm_crps tabfm_log_score tabfm_interval_score
+
+query I
+SELECT (SELECT ${fn}(y_val, dist) FROM s_nan) IS NOT DISTINCT FROM (SELECT ${fn}(y_val, dist) FROM s_null)
+   AND (SELECT ${fn}(y_val, dist) FROM s_nan) IS NOT NULL
+   AND NOT isnan((SELECT ${fn}(y_val, dist) FROM s_nan))
+----
+true
+
+statement error
+SELECT ${fn}(y_val, dist) FROM (VALUES
+  ('infinity'::DOUBLE, {'logits': [0.0, 0.0, 0.0, 0.0]::DOUBLE[], 'borders': [0.0, 1.0, 2.0, 3.0, 4.0]::DOUBLE[]})) v(y_val, dist)
+----
+<REGEX>:.*tabfm_[a-z0-9_]+: the actual argument contains an Infinity value.*
+
+endloop
+
+# A finite value above FLT_MAX is a perfectly good double actual here: metrics compute in double and never
+# feed a float32 tensor, so the float32 rule that applies to MODEL targets does not apply to operands.
+query I
+SELECT tabfm_rmse(a, p) IS NOT NULL FROM (VALUES (1e300, 1.0), (2.0, 2.0)) v(a, p)
+----
+true
+
+# ---------------------------------------------------------------------------------------------
+# classification metrics with ANY-typed labels: the type is kept, so a numeric NaN (missing) is told
+# apart from the string 'nan' (a label)
+# ---------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE c_null AS SELECT * FROM (VALUES
+  (1.0, 1.0), (2.0, 2.0), (2.0, 1.0), (3.0, 3.0), (NULL, 3.0), (2.0, NULL)) v(a, p);
+
+statement ok
+CREATE TABLE c_nan AS SELECT * FROM (VALUES
+  (1.0, 1.0), (2.0, 2.0), (2.0, 1.0), (3.0, 3.0), ('nan'::DOUBLE, 3.0), (2.0, 'nan'::DOUBLE)) v(a, p);
+
+query I
+SELECT (SELECT tabfm_accuracy(a, p) FROM c_nan) IS NOT DISTINCT FROM (SELECT tabfm_accuracy(a, p) FROM c_null)
+   AND (SELECT tabfm_accuracy(a, p) FROM c_nan) = 0.75
+----
+true
+
+foreach fn tabfm_precision tabfm_recall tabfm_f1
+
+query I
+SELECT (SELECT ${fn}(a, p, 'macro') FROM c_nan) IS NOT DISTINCT FROM (SELECT ${fn}(a, p, 'macro') FROM c_null)
+   AND (SELECT ${fn}(a, p, 'macro') FROM c_nan) IS NOT NULL
+----
+true
+
+endloop
+
+# a NaN pair does NOT count as a correct match any more (it used to: NaN = NaN is true in DuckDB)
+query I
+SELECT tabfm_accuracy(a, p) IS NULL FROM (VALUES ('nan'::DOUBLE, 'nan'::DOUBLE)) v(a, p)
+----
+true
+
+# ...but the STRING 'nan' is an ordinary label and still matches itself
+query I
+SELECT tabfm_accuracy(a, p) FROM (VALUES ('nan', 'nan'), ('a', 'b')) v(a, p)
+----
+0.5
+
+statement error
+SELECT tabfm_accuracy(a, p) FROM (VALUES (1.0, 1.0), ('infinity'::DOUBLE, 2.0)) v(a, p)
+----
+tabfm_accuracy: the actual argument contains an Infinity value
+
+statement error
+SELECT tabfm_f1(a, p, 'macro') FROM (VALUES (1.0, 1.0), (2.0, '-infinity'::DOUBLE)) v(a, p)
+----
+the predicted argument contains an Infinity value

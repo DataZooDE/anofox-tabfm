@@ -20,6 +20,7 @@
 
 #include "tabfm_metrics_classification.hpp"
 #include "anofox_function_alias.hpp"
+#include "tabfm_preprocess.hpp"
 #include "tabfm_registration.hpp"
 
 #include "duckdb/common/enums/catalog_type.hpp"
@@ -106,12 +107,19 @@ void AccuracyUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_
 			continue;
 		}
 
+		const Value actual_label = inputs[0].GetValue(i);
+		const Value predicted_label = inputs[1].GetValue(i);
+		if (SkipMissingLabel(actual_label, "tabfm_accuracy", "actual") ||
+		    SkipMissingLabel(predicted_label, "tabfm_accuracy", "predicted")) {
+			continue; // a NaN label is missing, like NULL; Infinity throws
+		}
+
 		auto &state = *states[sidx];
 		state.total++;
 
 		// Compare via Value for type-safety — works for INTEGER, BIGINT, DATE,
 		// VARCHAR, and all other DuckDB types without implicit cast assumptions.
-		if (inputs[0].GetValue(i) == inputs[1].GetValue(i)) {
+		if (actual_label == predicted_label) {
 			state.correct++;
 		}
 	}
@@ -281,6 +289,13 @@ void F1Update(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector
 			continue;
 		}
 
+		const Value actual_label = inputs[0].GetValue(i);
+		const Value predicted_label = inputs[1].GetValue(i);
+		if (SkipMissingLabel(actual_label, "tabfm_precision/recall/f1", "actual") ||
+		    SkipMissingLabel(predicted_label, "tabfm_precision/recall/f1", "predicted")) {
+			continue; // a NaN label is missing, like NULL; Infinity throws
+		}
+
 		auto &slot = *slots[sidx];
 		if (!slot.data) {
 			slot.data = new std::unordered_map<std::string, ClassCounts>();
@@ -291,8 +306,8 @@ void F1Update(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector
 		// VARCHAR, …) produce a stable string key without raw-byte reinterpretation
 		// (CR-01; WR-03 micro-opt reverted in favour of correctness — registration
 		// is now {ANY, ANY} per 01-VERIFICATION.md Option B).
-		std::string actual_str    = inputs[0].GetValue(i).ToString();
-		std::string predicted_str = inputs[1].GetValue(i).ToString();
+		std::string actual_str    = actual_label.ToString();
+		std::string predicted_str = predicted_label.ToString();
 
 		// Ensure both class entries exist before modifying them
 		class_map[actual_str];    // default-insert if missing

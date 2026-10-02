@@ -109,6 +109,30 @@ TargetValueKind ClassifyTargetValue(const Value &value);
 //! discard NaN rows (they are legal: they mean "predict this row"). `kind` must be an invalid kind.
 [[noreturn]] void ThrowInvalidTarget(const string &column, TargetValueKind kind, idx_t count, idx_t first_row);
 
+//! The rule for an OPERAND of a metric or scoring function (typed DOUBLE, so NaN and the string 'nan' can
+//! be told apart): NaN is missing and the row is skipped, exactly like NULL always was; +/-Infinity is an
+//! error naming the function and the argument. Returns true when the row must be skipped. A finite value
+//! beyond float32 is fine here: metrics compute in double and never feed a float32 tensor.
+inline bool SkipMissingOperand(double value, const char *function, const char *argument) {
+	if (std::isnan(value)) {
+		return true;
+	}
+	if (std::isinf(value)) {
+		throw InvalidInputException(
+		    "%s: the %s argument contains an Infinity value (%s). NaN is treated as missing and skipped, like "
+		    "NULL, but Infinity is not a usable value. Replace it with NULL first, e.g. CASE WHEN isfinite(x) THEN "
+		    "x END.",
+		    function, argument, value > 0 ? "+Infinity" : "-Infinity");
+	}
+	return false;
+}
+
+//! The same rule for an ANY-typed LABEL operand of a classification metric. The value's type is kept, so a
+//! numeric NaN (missing: the row is skipped) is told apart from the string 'nan' (a label like any other).
+//! The metrics that bind their labels as VARCHAR (log-loss, ROC-AUC, ECE) cannot make that distinction and
+//! are not covered; the docs say so.
+inline bool SkipMissingLabel(const Value &value, const char *function, const char *argument);
+
 //! True for the kinds that are an error as a MODEL target. `regression` is whether the value feeds a
 //! float32 tensor (a REGRESSION target); a class label never does, so an overflow is fine there.
 inline bool IsInvalidModelTarget(TargetValueKind kind, bool regression) {
@@ -231,6 +255,22 @@ bool IsUnsupportedNestedType(const LogicalType &type);
 PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
                                   const vector<PreprocessColumnSpec> &columns,
                                   PreprocessTask task, bool standardize = true);
+
+
+inline bool SkipMissingLabel(const Value &value, const char *function, const char *argument) {
+	switch (ClassifyTargetValue(value)) {
+	case TargetValueKind::MISSING:
+		return true;
+	case TargetValueKind::INFINITE:
+		throw InvalidInputException(
+		    "%s: the %s argument contains an Infinity value (%s). NaN is treated as missing and skipped, like "
+		    "NULL, but Infinity is not a usable label. Replace it with NULL first, e.g. CASE WHEN isfinite(x) THEN "
+		    "x END.",
+		    function, argument, value.ToString());
+	default:
+		return false;
+	}
+}
 
 } // namespace anofox
 } // namespace duckdb
