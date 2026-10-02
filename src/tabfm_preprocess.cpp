@@ -20,6 +20,7 @@
 #include "tabfm_preprocess.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/parser/keyword_helper.hpp"
 #include "duckdb/common/types/date.hpp"
 #include "duckdb/common/types/timestamp.hpp"
 
@@ -214,6 +215,25 @@ TargetValueKind ClassifyTargetValue(const Value &value) {
 	}
 }
 
+void ThrowInvalidTarget(const string &column, TargetValueKind kind, idx_t count, idx_t first_row) {
+	const string quoted = KeywordHelper::WriteOptionallyQuoted(column);
+	if (kind == TargetValueKind::FLOAT32_OVERFLOW) {
+		throw InvalidInputException(
+		    "tabfm: target '%s' has %llu finite value(s) beyond the float32 range (largest 3.4028235e38; first at "
+		    "input row %llu, 1-based within the group). The model's input is float32, so such a value would become "
+		    "Infinity. Rescale the column (e.g. divide it by a constant) or replace the value with NULL to have the "
+		    "row predicted.",
+		    column, static_cast<unsigned long long>(count), static_cast<unsigned long long>(first_row));
+	}
+	// INFINITE: floats and DATE/TIMESTAMP alike. isfinite() is false for NaN and +/-infinity, and NULL is what
+	// "predict this row" means, so one remedy serves every type.
+	throw InvalidInputException(
+	    "tabfm: target '%s' has %llu Infinity value(s) (first at input row %llu, 1-based within the group). NaN "
+	    "means \"predict this row\" and is fine, but Infinity is not a usable label or value. Replace it with NULL "
+	    "to have the row predicted, e.g. CASE WHEN isfinite(%s) THEN %s END.",
+	    column, static_cast<unsigned long long>(count), static_cast<unsigned long long>(first_row), quoted, quoted);
+}
+
 PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
                                   const vector<PreprocessColumnSpec> &columns,
                                   PreprocessTask task, bool standardize) {
@@ -262,20 +282,45 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 	// materialized row view (GetValue is a member of ColumnDataRowCollection).
 	ColumnDataRowCollection rows = data.GetRows();
 
-	// Train rows = non-NULL target (in order), then to-score rows = NULL target.
+	// Train rows = usable target (in order), then to-score rows = MISSING target (NULL or NaN).
+	// An Infinity (or a double beyond float32) is neither: it is an error, reported once with the
+	// column, the category, the count and the first row. This is the SAME rule the aggregate, the window
+	// path, generate/impute and the metrics apply (ClassifyTargetValue), so no entry point can call a row
+	// "context" that another calls "query".
 	vector<idx_t> train_rows, test_rows;
+	idx_t infinite_count = 0, infinite_first = 0, overflow_count = 0, overflow_first = 0;
 	for (idx_t r = 0; r < n_rows; r++) {
-		if (rows.GetValue(target_col, r).IsNull()) {
+		switch (ClassifyTargetValue(rows.GetValue(target_col, r))) {
+		case TargetValueKind::MISSING:
 			test_rows.push_back(r);
-		} else {
+			break;
+		case TargetValueKind::USABLE:
 			train_rows.push_back(r);
+			break;
+		case TargetValueKind::INFINITE:
+			if (infinite_count++ == 0) {
+				infinite_first = r + 1;
+			}
+			break;
+		case TargetValueKind::FLOAT32_OVERFLOW:
+			if (overflow_count++ == 0) {
+				overflow_first = r + 1;
+			}
+			break;
 		}
+	}
+	if (infinite_count > 0) {
+		ThrowInvalidTarget(columns[target_col].name, TargetValueKind::INFINITE, infinite_count, infinite_first);
+	}
+	if (overflow_count > 0) {
+		ThrowInvalidTarget(columns[target_col].name, TargetValueKind::FLOAT32_OVERFLOW, overflow_count,
+		                   overflow_first);
 	}
 	const idx_t n_train = train_rows.size();
 	const idx_t n_test = test_rows.size();
 	if (n_train == 0) {
 		throw InvalidInputException(
-		    "tabfm preprocess: no in-context train rows (all target values NULL)");
+		    "tabfm preprocess: no in-context train rows (all target values NULL or NaN)");
 	}
 
 	vector<idx_t> src(n_train + n_test);

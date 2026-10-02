@@ -493,3 +493,176 @@ TEST_CASE("target value: which kinds are errors for a model target", "[tabfm][pr
 	REQUIRE(IsInvalidModelTarget(TargetValueKind::INFINITE));
 	REQUIRE(IsInvalidModelTarget(TargetValueKind::FLOAT32_OVERFLOW));
 }
+
+// ---------------------------------------------------------------------------
+// The preprocessor's train/query split follows the same rule: a NaN target is a QUERY row, exactly
+// like NULL; Infinity is an error naming the column, the category, the count and the first row.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+vector<PreprocessColumnSpec> TargetCols(const LogicalType &target_type) {
+	return {{"f1", LogicalType::DOUBLE, false, true},
+	        {"f2", LogicalType::DOUBLE, false, true},
+	        {"target", target_type, true, false}};
+}
+
+// 8 rows. Rows 0-4 carry the labels 0..2 / values; rows 5-7 take `markers[i]`.
+unique_ptr<ColumnDataCollection> DoubleTargetTable(const std::vector<Value> &markers) {
+	const std::vector<double> labelled = {0.0, 1.0, 2.0, 1.0, 0.0};
+	std::vector<std::vector<Value>> rows;
+	for (size_t i = 0; i < 8; i++) {
+		Value target = i < 5 ? VDouble(labelled[i]) : markers[i - 5];
+		rows.push_back({VDouble(1.0 + 0.5 * i), VDouble(10.0 - i), target});
+	}
+	return MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, rows);
+}
+
+void RequireSameBatch(const PreprocessedBatch &a, const PreprocessedBatch &b) {
+	REQUIRE(a.T == b.T);
+	REQUIRE(a.train_size == b.train_size);
+	CheckVec(a.x, b.x, 1e-12, 1e-12);
+	CheckVec(a.y, b.y, 1e-12, 1e-12);
+	REQUIRE(a.y_train == b.y_train);
+	REQUIRE(a.target_mean == Approx(b.target_mean));
+	REQUIRE(a.target_scale == Approx(b.target_scale));
+	REQUIRE(a.row_source_index == b.row_source_index);
+	REQUIRE(a.label_decoder.size() == b.label_decoder.size());
+	for (size_t i = 0; i < a.label_decoder.size(); i++) {
+		REQUIRE(a.label_decoder[i].ToString() == b.label_decoder[i].ToString());
+	}
+}
+
+} // namespace
+
+TEST_CASE("preprocess: a NaN target is a QUERY row, the same batch as NULL, in every branch",
+          "[tabfm][preprocess][target]") {
+	const Value nan = Value::DOUBLE(kNaN);
+	for (auto task : {PreprocessTask::CLASSIFICATION, PreprocessTask::REGRESSION}) {
+		for (bool standardize : {true, false}) {
+			INFO("task " << (task == PreprocessTask::CLASSIFICATION ? "classification" : "regression")
+			             << " standardize " << standardize);
+			auto null_table = DoubleTargetTable({VNullDouble(), VNullDouble(), VNullDouble()});
+			auto nan_table = DoubleTargetTable({nan, nan, nan});
+			auto mixed_table = DoubleTargetTable({VNullDouble(), nan, VNullDouble()});
+			auto cols = TargetCols(LogicalType::DOUBLE);
+			auto reference = PreprocessBatch(*null_table, cols, task, standardize);
+			REQUIRE(reference.train_size == 5);
+			REQUIRE(reference.T == 8);
+			// Baseline: a NaN target row was a TRAINING row (train_size 8) and poisoned the target mean.
+			RequireSameBatch(reference, PreprocessBatch(*nan_table, cols, task, standardize));
+			RequireSameBatch(reference, PreprocessBatch(*mixed_table, cols, task, standardize));
+			if (task == PreprocessTask::REGRESSION) {
+				REQUIRE(std::isfinite(reference.target_mean));
+				REQUIRE(std::isfinite(reference.target_scale));
+				for (double y : reference.y) {
+					REQUIRE(std::isfinite(y));
+				}
+			}
+		}
+	}
+}
+
+TEST_CASE("preprocess: a table whose targets are ALL missing has no context, whichever marker is used",
+          "[tabfm][preprocess][target]") {
+	auto cols = TargetCols(LogicalType::DOUBLE);
+	for (auto marker : {VNullDouble(), Value::DOUBLE(kNaN)}) {
+		auto table = DoubleTargetTable({marker, marker, marker});
+		// make rows 0-4 missing too
+		std::vector<std::vector<Value>> rows;
+		for (size_t i = 0; i < 8; i++) {
+			rows.push_back({VDouble(1.0 * i), VDouble(2.0 * i), marker});
+		}
+		auto all_missing = MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, rows);
+		REQUIRE_THROWS_WITH(PreprocessBatch(*all_missing, cols, PreprocessTask::REGRESSION),
+		                    Catch::Matchers::Contains("no in-context train rows"));
+	}
+}
+
+TEST_CASE("preprocess: an Infinity target is an error naming the column, the category, the count and the row",
+          "[tabfm][preprocess][target]") {
+	for (auto task : {PreprocessTask::CLASSIFICATION, PreprocessTask::REGRESSION}) {
+		for (bool standardize : {true, false}) {
+			for (double inf : {kInf, -kInf}) {
+				INFO("task " << (task == PreprocessTask::CLASSIFICATION ? "classification" : "regression")
+				             << " standardize " << standardize << " value " << inf);
+				// the Infinity sits in the 7th row; the other query rows are NaN and must stay legal
+				auto table = DoubleTargetTable({Value::DOUBLE(kNaN), Value::DOUBLE(inf), Value::DOUBLE(kNaN)});
+				REQUIRE_THROWS_WITH(PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), task, standardize),
+				                    Catch::Matchers::Contains("target 'target' has 1 Infinity value") &&
+				                        Catch::Matchers::Contains("input row 7") &&
+				                        Catch::Matchers::Contains("CASE WHEN isfinite("));
+			}
+		}
+	}
+}
+
+TEST_CASE("preprocess: a finite target beyond the float32 range is an error (it would become Infinity)",
+          "[tabfm][preprocess][target]") {
+	for (auto task : {PreprocessTask::CLASSIFICATION, PreprocessTask::REGRESSION}) {
+		auto table = DoubleTargetTable({VNullDouble(), Value::DOUBLE(1e300), VNullDouble()});
+		REQUIRE_THROWS_WITH(PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), task, false),
+		                    Catch::Matchers::Contains("target 'target'") &&
+		                        Catch::Matchers::Contains("float32") && Catch::Matchers::Contains("input row 7"));
+	}
+	// ...but FLT_MAX itself is fine
+	auto edge = DoubleTargetTable({VNullDouble(), Value::DOUBLE(static_cast<double>(FLT_MAX)), VNullDouble()});
+	REQUIRE_NOTHROW(PreprocessBatch(*edge, TargetCols(LogicalType::DOUBLE), PreprocessTask::REGRESSION, false));
+}
+
+TEST_CASE("preprocess: DATE infinity as a classification target is an error, not the class 'infinity'",
+          "[tabfm][preprocess][target]") {
+	std::vector<std::vector<Value>> rows;
+	for (int i = 0; i < 6; i++) {
+		rows.push_back({VDouble(1.0 * i), VDouble(2.0 * i),
+		                i == 5 ? Value::DATE(date_t::infinity()) : (i == 4 ? VNullDate() : VDate(2023, 1, 1 + i))});
+	}
+	auto table = MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DATE}, rows);
+	REQUIRE_THROWS_WITH(PreprocessBatch(*table, TargetCols(LogicalType::DATE), PreprocessTask::CLASSIFICATION),
+	                    Catch::Matchers::Contains("target 'target' has 1 Infinity value") &&
+	                        Catch::Matchers::Contains("input row 6"));
+}
+
+TEST_CASE("preprocess: the strings 'nan' and 'inf' remain legitimate labels", "[tabfm][preprocess][target]") {
+	std::vector<std::vector<Value>> rows = {
+	    {VDouble(1.0), VDouble(2.0), VStr("nan")}, {VDouble(2.0), VDouble(1.0), VStr("inf")},
+	    {VDouble(3.0), VDouble(0.0), VStr("nan")}, {VDouble(4.0), VDouble(5.0), VStr("-infinity")},
+	    {VDouble(5.0), VDouble(6.0), VNullStr()},
+	};
+	auto table = MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::VARCHAR}, rows);
+	auto batch = PreprocessBatch(*table, TargetCols(LogicalType::VARCHAR), PreprocessTask::CLASSIFICATION);
+	REQUIRE(batch.train_size == 4);
+	REQUIRE(batch.label_decoder.size() == 3);
+}
+
+TEST_CASE("preprocess: the suggested fix quotes an awkward column name so it can be pasted as written",
+          "[tabfm][preprocess][target]") {
+	// A name with a space and a quote is the case where an unquoted remedy would be a syntax error.
+	const string awkward = "my \"target\" col";
+	vector<PreprocessColumnSpec> cols = {{"f1", LogicalType::DOUBLE, false, true},
+	                                     {"f2", LogicalType::DOUBLE, false, true},
+	                                     {awkward, LogicalType::DOUBLE, true, false}};
+	auto table = DoubleTargetTable({VNullDouble(), Value::DOUBLE(kInf), VNullDouble()});
+	// what() is the JSON-serialised exception, where every quote is escaped: read the message field
+	// back out, so the assertion is about the text a user actually sees.
+	try {
+		PreprocessBatch(*table, cols, PreprocessTask::REGRESSION);
+		FAIL("expected an InvalidInputException");
+	} catch (const InvalidInputException &e) {
+		const string json = e.what();
+		const string key = "\"exception_message\":\"";
+		auto pos = json.find(key);
+		REQUIRE(pos != string::npos);
+		string message;
+		for (pos += key.size(); pos < json.size() && json[pos] != '"'; pos++) {
+			if (json[pos] == '\\' && pos + 1 < json.size()) {
+				pos++;
+				message += json[pos] == 'n' ? '\n' : json[pos];
+			} else {
+				message += json[pos];
+			}
+		}
+		REQUIRE_THAT(message, Catch::Matchers::Contains("isfinite(\"my \"\"target\"\" col\")"));
+		REQUIRE_THAT(message, Catch::Matchers::Contains("THEN \"my \"\"target\"\" col\" END"));
+	}
+}

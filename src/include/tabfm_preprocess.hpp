@@ -100,6 +100,13 @@ enum class TargetValueKind : uint8_t { MISSING, USABLE, INFINITE, FLOAT32_OVERFL
 
 TargetValueKind ClassifyTargetValue(const Value &value);
 
+//! The ONE error every entry point raises for an unusable target value, so the wording, the
+//! category names and the fix cannot drift between the preprocessor, the aggregate, the window
+//! path, generate/impute and the metrics. Names the column, the category and the count, gives the
+//! first offending row (1-based, in input order within the group), and offers a fix that does NOT
+//! discard NaN rows (they are legal: they mean "predict this row"). `kind` must be an invalid kind.
+[[noreturn]] void ThrowInvalidTarget(const string &column, TargetValueKind kind, idx_t count, idx_t first_row);
+
 //! True for the kinds that are an error as a MODEL target.
 inline bool IsInvalidModelTarget(TargetValueKind kind) {
 	return kind == TargetValueKind::INFINITE || kind == TargetValueKind::FLOAT32_OVERFLOW;
