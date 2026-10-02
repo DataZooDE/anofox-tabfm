@@ -114,6 +114,27 @@ def _patch_classes():
         o = F.scaled_dot_product_attention(query.transpose(1, 2), key.transpose(1, 2), value.transpose(1, 2), attn_mask=attention_mask)
         return o.transpose(1, 2)
 
+    from model.v2_0 import encoders as enc
+
+    def mte_forward(self, input):
+        # upstream: label -> rank among the DISTINCT training labels, via torch.unique + an in-place loop over the batch.
+        # `Unique` has a data-dependent output shape (not in the MLX interpreter table, hostile to MIGraphX/CUDA graph
+        # compilation). Same value without it: rank_i = #distinct training labels < y_i
+        #   = sum_j [y_j < y_i] * [j is the first occurrence of its value]   (O(S^2) bool, fine up to ~10k rows)
+        x = input[self.in_keys[0]]
+        eval_pos = input["eval_pos"]
+        a = x[:, :eval_pos, 0]
+        idx = torch.arange(a.shape[1], device=a.device)
+        earlier = idx.view(1, 1, -1) < idx.view(1, -1, 1)          # [1, j, k]: k < j
+        has_earlier_dup = ((a.unsqueeze(2) == a.unsqueeze(1)) & earlier).any(dim=-1)  # [B, S]
+        first = ~has_earlier_dup
+        rank = ((a.unsqueeze(2) > a.unsqueeze(1)) & first.unsqueeze(1)).sum(dim=-1)  # [B, S_i]
+        input[self.out_key] = torch.cat([rank.unsqueeze(-1).to(x.dtype), x[:, eval_pos:]], dim=1)
+        input["cls_head_mapping"] = torch.arange(10, device=x.device).unsqueeze(0).expand(x.shape[0], -1)
+        input["cls_head_mask"] = torch.ones([x.shape[0], 10], device=x.device)
+        return input
+
+    enc.MulticlassTargetEncoder.forward = mte_forward
     ssm.SoftmaxScalingMLP.forward = ssm_forward
     dsti.DecoupledStructuralTaskAttention.forward = dsti_forward
     dsti.DecoupledStructuralTaskAttention._sdpa_attention = sdpa_attention
