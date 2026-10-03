@@ -144,13 +144,29 @@ SELECT * FROM tabfm_classify('history', 'churned', test := 'prospects');
 SELECT * FROM tabfm_regress('sold_homes', 'price', test := 'listings');
 ```
 
-**Single relation** — rows whose target `IS NULL` are the ones to score; every
+**Single relation** — rows whose target is missing are the ones to score; every
 row comes back with an `is_training` flag (context rows get in-context fitted
 values, handy for a sanity check).
 
 ```sql
 SELECT * FROM tabfm_classify('customers', 'churned');
 ```
+
+**What counts as a missing target.** `NULL`, and `NaN` in a `FLOAT`/`DOUBLE`
+column (pandas exports missing numbers as `NaN`): both mean *predict this
+row*. `+Infinity`, `-Infinity` and a `DATE`/`TIMESTAMP` infinity are an **error**
+that names the column, so a stray sentinel cannot become a label or skew a mean;
+`CASE WHEN isfinite(y) THEN y END` turns them into `NULL` and keeps the `NaN`
+rows. The string `'nan'` is an ordinary class label. A value beyond the float32
+range (about 3.4e38) is also an error for a regression target. In the two-table
+form a row of the context relation with a missing target is neither context nor
+output: only the `test` rows come back. The same rule applies to `tabfm_impute`
+(a `NaN` cell in a column being filled is filled), the regression metrics and
+scoring functions (a `NaN` operand is skipped, like `NULL`; `Infinity` is an
+error) and the typed classification metrics. Feature columns are never an error:
+`NaN`, `Infinity`, a value beyond float32 and a date infinity are all imputed like
+`NULL`. One limit: the metrics that bind labels as `VARCHAR` (log-loss, ROC-AUC,
+ECE) cannot tell a numeric `NaN` from the string `'nan'`.
 
 **A subquery** works anywhere where a table name does:
 

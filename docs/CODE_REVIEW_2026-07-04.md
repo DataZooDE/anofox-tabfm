@@ -76,6 +76,9 @@ freed after `CreateSession`" — they must outlive the session.
 **Fix:** treat `std::isnan`/non-finite as missing everywhere NULL is handled
 (mean fit + imputation). Decide policy for `NaN` regression targets (reject, or
 treat as query row) and enforce it.
+**Resolved (2026-10):** feature NaN/Infinity were already imputed; a NaN *target* is now a
+query row exactly like NULL, `+/-Infinity` in a target is an error, on every entry point
+(see CHANGELOG, "NaN and Infinity in target columns").
 
 ### D. Datetime features: `TIMESTAMP_NS` precision loss + signed-overflow UB
 **R3#2, R1#5. CONFIRMED.**

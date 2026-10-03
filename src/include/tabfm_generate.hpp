@@ -233,7 +233,8 @@ vector<vector<Value>> RunChainRule(const vector<vector<Value>> &real_rows, const
                                    const PredictContext &ctx);
 
 //! Fill the NULL cells of the `targets` columns with the conditional best
-//! estimate, leaving every non-NULL cell untouched. One engine call per target
+//! estimate, leaving every cell that was not missing untouched (NULL, or NaN in a column being filled,
+//! is missing; see NormalizeMissingCells). One engine call per target
 //! column per round; `opts.rounds > 1` re-runs the sweep so later columns'
 //! fills inform earlier ones (MICE-style).
 vector<vector<Value>> RunImpute(const vector<vector<Value>> &input_rows, const child_list_t<LogicalType> &fields,

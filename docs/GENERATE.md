@@ -4,7 +4,7 @@ Two functions, both built on the same idea and the same engine:
 
 ```sql
 tabfm_generate(data, n [, features] [, opts] [, model])   -- sample new rows
-tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
+tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill missing cells (NULL, or NaN in a column being filled)
 ```
 
 Neither one trains anything. They call the same in-context prediction engine as
@@ -103,8 +103,10 @@ for numeric columns, which generation never does.
 | `tabfm_generate` | yes, at `temperature` | quantile bins | no |
 | `tabfm_impute` | no (mode / mean) | full-precision point estimate | yes, for numeric columns |
 
-Non-NULL cells are never modified. `tabfm_impute` returns exactly the input
-columns, so it round-trips:
+A cell that is not missing is never modified. Missing means `NULL`, or `NaN` in a
+FLOAT/DOUBLE column being filled (`+/-Infinity` there is an error naming the
+column); a `NaN` in a column you did not ask to fill is left exactly as it is.
+`tabfm_impute` returns exactly the input columns, so it round-trips:
 
 ```sql
 CREATE TABLE clean AS SELECT * FROM tabfm_impute('raw');

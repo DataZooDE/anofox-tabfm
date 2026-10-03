@@ -24,6 +24,7 @@
 
 #include "tabfm_metrics_regression.hpp"
 #include "anofox_function_alias.hpp"
+#include "tabfm_preprocess.hpp"
 #include "tabfm_registration.hpp"
 
 #include "duckdb/function/aggregate_function.hpp"
@@ -85,6 +86,13 @@ void RMSEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vect
 		auto &state      = *states[sidx];
 		double a         = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
 		double p         = UnifiedVectorFormat::GetData<double>(predicted_data)[pidx];
+		// Both operands are checked before deciding to skip: an Infinity in one must not be hidden by a
+		// NaN in the other.
+		const bool actual_missing = SkipMissingOperand(a, "tabfm_rmse", "actual");
+		const bool predicted_missing = SkipMissingOperand(p, "tabfm_rmse", "predicted");
+		if (actual_missing || predicted_missing) {
+			continue; // NaN is missing, like NULL; Infinity throws
+		}
 		double residual  = p - a;
 		state.sum_sq    += residual * residual;
 		state.n++;
@@ -171,6 +179,13 @@ void MAEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vecto
 		auto &state       = *states[sidx];
 		double a          = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
 		double p          = UnifiedVectorFormat::GetData<double>(predicted_data)[pidx];
+		// Both operands are checked before deciding to skip: an Infinity in one must not be hidden by a
+		// NaN in the other.
+		const bool actual_missing = SkipMissingOperand(a, "tabfm_mae", "actual");
+		const bool predicted_missing = SkipMissingOperand(p, "tabfm_mae", "predicted");
+		if (actual_missing || predicted_missing) {
+			continue; // NaN is missing, like NULL; Infinity throws
+		}
 		state.sum_abs    += std::abs(p - a);
 		state.n++;
 	}
@@ -276,6 +291,13 @@ void R2Update(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector
 		auto  &state  = *states[sidx];
 		double a      = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
 		double p      = UnifiedVectorFormat::GetData<double>(predicted_data)[pidx];
+		// Both operands are checked before deciding to skip: an Infinity in one must not be hidden by a
+		// NaN in the other.
+		const bool actual_missing = SkipMissingOperand(a, "tabfm_r2", "actual");
+		const bool predicted_missing = SkipMissingOperand(p, "tabfm_r2", "predicted");
+		if (actual_missing || predicted_missing) {
+			continue; // NaN is missing, like NULL; Infinity throws
+		}
 		double resid  = a - p;
 
 		// Welford online update: accumulate SS_tot = M2 without catastrophic
@@ -401,6 +423,13 @@ void MAPEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vect
 
 		double a = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
 		double p = UnifiedVectorFormat::GetData<double>(predicted_data)[pidx];
+		// Both operands are checked before deciding to skip: an Infinity in one must not be hidden by a
+		// NaN in the other.
+		const bool actual_missing = SkipMissingOperand(a, "tabfm_mape", "actual");
+		const bool predicted_missing = SkipMissingOperand(p, "tabfm_mape", "predicted");
+		if (actual_missing || predicted_missing) {
+			continue; // NaN is missing, like NULL; Infinity throws
+		}
 
 		// Zero-actual skip: documented behavior; never divides by zero (T-01-03-01).
 		// Row is silently excluded from both numerator and denominator.
@@ -518,6 +547,13 @@ void MedAEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vec
 
 		double a = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
 		double p = UnifiedVectorFormat::GetData<double>(predicted_data)[pidx];
+		// Both operands are checked before deciding to skip: an Infinity in one must not be hidden by a
+		// NaN in the other.
+		const bool actual_missing = SkipMissingOperand(a, "tabfm_medae", "actual");
+		const bool predicted_missing = SkipMissingOperand(p, "tabfm_medae", "predicted");
+		if (actual_missing || predicted_missing) {
+			continue; // NaN is missing, like NULL; Infinity throws
+		}
 		slot.data->push_back(std::abs(a - p));
 	}
 }

@@ -107,7 +107,16 @@ R"(
                  -- roughly chance. Measured on real weights, every model in the
                  -- catalog fell to 0.27-0.58 on a task where they otherwise
                  -- score 0.92-0.98, and nothing raised.
-                 ELSE 'SELECT * FROM (FROM ' || data || ') UNION ALL BY NAME '
+                 -- A `data` row whose target is missing (NULL, or NaN in a FLOAT/DOUBLE
+                 -- column) is neither context nor output in this form: only `test`
+                 -- rows are returned. Drop it HERE, before the union makes it
+                 -- indistinguishable from a test row (both carry a NULL target).
+                 -- typeof() keeps a VARCHAR 'nan' a label; Infinity is deliberately
+                 -- NOT dropped, it must reach the engine and fail there.
+                 ELSE 'SELECT * FROM (SELECT * FROM (FROM ' || data || ') WHERE "' || replace(target, '"', '""')
+                      || '" IS NOT NULL AND NOT (typeof("' || replace(target, '"', '""')
+                      || '") IN (''FLOAT'', ''DOUBLE'') AND isnan(TRY_CAST("' || replace(target, '"', '""')
+                      || '" AS DOUBLE)))) UNION ALL BY NAME '
                       || 'SELECT *, NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
             END)
         ) anofox_tabfm_row
@@ -206,7 +215,16 @@ R"(
                  -- roughly chance. Measured on real weights, every model in the
                  -- catalog fell to 0.27-0.58 on a task where they otherwise
                  -- score 0.92-0.98, and nothing raised.
-                 ELSE 'SELECT * FROM (FROM ' || data || ') UNION ALL BY NAME '
+                 -- A `data` row whose target is missing (NULL, or NaN in a FLOAT/DOUBLE
+                 -- column) is neither context nor output in this form: only `test`
+                 -- rows are returned. Drop it HERE, before the union makes it
+                 -- indistinguishable from a test row (both carry a NULL target).
+                 -- typeof() keeps a VARCHAR 'nan' a label; Infinity is deliberately
+                 -- NOT dropped, it must reach the engine and fail there.
+                 ELSE 'SELECT * FROM (SELECT * FROM (FROM ' || data || ') WHERE "' || replace(target, '"', '""')
+                      || '" IS NOT NULL AND NOT (typeof("' || replace(target, '"', '""')
+                      || '") IN (''FLOAT'', ''DOUBLE'') AND isnan(TRY_CAST("' || replace(target, '"', '""')
+                      || '" AS DOUBLE)))) UNION ALL BY NAME '
                       || 'SELECT *, NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
             END)
         ) anofox_tabfm_row
