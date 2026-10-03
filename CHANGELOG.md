@@ -97,6 +97,9 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   measured fitted R² 0.50 where the query R² is 0.999, which is why each call evaluates the context
   rows a second time.
 
+  The CUDA/CPU external-data graphs are bundled too (CPU results are bit-identical to the
+  injection path on real weights). CUDA and MLX are prepared but not yet run on those devices.
+
 - **`CALL tabfm_accelerate()` — GPU acceleration without configuring anything.**
   Discovers the hardware, downloads the right backend plugin to the default
   `ep_path`, verifies it by `dlopen` + ABI check, and reports what is left to do
