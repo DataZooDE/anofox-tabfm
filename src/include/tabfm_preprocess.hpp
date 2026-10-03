@@ -57,6 +57,9 @@
 #pragma once
 
 #include "duckdb/common/types/column/column_data_collection.hpp"
+#include <cfloat>
+#include <cmath>
+
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/types.hpp"
 #include "duckdb/common/vector.hpp"
@@ -75,6 +78,71 @@ static constexpr double kTargetPadSentinel = -100.0;
 
 //! min_frequency for CategoricalOrdinalEncoder (TransformToNumerical default).
 static constexpr int kMinCatFrequency = 2;
+
+//! What a TARGET value means. This is the ONE predicate every train/query decision uses (the
+//! preprocessor's split, the aggregate's is_training flag and has-context check, the window
+//! path, generate/impute, the metrics), so NULL and NaN can never be told apart in one place
+//! and not in another.
+//!
+//!   NULL, or NaN in FLOAT/DOUBLE                   -> MISSING: the row is to be PREDICTED
+//!   +/-Infinity in FLOAT/DOUBLE, DATE, TIMESTAMP*  -> INFINITE: an error for a model target
+//!   a finite double (or UHUGEINT) with abs(v) > FLT_MAX
+//!                                                  -> FLOAT32_OVERFLOW: it would become Infinity in
+//!                                                     the float32 graph input
+//!   anything else                                  -> USABLE
+//!
+//! A string is a LABEL, never a missing marker: 'nan' and 'inf' stay legitimate class names.
+//! FLOAT32_OVERFLOW is an error only where the value feeds a float32 tensor, i.e. a REGRESSION
+//! target. A class label is a string, and operands of the metrics compute in double, so both treat
+//! it as USABLE.
+//!
+//! Before this predicate a NaN target was a non-NULL value and so a TRAINING row: regression
+//! answered NaN for every row with no error, and classification made 'nan' an extra class.
+enum class TargetValueKind : uint8_t { MISSING, USABLE, INFINITE, FLOAT32_OVERFLOW };
+
+TargetValueKind ClassifyTargetValue(const Value &value);
+
+//! The ONE error every entry point raises for an unusable target value, so the wording, the
+//! category names and the fix cannot drift between the preprocessor, the aggregate, the window
+//! path, generate/impute and the metrics. Names the column, the category and the count, gives the
+//! first offending row (1-based, in input order within the group), and offers a fix that does NOT
+//! discard NaN rows (they are legal: they mean "predict this row"). `kind` must be an invalid kind.
+[[noreturn]] void ThrowInvalidTarget(const string &column, TargetValueKind kind, idx_t count, idx_t first_row);
+
+//! The rule for an OPERAND of a metric or scoring function (typed DOUBLE, so NaN and the string 'nan' can
+//! be told apart): NaN is missing and the row is skipped, exactly like NULL always was; +/-Infinity is an
+//! error naming the function and the argument. Returns true when the row must be skipped. A finite value
+//! beyond float32 is fine here: metrics compute in double and never feed a float32 tensor.
+inline bool SkipMissingOperand(double value, const char *function, const char *argument) {
+	if (std::isnan(value)) {
+		return true;
+	}
+	if (std::isinf(value)) {
+		throw InvalidInputException(
+		    "%s: the %s argument contains an Infinity value (%s). NaN is treated as missing and skipped, like "
+		    "NULL, but Infinity is not a usable value. Replace it with NULL first, e.g. CASE WHEN isfinite(x) THEN "
+		    "x END.",
+		    function, argument, value > 0 ? "+Infinity" : "-Infinity");
+	}
+	return false;
+}
+
+//! The same rule for an ANY-typed LABEL operand of a classification metric. The value's type is kept, so a
+//! numeric NaN (missing: the row is skipped) is told apart from the string 'nan' (a label like any other).
+//! The metrics that bind their labels as VARCHAR (log-loss, ROC-AUC, ECE) cannot make that distinction and
+//! are not covered; the docs say so.
+inline bool SkipMissingLabel(const Value &value, const char *function, const char *argument);
+
+//! True for the kinds that are an error as a MODEL target. `regression` is whether the value feeds a
+//! float32 tensor (a REGRESSION target); a class label never does, so an overflow is fine there.
+inline bool IsInvalidModelTarget(TargetValueKind kind, bool regression) {
+	return kind == TargetValueKind::INFINITE || (regression && kind == TargetValueKind::FLOAT32_OVERFLOW);
+}
+
+//! True iff `value` survives the double -> float32 cast of the graph input as a finite number.
+inline bool IsFloat32Finite(double value) {
+	return std::isfinite(value) && std::fabs(value) <= static_cast<double>(FLT_MAX);
+}
 
 //! Prediction task; upstream picks this from the target field type (FR-3.2).
 enum class PreprocessTask : uint8_t { CLASSIFICATION, REGRESSION };
@@ -187,6 +255,22 @@ bool IsUnsupportedNestedType(const LogicalType &type);
 PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
                                   const vector<PreprocessColumnSpec> &columns,
                                   PreprocessTask task, bool standardize = true);
+
+
+inline bool SkipMissingLabel(const Value &value, const char *function, const char *argument) {
+	switch (ClassifyTargetValue(value)) {
+	case TargetValueKind::MISSING:
+		return true;
+	case TargetValueKind::INFINITE:
+		throw InvalidInputException(
+		    "%s: the %s argument contains an Infinity value (%s). NaN is treated as missing and skipped, like "
+		    "NULL, but Infinity is not a usable label. Replace it with NULL first, e.g. CASE WHEN isfinite(x) THEN "
+		    "x END.",
+		    function, argument, value.ToString());
+	default:
+		return false;
+	}
+}
 
 } // namespace anofox
 } // namespace duckdb

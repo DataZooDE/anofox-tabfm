@@ -1250,6 +1250,40 @@ vector<Value> RowChildren(const Value &row_value, const LogicalType &row_type) {
 	return StructValue::GetChildren(row_value);
 }
 
+//! The ONE reading of the cells of every column we are about to MODEL (an impute target, or any column
+//! of a generate input), shared with the predict path (ClassifyTargetValue): NULL and NaN are both
+//! "missing", so a NaN is turned into a typed NULL here and everything downstream -- the plan's counts
+//! and constants, EncodeTarget, BinOf, the writable-cell mask, the default target selection -- sees one
+//! kind of gap and cannot treat the two differently. +/-Infinity (floats, DATE/TIMESTAMP) is an error
+//! naming the column, raised before planning so a path that needs no engine call (a constant or marginal
+//! column) cannot let it through either. Columns NOT being modelled are never touched: a NaN there is
+//! just a feature, and impute must hand it back exactly as it came.
+void NormalizeMissingCells(vector<vector<Value>> &rows, const child_list_t<LogicalType> &fields,
+                           const vector<idx_t> &columns) {
+	for (auto c : columns) {
+		idx_t infinite = 0, first = 0;
+		for (idx_t r = 0; r < rows.size(); r++) {
+			switch (ClassifyTargetValue(rows[r][c])) {
+			case TargetValueKind::MISSING:
+				if (!rows[r][c].IsNull()) {
+					rows[r][c] = Value(fields[c].second);
+				}
+				break;
+			case TargetValueKind::INFINITE:
+				if (infinite++ == 0) {
+					first = r + 1;
+				}
+				break;
+			default:
+				break; // usable; a float32 overflow is fine here, the engine boundary checks it as a feature
+			}
+		}
+		if (infinite > 0) {
+			ThrowInvalidTarget(fields[c].first, TargetValueKind::INFINITE, infinite, first);
+		}
+	}
+}
+
 //! Build one ColumnPlan per input column, and refuse any column that cannot be
 //! a generation target with the reason the plan recorded.
 vector<ColumnPlan> PlanAll(const vector<vector<Value>> &rows, const child_list_t<LogicalType> &fields,
@@ -1318,17 +1352,18 @@ void GenerateAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_da
 		if (bind.is_impute) {
 			vector<idx_t> targets = bind.targets;
 			if (!bind.targets_explicit) {
-				// Default: every column that actually has a NULL to fill.
+				// Default: every column that actually has a gap (NULL or NaN) to fill.
 				for (idx_t c = 0; c < fields.size(); c++) {
-					bool has_null = false;
-					for (idx_t r = 0; r < rows.size() && !has_null; r++) {
-						has_null = rows[r][c].IsNull();
+					bool has_gap = false;
+					for (idx_t r = 0; r < rows.size() && !has_gap; r++) {
+						has_gap = ClassifyTargetValue(rows[r][c]) == TargetValueKind::MISSING;
 					}
-					if (has_null) {
+					if (has_gap) {
 						targets.push_back(c);
 					}
 				}
 			}
+			NormalizeMissingCells(rows, fields, targets);
 			auto plans = PlanAll(rows, fields, bind.options, bind.function_name, &targets);
 			auto filled = RunImpute(rows, fields, plans, targets, bind.options, bind.context);
 			for (auto &row : filled) {
@@ -1349,6 +1384,11 @@ void GenerateAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_da
 			    bind.function_name, (unsigned long long)rows.size(), (unsigned long long)bind.n,
 			    (unsigned long long)bind.max_rows);
 		}
+		vector<idx_t> all_columns(fields.size());
+		for (idx_t c = 0; c < fields.size(); c++) {
+			all_columns[c] = c;
+		}
+		NormalizeMissingCells(rows, fields, all_columns);
 		auto plans = PlanAll(rows, fields, bind.options, bind.function_name, nullptr);
 		auto synthetic = RunChainRule(rows, fields, plans, bind.n, bind.options, bind.context);
 		for (idx_t r = 0; r < synthetic.size(); r++) {

@@ -27,11 +27,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  duckdb-v1_5_5-build:
-    name: Build extension binaries (v1.5.5, cpu flavor)
+  duckdb-v1_5_6-build:
+    name: Build extension binaries (v1.5.6, cpu flavor)
     uses: duckdb/extension-ci-tools/.github/workflows/_extension_distribution.yml@v1.5-variegata
     with:
-      duckdb_version: v1.5.5
+      duckdb_version: v1.5.6
       ci_tools_version: v1.5-variegata
       extension_name: anofox_tabfm
       # ONNX Runtime comes from the prebuilt release archive by default
@@ -45,18 +45,18 @@ jobs:
       # arch is requested anyway.
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
 
-  duckdb-v1_5_5-smoke-test:
-    name: Smoke test (v1.5.5)
-    needs: duckdb-v1_5_5-build
+  duckdb-v1_5_6-smoke-test:
+    name: Smoke test (v1.5.6)
+    needs: duckdb-v1_5_6-build
     uses: ./.github/workflows/_extension_smoke_test.yml
     with:
-      duckdb_version: v1.5.5
+      duckdb_version: v1.5.6
       extension_name: anofox_tabfm
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64'
 
-  duckdb-v1_5_5-deploy:
-    name: Deploy extension binaries (v1.5.5)
-    needs: [duckdb-v1_5_5-build, duckdb-v1_5_5-smoke-test]
+  duckdb-v1_5_6-deploy:
+    name: Deploy extension binaries (v1.5.6)
+    needs: [duckdb-v1_5_6-build, duckdb-v1_5_6-smoke-test]
     # Deploy only ever uploads on main or a v* tag (deploy_latest/deploy_versioned
     # below) -- everything else, including every PR, is a dry run that still pays
     # for "Configure AWS Credentials" and fails there for a fork PR (no repo
@@ -72,7 +72,7 @@ jobs:
     uses: ./.github/workflows/_extension_deploy.yml
     secrets: inherit
     with:
-      duckdb_version: v1.5.5
+      duckdb_version: v1.5.6
       extension_name: anofox_tabfm
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
       deploy_latest: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' }}

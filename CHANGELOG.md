@@ -6,6 +6,45 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 ## [Unreleased]
 
 ### Changed
+- **NaN and Infinity in target columns now have one meaning, on every entry point.**
+  A `NaN` in a target was not `NULL`, so the row became a *training* row. Measured
+  on the committed TabICL fixture: regression with `NaN` query targets made every
+  row `is_training` and **every prediction `NaN`, with no error**; classification
+  made `'nan'` an extra class (a misleading "supports at most N classes" at a
+  model's ceiling, otherwise a silent all-context table). It is shared
+  preprocessing, so every model was affected, and loading test data with `NaN`
+  instead of `NULL` (any pandas export) triggered it.
+  The rule, now enforced in one place and used everywhere:
+
+  | value in a target | meaning |
+  |---|---|
+  | `NULL`, or `NaN` in `FLOAT`/`DOUBLE` | missing: a query row, `is_training = false` |
+  | `+/-Infinity`, `DATE`/`TIMESTAMP` infinity | **error** naming the column, with a fix that keeps the `NaN` rows |
+  | a finite double beyond float32 (regression), `UHUGEINT` beyond float32 | **error** (it would become Infinity in the graph input) |
+  | anything else, including the string `'nan'` | a usable label or value |
+
+  Covered: `tabfm_classify`/`tabfm_regress` (the aggregate, the `is_training`
+  flag, the window path including Infinity in the *scored* row), `tabfm_impute` and
+  `tabfm_generate` (a `NaN` cell in a column being filled is filled; an all-`NaN`
+  column behaves like an all-`NULL` one), the regression metrics, the three
+  distribution scoring functions and the typed classification metrics (a `NaN`
+  operand is skipped like `NULL`; `Infinity` is an error), and cross-validation.
+  Features are unchanged in kind but closed at the source: a finite double beyond
+  float32 and a `DATE`/`TIMESTAMP` infinity are now imputed before the mean is
+  fitted, like `NaN` already was. Not covered: the metrics that bind labels as
+  `VARCHAR` (log-loss, ROC-AUC, ECE) cannot tell a numeric `NaN` from the string
+  `'nan'`.
+
+- **Two-table form returns only the `test` rows.** In
+  `tabfm_classify(data, target, test := ...)` a row of `data` whose target is
+  missing used to be scored *and returned* (a context table with 8 missing targets
+  and a 5-row `test` relation answered 13 rows). It is now neither context nor
+  output, matching the documented "every row of the `test` relation". This is a
+  behaviour change: anything that relied on those extra rows (rare, since
+  `is_training` was `false` for them and they were not what the caller asked for)
+  should select them from `data` directly. Cross-validation scores its held-out
+  fold through this form and is unaffected.
+
 - **`is_training` rows now carry real in-context fitted values for `tabdpt`.**
   They previously carried a single constant: the export ran the model head over
   the query rows only and zero-padded the context rows, so every training row

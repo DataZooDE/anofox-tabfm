@@ -1,0 +1,513 @@
+# name: test/sql/tabfm_nonfinite_targets.test
+# description: What a NaN or Infinity in a TARGET means, on every entry point.
+#
+#              THE RULE (docs and CHANGELOG state it the same way):
+#                NULL or NaN  -> missing: the row is to be PREDICTED, is_training = false
+#                +/-Infinity  -> an error naming the column, with a fix that keeps the NaN rows
+#
+#              Before this rule a NaN target was a non-NULL value, so the row became a TRAINING
+#              row: regression answered NaN for EVERY row with no error (the mean/std were NaN),
+#              and classification made 'nan' an extra class (an all-context table that succeeds
+#              silently, or a misleading "supports at most N classes" error at a model's ceiling).
+#
+#              The tests compare NULL-marked and NaN-marked tables on predictions, flags and row
+#              counts. They cannot compare whole results: the output keeps the source row in
+#              `cols`, where NULL and NaN necessarily differ.
+#
+#              ENTRY-POINT INVENTORY (every one needs a section here; a path that is not listed
+#              is a path the matrix cannot protect):
+#                [x] tabfm_classify / tabfm_regress, single relation
+#                [x] tabfm_classify / tabfm_regress, two-table form (NULL/NaN in `data`)
+#                [x] window prediction
+#                [x] tabfm_cross_validate (compare_models shares its fold construction and metric join)
+#                [x] tabfm_impute, tabfm_generate (including a path with no engine call)
+#                [x] metrics and scoring: see tabfm_nonfinite_metrics.test (needs no model, runs on Windows;
+#                    VARCHAR-bound classification metrics cannot tell a numeric NaN from the string 'nan',
+#                    and that limit is documented)
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# The committed random-init TabICL fixture, registered twice: with a *_raw profile (the graph
+# normalises, so the engine feeds raw targets) and with a standardising one (the engine z-scores
+# the target, so a NaN would poison the mean and std). Both preprocessing branches are exercised.
+statement ok
+CALL tabfm_register_model(
+  id := 'nf-raw', base_dir := 'test/fixtures/tabicl',
+  classification_graph := 'graph_tabicl_classification.onnx', regression_graph := 'graph_tabicl_regression.onnx',
+  classification_weights := 'model_classification.safetensors', regression_weights := 'model_regression.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json', license := 'bsd-3-clause', commercial := true,
+  weights_repo := 'local:test/fixtures/tabicl', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'tabicl_v2_raw', max_rows := 4096, max_features := 64, max_classes := 3)
+
+statement ok
+CALL tabfm_register_model(
+  id := 'nf-std', base_dir := 'test/fixtures/tabicl',
+  classification_graph := 'graph_tabicl_classification.onnx', regression_graph := 'graph_tabicl_regression.onnx',
+  classification_weights := 'model_classification.safetensors', regression_weights := 'model_regression.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json', license := 'bsd-3-clause', commercial := true,
+  weights_repo := 'local:test/fixtures/tabicl', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'tabicl_v2_minimal', max_rows := 4096, max_features := 64, max_classes := 3)
+
+# 20 rows, the first 12 labelled. Features are unique per row (residues mod 11, 7 and 13), so rows
+# can be matched across tables on their feature values: the output carries the selected feature
+# columns, not an unselected id.
+statement ok
+CREATE TABLE base AS SELECT i AS id,
+  ((i*7) % 11) * 0.25 AS f1, ((i*3) % 7) * 0.5 AS f2, ((i*5) % 13) * 0.5 AS f3,
+  (i % 3)::DOUBLE AS lab, ((i*5) % 13) * 0.5 + (i % 3) AS tgt
+FROM range(20) r(i);
+
+query II
+SELECT count(*), count(DISTINCT (f1, f2, f3)) FROM base
+----
+20	20
+
+# The same 12 labelled rows; the 8 rows to predict are marked NULL in one table and NaN in the other.
+statement ok
+CREATE TABLE cls_null AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab END AS y FROM base;
+
+statement ok
+CREATE TABLE cls_nan AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab ELSE 'nan'::DOUBLE END AS y FROM base;
+
+statement ok
+CREATE TABLE reg_null AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE reg_nan AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN tgt ELSE 'nan'::DOUBLE END AS y FROM base;
+
+# ---------------------------------------------------------------------------------------------
+# tabfm_classify / tabfm_regress, single relation
+# ---------------------------------------------------------------------------------------------
+
+# Sanity: the NULL-marked table is the reference. 12 context rows, 8 to predict.
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_classify('cls_null', 'y', model := 'nf-raw')
+----
+20	12	0
+
+# NaN means "predict this row": the SAME 12 context rows, not an all-context table.
+# (Baseline: all 20 rows were is_training, and 'nan' was a fourth class.)
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_classify('cls_nan', 'y', model := 'nf-raw')
+----
+20	12	0
+
+# ...and the answers are the same as when the rows are marked NULL, row for row.
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat IS DISTINCT FROM b.yhat OR a.is_training IS DISTINCT FROM b.is_training)
+FROM tabfm_classify('cls_null', 'y', model := 'nf-raw') a
+JOIN tabfm_classify('cls_nan', 'y', model := 'nf-raw') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+----
+20	0
+
+# Regression: the baseline answered NaN for EVERY row, with no error.
+query IIII
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE isnan(yhat) OR yhat IS NULL),
+       count(*) FILTER (WHERE NOT is_training AND yhat IS NOT NULL)
+FROM tabfm_regress('reg_nan', 'y', model := 'nf-raw')
+----
+20	12	0	8
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.is_training IS DISTINCT FROM b.is_training OR a.yhat IS NULL OR b.yhat IS NULL
+                             OR isnan(a.yhat) OR isnan(b.yhat) OR abs(a.yhat - b.yhat) > 1e-9)
+FROM tabfm_regress('reg_null', 'y', model := 'nf-raw') a
+JOIN tabfm_regress('reg_nan', 'y', model := 'nf-raw') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+----
+20	0
+
+# The standardising branch is the one where a NaN poisons the mean and std of the whole target.
+query IIII
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE isnan(yhat) OR yhat IS NULL),
+       count(*) FILTER (WHERE NOT is_training AND yhat IS NOT NULL)
+FROM tabfm_regress('reg_nan', 'y', model := 'nf-std')
+----
+20	12	0	8
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.is_training IS DISTINCT FROM b.is_training OR a.yhat IS NULL OR b.yhat IS NULL
+                             OR isnan(a.yhat) OR isnan(b.yhat) OR abs(a.yhat - b.yhat) > 1e-9)
+FROM tabfm_regress('reg_null', 'y', model := 'nf-std') a
+JOIN tabfm_regress('reg_nan', 'y', model := 'nf-std') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+----
+20	0
+
+# Infinity is an error, with the category named and a fix that does not delete the NaN rows.
+statement ok
+CREATE TABLE reg_inf AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN tgt WHEN id = 12 THEN 'infinity'::DOUBLE END AS y FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_regress('reg_inf', 'y', model := 'nf-raw')
+----
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
+
+statement error
+SELECT count(*) FROM tabfm_regress('reg_inf', 'y', model := 'nf-std')
+----
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
+
+statement ok
+CREATE TABLE cls_inf AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab WHEN id = 12 THEN '-infinity'::DOUBLE END AS y FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_classify('cls_inf', 'y', model := 'nf-raw')
+----
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
+
+# VARCHAR 'nan' is a legitimate label, not a missing marker: strings are left alone.
+statement ok
+CREATE TABLE cls_str AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN CASE WHEN id % 3 = 0 THEN 'nan' WHEN id % 3 = 1 THEN 'a' ELSE 'b' END END AS y FROM base;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE is_training)
+FROM tabfm_classify('cls_str', 'y', model := 'nf-raw')
+----
+20	12
+
+# An aggregate group whose targets are ALL missing has no context, whichever marker is used.
+statement ok
+CREATE TABLE all_nan AS SELECT f1, f2, f3, 'nan'::DOUBLE AS y FROM base;
+
+statement ok
+CREATE TABLE all_null AS SELECT f1, f2, f3, NULL::DOUBLE AS y FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_regress('all_nan', 'y', model := 'nf-raw')
+----
+no non-NULL rows to use as context
+
+statement error
+SELECT count(*) FROM tabfm_regress('all_null', 'y', model := 'nf-raw')
+----
+no non-NULL rows to use as context
+
+# ---------------------------------------------------------------------------------------------
+# window prediction: row i is scored from the rows BEFORE it, its own target hidden
+# ---------------------------------------------------------------------------------------------
+
+# Rolling regression over 12 labelled rows, then 8 rows whose target is missing. Only row 0 has no history
+# (soft NULL); rows 1-19 are scored from the usable rows before them, and the history of a late row
+# contains missing targets, which must be skipped exactly like NULL.
+statement ok
+CREATE TABLE w_null AS SELECT id, f1, f2, f3, CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE w_nan AS SELECT id, f1, f2, f3, CASE WHEN id < 12 THEN tgt ELSE 'nan'::DOUBLE END AS y FROM base;
+
+query II
+SELECT count(*) FILTER (WHERE p IS NULL), count(*) FILTER (WHERE p IS NOT NULL)
+FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p
+      FROM w_null t)
+----
+1	19
+
+# NULL-marked and NaN-marked tables answer every row the same way: NULL where there is no usable history
+# (the first rows), and the same prediction elsewhere. Compared on yhat, the part that cannot differ.
+query II
+SELECT count(*), count(*) FILTER (WHERE a.p.yhat IS DISTINCT FROM b.p.yhat)
+FROM (SELECT id, __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_null t) a
+JOIN (SELECT id, __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_nan t) b USING (id)
+----
+20	0
+
+# A frame whose every target is missing is the soft NULL ("no history yet"), not an error and not a
+# prediction made from NaN context. (Baseline: the NaN rows counted as context and were predicted from.)
+query I
+SELECT count(*) FILTER (WHERE p IS NOT NULL)
+FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p
+      FROM (SELECT id, f1, f2, f3, 'nan'::DOUBLE AS y FROM base) t)
+----
+0
+
+# Infinity in the HISTORY is an error...
+statement ok
+CREATE TABLE w_inf_hist AS SELECT id, f1, f2, f3, CASE WHEN id = 3 THEN 'infinity'::DOUBLE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement error
+SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_inf_hist t)
+----
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
+
+# ...and so is Infinity in the SCORED row, whose target the window path hides from the engine. It sits in the
+# LAST row (id 19) on purpose: anywhere earlier it would also be history for the rows after it, and the
+# history check would catch it, hiding a missing scored-row check (a mutation test showed exactly that).
+# Without the check before hiding, this would be answered as an ordinary query row.
+statement ok
+CREATE TABLE w_inf_scored AS SELECT id, f1, f2, f3, CASE WHEN id = 19 THEN 'infinity'::DOUBLE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement error
+SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_inf_scored t)
+----
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
+
+# ---------------------------------------------------------------------------------------------
+# two-table form: ONLY the `test` rows come back. A row of `data` whose target is missing (NULL or NaN)
+# is neither context nor output. (Baseline: those rows were scored AND returned, so a context table with
+# 8 missing targets and a 5-row test relation answered 13 rows, and the flag hid which were which.)
+# ---------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE two_test AS SELECT f1, f2, f3 FROM base WHERE id >= 15;
+
+# data: 12 labelled rows, 4 NULL-target rows and 4 NaN-target rows
+statement ok
+CREATE TABLE two_data AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab WHEN id < 16 THEN NULL ELSE 'nan'::DOUBLE END AS y FROM base;
+
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_classify('two_data', 'y', test := 'two_test', model := 'nf-raw')
+----
+5	0	0
+
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_regress('two_data', 'y', test := 'two_test', model := 'nf-raw')
+----
+5	0	0
+
+# the answers for the test rows do not depend on HOW the missing data rows are marked
+statement ok
+CREATE TABLE two_data_null AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab END AS y FROM base;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat IS DISTINCT FROM b.yhat)
+FROM tabfm_classify('two_data', 'y', test := 'two_test', model := 'nf-raw') a
+JOIN tabfm_classify('two_data_null', 'y', test := 'two_test', model := 'nf-raw') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+----
+5	0
+
+# a `data` with NO usable target is still the no-context error, not an empty result
+statement error
+SELECT count(*) FROM tabfm_classify('all_nan', 'y', test := 'two_test', model := 'nf-raw')
+----
+no non-NULL rows to use as context
+
+# Infinity in `data` is still an error in this form
+statement error
+SELECT count(*) FROM tabfm_regress('reg_inf', 'y', test := 'two_test', model := 'nf-raw')
+----
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
+
+# VARCHAR 'nan' labels in `data` are labels, so those rows are context and are NOT dropped
+query I
+SELECT count(*) FROM tabfm_classify('cls_str', 'y', test := 'two_test', model := 'nf-raw')
+----
+5
+
+# ---------------------------------------------------------------------------------------------
+# tabfm_impute / tabfm_generate: a NaN cell is a MISSING cell, exactly like NULL
+# ---------------------------------------------------------------------------------------------
+
+# (cast to DOUBLE: 'nan'::DOUBLE makes the NaN-marked column DOUBLE, and a DECIMAL column would round the fill)
+statement ok
+CREATE TABLE imp_null AS SELECT id, (CASE WHEN id IN (3, 7, 11) THEN NULL ELSE f1 END)::DOUBLE AS f1, f2, f3 FROM base;
+
+statement ok
+CREATE TABLE imp_nan AS SELECT id, CASE WHEN id IN (3, 7, 11) THEN 'nan'::DOUBLE ELSE f1 END AS f1, f2, f3 FROM base;
+
+# Baseline: a NaN cell was "not missing", so it was never filled and stayed NaN in the output.
+query II
+SELECT count(*) FILTER (WHERE isnan(f1)), count(*) FILTER (WHERE f1 IS NULL)
+FROM tabfm_impute('imp_nan', columns := ['f1'], model := 'nf-raw', opts := MAP{'seed': '7'})
+----
+0	0
+
+# ...and the fills are the same ones the NULL-marked table gets.
+query II
+SELECT count(*), count(*) FILTER (WHERE a.f1 IS DISTINCT FROM b.f1)
+FROM tabfm_impute('imp_null', columns := ['f1'], model := 'nf-raw', opts := MAP{'seed': '7'}) a
+JOIN tabfm_impute('imp_nan', columns := ['f1'], model := 'nf-raw', opts := MAP{'seed': '7'}) b USING (id)
+----
+20	0
+
+# Default target selection: a column whose only gaps are NaN is picked up without naming it.
+query I
+SELECT count(*) FILTER (WHERE isnan(f1))
+FROM tabfm_impute('imp_nan', model := 'nf-raw', opts := MAP{'seed': '7'})
+----
+0
+
+# A NaN in a column that is NOT being filled is left exactly as it was: impute never rewrites a cell it
+# was not asked to fill (here f2 stays NaN while f1 is filled), and it is still just a feature.
+statement ok
+CREATE TABLE imp_mixed AS SELECT id, CASE WHEN id = 3 THEN NULL ELSE f1 END AS f1,
+                                 CASE WHEN id = 5 THEN 'nan'::DOUBLE ELSE f2 END AS f2, f3 FROM base;
+
+query II
+SELECT count(*) FILTER (WHERE isnan(f2)), count(*) FILTER (WHERE f1 IS NULL)
+FROM tabfm_impute('imp_mixed', columns := ['f1'], model := 'nf-raw', opts := MAP{'seed': '7'})
+----
+1	0
+
+# Infinity in a column that is being filled is an error naming the column; as a plain feature it is not.
+statement ok
+CREATE TABLE imp_inf AS SELECT id, CASE WHEN id = 3 THEN NULL WHEN id = 4 THEN 'infinity'::DOUBLE ELSE f1 END AS f1, f2, f3 FROM base;
+
+statement error
+SELECT count(*) FROM tabfm_impute('imp_inf', columns := ['f1'], model := 'nf-raw')
+----
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
+
+# An all-NaN column is the same as an all-NULL one: nothing to learn from, so the fill is NULL, never a
+# constant NaN.
+statement ok
+CREATE TABLE imp_allnan AS SELECT id, 'nan'::DOUBLE AS f1, f2, f3 FROM base;
+
+statement ok
+CREATE TABLE imp_allnull AS SELECT id, NULL::DOUBLE AS f1, f2, f3 FROM base;
+
+query II
+SELECT count(*) FILTER (WHERE isnan(f1)), count(f1)
+FROM tabfm_impute('imp_allnan', columns := ['f1'], model := 'nf-raw')
+----
+0	0
+
+query II
+SELECT count(*) FILTER (WHERE isnan(f1)), count(f1)
+FROM tabfm_impute('imp_allnull', columns := ['f1'], model := 'nf-raw')
+----
+0	0
+
+# generate: the same plan (so the same sample for a fixed seed) whichever marker the gaps carry. This path
+# also covers the plan itself, which needs no engine call for a constant or marginal column.
+query II
+SELECT count(*), count(*) FILTER (WHERE a.f1 IS DISTINCT FROM b.f1 OR a.f2 IS DISTINCT FROM b.f2)
+FROM (SELECT row_number() OVER () AS rn, * FROM tabfm_generate('imp_null', 6, model := 'nf-raw', opts := MAP{'seed': '7'})) a
+JOIN (SELECT row_number() OVER () AS rn, * FROM tabfm_generate('imp_nan', 6, model := 'nf-raw', opts := MAP{'seed': '7'})) b USING (rn)
+----
+6	0
+
+# a generated NaN is never produced from a NaN-only column
+query I
+SELECT count(*) FILTER (WHERE isnan(f1)) FROM tabfm_generate('imp_allnan', 6, model := 'nf-raw', opts := MAP{'seed': '7'})
+----
+0
+
+statement error
+SELECT count(*) FROM tabfm_generate('imp_inf', 6, model := 'nf-raw')
+----
+<REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
+
+# ---------------------------------------------------------------------------------------------
+# cross-validation: NaN-marked missing targets behave exactly like NULL-marked ones, and the fold
+# metric is a number, not NaN (the held-out fold's NaN actuals used to poison rmse)
+# ---------------------------------------------------------------------------------------------
+
+statement ok
+SET anofox_tabfm_default_model = 'nf-raw'
+
+statement ok
+CREATE TABLE cv_null AS SELECT id, f1, f2, f3, CASE WHEN id < 14 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE cv_nan AS SELECT id, f1, f2, f3, CASE WHEN id < 14 THEN tgt ELSE 'nan'::DOUBLE END AS y FROM base;
+
+query III
+SELECT count(*), count(*) FILTER (WHERE b.metric_value IS NULL OR isnan(b.metric_value)),
+       count(*) FILTER (WHERE a.metric_value IS DISTINCT FROM b.metric_value)
+FROM tabfm_cross_validate('cv_null', 'y', 'id', k := 2, seed := 42, task := 'regression', metric := 'tabfm_rmse') a
+JOIN tabfm_cross_validate('cv_nan', 'y', 'id', k := 2, seed := 42, task := 'regression', metric := 'tabfm_rmse') b
+  USING (fold_id)
+----
+3	0	0
+
+# ---------------------------------------------------------------------------------------------
+# FEATURES: nothing is an error. A value the float32 graph input cannot hold (beyond FLT_MAX, +/-Infinity,
+# NaN) and a date infinity are MISSING and mean-imputed, decided before the mean is fitted, so a 1e300 in a
+# feature gives exactly the answer a NULL there gives. (Baseline: 1e300 reached the float32 cast as
+# Infinity, and a date infinity became a nonsense year.)
+# ---------------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE ft_null AS SELECT f1, (CASE WHEN id IN (3, 15) THEN NULL ELSE f2 END)::DOUBLE AS f2, f3,
+  CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE ft_big AS SELECT f1, (CASE WHEN id IN (3, 15) THEN 1e300 ELSE f2 END)::DOUBLE AS f2, f3,
+  CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE ft_inf AS SELECT f1, (CASE WHEN id = 3 THEN 'infinity'::DOUBLE WHEN id = 15 THEN '-infinity'::DOUBLE ELSE f2 END)::DOUBLE AS f2, f3,
+  CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+foreach tbl ft_big ft_inf
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat IS DISTINCT FROM b.yhat OR isnan(b.yhat) OR b.yhat IS NULL)
+FROM tabfm_regress('ft_null', 'y', model := 'nf-raw') a
+JOIN tabfm_regress('${tbl}', 'y', model := 'nf-raw') b
+  ON a.f1 = b.f1 AND a.f3 = b.f3 AND a.is_training = b.is_training
+----
+20	0
+
+endloop
+
+# a DATE feature: infinity is a sentinel, not a moment
+statement ok
+CREATE TABLE ft_date_null AS SELECT f1, f3, (DATE '2024-01-01' + CAST(id AS INTEGER) * 3) AS d, CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+UPDATE ft_date_null SET d = NULL WHERE f1 = (SELECT f1 FROM base WHERE id = 3) AND f3 = (SELECT f3 FROM base WHERE id = 3);
+
+statement ok
+CREATE TABLE ft_date_inf AS SELECT * FROM ft_date_null;
+
+statement ok
+UPDATE ft_date_inf SET d = 'infinity'::DATE WHERE d IS NULL;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat IS DISTINCT FROM b.yhat OR b.yhat IS NULL OR isnan(b.yhat))
+FROM tabfm_regress('ft_date_null', 'y', model := 'nf-raw') a
+JOIN tabfm_regress('ft_date_inf', 'y', model := 'nf-raw') b
+  ON a.f1 = b.f1 AND a.f3 = b.f3 AND a.is_training = b.is_training
+----
+20	0
+
+# Window: an invalid SCORED target is not swallowed by the "no history yet" soft NULL, and a finite value
+# beyond float32 in a regression scored row is an error rather than being hidden from the engine.
+# one row: the Infinity is ONLY ever a scored target, never history for a later row
+statement ok
+CREATE TABLE w_first_inf AS SELECT id, f1, f2, f3, 'infinity'::DOUBLE AS y FROM base WHERE id = 0;
+
+statement error
+SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_first_inf t)
+----
+Infinity value
+
+# all-NaN history, then an Infinity scored row: still an error, not a soft NULL
+statement ok
+CREATE TABLE w_nan_then_inf AS SELECT id, f1, f2, f3, CASE WHEN id = 5 THEN 'infinity'::DOUBLE ELSE 'nan'::DOUBLE END AS y FROM base WHERE id < 6;
+
+statement error
+SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_nan_then_inf t)
+----
+Infinity value
+
+statement ok
+CREATE TABLE w_big_scored AS SELECT id, f1, f2, f3, CASE WHEN id = 19 THEN 1e300 WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement error
+SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+             OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_big_scored t)
+----
+float32 range

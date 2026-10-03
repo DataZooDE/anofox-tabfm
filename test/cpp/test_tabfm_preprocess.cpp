@@ -18,7 +18,9 @@
 #include "duckdb/common/allocator.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/common/types/date.hpp"
+#include "duckdb/common/types/timestamp.hpp"
 
+#include <cfloat>
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -394,4 +396,396 @@ TEST_CASE("preprocess: regression_dates golden parity", "[tabfm][preprocess]") {
 
 	REQUIRE(batch.target_mean == Approx(131.875).epsilon(1e-9));
 	REQUIRE(batch.target_scale == Approx(26.21277121938846).epsilon(1e-9));
+}
+
+// ---------------------------------------------------------------------------
+// What a TARGET value means (the shared predicate every train/query decision uses).
+//
+//   NULL, or NaN in FLOAT/DOUBLE      -> MISSING   (the row is to be predicted)
+//   +/-Infinity (FLOAT/DOUBLE, DATE, TIMESTAMP[...])  -> INFINITE  (an error for a model target)
+//   a finite double beyond FLT_MAX    -> FLOAT32_OVERFLOW (it would become Infinity in the graph input)
+//   anything else, INCLUDING the strings 'nan' / 'inf'  -> USABLE
+// ---------------------------------------------------------------------------
+
+namespace {
+constexpr double kNaN = std::numeric_limits<double>::quiet_NaN();
+constexpr double kInf = std::numeric_limits<double>::infinity();
+Value TsFromText(const char *text, const LogicalType &type) {
+	return Value(string(text)).DefaultCastAs(type);
+}
+} // namespace
+
+TEST_CASE("target value: NULL and NaN are MISSING, in every type that can be NULL", "[tabfm][preprocess][target]") {
+	REQUIRE(ClassifyTargetValue(VNullDouble()) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(VNullStr()) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(VNullBool()) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(VNullDate()) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(Value(LogicalType::BIGINT)) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(kNaN)) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(-kNaN)) == TargetValueKind::MISSING); // sign bit set
+	REQUIRE(ClassifyTargetValue(Value::FLOAT(std::numeric_limits<float>::quiet_NaN())) == TargetValueKind::MISSING);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(std::numeric_limits<double>::signaling_NaN())) ==
+	        TargetValueKind::MISSING);
+}
+
+TEST_CASE("target value: Infinity is INFINITE for floats and for temporal types", "[tabfm][preprocess][target]") {
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(kInf)) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(-kInf)) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::FLOAT(std::numeric_limits<float>::infinity())) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::FLOAT(-std::numeric_limits<float>::infinity())) == TargetValueKind::INFINITE);
+	// DuckDB has date/timestamp infinity; ToString() would make it the class label "infinity"
+	REQUIRE(ClassifyTargetValue(Value::DATE(date_t::infinity())) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::DATE(date_t::ninfinity())) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::TIMESTAMP(timestamp_t::infinity())) == TargetValueKind::INFINITE);
+	REQUIRE(ClassifyTargetValue(Value::TIMESTAMP(timestamp_t::ninfinity())) == TargetValueKind::INFINITE);
+	// every temporal flavour, through its own text form (the native units differ)
+	for (auto id : {LogicalTypeId::TIMESTAMP, LogicalTypeId::TIMESTAMP_TZ, LogicalTypeId::TIMESTAMP_SEC,
+	                LogicalTypeId::TIMESTAMP_MS, LogicalTypeId::TIMESTAMP_NS}) {
+		const LogicalType type(id);
+		INFO("type " << type.ToString());
+		REQUIRE(ClassifyTargetValue(TsFromText("infinity", type)) == TargetValueKind::INFINITE);
+		REQUIRE(ClassifyTargetValue(TsFromText("-infinity", type)) == TargetValueKind::INFINITE);
+		REQUIRE(ClassifyTargetValue(TsFromText("2023-06-30 12:00:00", type)) == TargetValueKind::USABLE);
+	}
+	REQUIRE(ClassifyTargetValue(TsFromText("infinity", LogicalType::DATE)) == TargetValueKind::INFINITE);
+}
+
+TEST_CASE("target value: the float32 range boundary for a double model target", "[tabfm][preprocess][target]") {
+	const double fmax = static_cast<double>(FLT_MAX);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(fmax)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(-fmax)) == TargetValueKind::USABLE);
+	// the very next representable double no longer fits float32 and would become Infinity in the graph
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(std::nextafter(fmax, kInf))) == TargetValueKind::FLOAT32_OVERFLOW);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(std::nextafter(-fmax, -kInf))) == TargetValueKind::FLOAT32_OVERFLOW);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(1e300)) == TargetValueKind::FLOAT32_OVERFLOW);
+	REQUIRE(ClassifyTargetValue(Value::DOUBLE(DBL_MAX)) == TargetValueKind::FLOAT32_OVERFLOW);
+	// a FLOAT column cannot overflow float32 by construction
+	REQUIRE(ClassifyTargetValue(Value::FLOAT(FLT_MAX)) == TargetValueKind::USABLE);
+	REQUIRE(IsFloat32Finite(fmax));
+	REQUIRE_FALSE(IsFloat32Finite(std::nextafter(fmax, kInf)));
+	REQUIRE_FALSE(IsFloat32Finite(kInf));
+	REQUIRE_FALSE(IsFloat32Finite(kNaN));
+	REQUIRE(IsFloat32Finite(0.0));
+	REQUIRE(IsFloat32Finite(-0.0));
+}
+
+TEST_CASE("target value: ordinary values, zeros, subnormals, other types and STRINGS are USABLE",
+          "[tabfm][preprocess][target]") {
+	for (double v : {0.0, -0.0, 1.0, -1.5, DBL_MIN, std::numeric_limits<double>::denorm_min(), 3.4e38}) {
+		INFO("value " << v);
+		REQUIRE(ClassifyTargetValue(Value::DOUBLE(v)) == TargetValueKind::USABLE);
+	}
+	REQUIRE(ClassifyTargetValue(Value::BIGINT(42)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::HUGEINT(hugeint_t(1) << 100)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::DECIMAL(int32_t(12345), 7, 2)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(VBool(true)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(VDate(2023, 1, 15)) == TargetValueKind::USABLE);
+	// A string is a LABEL, never a missing marker: 'nan' and 'inf' stay legitimate class names
+	for (const char *label : {"nan", "NaN", "inf", "-inf", "infinity", "", "NULL"}) {
+		INFO("label '" << label << "'");
+		REQUIRE(ClassifyTargetValue(VStr(label)) == TargetValueKind::USABLE);
+	}
+}
+
+TEST_CASE("target value: which kinds are errors for a model target", "[tabfm][preprocess][target]") {
+	for (bool regression : {false, true}) {
+		REQUIRE_FALSE(IsInvalidModelTarget(TargetValueKind::MISSING, regression));
+		REQUIRE_FALSE(IsInvalidModelTarget(TargetValueKind::USABLE, regression));
+		REQUIRE(IsInvalidModelTarget(TargetValueKind::INFINITE, regression));
+	}
+	// a huge double is only an error where it feeds a float32 tensor: a class label is a string
+	REQUIRE(IsInvalidModelTarget(TargetValueKind::FLOAT32_OVERFLOW, true));
+	REQUIRE_FALSE(IsInvalidModelTarget(TargetValueKind::FLOAT32_OVERFLOW, false));
+}
+
+TEST_CASE("target value: a finite timestamp far outside the microsecond range is USABLE, not an error",
+          "[tabfm][preprocess][target]") {
+	// 10^13 seconds is year ~318,000: it fits TIMESTAMP_SEC's int64 but not a microsecond timestamp, so a
+	// cast to TIMESTAMP would throw. The native-value check must neither throw nor call it infinite.
+	REQUIRE(ClassifyTargetValue(Value::TIMESTAMPSEC(timestamp_sec_t(10000000000000LL))) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::TIMESTAMPSEC(timestamp_sec_t(-10000000000000LL))) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::TIMESTAMPMS(timestamp_ms_t(10000000000000000LL))) == TargetValueKind::USABLE);
+}
+
+TEST_CASE("target value: UHUGEINT is the one integer type that can exceed float32", "[tabfm][preprocess][target]") {
+	REQUIRE(ClassifyTargetValue(Value::UHUGEINT(uhugeint_t(1) << 100)) == TargetValueKind::USABLE);
+	REQUIRE(ClassifyTargetValue(Value::UHUGEINT(NumericLimits<uhugeint_t>::Maximum())) ==
+	        TargetValueKind::FLOAT32_OVERFLOW);
+	REQUIRE(ClassifyTargetValue(Value::HUGEINT(NumericLimits<hugeint_t>::Maximum())) == TargetValueKind::USABLE);
+}
+
+// ---------------------------------------------------------------------------
+// The preprocessor's train/query split follows the same rule: a NaN target is a QUERY row, exactly
+// like NULL; Infinity is an error naming the column, the category, the count and the first row.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+vector<PreprocessColumnSpec> TargetCols(const LogicalType &target_type) {
+	return {{"f1", LogicalType::DOUBLE, false, true},
+	        {"f2", LogicalType::DOUBLE, false, true},
+	        {"target", target_type, true, false}};
+}
+
+// 8 rows. Rows 0-4 carry the labels 0..2 / values; rows 5-7 take `markers[i]`.
+unique_ptr<ColumnDataCollection> DoubleTargetTable(const std::vector<Value> &markers) {
+	const std::vector<double> labelled = {0.0, 1.0, 2.0, 1.0, 0.0};
+	std::vector<std::vector<Value>> rows;
+	for (size_t i = 0; i < 8; i++) {
+		Value target = i < 5 ? VDouble(labelled[i]) : markers[i - 5];
+		rows.push_back({VDouble(1.0 + 0.5 * i), VDouble(10.0 - i), target});
+	}
+	return MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, rows);
+}
+
+void RequireSameBatch(const PreprocessedBatch &a, const PreprocessedBatch &b) {
+	REQUIRE(a.T == b.T);
+	REQUIRE(a.train_size == b.train_size);
+	CheckVec(a.x, b.x, 1e-12, 1e-12);
+	CheckVec(a.y, b.y, 1e-12, 1e-12);
+	REQUIRE(a.y_train == b.y_train);
+	REQUIRE(a.target_mean == Approx(b.target_mean));
+	REQUIRE(a.target_scale == Approx(b.target_scale));
+	REQUIRE(a.row_source_index == b.row_source_index);
+	REQUIRE(a.label_decoder.size() == b.label_decoder.size());
+	for (size_t i = 0; i < a.label_decoder.size(); i++) {
+		REQUIRE(a.label_decoder[i].ToString() == b.label_decoder[i].ToString());
+	}
+}
+
+} // namespace
+
+TEST_CASE("preprocess: a NaN target is a QUERY row, the same batch as NULL, in every branch",
+          "[tabfm][preprocess][target]") {
+	const Value nan = Value::DOUBLE(kNaN);
+	for (auto task : {PreprocessTask::CLASSIFICATION, PreprocessTask::REGRESSION}) {
+		for (bool standardize : {true, false}) {
+			INFO("task " << (task == PreprocessTask::CLASSIFICATION ? "classification" : "regression")
+			             << " standardize " << standardize);
+			auto null_table = DoubleTargetTable({VNullDouble(), VNullDouble(), VNullDouble()});
+			auto nan_table = DoubleTargetTable({nan, nan, nan});
+			auto mixed_table = DoubleTargetTable({VNullDouble(), nan, VNullDouble()});
+			auto cols = TargetCols(LogicalType::DOUBLE);
+			auto reference = PreprocessBatch(*null_table, cols, task, standardize);
+			REQUIRE(reference.train_size == 5);
+			REQUIRE(reference.T == 8);
+			// Baseline: a NaN target row was a TRAINING row (train_size 8) and poisoned the target mean.
+			RequireSameBatch(reference, PreprocessBatch(*nan_table, cols, task, standardize));
+			RequireSameBatch(reference, PreprocessBatch(*mixed_table, cols, task, standardize));
+			if (task == PreprocessTask::REGRESSION) {
+				REQUIRE(std::isfinite(reference.target_mean));
+				REQUIRE(std::isfinite(reference.target_scale));
+				for (double y : reference.y) {
+					REQUIRE(std::isfinite(y));
+				}
+			}
+		}
+	}
+}
+
+TEST_CASE("preprocess: a table whose targets are ALL missing has no context, whichever marker is used",
+          "[tabfm][preprocess][target]") {
+	auto cols = TargetCols(LogicalType::DOUBLE);
+	for (auto marker : {VNullDouble(), Value::DOUBLE(kNaN)}) {
+		std::vector<std::vector<Value>> rows;
+		for (size_t i = 0; i < 8; i++) {
+			rows.push_back({VDouble(1.0 * i), VDouble(2.0 * i), marker});
+		}
+		auto all_missing = MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, rows);
+		REQUIRE_THROWS_WITH(PreprocessBatch(*all_missing, cols, PreprocessTask::REGRESSION),
+		                    Catch::Matchers::Contains("no in-context train rows"));
+	}
+}
+
+TEST_CASE("preprocess: an Infinity target is an error naming the column, the category, the count and the row",
+          "[tabfm][preprocess][target]") {
+	for (auto task : {PreprocessTask::CLASSIFICATION, PreprocessTask::REGRESSION}) {
+		for (bool standardize : {true, false}) {
+			for (double inf : {kInf, -kInf}) {
+				INFO("task " << (task == PreprocessTask::CLASSIFICATION ? "classification" : "regression")
+				             << " standardize " << standardize << " value " << inf);
+				// the Infinity sits in the 7th row; the other query rows are NaN and must stay legal
+				auto table = DoubleTargetTable({Value::DOUBLE(kNaN), Value::DOUBLE(inf), Value::DOUBLE(kNaN)});
+				REQUIRE_THROWS_WITH(PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), task, standardize),
+				                    Catch::Matchers::Contains("target 'target' has 1 Infinity value") &&
+				                        Catch::Matchers::Contains("input row 7") &&
+				                        Catch::Matchers::Contains("CASE WHEN isfinite("));
+			}
+		}
+	}
+}
+
+TEST_CASE("preprocess: a finite target beyond float32 is an error for REGRESSION only",
+          "[tabfm][preprocess][target]") {
+	auto table = DoubleTargetTable({VNullDouble(), Value::DOUBLE(1e300), VNullDouble()});
+	for (bool standardize : {true, false}) {
+		REQUIRE_THROWS_WITH(
+		    PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), PreprocessTask::REGRESSION, standardize),
+		    Catch::Matchers::Contains("target 'target'") && Catch::Matchers::Contains("float32") &&
+		        Catch::Matchers::Contains("input row 7"));
+	}
+	// A class label is a string, never a float tensor: a huge double label is just another class.
+	auto batch = PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), PreprocessTask::CLASSIFICATION, false);
+	REQUIRE(batch.train_size == 6); // the five labelled rows and the 1e300 row
+	// ...and FLT_MAX itself is fine for regression
+	auto edge = DoubleTargetTable({VNullDouble(), Value::DOUBLE(static_cast<double>(FLT_MAX)), VNullDouble()});
+	REQUIRE_NOTHROW(PreprocessBatch(*edge, TargetCols(LogicalType::DOUBLE), PreprocessTask::REGRESSION, false));
+}
+
+TEST_CASE("preprocess: with several invalid rows the error reports the count and the FIRST row, 1-based",
+          "[tabfm][preprocess][target]") {
+	// rows 6, 7 and 8 (1-based): -Infinity, NaN (legal), +Infinity
+	auto table = DoubleTargetTable({Value::DOUBLE(-kInf), Value::DOUBLE(kNaN), Value::DOUBLE(kInf)});
+	REQUIRE_THROWS_WITH(PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), PreprocessTask::REGRESSION),
+	                    Catch::Matchers::Contains("has 2 Infinity value(s)") &&
+	                        Catch::Matchers::Contains("first at input row 6"));
+}
+
+TEST_CASE("preprocess: UHUGEINT maximum as a regression target is an error, as a class label it is fine",
+          "[tabfm][preprocess][target]") {
+	std::vector<std::vector<Value>> rows;
+	for (int i = 0; i < 6; i++) {
+		rows.push_back({VDouble(1.0 * i), VDouble(2.0 * i),
+		                i == 5 ? Value::UHUGEINT(NumericLimits<uhugeint_t>::Maximum())
+		                       : (i == 4 ? Value(LogicalType::UHUGEINT) : Value::UHUGEINT(uhugeint_t(i + 1)))});
+	}
+	auto table = MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::UHUGEINT}, rows);
+	REQUIRE_THROWS_WITH(PreprocessBatch(*table, TargetCols(LogicalType::UHUGEINT), PreprocessTask::REGRESSION),
+	                    Catch::Matchers::Contains("beyond the float32 range") &&
+	                        Catch::Matchers::Contains("input row 6"));
+	REQUIRE_NOTHROW(PreprocessBatch(*table, TargetCols(LogicalType::UHUGEINT), PreprocessTask::CLASSIFICATION));
+}
+
+TEST_CASE("preprocess: DATE infinity as a classification target is an error, not the class 'infinity'",
+          "[tabfm][preprocess][target]") {
+	std::vector<std::vector<Value>> rows;
+	for (int i = 0; i < 6; i++) {
+		rows.push_back({VDouble(1.0 * i), VDouble(2.0 * i),
+		                i == 5 ? Value::DATE(date_t::infinity()) : (i == 4 ? VNullDate() : VDate(2023, 1, 1 + i))});
+	}
+	auto table = MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DATE}, rows);
+	REQUIRE_THROWS_WITH(PreprocessBatch(*table, TargetCols(LogicalType::DATE), PreprocessTask::CLASSIFICATION),
+	                    Catch::Matchers::Contains("target 'target' has 1 Infinity value") &&
+	                        Catch::Matchers::Contains("input row 6"));
+}
+
+TEST_CASE("preprocess: the strings 'nan' and 'inf' remain legitimate labels", "[tabfm][preprocess][target]") {
+	std::vector<std::vector<Value>> rows = {
+	    {VDouble(1.0), VDouble(2.0), VStr("nan")}, {VDouble(2.0), VDouble(1.0), VStr("inf")},
+	    {VDouble(3.0), VDouble(0.0), VStr("nan")}, {VDouble(4.0), VDouble(5.0), VStr("-infinity")},
+	    {VDouble(5.0), VDouble(6.0), VNullStr()},
+	};
+	auto table = MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::VARCHAR}, rows);
+	auto batch = PreprocessBatch(*table, TargetCols(LogicalType::VARCHAR), PreprocessTask::CLASSIFICATION);
+	REQUIRE(batch.train_size == 4);
+	REQUIRE(batch.label_decoder.size() == 3);
+}
+
+// ---------------------------------------------------------------------------
+// FEATURES follow the rule from the other side: nothing here is an error, everything unusable is MISSING
+// and mean-imputed, decided at the SOURCE, before the mean is fitted. A value beyond float32 or a date
+// infinity used to reach the fit (shifting the mean and every other row) and then the float32 cast.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+unique_ptr<ColumnDataCollection> FeatureTable(const LogicalType &type, const std::vector<Value> &feature) {
+	std::vector<std::vector<Value>> rows;
+	for (size_t i = 0; i < feature.size(); i++) {
+		rows.push_back({feature[i], VDouble(10.0 - 0.5 * i), i < 6 ? VDouble(1.0 * (i % 3)) : VNullDouble()});
+	}
+	return MakeCollection({type, LogicalType::DOUBLE, LogicalType::DOUBLE}, rows);
+}
+
+vector<PreprocessColumnSpec> FeatureCols(const LogicalType &type) {
+	return {{"feat", type, false, true}, {"other", LogicalType::DOUBLE, false, true},
+	        {"target", LogicalType::DOUBLE, true, false}};
+}
+
+} // namespace
+
+TEST_CASE("preprocess feature: a double beyond float32 is mean-imputed, exactly like NULL",
+          "[tabfm][preprocess][feature]") {
+	auto base = [](Value marker_train, Value marker_test) {
+		return std::vector<Value> {VDouble(1.0), VDouble(2.0), marker_train, VDouble(4.0), VDouble(5.0), VDouble(6.0),
+		                           VDouble(7.0), marker_test};
+	};
+	auto cols = FeatureCols(LogicalType::DOUBLE);
+	for (bool standardize : {true, false}) {
+		INFO("standardize " << standardize);
+		auto null_table = FeatureTable(LogicalType::DOUBLE, base(VNullDouble(), VNullDouble()));
+		auto reference = PreprocessBatch(*null_table, cols, PreprocessTask::REGRESSION, standardize);
+		for (double marker : {1e300, -1e300, static_cast<double>(FLT_MAX) * 1.0000001, kInf, -kInf, kNaN}) {
+			INFO("marker " << marker);
+			auto table = FeatureTable(LogicalType::DOUBLE, base(Value::DOUBLE(marker), Value::DOUBLE(marker)));
+			auto batch = PreprocessBatch(*table, cols, PreprocessTask::REGRESSION, standardize);
+			CheckVec(batch.x, reference.x, 1e-12, 1e-12);
+			for (double v : batch.x) {
+				REQUIRE(std::isfinite(v));
+				REQUIRE(std::fabs(v) <= static_cast<double>(FLT_MAX));
+			}
+		}
+		// ...and FLT_MAX itself is an ordinary finite value, NOT imputed
+		auto edge = FeatureTable(LogicalType::DOUBLE,
+		                         base(Value::DOUBLE(static_cast<double>(FLT_MAX)), VNullDouble()));
+		auto edge_batch = PreprocessBatch(*edge, cols, PreprocessTask::REGRESSION, false);
+		bool differs = false;
+		for (size_t i = 0; i < edge_batch.x.size(); i++) {
+			differs = differs || std::fabs(edge_batch.x[i] - reference.x[i]) > 1e-9;
+		}
+		REQUIRE(differs);
+	}
+}
+
+TEST_CASE("preprocess feature: UHUGEINT beyond float32 is imputed too", "[tabfm][preprocess][feature]") {
+	std::vector<Value> feat;
+	for (int i = 0; i < 8; i++) {
+		feat.push_back(i == 2 ? Value::UHUGEINT(NumericLimits<uhugeint_t>::Maximum())
+		                      : (i == 7 ? Value(LogicalType::UHUGEINT) : Value::UHUGEINT(uhugeint_t(i + 1))));
+	}
+	std::vector<Value> null_feat = feat;
+	null_feat[2] = Value(LogicalType::UHUGEINT);
+	auto cols = FeatureCols(LogicalType::UHUGEINT);
+	auto batch = PreprocessBatch(*FeatureTable(LogicalType::UHUGEINT, feat), cols, PreprocessTask::REGRESSION, false);
+	auto reference =
+	    PreprocessBatch(*FeatureTable(LogicalType::UHUGEINT, null_feat), cols, PreprocessTask::REGRESSION, false);
+	CheckVec(batch.x, reference.x, 1e-12, 1e-12);
+}
+
+TEST_CASE("preprocess feature: a date or timestamp infinity is imputed like NULL, never expanded",
+          "[tabfm][preprocess][feature]") {
+	// A sentinel passed to the day-index arithmetic yields a nonsense year/month/day, and entering the
+	// mean fit it shifts the fill for every NULL row.
+	struct Flavour {
+		LogicalType type;
+		Value finite, infinity, ninfinity, null;
+	};
+	std::vector<Flavour> flavours = {
+	    {LogicalType::DATE, VDate(2023, 6, 1), Value::DATE(date_t::infinity()), Value::DATE(date_t::ninfinity()),
+	     VNullDate()},
+	    {LogicalType::TIMESTAMP, Value::TIMESTAMP(timestamp_t(1700000000000000LL)),
+	     Value::TIMESTAMP(timestamp_t::infinity()), Value::TIMESTAMP(timestamp_t::ninfinity()),
+	     Value(LogicalType::TIMESTAMP)},
+	    {LogicalType::TIMESTAMP_TZ, Value::TIMESTAMPTZ(timestamp_tz_t(1700000000000000LL)),
+	     Value::TIMESTAMPTZ(timestamp_tz_t(timestamp_t::infinity())),
+	     Value::TIMESTAMPTZ(timestamp_tz_t(timestamp_t::ninfinity())), Value(LogicalType::TIMESTAMP_TZ)},
+	};
+	for (auto &f : flavours) {
+		INFO(f.type.ToString());
+		auto series = [&](const Value &marker) {
+			std::vector<Value> v;
+			for (int i = 0; i < 8; i++) {
+				v.push_back(i == 2 || i == 7 ? marker : f.finite);
+			}
+			// make the finite ones differ so there is something to average
+			return v;
+		};
+		auto cols = FeatureCols(f.type);
+		auto reference = PreprocessBatch(*FeatureTable(f.type, series(f.null)), cols, PreprocessTask::REGRESSION, false);
+		for (const Value &marker : {f.infinity, f.ninfinity}) {
+			auto batch = PreprocessBatch(*FeatureTable(f.type, series(marker)), cols, PreprocessTask::REGRESSION, false);
+			CheckVec(batch.x, reference.x, 1e-9, 1e-9);
+			REQUIRE(batch.H == reference.H);
+		}
+	}
 }

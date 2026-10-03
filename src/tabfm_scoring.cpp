@@ -29,6 +29,7 @@
 
 #include "tabfm_scoring.hpp"
 #include "anofox_function_alias.hpp"
+#include "tabfm_preprocess.hpp"
 #include "tabfm_registration.hpp"
 
 #include "duckdb/function/aggregate_function.hpp"
@@ -336,6 +337,9 @@ void CRPSUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vect
 			continue;
 		}
 		double actual_val = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
+		if (SkipMissingOperand(actual_val, "tabfm_crps", "actual")) {
+			continue; // NaN is missing, like NULL; Infinity throws
+		}
 
 		// STRUCT argument: GetValue(i) handles all vector representations
 		Value dist_val = inputs[1].GetValue(i);
@@ -475,6 +479,9 @@ void LogScoreUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_
 			continue;
 		}
 		double actual_val = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
+		if (SkipMissingOperand(actual_val, "tabfm_log_score", "actual")) {
+			continue; // NaN is missing, like NULL; Infinity throws
+		}
 
 		Value dist_val = inputs[1].GetValue(i);
 		if (dist_val.IsNull()) {
@@ -630,6 +637,9 @@ void IScoreUpdate(Vector inputs[], AggregateInputData &aggr_input, idx_t, Vector
 			continue;
 		}
 		double actual_val = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
+		if (SkipMissingOperand(actual_val, "tabfm_interval_score", "actual")) {
+			continue; // NaN is missing, like NULL; Infinity throws
+		}
 
 		Value dist_val = inputs[1].GetValue(i);
 		if (dist_val.IsNull()) {
