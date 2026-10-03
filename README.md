@@ -176,6 +176,25 @@ SELECT * FROM tabfm_classify(
     test := 'prospects');
 ```
 
+**One model per segment.** The model learns in context, so each call sees
+exactly the labelled rows you hand it. To predict each segment from its own
+history, make one call per segment with a subquery and stack the results; the
+segment column is excluded so it does not act as a feature:
+
+```sql
+SELECT 'north' AS region, * FROM tabfm_classify(
+    '(SELECT * EXCLUDE (region) FROM customers WHERE region = ''north'')', 'churned')
+UNION ALL
+SELECT 'south', * FROM tabfm_classify(
+    '(SELECT * EXCLUDE (region) FROM customers WHERE region = ''south'')', 'churned');
+```
+
+This is the supported way to predict per group. Each call is one forward pass over
+that segment's context and queries together, which is why a row-at-a-time form such
+as a `LATERAL` join would be slower: it would repeat the whole context for every
+row. (The grouped and windowed aggregates are internal; `tabfm_classify` and
+`tabfm_regress` are the public surface.)
+
 **Feature selection and options** (named parameters lead to the best readability):
 
 ```sql
