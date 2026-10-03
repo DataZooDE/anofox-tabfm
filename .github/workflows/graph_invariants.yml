@@ -33,6 +33,7 @@ permissions:
 jobs:
   scatternd-pins:
     name: ScatterND slice bounds stay pinned
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,6 +62,7 @@ jobs:
 
   migraphx-no-int-div:
     name: MIGraphX graphs do no integer division on runtime data
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
