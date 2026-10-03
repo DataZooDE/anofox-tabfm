@@ -199,6 +199,19 @@ def _inject(rows, embedded, keep):
 
 # --- the normaliser -------------------------------------------------------------------------------------
 
+def _row_sum(v):
+    """`v.sum(1, keepdim=True)` for [1,T,W], written as `ones[1,1,T] @ v` -> [1,1,W].
+
+    Why a matmul: with the statistics written as reductions, MIGraphX's GPU pipeline fuses the chain
+    reduce -> pointwise -> reduce (mean, then the variance around it) into one `fused_reduce` kernel that does not
+    compile for gfx1201 (`invalid operands to binary expression ('float' and ...inner_storage<float, 1, ...>)`, a
+    16-line reproducer is in docs/ROCM_CAUSILO_PLAN.md). A matmul is not a reduction to the fuser, so it breaks the
+    chain. The reciprocal form (`* (1/count)`) and a scalar count did NOT help: the chain is the trigger, not the
+    division. Same values up to summation order.
+    """
+    return torch.ones(1, 1, v.shape[1], dtype=v.dtype, device=v.device) @ v
+
+
 def normalise_masked(x, train):
     """`Normalizer.fit(train rows, "none").transform(x)` in-graph, the train rows being a MASK. [1,T,H] -> [1,T,H].
 
@@ -212,33 +225,33 @@ def normalise_masked(x, train):
     missing = torch.isnan(x)
 
     observed = (~missing) & sm
-    count = observed.to(x.dtype).sum(1, keepdim=True)
+    count = _row_sum(observed.to(x.dtype))
     fill = torch.where(count > 0,
-                       torch.where(observed, x, torch.zeros_like(x)).sum(1, keepdim=True) / count.clamp(min=1.0),
+                       _row_sum(torch.where(observed, x, torch.zeros_like(x))) / count.clamp(min=1.0),
                        zero)
     filled = torch.where(missing, fill, x)
 
-    n_rows = sm.to(x.dtype).sum(1, keepdim=True)                      # number of statistics rows
-    center = torch.where(sm, filled, torch.zeros_like(x)).sum(1, keepdim=True) / n_rows
-    spread = (torch.where(sm, (filled - center) ** 2, torch.zeros_like(x)).sum(1, keepdim=True) / n_rows).sqrt()
+    n_rows = _row_sum(sm.to(x.dtype))                      # number of statistics rows
+    center = _row_sum(torch.where(sm, filled, torch.zeros_like(x))) / n_rows
+    spread = (_row_sum(torch.where(sm, (filled - center) ** 2, torch.zeros_like(x))) / n_rows).sqrt()
     tolerance = 8.0 * _EPS32 * torch.clamp(center.abs(), min=1.0)
     spread = torch.where(spread <= tolerance, torch.ones_like(spread), spread)
     scaled = (filled - center) / spread
 
     # outlier_bounds: two passes, ddof = 1 when there is more than one statistics row
     correction = (n_rows > 1).to(x.dtype)
-    mean = torch.where(sm, scaled, torch.zeros_like(x)).sum(1, keepdim=True) / n_rows
+    mean = _row_sum(torch.where(sm, scaled, torch.zeros_like(x))) / n_rows
     preliminary = torch.clamp(
-        (torch.where(sm, (scaled - mean) ** 2, torch.zeros_like(x)).sum(1, keepdim=True)
+        (_row_sum(torch.where(sm, (scaled - mean) ** 2, torch.zeros_like(x)))
          / (n_rows - correction)).sqrt(), min=1e-6)
     kept = (~((scaled - mean).abs() > 4.0 * preliminary)) & sm
-    kept_count = kept.to(x.dtype).sum(1, keepdim=True)
+    kept_count = _row_sum(kept.to(x.dtype))
     centre2 = torch.where(kept_count > 0,
-                          torch.where(kept, scaled, torch.zeros_like(x)).sum(1, keepdim=True)
+                          _row_sum(torch.where(kept, scaled, torch.zeros_like(x)))
                           / kept_count.clamp(min=1.0),
                           zero)
     dof = kept_count - correction
-    variance = torch.where(kept, (scaled - centre2) ** 2, torch.zeros_like(x)).sum(1, keepdim=True) / dof.clamp(min=1.0)
+    variance = _row_sum(torch.where(kept, (scaled - centre2) ** 2, torch.zeros_like(x))) / dof.clamp(min=1.0)
     spread2 = torch.clamp(torch.where(dof > 0, variance.sqrt(), torch.ones_like(variance)), min=1e-6)
     lower, upper = centre2 - 4.0 * spread2, centre2 + 4.0 * spread2
 

@@ -236,8 +236,34 @@ out = (x - mu) / var            # x [1,128,16], n [1]
 2-D bool mask) compile on `--gpu`, so the trigger is the second reduction dividing by the first.
 The failing kernel's shapes (`[128,16]` bool inputs reduced to `[1,16]`) match the masked normaliser's per-feature
 mean/variance over the real rows, but that match was NOT confirmed by mapping the kernel to a node. Whether the
-positional graph has the same construct was not checked (it failed earlier, section 3). Not yet attempted: rewriting it (e.g. multiply by a precomputed `1/count`, or compute the
-count outside the fusion) and re-guarding.
+positional graph has the same construct was not checked (it failed earlier, section 3). **Fix, shown on the reproducer first.** On `--gpu`, with the reproducer's exact inputs (`x[1,128,16]`, `n[1]`):
+
+| form of the statistics | `--gpu` |
+|---|---|
+| old: `sum / count`, `sum / count` (the reproducer) | abort, rc=134, 3 kernel errors |
+| `* (1/count)` (reciprocal computed once) | abort, same 3 errors |
+| count as a `[1,1,1]` scalar from the 1-D mask | abort, same 3 errors |
+| `ReduceMean * (R/count)` | abort, same 3 errors |
+| sums as `ones[1,1,T] @ v` (matmul), count too | compiles, rc=0, 0 errors |
+| only the second reduction as a matmul | compiles, rc=0, 0 errors |
+
+So the division was not the trigger; the chain reduce -> pointwise -> reduce is, and a matmul is not a reduction to the
+fuser. `normalise_masked` now writes all ten of its row sums through `_row_sum` (`ones @ v`). Values are the same up
+to summation order (gate numbers below). No structural guard: reduction chains are everywhere in the graph (softmax
+is one) and compile, so a graph-shape check cannot tell the bad ones apart; the compile of the fixture is the check.
+
+**Result: the fixture graph (4,235 nodes) compiles on `--gpu`: rc=0, no kernel error, no assertion, 2m36s.**
+Nothing was run on the GPU, so there are no GPU numerics, and `fixture_r` and the real graphs were NOT recompiled.
+
+Full gate after the rewrite (4 configs x 11 cases, plus controls; file read in full): worst `all` error
+9.5e-06 (fixture classification), 2.2e-05 (fixture regression), 6.1e-06 (fixture_r classification), 2.3e-05
+(fixture_r regression), budget 1e-4; all 28 negative controls caught (7 controls x 4 configs, relative error 0.54 to
+2.2). Caveat from that output: the separate `qry` column reaches 1.08e-04 on fixture_r regression (n=16, N=15) and
+5.6e-05 on fixture regression, above 1e-4 for that one cell; the gate's criterion is the `all` column (2.3e-05 there).
+Before the rewrite the same cell (fixture_r regression, n=16, N=15) read `qry`=4.59e-06 (all=1.45e-05), so the
+matmul sums DID move it, to 1.08e-04 (the `all` column went 1.45e-05 -> 2.32e-05). Cause not investigated; summation
+order through a near-degenerate case (N=15 context rows, 1 query) is the suspect, not shown. The 1e-4 budget is not
+loosened; the criterion it is applied to is `all`.
 
 ### 3. The shipped POSITIONAL graph also fails on `--gpu`, differently
 
@@ -253,12 +279,12 @@ on this GPU.
 
 * One GPU (gfx1201), one MIGraphX build, `migraphx-driver compile`; no run, no numerics on the GPU.
 * The `fuse_concat` cause is unestablished (section 1). The Concat-free variant is a workaround for one graph
-  that moved the failure to section 2.
+  that moved the failure to section 2, which the matmul sums resolve for the fixture only.
 * Section 2 was reproduced on a 16-line graph; section 1 and section 3 were not reduced.
 
 ## What is not done
 
-No GPU compile passes (see the section above), no bundling (nothing under `resources/`, no `cmake/embed_resources.cmake` entry), no
+Only the fixture graph compiles on the GPU target, nothing else does (see the section above), no bundling (nothing under `resources/`, no `cmake/embed_resources.cmake` entry), no
 `tabfm_backends()` or test-list change, no timing on any device, no plugin involvement. `make_migraphx_graph.py` was
 run only into a scratch directory to feed the parser. The GPU pipeline does not accept the graph yet; the
 TabPFN conversion found four such failures only on the GPU.
