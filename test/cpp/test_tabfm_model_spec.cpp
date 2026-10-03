@@ -308,6 +308,14 @@ TEST_CASE("model_spec: the whole catalog has (model, task) header hashes for ext
 	        "85fb120c90878b69b0d34ff32fcfbdcf457ffd4d2ed7af2a102fe7c2d417d742");
 	REQUIRE(ExpectedWeightsHeaderShaFor("causilo", "regression") ==
 	        "0bbfd6114cbae8d2facfcbf11cb01796c88aa57e0bb57d4589d552ca8accc192");
+	// LimiX-2M: ONE checkpoint serves both tasks, so both share a header sha. It pins the header of the
+	// safetensors that tools/export_limix's convert_limix_weights writes from LimiX-2M.ckpt (137 tensors,
+	// deterministic); the ext graphs bake offsets into THAT file, so a user without it falls back to the
+	// layout-independent injection path.
+	REQUIRE(ExpectedWeightsHeaderShaFor("limix-2m", "classification") ==
+	        "0c6a868493ea16aaa88bd604b7f769b34018e82941eae90abd9d16072cf283eb");
+	REQUIRE(ExpectedWeightsHeaderShaFor("limix-2m", "regression") ==
+	        "0c6a868493ea16aaa88bd604b7f769b34018e82941eae90abd9d16072cf283eb");
 	REQUIRE(ExpectedWeightsHeaderShaFor("orion-bix", "classification") ==
 	        "c2b7ff39add2b0c1c2d3ddabbaf413e8c15f433b620f3091f0562f376255d166");
 	REQUIRE(ExpectedWeightsHeaderShaFor("orion-bix", "regression") == "");
@@ -383,6 +391,10 @@ TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the regis
 	// causilo's id IS its stem, so it needs no mapping (a wrong one would silently find no graph)
 	REQUIRE(BundledGpuGraphId("causilo", "ext", "classification") == "graph_ext_causilo_classification");
 	REQUIRE(BundledGpuGraphId("causilo", "ext", "regression") == "graph_ext_causilo_regression");
+	// limix-2m maps to the stem "limix2m" on purpose: LimiX-2 (400M) is a different model, and a bare
+	// "limix" stem would silently hand its graphs to the wrong one
+	REQUIRE(BundledGpuGraphId("limix-2m", "ext", "classification") == "graph_ext_limix2m_classification");
+	REQUIRE(BundledGpuGraphId("limix-2m", "ext", "regression") == "graph_ext_limix2m_regression");
 	REQUIRE(BundledGpuGraphId("orion-bix", "ext", "classification") == "graph_ext_orion_bix_classification");
 	// orion-msp is a separate stem, NOT a fallback onto orion-bix's graphs: the
 	// two are different architectures that happen to share a vendor and licence.

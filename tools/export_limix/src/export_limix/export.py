@@ -158,6 +158,25 @@ def postprocess(graph_path: pathlib.Path, state_dict: dict) -> dict:
 
     tensor_map = build_tensor_map(model_proto, state_dict)
 
+    # The engine injects EVERY tensor in the weights file by name, and ONNX Runtime rejects one the graph does
+    # not have ("Failed to find existing initializer"). LimiX's single checkpoint holds both tasks' heads and
+    # an imputation head, none of which one task graph reads. An initializer no node consumes is pruned when
+    # ORT LOADS the graph, which is BEFORE the engine injects, so declaring it is not enough: each unread tensor
+    # also feeds an Identity whose output nothing uses (named keep_*). ORT's dead-code removal runs only after
+    # injection, MLX's Identity is a free shared tensor, and the values here are the random-init trace values:
+    # like every mapped initializer they are externalised and their bytes are never shipped.
+    read = set(tensor_map["initializers"].values())
+    for key, value in state_dict.items():
+        if CKPT_KEY_PREFIX + key in read:
+            continue
+        arr = value.detach().cpu().numpy()
+        assert arr.dtype == np.float32, f"{key}: unread tensor is {arr.dtype}, the engine injects float32"
+        name = "m." + key
+        model_proto.graph.initializer.append(onnx.numpy_helper.from_array(arr, name))
+        model_proto.graph.node.append(
+            onnx.helper.make_node("Identity", [name], [f"keep_alive.{key}"], name=f"keep_{key}"))
+        tensor_map["initializers"][name] = CKPT_KEY_PREFIX + key
+
     data_name = graph_path.name + ".data"
     data_path = graph_path.with_name(data_name)
     mapped = set(tensor_map["initializers"])
@@ -192,10 +211,12 @@ def make_feed(t, h, s, max_classes, seed=1, task="classification"):
 def check_parity(graph_path: pathlib.Path, wrapper: ExportWrapper,
                  shapes, max_classes=10, task="classification",
                  tol: float = PARITY_TOL) -> dict:
-    """ORT vs PyTorch fp32 on random weights. Compares TEST rows (>= train_size).
+    """ORT vs PyTorch fp32 on random weights, over EVERY row.
 
-    ``shapes`` = ((T, H, S), ...), all different from the export example so the
-    dynamic dims are genuinely exercised.
+    ``shapes`` = ((T, H, S), ...), all different from the export example so the dynamic dims are
+    genuinely exercised. Context rows (< S) and query rows (>= S) are reported separately so a failure
+    says which half is wrong. (This used to compare the query rows only, which could not have noticed
+    a wrong context row; the wrapper then padded them with zeros and the engine decoded a constant.)
     """
     import onnxruntime as ort
 
@@ -208,10 +229,13 @@ def check_parity(graph_path: pathlib.Path, wrapper: ExportWrapper,
         ort_ms = (time.time() - t0) * 1e3
         with torch.no_grad():
             pt_out = wrapper(torch.from_numpy(feed["x"]), torch.from_numpy(feed["y"])).numpy()
-        delta = float(np.abs(ort_out[:, s:] - pt_out[:, s:]).max())
-        worst = max(worst, delta)
-        results.append({"T": t, "H": h, "train": s,
-                        "max_abs_delta_test_rows": delta, "ort_ms": ort_ms})
+        if ort_out.shape != pt_out.shape:
+            raise RuntimeError(f"shape mismatch at (T,H,S)=({t},{h},{s}): ORT {ort_out.shape} vs torch {pt_out.shape}")
+        ctx = float(np.abs(ort_out[:, :s] - pt_out[:, :s]).max())
+        qry = float(np.abs(ort_out[:, s:] - pt_out[:, s:]).max()) if t > s else 0.0
+        worst = max(worst, ctx, qry)
+        results.append({"T": t, "H": h, "train": s, "max_abs_delta_context_rows": ctx,
+                        "max_abs_delta_query_rows": qry, "ort_ms": ort_ms})
     return {"ok": worst < tol, "worst": worst, "tol": tol, "shapes": results}
 
 

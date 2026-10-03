@@ -42,6 +42,10 @@
 #                CALL tabfm_download('classification', model := 'causilo');
 #                CALL tabfm_download('regression', model := 'causilo');
 #
+#                # LimiX-2M needs NO converter either: the engine's native reader takes the .ckpt (the
+#                # nested {"config", "state_dict"} pickle) directly. ONE 9.5 MB file serves both tasks:
+#                CALL tabfm_download('classification', model := 'limix-2m');
+#
 #                TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
 # group: [anofox_tabfm]
 
@@ -413,5 +417,74 @@ true
 query I
 SELECT corr(yhat, f1) > 0.9
 FROM tabfm_regress('reg_t', 'target', model := 'causilo') WHERE NOT is_training;
+----
+true
+
+# ---------------------------------------------------------------------------
+# LimiX-2M (StableAI): query rows AND context rows, both tasks, from ONE downloaded checkpoint.
+#
+# Like Causilo its context rows come from a second pass (the context presented again as queries), so a
+# regression could break the query rows while the context rows stay right, or the reverse: both are checked.
+# The model standardises its own features and the wrapper standardises the regression target in-graph, so
+# the engine must do neither (profile limix_v1_raw); a double normalisation would pass a "non-NULL" check and
+# fail these floors.
+#
+# Parity with upstream's single forward is exercised out-of-band, where upstream's own model is available
+# (tools/export_limix/tests/test_real_weights.py): on a held-out split the engine agreed with upstream eager on
+# 45/45 iris and 54/54 wine labels, and on diabetes within 3.8e-2 absolute on a target spread of ~220.
+# It is a SINGLE forward, not the ensemble upstream's leaderboard figures come from.
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'limix-2m') WHERE is_training;
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = 'c' || round(f1 / 10)::INTEGER THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'limix-2m') WHERE NOT is_training;
+----
+true
+
+query I
+SELECT count(DISTINCT yhat) > 1 FROM tabfm_classify('fitted_t', 'label', model := 'limix-2m')
+WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'limix-2m') WHERE is_training;
+----
+true
+
+# reg_t's 20 query rows (f1 80..99) lie BEYOND the training range (0..79), and LimiX-2M saturates there
+# rather than extrapolating: on this table its predictions span 59.2..64.7 where the truth runs to 72.3.
+# That is the model, not the engine: upstream's own eager forward gives the identical range and the identical
+# correlation (0.8307, measured), so the floor below is a bound on a known behaviour, not a quality claim.
+query I
+SELECT corr(yhat, f1) > 0.8
+FROM tabfm_regress('reg_t', 'target', model := 'limix-2m') WHERE NOT is_training;
+----
+true
+
+# The accuracy oracle for this model is interpolation: the same linear target with the query rows scattered
+# INSIDE the training range (every 5th row, offset 3). Upstream eager measures corr 0.9998 and a worst error of
+# 0.99 on a target spanning 3..72.
+#
+# The offset is chosen on purpose. With the holdout at i % 5 = 4 the training mean of f1 is exactly 49.0, so the
+# row f1 = 49 standardises to EXACTLY 0.0, which LimiX's decimal tokenizer encodes as its own token, and the
+# model gets that one row badly wrong (25.1 against a truth of 37.3) while its neighbours at z = +-0.17 are off
+# by 0.3-0.4. Upstream's eager forward does the same on the identical table, so it is the model's behaviour, not
+# the engine's (tools/export_limix/tests/test_real_weights.py pins it; docs/REAL_MODELS.md says so).
+statement ok
+CREATE TABLE reg_in AS
+SELECT i::DOUBLE AS f1, (i % 7)::DOUBLE AS f2,
+       CASE WHEN i % 5 <> 3 THEN (i * 0.7 + 3)::DOUBLE ELSE NULL END AS target
+FROM range(100) s(i);
+
+query I
+SELECT corr(yhat, f1 * 0.7 + 3) > 0.99 AND max(abs(yhat - (f1 * 0.7 + 3))) < 3
+FROM tabfm_regress('reg_in', 'target', model := 'limix-2m') WHERE NOT is_training;
 ----
 true

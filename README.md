@@ -6,12 +6,17 @@ classification and regression become a single SQL statement. No Python, no
 training loop, no MLOps: the model reads your labelled rows as context and
 predicts the rest.
 
-**Twelve models are built in and selectable by name** — `mitra` (AWS AutoGluon,
+**Thirteen models are built in and selectable by name** — `mitra` (AWS AutoGluon,
 Apache-2.0), `tabdpt` (Layer 6 AI, Apache-2.0), `tabpfn-v2`, `tabpfn-v2-5`,
 `tabpfn-v2-5-real`, `tabpfn-v2-6` and `tabpfn-v3` (Prior Labs), `tabicl-v2`
-(Inria), `causilo` (Nums AI), `orion-bix` and `orion-msp` (Lexsi Labs, MIT), and
-`tabfm-v1` (Google TabFM) — and you can register your own entirely in SQL. Everything is
-operated in SQL: no manifest file, no config.
+(Inria), `causilo` (Nums AI), `limix-2m` (StableAI), `orion-bix` and `orion-msp` (Lexsi
+Labs, MIT), and `tabfm-v1` (Google TabFM) — and you can register your own entirely in SQL.
+Everything is operated in SQL: no manifest file, no config.
+
+**Built with StableAI LimiX.** The `limix-2m` model is StableAI's LimiX-2M, used under the
+Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 plus an attribution clause): see
+[`docs/REAL_MODELS.md`](docs/REAL_MODELS.md#limix-2m-stableai--shipped-classify--regress)
+and the [licence](https://huggingface.co/stable-ai/LimiX-2M/blob/main/LICENSE.txt).
 
 ---
 
@@ -290,6 +295,7 @@ SELECT * FROM tabfm_list_models();          -- the registry: every known model
 | `tabpfn-v2-6` | Prior Labs | TabPFN-2.6 (non-commercial, gated) | `false` |
 | `tabpfn-v3` | Prior Labs | TabPFN-3 (non-commercial, gated) | `false` |
 | `causilo` | Nums AI | Causilo License v1.0 (non-commercial, gated; hosted/API/SaaS use needs a separate license) | `false` |
+| `limix-2m` | StableAI | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution: "Built with StableAI LimiX"; gated by the licence acknowledgement; verified on CPU, CUDA and MLX not run, refused on ROCm) | `true` |
 
 Pick a model per call (a first-class argument, promoted out of `opts`), or set a
 session default; precedence is **per-call → `anofox_tabfm_default_model` → a

@@ -92,8 +92,8 @@ def main(argv=None) -> int:
             "repo": "https://github.com/limix-ldm-ai/LimiX",
             "rev": _vendor_rev(),
             "code_license": "Apache-2.0",
-            "weights_license": "academic research only; commercial use requires "
-                               "authorization from StableAI",
+            "weights_license": "Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + Section 10: "
+                               "'Built with StableAI LimiX' attribution; 'LimiX' name prefix for derived models)",
             "checkpoint": "stable-ai/LimiX-2M :: LimiX-2M.ckpt",
         },
         "input_signature": {"x": "[1,T,H] f32",

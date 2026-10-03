@@ -1,86 +1,90 @@
-# export_limix — LimiX-2M (StableAI) → weight-free ONNX — **INCOMPLETE SPIKE**
+# export_limix — LimiX-2M (StableAI) → weight-free ONNX
 
-> **Status: not shipped.** `limix-2m` is deliberately **not** in the built-in
-> registry, not in `cmake/embed_resources.cmake`, and has no fixture or
-> sqllogictest. The extension builds and tests green without it. This directory
-> is the export spike, checked in so the analysis below is not lost.
-
-WS-A exporter for onboarding **LimiX-2M** (`stable-ai/LimiX-2M`) into the
-anofox-tabfm engine. Upstream ships no packaging metadata, so it is pinned as
-the `vendor/limix` git submodule (the convention `vendor/tabfm` already uses)
-and patched at runtime — no upstream source is copied into this repo.
+WS-A exporter for the built-in **`limix-2m`** model (`stable-ai/LimiX-2M`). Upstream ships no packaging
+metadata, so it is pinned as the `vendor/limix` git submodule (the convention `vendor/tabfm` uses) and patched
+at runtime: no upstream source is copied into this repo, and no weight bytes are committed anywhere.
 
 ```bash
 git submodule update --init vendor/limix
-uv sync
-uv run export_limix --task classification --config fixture --out ./out   # traces, then FAILS in ORT
+cd tools/export_limix && uv sync
+uv run export_limix --task classification --config real --out ./out     # graph + tensor map, weight-free
+uv run export_limix --task regression     --config real --out ./out
+uv run convert_limix_weights <LimiX-2M.ckpt> model.safetensors          # optional: enables the ext graphs
+uv run make_limix_fixture ../../test/fixtures/limix                     # the committed random-init CI fixture
+uv run pytest                                                           # TABFM_REAL_WEIGHTS=1 adds the real-weight tests
 ```
 
-## Why it is not shipped
+The shipped copies live in `resources/` as `graph_limix2m_*.onnx`, `graph_ext_limix2m_*.onnx` (made with
+`tools/make_external_graph.py`) and `tensor_map_limix2m_*.json`. The stem is `limix2m`, not `limix`, so LimiX-2
+(a different, 400 M-parameter model) can never be mistaken for it. Status, measurements and the licence
+reasoning are in `docs/REAL_MODELS.md`; this file is about the exporter.
 
-The graph **traces and exports** (43 initializers mapped, weight-free), but the
-exported graph is **not shape-correct**: a reshape in the feature-grouping step
-binds the sequence length to `T_example + (S − S_example)` instead of the row
-count `T`, so ORT fails at any shape other than the export example:
+## Licence
 
-```
-T=20,H=6,S=12 (export example)  -> OK
-T=20,H=6,S=15                   -> Reshape wants {1,23,3,2} from {1,20,6}   (23 = 20+(15-12))
-T=30,H=6,S=12                   -> Reshape wants {1,20,3,2} from {1,30,6}   (20 = T_example)
-T=40,H=8,S=30                   -> Reshape wants {1,38,4,2} from {1,40,8}   (38 = 20+(30-12))
-```
+Upstream **code** is Apache-2.0 (`vendor/limix/LICENSE.txt`). The **weights** are under the *Stable AI
+Technology Co., Ltd. License v1.0* (`LICENSE.txt` in the weights repo, 2026-09): Apache-2.0 plus a Section 10
+that permits commercial use but requires the attribution **"Built with StableAI LimiX"** when you distribute or
+make available the Work or a product built on it, and a **"LimiX"** prefix on the name of an AI model derived
+from the weights; internal research, evaluation, benchmarking and testing are exempt. The older upstream README
+says "academic research, commercial with authorization" and the model card is internally inconsistent (front
+matter `license: other`, body "Apache 2.0"); the registry follows the newest `LICENSE.txt` (`commercial: true`,
+gated by `accept_hf_license`). Whether shipping weight-free graphs counts as "distributing the Work" is **not**
+confirmed with StableAI. Running the real-weight tests here is evaluation.
 
-The row dim `T` and the train dim `S` are being unified into one symbol
-somewhere between `forward`'s `batch_size, seq_len, num_feature = x.shape` and
-the `x[k].reshape(batch_size, seq_len, ...)` regrouping — most likely via the
-`y[k].shape[1] < x["data"].shape[1]` guard and the `T - S` padding width. Fixing
-it means either driving the reshape from `x[k].shape[1]` directly rather than
-the captured `seq_len`, or splitting the y-padding so the two dims never meet.
-That is the one remaining blocker; everything below it is solved.
+## What the exporter does
 
-## Effort assessment
-
-LimiX turned out **heavier than the other onboardings**. TabPFN-2.5, TabICL and
-Orion-BiX each needed 2–3 surgical monkeypatches; LimiX needs a full patched
-re-implementation of `FeaturesTransformer.forward` plus encoder rewrites — the
-Mitra tier — and then the dynamic-shape debugging above. It should be re-scoped
-as its own piece of work rather than treated as a drop-in.
-
-## What is already solved (patches 1–4, `limix_patches.py`)
-
-The forward maps cleanly onto the engine's existing `(x, y)`-only contract:
-upstream's `forward(x, y, eval_pos, task_type=...)` already takes a row-major
-table plus a label prefix and a split point, so **no engine change is needed**.
-Both tasks run in PyTorch through `ExportWrapper` (classification → `[1,T,10]`,
-regression → `[1,T,1]`).
+Upstream's `forward(x, y, eval_pos, task_type=...)` already takes a row-major table plus a label prefix and a
+split point, so the graph maps onto the engine's `(x, y)`-only contract with no engine change. `ExportWrapper`
+exposes both tasks (classification → `[1,T,C]`, regression → `[1,T,1]`).
 
 | # | upstream | rewrite | why |
 |---|---|---|---|
-| 1 | two `if torch.isnan(...).any(): raise` guards in `forward` | proxy whose `.any()` is statically False, installed only inside `model.transformer` | data-dependent branch; pure input validation, and the config enables the NaN encoders |
-| 2 | `mixed_y_embedding` splits labels by `y_type` with boolean-mask indexing | call the single live encoder directly | `forward` builds `y_type` as all-zeros or all-ones from `task_type`, so the split is the identity; keeps upstream's float16 round-trip |
-| 3 | `y["data"][:, eval_pos:] = torch.nan` | `torch.where` against a row-index mask | in-place dynamic slice assign bakes `index_put` operand shapes |
-| 4 | `NanEncoder.forward`'s four boolean-mask assignments | `torch.where` | same `index_put` shape-baking; elementwise-identical |
+| 1 | two `if torch.isnan(...).any(): raise` guards in `forward` | proxy whose `.any()` is statically False, installed only inside `model.transformer` | data-dependent branch; pure input validation |
+| 2 | `mixed_y_embedding` splits labels by `y_type` with boolean-mask indexing | call the single live encoder directly | `y_type` is uniform per graph, so the split is the identity (proved against upstream by a test) |
+| 3 | `y["data"][:, eval_pos:] = torch.nan` | `torch.where` against a row-index mask | an in-place dynamic slice assign bakes `index_put` shapes |
+| 4 | `NanEncoder.forward`'s four boolean-mask assignments | `torch.where` | same shape-baking; elementwise-identical |
+| 5 | the y decoder's split by `y_type` | call the live decoder | as 2 |
+| 6 | `MulticlassTargetEncoder` ranks labels with `torch.unique` | a first-occurrence rank table | `Unique` has a data-dependent shape and is not in the MLX interpreter's op table; equal to upstream on duplicates, gaps, single-class and NaN-pad cases |
+| 7 | `nn.ReLU` | `clamp(x, min=0)`, per instance | `Relu` is not in the MLX op table; identical function, exports as `Clip` |
+
+Beyond those patches, the things that were wrong and are now guarded by tests (`tests/test_export.py`):
+
+- **T and S were unified.** The traced reshape baked `T − S` as a constant, so ORT failed at every shape other
+  than the trace shape. The pad is now the tail of a `T`-long tensor.
+- **Odd feature widths.** `num_features % features_per_group` is a Python branch on a symbolic size; the group
+  padding is now unconditional.
+- **Export time exploded with depth** (8 layers took more than 480 s; the real model has 12) because the
+  per-layer slices create `Min(S, …)` expressions sympy re-simplifies. `torch._check(S <= T)` makes them exact;
+  the real config exports in about 25 s.
+- **Context rows.** The wrapper presents the context a second time as queries, so `is_training` rows are real
+  in-context values (decoding every row from one pass scored 0.111 on a 5-class problem against 1.000).
+- **The regression target is not normalised by the model.** The wrapper z-scores it and inverts the output.
+- **The engine injects every checkpoint tensor by name**, and ORT rejects one the graph lacks. The checkpoint
+  holds both tasks' heads and an imputation head, none of which one task graph reads, so each unread tensor is
+  declared as an initializer *and* feeds a `keep_*` Identity whose output nothing uses (ORT prunes an unused
+  initializer when it loads the graph, before the engine injects; its dead-code removal runs after).
 
 ## Architecture facts (from `LimiX-2M.ckpt`'s embedded `config`)
 
-2,377,837 params over 137 tensors, 12 layers, `embed_dim` 96, `layer_arch`
-`"smf"`. Two flags keep the traced path narrow and are pinned by
-`configs.assert_shipped_path`:
+2,377,837 parameters over 137 tensors, 12 layers, `embed_dim` 96, `layer_arch` `"smf"`. Two flags keep the
+traced path narrow and are pinned by `configs.assert_shipped_path`: `mask_prediction = False` (the imputation
+head is off, so `forward` returns logits) and `feature_positional_embedding_type = "none"` (avoids the runtime
+`torch.randn` positional draw, untraceable at a symbolic column count). Checkpoint keys are in the **bare**
+module namespace, so `export.CKPT_KEY_PREFIX` is `""`. The RBF tokenizer's `centers` are a deterministic
+`linspace` built from the config (`use_random_kernels: False`), which is why the one small inline constant per
+graph is correct for the real model.
 
-- `mask_prediction = False` — the imputation head is off, so `forward` returns
-  logits rather than a dict with `feature_pred` and preprocessing statistics.
-- `feature_positional_embedding_type = "none"` — avoids the runtime
-  `torch.randn` positional draw at `transformer.py:277`, untraceable at a
-  symbolic column count.
+## The numeric tokenizer, and why it matters
 
-Checkpoint keys are in the **bare** module namespace (no `_orig_mod.` prefix,
-unlike Orion-BiX), so `export.CKPT_KEY_PREFIX` is `""`.
+The tokenizer encodes a standardised value as (sign, decimal exponent, mantissa), and an **exact zero as its own
+token**. A value near zero is therefore hypersensitive in proportion to 1/|z|, and an exact zero (a value equal
+to its column mean, which discrete or symmetric data produces constantly) flips to a completely different
+embedding under any rounding noise. Consequences, all measured and pinned:
 
-## Licensing (decided, if it ever ships)
-
-Upstream **code** is Apache-2.0 (`vendor/limix/LICENSE.txt`). The **weights**
-are not: the model card says "fully open for academic research; commercial use
-requires official authorization from StableAI" — note this contradicts the HF
-repo's `apache-2.0` card tag. It would therefore ship `commercial: false` +
-`gate_setting: "accept_hf_license"`, the `tabfm-v1` treatment, with the conflict
-recorded in the manifest attribution.
+- the fixture's golden inputs must avoid it (`fixture.assert_well_conditioned` rejects exact zeros and values
+  closer to zero than 0.02; with quarter-multiple inputs 41 standardised values were exactly 0 and the logits
+  moved by 0.04–20 under 1e-6 noise);
+- the one ORT-vs-PyTorch outlier from the original spike (1.2e-3 at T=33, H=9, S=21) is this: its input has a
+  standardised value of 3.2e-6 and is chaotic in eager PyTorch too (`test_the_ort_outlier_is_…`);
+- the real model predicts a row sitting exactly on the training mean badly, and saturates when extrapolating,
+  identically in upstream's own forward (`test_a_feature_value_exactly_at_the_training_mean_…`).

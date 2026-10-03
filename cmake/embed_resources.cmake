@@ -112,6 +112,16 @@ set(_tabfm_inputs
     "graph_ext_causilo_regression.onnx"
     "tensor_map_causilo_classification.json"
     "tensor_map_causilo_regression.json"
+    # LimiX-2M (StableAI; commercial under the Stable AI Technology Co., Ltd. License v1.0) -- (x, y)-only,
+    # one plain graph and one tensor map per task, plus the CUDA/CPU external-data variants. NO migraphx
+    # graph: its split is positional, so ROCm refuses it by name (docs/ROCM_SINGLE_EVAL_POS.md). The stem is
+    # "limix2m" so LimiX-2 (400M) can never be mistaken for it.
+    "graph_limix2m_classification.onnx"
+    "graph_limix2m_regression.onnx"
+    "graph_ext_limix2m_classification.onnx"
+    "graph_ext_limix2m_regression.onnx"
+    "tensor_map_limix2m_classification.json"
+    "tensor_map_limix2m_regression.json"
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
     "graph_tabpfn25_classification.onnx"
     "graph_tabpfn25_regression.onnx"

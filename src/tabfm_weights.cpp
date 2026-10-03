@@ -114,6 +114,10 @@ struct WeightsManifest {
 	string repo;     // e.g. "google/tabfm-1.0.0-pytorch"
 	string revision; // default "main"
 	string license;  // license id; "" or "none" = ungated
+	//! False for the non-commercial entries. A COMMERCIAL model can still be gated (the gate is then the
+	//! acknowledgement of its terms, e.g. an attribution clause), and the gate message must not call it
+	//! "non-commercial".
+	bool commercial = false;
 	vector<WeightsFileEntry> files;
 	bool builtin = false;
 	//! Registered/user models resolve their files here instead of the cache
@@ -159,6 +163,7 @@ WeightsManifest WeightsFromSpec(const ModelSpec &spec, TabFMTask task) {
 	result.revision = art.revision;
 	// Gated iff the license declares a gate_setting (e.g. accept_hf_license).
 	result.license = spec.license.gate_setting.empty() ? "none" : spec.license.id;
+	result.commercial = spec.license.commercial;
 	result.builtin = spec.source_dir.empty(); // built-ins carry no source dir
 	result.source_dir = spec.source_dir;
 	for (auto &f : art.files) {
@@ -280,6 +285,13 @@ void RequireLicenseAccepted(ClientContext &context, const WeightsManifest &manif
 		return;
 	}
 	auto what = manifest.repo.empty() ? manifest.model : manifest.repo;
+	if (manifest.commercial) {
+		throw InvalidConfigurationException(
+		    "tabfm_download: weights in '%s' are licensed '%s' and require you to accept its terms before they "
+		    "are downloaded (read the licence in that Hugging Face repo, and docs/REAL_MODELS.md for what it asks "
+		    "of you). Run: SET anofox_tabfm_accept_hf_license = true;",
+		    what, manifest.license);
+	}
 	throw InvalidConfigurationException(
 	    "tabfm_download: weights in '%s' are licensed '%s' (non-commercial, no redistribution). "
 	    "Run: SET anofox_tabfm_accept_hf_license = true;",

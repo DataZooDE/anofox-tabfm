@@ -1,0 +1,73 @@
+{
+  "schema_version": 2,
+  "id": "limix-2m",
+  "display_name": "LimiX-2M (StableAI)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "limix-2m-license-v1.0",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": "accept_hf_license",
+    "attribution": "LimiX-2M by Stable AI Technology Co., Ltd. Code Apache-2.0; weights under the Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 plus Section 10), which permits commercial use. Section 10 requires, if you distribute or make available the Work, a Derivative Work, or any product or service that incorporates it: (a) a copy of or link to the License, and (b) the attribution \"Built with StableAI LimiX\". An AI model created, trained, fine-tuned or distilled from the weights and made available to a third party must include \"LimiX\" at the beginning of the name of such AI model. Internal research, evaluation, benchmarking or testing is exempt. License: https://huggingface.co/stable-ai/LimiX-2M/blob/main/LICENSE.txt. Checkpoint: HF stable-ai/LimiX-2M."
+  },
+  "preprocessing_profile": "limix_v1_raw",
+  "weights": {
+    "classification": {
+      "repo": "stable-ai/LimiX-2M",
+      "revision": "641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e",
+      "files": [
+        {
+          "path": "model.ckpt",
+          "bytes": 9558253,
+          "url": "https://huggingface.co/stable-ai/LimiX-2M/resolve/641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e/LimiX-2M.ckpt"
+        }
+      ]
+    },
+    "regression": {
+      "repo": "stable-ai/LimiX-2M",
+      "revision": "641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e",
+      "files": [
+        {
+          "path": "model.ckpt",
+          "bytes": 9558253,
+          "url": "https://huggingface.co/stable-ai/LimiX-2M/resolve/641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e/LimiX-2M.ckpt"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_limix2m_classification",
+    "regression": "graph_limix2m_regression",
+    "tensor_map": {
+      "classification": "tensor_map_limix2m_classification.json",
+      "regression": "tensor_map_limix2m_regression.json"
+    }
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32"
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32"
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32"
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 5000,
+    "max_features": 100,
+    "max_classes": 10
+  }
+}

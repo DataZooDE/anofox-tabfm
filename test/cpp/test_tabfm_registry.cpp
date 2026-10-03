@@ -219,6 +219,48 @@ TEST_CASE("registry: Orion-MSP is classify-only alongside its Orion-BiX sibling"
 	        bix.tasks.at(TabFMTask::CLASSIFICATION).repo);
 }
 
+TEST_CASE("registry: LimiX-2M ships built in, commercial under the Stable AI licence, gated, pinned to the release it was exported from",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("limix-2m"));
+	auto &m = reg.Get("limix-2m");
+
+	// The weights repo's LICENSE.txt (Stable AI Technology Co., Ltd. License v1.0, 2026-09) is
+	// Apache-2.0 plus one added Section 10, so commercial use is permitted. The gate is therefore the
+	// licence ACKNOWLEDGEMENT, not a commercial restriction. (The older upstream README says "academic,
+	// commercial with authorization" and the model card is internally inconsistent; the newest
+	// LICENSE.txt governs and docs/REAL_MODELS.md says so.)
+	REQUIRE(m.license.id == "limix-2m-license-v1.0");
+	REQUIRE(m.license.commercial == true);
+	REQUIRE(m.license.redistributable == true);
+	REQUIRE(m.license.gate_setting == "accept_hf_license");
+	// Section 10's two obligations must be quoted where a user sees the model, verbatim.
+	REQUIRE_THAT(m.license.attribution, Contains("Built with StableAI LimiX"));
+	REQUIRE_THAT(m.license.attribution, Contains("Section 10"));
+	REQUIRE_THAT(m.license.attribution, Contains("\"LimiX\" at the beginning of the name"));
+	REQUIRE_THAT(m.license.attribution, Contains("Stable AI Technology Co., Ltd."));
+
+	REQUIRE(m.HasCapability("classify"));
+	REQUIRE(m.HasCapability("regress"));
+	// the model standardises its features itself and the wrapper standardises the regression target
+	// in-graph, so the engine must do neither
+	REQUIRE(m.preprocessing_profile == "limix_v1_raw");
+	REQUIRE(m.size_regime.max_classes == 10);
+
+	// ONE checkpoint serves both tasks, so both tasks name the same file (downloaded once), pinned to the
+	// commit the graphs were exported from. Its LFS sha256 is identical across every commit since release.
+	for (auto task : {TabFMTask::CLASSIFICATION, TabFMTask::REGRESSION}) {
+		auto &t = m.tasks.at(task);
+		REQUIRE(t.repo == "stable-ai/LimiX-2M");
+		REQUIRE(t.revision == "641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e");
+		REQUIRE(t.files.size() == 1);
+		REQUIRE_THAT(t.files[0].url, Contains("/resolve/641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e/LimiX-2M.ckpt"));
+		REQUIRE(t.files[0].bytes == 9558253);
+	}
+	REQUIRE(m.tasks.at(TabFMTask::CLASSIFICATION).files[0].path ==
+	        m.tasks.at(TabFMTask::REGRESSION).files[0].path);
+}
+
 TEST_CASE("registry: Causilo ships built in, non-commercial and gated, pinned to the release it was exported from",
           "[tabfm][registry]") {
 	auto reg = ModelRegistry::Build();

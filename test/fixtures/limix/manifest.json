@@ -1,0 +1,90 @@
+{
+  "schema_version": 2,
+  "id": "limix-fixture",
+  "display_name": "LimiX CI fixture (random init, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "apache-2.0",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "limix_v1_raw",
+  "weights": {
+    "classification": {
+      "repo": "local:test/fixtures/limix",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model.safetensors",
+          "bytes": 110948,
+          "sha256": "dc1bc8d73ebc276f0d220de58e390512b7ad8cccd8560963bcfa75d12d75b68f"
+        }
+      ]
+    },
+    "regression": {
+      "repo": "local:test/fixtures/limix",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model.safetensors",
+          "bytes": 110948,
+          "sha256": "dc1bc8d73ebc276f0d220de58e390512b7ad8cccd8560963bcfa75d12d75b68f"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_limix_classification.onnx",
+    "regression": "graph_limix_regression.onnx",
+    "tensor_map": {
+      "classification": "tensor_map_limix_classification.json",
+      "regression": "tensor_map_limix_regression.json"
+    }
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 3
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init LimiX fixture (Apache-2.0 architecture, our weights). ONE weights file serves both tasks. H is DYNAMIC; y carries train targets only (length = train_size); no cat_mask/d/train_size inputs. The model standardises features itself and the wrapper standardises the regression target in-graph, so the engine profile is *_raw. classification outputs are class logits (C = max_classes); regression outputs are a SINGLE RAW-space point estimate (C = 1). Rows < S are in-context fitted values (context rows presented a second time as queries)."
+}
