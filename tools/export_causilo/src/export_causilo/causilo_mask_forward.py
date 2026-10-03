@@ -79,6 +79,22 @@ def _inject_keep(train):
     return train
 
 
+def _twice(t):
+    """`[t ; t]` along the row axis (axis 1) WITHOUT a Concat: unsqueeze, expand, reshape.
+
+    The values are identical to `torch.cat([t, t], dim=1)`. The Concat spelling puts a node into the graph whose
+    two inputs are the SAME tensor, and the real masked graph fails MIGraphX's GPU pipeline in `fuse_concat`
+    (`program.cpp:1211 create_module: Assertion 'not contains(impl->modules, name)'`). See
+    docs/ROCM_CAUSILO_PLAN.md for how far that is established.
+    """
+    return t.unsqueeze(1).expand(t.shape[0], 2, *t.shape[1:]).reshape(t.shape[0], -1, *t.shape[2:])
+
+
+def _twice_concat(t):
+    """The original spelling, kept only so a test can show what the graph looked like (and that the guard sees it)."""
+    return torch.cat([t, t], dim=1)
+
+
 # --- small pieces ---------------------------------------------------------------------------------------
 
 def _bias(keep, like):
@@ -343,7 +359,7 @@ def masked_forward(model, x, y, train_size, d):
         y = torch.where(train.reshape(1, -1), (y - mean_y) / std_y, torch.zeros_like(y))
 
     two_t = torch.arange(2 * T, device=x.device) < train_size
-    out = _predict_rows(model, torch.cat([table, table], dim=1), torch.cat([y, y], dim=1), two_t, d)[:, T:]
+    out = _predict_rows(model, _twice(table), _twice(y), two_t, d)[:, T:]
     if regression:
         return out.mean(dim=-1, keepdim=True) * std_y + mean_y
     return out

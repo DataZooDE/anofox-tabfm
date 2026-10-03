@@ -108,6 +108,18 @@ class _Sliced(_Chunk):
         return p[..., :8] * p[..., 8:]
 
 
+class _CatSame(torch.nn.Module):           # cat([a, a]): the duplicate route's old spelling
+    def forward(self, x):
+        a = torch.sin(x) * 2.0 + 1.0
+        return torch.cat([a, a], dim=1) * 3.0
+
+
+class _ExpandedTwice(torch.nn.Module):     # the same values, no Concat
+    def forward(self, x):
+        a = torch.sin(x) * 2.0 + 1.0
+        return a.unsqueeze(1).expand(a.shape[0], 2, *a.shape[1:]).reshape(a.shape[0], -1, *a.shape[2:]) * 3.0
+
+
 def _bad_and_good():
     f4 = torch.randn(4, 8)
     return {
@@ -116,6 +128,7 @@ def _bad_and_good():
         "concat of transposes": (_ConcatOfTransposes(), (torch.randn(3, 5), torch.randn(3, 5)), _ConcatFixed()),
         "K=1 matmul": (_K1Matmul(), (f4, torch.tensor([[2.0]])), _K1Elementwise()),
         "sequence ops": (_Chunk(), (torch.randn(3, 5, 8),), _Sliced()),
+        "concat of the same tensor": (_CatSame(), (torch.randn(1, 64, 16),), _ExpandedTwice()),
     }
 
 
@@ -207,6 +220,29 @@ def test_the_sequence_guard_sees_the_real_graph(tmp_path, monkeypatch):
     path = tmp_path / "chunk.onnx"
     export.export_mask_graph(seeded_model("classification"), path, example=cfg.mask_example, classes=cfg.classes)
     assert guards.sequence_ops(path), "no sequence op found even though chunk was reintroduced"
+
+
+def test_the_repeated_concat_guard_sees_the_real_graph_and_the_fix_is_numerically_identical(tmp_path, monkeypatch):
+    """Put the old `cat([t, t])` spelling back: the guard must flag the REAL masked graph, the default must be clean,
+    and the two spellings must agree exactly (the gate numbers do not move)."""
+    cfg = configs.get("fixture")
+    model = seeded_model("classification")
+    n, N, d, T, H = cfg.mask_parity_cases[0]
+    rng = np.random.default_rng(0)
+    feed = export.padded_feed(rng.standard_normal((n, d)), rng.integers(0, 3, N), (T, H))
+    args = [torch.from_numpy(feed[k]) for k in ("x", "y", "train_size", "n_rows", "d")]
+    with torch.no_grad():
+        fixed = MaskExportWrapper(model)(*args)
+    clean = tmp_path / "clean.onnx"
+    export.export_mask_graph(model, clean, example=cfg.mask_example, classes=cfg.classes)
+    assert not guards.repeated_concat_inputs(clean)
+
+    monkeypatch.setattr(cmf, "_twice", cmf._twice_concat)
+    old = tmp_path / "old.onnx"
+    export.export_mask_graph(model, old, example=cfg.mask_example, classes=cfg.classes)
+    assert guards.repeated_concat_inputs(old), "the guard did not flag the graph with the old Concat spelling"
+    with torch.no_grad():
+        assert torch.equal(MaskExportWrapper(model)(*args), fixed)
 
 
 # --- 5. independence from patches, and upstream's own runner ----------------------------------------------

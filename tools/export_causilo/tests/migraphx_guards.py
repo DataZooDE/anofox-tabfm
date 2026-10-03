@@ -19,6 +19,14 @@ graph MIGraphX rejected (the empty shape is a Constant with `value_ints = []`, n
      with migraphx-driver, not by anything that runs on ORT; unlike 1-4 it fails at parse time, so even
      `--ref` sees it.
 
+  6. a `Concat` that lists the SAME tensor twice (`torch.cat([t, t])`): in the real masked graph this precedes
+     `fuse_concat` asserting `create_module: Assertion 'not contains(impl->modules, name)'` on the GPU target.
+     EVIDENCE IS WEAKER than for 1-5, and the docs say so: eight tiny graphs with such a Concat (float, bool, via
+     `isnan`) compiled FINE on the GPU target, and the real graph was not reduced to a minimal reproducer. What was
+     shown: the real fixture graph fails in `fuse_concat` with them, and compiles PAST `fuse_concat` without them
+     (it then fails later, for an unrelated reason: see docs/ROCM_CAUSILO_PLAN.md). The guard marks a known-bad
+     CONTEXT, not a proven trigger.
+
 All of them take a path and return a list of offending node names (empty = clean).
 """
 
@@ -80,6 +88,25 @@ def k1_matmuls(path):
             if n.op_type in ("Gemm", "MatMul") and any(i in k1 or i in via for i in n.input)]
 
 
+def repeated_concat_inputs(path):
+    """`Concat` nodes that list the same COMPUTED tensor more than once.
+
+    Shape vectors built from `Constant`s (`Concat(c, c, n, c, c, m)` feeding a Reshape) repeat inputs legitimately
+    and are present in the graphs that compile; only repeats of a non-constant tensor count.
+    """
+    m = onnx.load(str(path), load_external_data=False)
+    constant = {o for n in m.graph.node if n.op_type == "Constant" for o in n.output}
+    constant |= {i.name for i in m.graph.initializer}
+    bad = []
+    for n in m.graph.node:
+        if n.op_type != "Concat":
+            continue
+        seen = [i for i in n.input if i not in constant]
+        if len(set(seen)) < len(seen):
+            bad.append(n.name or n.output[0])
+    return bad
+
+
 SEQUENCE_OPS = {"SplitToSequence", "SequenceAt", "SequenceConstruct", "SequenceInsert", "SequenceErase",
                 "SequenceLength", "SequenceEmpty", "ConcatFromSequence"}
 
@@ -96,4 +123,5 @@ GUARDS = {
     "concat of transposes": concat_of_transposes,
     "K=1 matmul": k1_matmuls,
     "sequence ops": sequence_ops,
+    "concat of the same tensor": repeated_concat_inputs,
 }

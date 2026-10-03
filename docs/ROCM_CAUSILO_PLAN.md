@@ -178,9 +178,87 @@ route processes `2T` rows, so run time (not node count) roughly doubles against 
 `tensor_map_causilo_<task>.json` from the masked export is byte-identical to the one already bundled, so the
 weights-header hash (`ExpectedWeightsHeaderShaFor("causilo", ...)`) and the tensor map need no change.
 
+## GPU compile (gfx1201, `migraphx-driver compile --gpu`): NOT PASSING
+
+No GPU compile of any Causilo masked graph has succeeded. Failures, in the order they were met. `--ref` compiles
+every one of these graphs; only `--gpu` reproduces them (`--cpu` is unavailable here: no `libmigraphx_cpu.so`).
+
+### 1. `fuse_concat` assertion (fixture 1m42s, fixture_r 4m30s, real classification 682 s)
+
+```
+program.cpp:1211 create_module: Assertion 'not contains(impl->modules, name)' failed
+```
+
+Last pass printed by `MIGRAPHX_TRACE_COMPILE=1`: `fuse_concat`. Ancestor-set bisection over the graph (compile the
+sub-graph that produces node N, find the first N that fails) gives **first failing node #3984**, a `MatMul`
+(`div_40 [1,2,2*s27,16] x [16,64]`): the first `Linear` of `QueryScale.content` in the LAST prediction layer. The
+nearest passing cut is node 3887; the cut at 3976 (`tanh_37`) passes but has a tiny ancestor set, so it says
+nothing. The program entering `fuse_concat` has 10 Concats, four of which list the same operand twice: bool
+`concat[axis=1](@15,@15)`, float `concat[axis=1](@40,@40)`, bool `concat[axis=0](@22,@22)`, `concat[axis=1](y,y)`.
+Those come from the duplicate route (`torch.cat([table, table])`, `torch.cat([y, y])`).
+
+**Eight tiny standalone Concat graphs compiled FINE on `--gpu`**: same operand twice (from an op, from a graph input,
+through an add), distinct operands, a bool same-operand Concat, `isnan` through a Concat with and without
+`where`-fill, and a bool Concat of the train mask. **So the same-operand Concat is NOT shown to be the trigger, and
+no minimal reproducer exists.** What is established: with the duplicate route spelled by `expand + reshape`
+instead of `Concat` (`_twice`; values identical), the fixture graph gets PAST `fuse_concat`. That is a correlation
+on one graph, not a mechanism.
+
+Guard 6 in `tests/migraphx_guards.py` ("concat of the same tensor") encodes that context. It flags repeated
+**computed** inputs only (shape vectors of `Constant`s repeat legitimately and compile). It is shown failing on a
+`cat([a, a])` module and on the real graph with the old spelling, and clean on the current export. Evidence for it
+is weaker than for guards 1 to 5.
+
+### 2. After the Concat change: a HIP kernel compile error in `gpu::compile_ops` (fixture, 2m34s)
+
+```
+main.cpp:99:40: error: invalid operands to binary expression ('float' and
+  'migraphx::reduce::block::reducer<...>::inner_storage<float, 1, integral_constant<unsigned int, 1>>')
+auto zz2 = migraphx::convert<float>(x0 / x1);
+... no matching function for call to 'invoke_loop' ... optional<gpu::tuning_config>::operator->: Assertion
+'this->_M_is_engaged()' failed.   (3 errors generated when compiling for gfx1201)
+```
+
+A `fused_reduce` kernel (`reduce::block`, `[1,16]`) divides a float by a reduction result held as `inner_storage`.
+It was hidden behind failure 1 (`fuse_concat` runs before `compile_ops`). **Minimal reproducer, 16 lines**: sum a
+masked tensor over axis 1, divide by the masked count (itself a reduction), then compute a masked variance divided
+by the same count:
+
+```python
+m  = (torch.arange(x.shape[1]) < n[0]).reshape(1, -1, 1)
+nr = m.to(x.dtype).sum(1, keepdim=True)
+mu = torch.where(m, x, torch.zeros_like(x)).sum(1, keepdim=True) / nr
+var = (torch.where(m, (x - mu) ** 2, torch.zeros_like(x)).sum(1, keepdim=True) / nr).sqrt()
+out = (x - mu) / var            # x [1,128,16], n [1]
+```
+
+`--gpu` fails with the error above; `--ref` passes. The two simpler variants (a masked mean alone, and the same on a
+2-D bool mask) compile on `--gpu`, so the trigger is the second reduction dividing by the first.
+The failing kernel's shapes (`[128,16]` bool inputs reduced to `[1,16]`) match the masked normaliser's per-feature
+mean/variance over the real rows, but that match was NOT confirmed by mapping the kernel to a node. Whether the
+positional graph has the same construct was not checked (it failed earlier, section 3). Not yet attempted: rewriting it (e.g. multiply by a precomputed `1/count`, or compute the
+count outside the fusion) and re-guarding.
+
+### 3. The shipped POSITIONAL graph also fails on `--gpu`, differently
+
+`resources/graph_causilo_classification.onnx` cannot even be parsed by MIGraphX (`Unknown operator:
+SplitToSequence`, from `Tensor.chunk`). With that one change (K/V as slices, exported by a scratch script; 9,181
+nodes), `--gpu` aborts in **54 s in `simplify_reshapes`** with `std::length_error: cannot create std::vector larger
+than max_size()`, at `x[1,128,16]`/`y[1,70]`, `x[1,256,16]`/`y[1,128]` and `x[1,192,8]`/`y[1,100]` alike. `--ref`
+compiles it. So the failure in section 1 is not inherited from the positional graph (it never gets that far), but
+the positional graph is NOT a known-good GPU baseline either: no Causilo graph, positional or masked, has compiled
+on this GPU.
+
+### Limits of what this shows
+
+* One GPU (gfx1201), one MIGraphX build, `migraphx-driver compile`; no run, no numerics on the GPU.
+* The `fuse_concat` cause is unestablished (section 1). The Concat-free variant is a workaround for one graph
+  that moved the failure to section 2.
+* Section 2 was reproduced on a 16-line graph; section 1 and section 3 were not reduced.
+
 ## What is not done
 
-No GPU compile, no bundling (nothing under `resources/`, no `cmake/embed_resources.cmake` entry), no
+No GPU compile passes (see the section above), no bundling (nothing under `resources/`, no `cmake/embed_resources.cmake` entry), no
 `tabfm_backends()` or test-list change, no timing on any device, no plugin involvement. `make_migraphx_graph.py` was
-run only into a scratch directory to feed the parser. Whether the GPU pipeline accepts the graph is unknown; the
+run only into a scratch directory to feed the parser. The GPU pipeline does not accept the graph yet; the
 TabPFN conversion found four such failures only on the GPU.
