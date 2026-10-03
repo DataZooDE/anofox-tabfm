@@ -178,7 +178,7 @@ route processes `2T` rows, so run time (not node count) roughly doubles against 
 `tensor_map_causilo_<task>.json` from the masked export is byte-identical to the one already bundled, so the
 weights-header hash (`ExpectedWeightsHeaderShaFor("causilo", ...)`) and the tensor map need no change.
 
-## GPU compile (gfx1201, `migraphx-driver compile --gpu`): NOT PASSING
+## GPU compile (gfx1201, `migraphx-driver compile --gpu`): compiles for classification at one bucket; nothing has run
 
 No GPU compile of any Causilo masked graph has succeeded. Failures, in the order they were met. `--ref` compiles
 every one of these graphs; only `--gpu` reproduces them (`--cpu` is unavailable here: no `libmigraphx_cpu.so`).
@@ -252,18 +252,45 @@ fuser. `normalise_masked` now writes all ten of its row sums through `_row_sum` 
 to summation order (gate numbers below). No structural guard: reduction chains are everywhere in the graph (softmax
 is one) and compile, so a graph-shape check cannot tell the bad ones apart; the compile of the fixture is the check.
 
-**Result: the fixture graph (4,235 nodes) compiles on `--gpu`: rc=0, no kernel error, no assertion, 2m36s.**
-Nothing was run on the GPU, so there are no GPU numerics, and `fixture_r` and the real graphs were NOT recompiled.
+**Compile results with the matmul sums** (`migraphx-driver compile --gpu`, bucket x[1,128,16], rebased code):
+
+| graph | nodes | rc | time | kernel errors | assertions |
+|---|---|---|---|---|---|
+| fixture | 4,235 | 0 | 2m36s | 0 | 0 |
+| fixture_r | 7,018 | 0 | 375 s | 0 | 0 |
+| real classification (MIGraphX variant, `--dynamic`) | n/a | 0 | 791 s | 0 | 0 |
+
+Not compiled: real REGRESSION, any other bucket, any other MIGraphX version. Nothing was RUN on the GPU, so there are
+no GPU numerics; a compile says the pipeline accepts the program, not that it computes the right numbers.
+The `fuse_concat` assertion did not reappear on these graphs (they all use the `expand + reshape` duplicate route); its
+cause remains unestablished.
 
 Full gate after the rewrite (4 configs x 11 cases, plus controls; file read in full): worst `all` error
 9.5e-06 (fixture classification), 2.2e-05 (fixture regression), 6.1e-06 (fixture_r classification), 2.3e-05
 (fixture_r regression), budget 1e-4; all 28 negative controls caught (7 controls x 4 configs, relative error 0.54 to
-2.2). Caveat from that output: the separate `qry` column reaches 1.08e-04 on fixture_r regression (n=16, N=15) and
-5.6e-05 on fixture regression, above 1e-4 for that one cell; the gate's criterion is the `all` column (2.3e-05 there).
-Before the rewrite the same cell (fixture_r regression, n=16, N=15) read `qry`=4.59e-06 (all=1.45e-05), so the
-matmul sums DID move it, to 1.08e-04 (the `all` column went 1.45e-05 -> 2.32e-05). Cause not investigated; summation
-order through a near-degenerate case (N=15 context rows, 1 query) is the suspect, not shown. The 1e-4 budget is not
-loosened; the criterion it is applied to is `all`.
+2.2). Re-run after rebasing onto origin/main (eb472a6): same worst errors, 28 of 28 controls caught (two detail rows moved
+at the 1e-7 level).
+
+### The 1.08e-04 `qry` cell is float32 noise against a near-zero output, not a defect
+
+The `qry` column is the error of the query rows divided by THEIR OWN max |output|. fixture_r regression n=16, N=15
+has one query row, so a small output inflates it. Measured (fixture_r regression, one query row, masked model in
+float64 as truth; `$S/drift.py`):
+
+* The formulation is exact: float64 matmul-sum vs float64 plain-sum differ by at most 1.3e-14.
+* Absolute error of the query row against float64, matmul form: n=16 2.7e-5, n=32 9.4e-7, n=64 7.5e-6, n=128 1.1e-5.
+  No growth with n (one seed each).
+* Eight seeds at n=16 and n=64, error relative to the query magnitude: median 1.7e-06 (plain sum) vs 1.4e-06
+  (matmul) at n=16, 2.9e-06 vs 2.2e-06 at n=64. The matmul did not move the typical case. Both forms have a heavy
+  tail: max 1.1e-5 (sum) vs 1.1e-4 (matmul) at n=16, 3.3e-3 vs 5.8e-3 at n=64.
+* The n=64 outlier (seed 4) has a true query output of 0.009; the UNPADDED POSITIONAL f32 reference shows the same
+  2.5e-3 relative error against float64 there, i.e. 2.3e-5 absolute. The tail is the model's own float32 noise measured
+  against a near-zero output, shared by the reference.
+
+Limits: one query row, 8 seeds, two n values, a random-weight model, not the real weights. "Does not grow with n" rests
+on the absolute errors above and on medians; the maxima of 8 samples are too noisy to show a trend either way. Also
+worth knowing: the positional float32 reference is itself up to 1.0e-04 (all rows, n=128) from float64, the same
+order as the 1e-4 budget, so that budget cannot resolve differences much finer than float32 noise at that size.
 
 ### 3. The shipped POSITIONAL graph also fails on `--gpu`, differently
 
