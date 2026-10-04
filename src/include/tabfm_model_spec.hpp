@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <algorithm>
+
 #include "tabfm_manifest.hpp" // ManifestFile, EngineProfile, TabFMTask
 #include "tabfm_mlx_ops.hpp"  // MlxKnownWrong
 
@@ -128,6 +130,17 @@ struct ModelSpec {
 	//! resolve against it). Empty for built-ins / inline manifests.
 	string source_dir;
 
+	//! Tasks for which the labelled (context) rows' own outputs are NOT usable fitted values as the graph
+	//! produces them, so the engine must evaluate those rows a second time as QUERIES (appended after the
+	//! real rows) and read their fitted values from that pass. A model needs this when its graph adds a
+	//! context row's label to that row's own representation and then decodes every row with a head that was
+	//! only ever trained on rows without one (tabfm-v1, both tasks; tabicl-v2 regression). Query rows are
+	//! bit-identical either way, because a query row's answer depends only on the context.
+	vector<TabFMTask> fitted_second_pass;
+
+	bool FittedSecondPass(TabFMTask task) const {
+		return std::find(fitted_second_pass.begin(), fitted_second_pass.end(), task) != fitted_second_pass.end();
+	}
 	bool HasTask(TabFMTask task) const {
 		return tasks.find(task) != tasks.end();
 	}
@@ -782,6 +795,10 @@ string ListableArtifactPath(const string &declared_path, ExistsFn exists) {
 
 //! Parse + strictly validate a v1 or v2 manifest into a ModelSpec.
 ModelSpec ParseModelSpec(const string &json, const string &manifest_path = "(inline manifest)");
+
+//! One entry of `fitted_second_pass`: "classification" or "regression". Anything else is an error that names the
+//! field, the word and the valid values, so a typo cannot silently leave a model on the broken fitted values.
+TabFMTask ParseFittedSecondPassTask(const string &name, const string &where);
 
 //! Read `path` and parse it (IOException if unreadable).
 ModelSpec LoadModelSpecFile(const string &path);

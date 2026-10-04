@@ -561,3 +561,57 @@ TEST_CASE("registry: every built-in pins its weights to a Hugging Face commit, w
 		}
 	}
 }
+// ---------------------------------------------------------------------------------------------
+// fitted_second_pass: which models need their context rows evaluated a second time as queries.
+// Measured on the real weights (eager PyTorch agrees with the engine to four digits): the fitted values of
+// tabfm-v1 (both tasks) and tabicl-v2 regression are uncorrelated or anti-correlated with the labels
+// (tabfm-v1 regression corr -0.016, tabicl-v2 regression -0.364, tabfm-v1 classification 76% on iris),
+// while a second pass makes them track the labels (+0.93 / +0.86 / 100%) with every query row bit-identical.
+// ---------------------------------------------------------------------------------------------
+
+TEST_CASE("registry: tabfm-v1 and tabicl-v2 regression ask for a second pass over their context rows",
+          "[tabfm][registry][fitted]") {
+	auto reg = ModelRegistry::Build({});
+	auto &v1 = reg.Get("tabfm-v1");
+	REQUIRE(v1.FittedSecondPass(TabFMTask::CLASSIFICATION));
+	REQUIRE(v1.FittedSecondPass(TabFMTask::REGRESSION));
+	auto &icl = reg.Get("tabicl-v2");
+	REQUIRE(icl.FittedSecondPass(TabFMTask::REGRESSION));
+	// tabicl-v2 classification measured fine (0.97+ on context rows): do not charge it the extra pass
+	REQUIRE_FALSE(icl.FittedSecondPass(TabFMTask::CLASSIFICATION));
+}
+
+TEST_CASE("registry: every other built-in already produces usable fitted values and pays no second pass",
+          "[tabfm][registry][fitted]") {
+	auto reg = ModelRegistry::Build({});
+	for (auto &id : {"mitra", "tabpfn-v2", "tabpfn-v2-5", "tabpfn-v2-5-real", "tabpfn-v2-6", "tabpfn-v3", "orion-bix",
+	                 "orion-msp", "tabdpt", "causilo", "limix-2m"}) {
+		INFO(id);
+		REQUIRE(reg.Has(id));
+		REQUIRE_FALSE(reg.Get(id).FittedSecondPass(TabFMTask::CLASSIFICATION));
+		REQUIRE_FALSE(reg.Get(id).FittedSecondPass(TabFMTask::REGRESSION));
+	}
+}
+
+TEST_CASE("model spec: a v2 manifest can declare fitted_second_pass, and a typo names the fix",
+          "[tabfm][registry][fitted]") {
+	const char *base = R"json({"schema_version": 2, "id": "m", "preprocessing_profile": "p",
+	  "weights": {"regression": {"repo": "r", "files": [{"path": "w.safetensors"}]}},
+	  "graph": {"regression": "g.onnx"}, "capabilities": ["regress"]%s})json";
+	char buf[1024];
+	snprintf(buf, sizeof(buf), base, ", \"fitted_second_pass\": [\"regression\"]");
+	auto spec = ParseModelSpec(buf, "(test)");
+	REQUIRE(spec.FittedSecondPass(TabFMTask::REGRESSION));
+	REQUIRE_FALSE(spec.FittedSecondPass(TabFMTask::CLASSIFICATION));
+
+	snprintf(buf, sizeof(buf), base, "");
+	REQUIRE_FALSE(ParseModelSpec(buf, "(test)").FittedSecondPass(TabFMTask::REGRESSION));
+
+	snprintf(buf, sizeof(buf), base, ", \"fitted_second_pass\": [\"regresion\"]");
+	REQUIRE_THROWS_WITH(ParseModelSpec(buf, "(test)"),
+	                    Contains("fitted_second_pass") && Contains("regresion") && Contains("classification") &&
+	                        Contains("regression"));
+
+	snprintf(buf, sizeof(buf), base, ", \"fitted_second_pass\": \"regression\"");
+	REQUIRE_THROWS_WITH(ParseModelSpec(buf, "(test)"), Contains("fitted_second_pass") && Contains("array"));
+}
