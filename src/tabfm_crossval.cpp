@@ -45,7 +45,8 @@
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
-#include "duckdb/parser/parser.hpp"
+#include "duckdb_compat.hpp"
+#include "tabfm_table_macro.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 #include "telemetry.hpp"
 
@@ -133,7 +134,7 @@ R"(
       -- Build the full k-fold UNION ALL SQL as a scalar string expression.
       -- No subquery — query() does not allow subquery arguments in DuckDB 1.5.4.
       --
-      -- Strategy: list_transform(range(k), f -> per_fold_sql) generates k SQL
+      -- Strategy: list_transform(range(k), lambda f: per_fold_sql) generates k SQL
       -- strings (one per fold) joined with UNION ALL, wrapped in a CTE _cv_folds
       -- inside the generated SQL, then appended with an aggregate row.
       --
@@ -170,7 +171,7 @@ R"(
       || array_to_string(
            list_transform(
              range(CAST(CAST(k AS BIGINT) AS BIGINT)),
-             f -> (
+             lambda f: (
                'SELECT ' || CAST(f AS VARCHAR) || ' AS fold_id,'
                ' m AS metric_value, NULL::DOUBLE AS metric_std'
                ' FROM (SELECT ' ||
@@ -350,45 +351,12 @@ R"(
 
 // ── Macro registration helpers (exact analog of tabfm_macros.cpp) ────────────
 
-unique_ptr<MacroFunction> BuildTableMacroFunction(const CVMacroDef &def) {
-	Parser parser;
-	parser.ParseQuery(def.body);
-	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
-		throw InternalException("tabfm CV macro body must be a single SELECT statement");
-	}
-	auto node = std::move(parser.statements[0]->Cast<SelectStatement>().node);
-	auto function = make_uniq<TableMacroFunction>(std::move(node));
-
-	// Positional required parameters
-	for (idx_t i = 0; def.parameters[i] != nullptr; i++) {
-		function->parameters.push_back(make_uniq<ColumnRefExpression>(def.parameters[i]));
-		function->types.push_back(LogicalType::UNKNOWN);
-	}
-	// Trailing optional parameters ("name=sql_default")
-	for (idx_t i = 0; def.default_params[i] != nullptr; i++) {
-		string spec = def.default_params[i];
-		auto eq = spec.find('=');
-		auto name = spec.substr(0, eq);
-		auto default_sql = spec.substr(eq + 1);
-		Parser expr_parser;
-		auto expr = expr_parser.ParseExpressionList(default_sql);
-		expr[0]->SetAlias(name);
-		function->parameters.push_back(make_uniq<ColumnRefExpression>(name));
-		function->types.push_back(LogicalType::UNKNOWN);
-		function->default_parameters[name] = std::move(expr[0]);
-	}
-	return std::move(function);
-}
-
 unique_ptr<CreateMacroInfo> BuildMacroInfo(const string &name, const CVMacroDef &def, const string &alias_of,
                                            const vector<string> &param_names) {
-	auto info = make_uniq<CreateMacroInfo>(CatalogType::TABLE_MACRO_ENTRY);
-	info->schema = DEFAULT_SCHEMA;
-	info->name = name;
+	auto info = MakeTableMacroInfo(name, def.parameters, def.default_params, def.body);
 	info->temporary = true;
 	info->internal = true;
-	info->alias_of = alias_of;
-	info->macros.push_back(BuildTableMacroFunction(def));
+	info->alias_of = duckdb_compat::Ident(alias_of);
 
 	// FunctionDescription required by tabfm_function_docs.test (CLAUDE.md rule #3)
 	FunctionDescription fd;

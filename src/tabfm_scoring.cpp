@@ -18,7 +18,7 @@
 // The STRUCT is the exact type tabfm_predict_agg.cpp emits at lines 100-103.
 //
 // tabfm_interval_score additionally accepts an optional 3rd DOUBLE arg `coverage`
-// (default 0.9, validated in IScoreBind via IScoreBindData).
+// (default 0.9, validated in duckdb_compat::AggregateBind<IScoreBind>() via IScoreBindData).
 //
 // Spec ref: PSR-01, PSR-02, PSR-03, PSR-04, SQL-API §5
 // Research ref: 03-RESEARCH.md §Exact CRPS Math, §Log-Score Math,
@@ -39,6 +39,8 @@
 
 #include "duckdb/common/types/value.hpp"
 #include "duckdb/common/value_operations/value_operations.hpp"
+#include "duckdb_compat.hpp"
+#include "duckdb_compat/aggregate.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -262,7 +264,7 @@ double ComputeLogScore(double y, const std::vector<double> &probs,
 // u = DistributionQuantile(probs, borders, 1 - alpha/2)
 //
 // DistributionQuantile reused from tabfm_predict.hpp:206 (external linkage).
-// Validated pre-condition: 0 < coverage < 1 (enforced at bind by IScoreBind).
+// Validated pre-condition: 0 < coverage < 1 (enforced at bind by duckdb_compat::AggregateBind<IScoreBind>()).
 //
 // External linkage for Catch2.
 // Spec ref: PSR-03, 03-RESEARCH.md §Interval Score Math
@@ -305,11 +307,7 @@ struct CRPSState {
 	int64_t n;        // non-NULL valid rows
 };
 
-idx_t CRPSStateSize(const AggregateFunction &) {
-	return sizeof(CRPSState);
-}
-
-void CRPSStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void CRPSStateInit(data_ptr_t state_ptr) {
 	new (state_ptr) CRPSState{0.0, 0};
 }
 
@@ -326,7 +324,7 @@ void CRPSUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vect
 	UnifiedVectorFormat sdata, actual_data;
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
-	auto states = reinterpret_cast<CRPSState **>(sdata.data);
+	auto states = reinterpret_cast<CRPSState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -401,8 +399,8 @@ void CRPSCombine(Vector &source_vector, Vector &target_vector, AggregateInputDat
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<CRPSState **>(source_data.data);
-	auto targets = reinterpret_cast<CRPSState **>(target_data.data);
+	auto sources = reinterpret_cast<CRPSState *const *>(source_data.data);
+	auto targets = reinterpret_cast<CRPSState *const *>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &src = *sources[source_data.sel->get_index(i)];
 		auto &tgt = *targets[target_data.sel->get_index(i)];
@@ -411,24 +409,24 @@ void CRPSCombine(Vector &source_vector, Vector &target_vector, AggregateInputDat
 	}
 }
 
-// CRPSFinalize — mean CRPS; NULL when n==0 (empty/all-NULL group)
+// duckdb_compat::AggregateFinalize<CRPSFinalize>() — mean CRPS; NULL when n==0 (empty/all-NULL group)
 void CRPSFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_t count,
                   idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<CRPSState **>(sdata.data);
+	auto states = reinterpret_cast<CRPSState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (state.n == 0) {
 			FlatVector::SetNull(result, i + offset, true);
 		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
+			duckdb_compat::FlatData<double>(result)[i + offset] =
 			    state.sum_crps / static_cast<double>(state.n);
 		}
 	}
 }
 
-unique_ptr<FunctionData> CRPSBind(ClientContext &, AggregateFunction &,
+unique_ptr<FunctionData> CRPSBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
                                    vector<unique_ptr<Expression>> &) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_crps");
 	return nullptr;
@@ -454,11 +452,7 @@ struct LogScoreState {
 	int64_t n;      // non-NULL valid rows
 };
 
-idx_t LogScoreStateSize(const AggregateFunction &) {
-	return sizeof(LogScoreState);
-}
-
-void LogScoreStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void LogScoreStateInit(data_ptr_t state_ptr) {
 	new (state_ptr) LogScoreState{0.0, 0};
 }
 
@@ -469,7 +463,7 @@ void LogScoreUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_
 	UnifiedVectorFormat sdata, actual_data;
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
-	auto states = reinterpret_cast<LogScoreState **>(sdata.data);
+	auto states = reinterpret_cast<LogScoreState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -532,8 +526,8 @@ void LogScoreCombine(Vector &source_vector, Vector &target_vector, AggregateInpu
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<LogScoreState **>(source_data.data);
-	auto targets = reinterpret_cast<LogScoreState **>(target_data.data);
+	auto sources = reinterpret_cast<LogScoreState *const *>(source_data.data);
+	auto targets = reinterpret_cast<LogScoreState *const *>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &src = *sources[source_data.sel->get_index(i)];
 		auto &tgt = *targets[target_data.sel->get_index(i)];
@@ -546,19 +540,19 @@ void LogScoreFinalize(Vector &state_vector, AggregateInputData &, Vector &result
                       idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<LogScoreState **>(sdata.data);
+	auto states = reinterpret_cast<LogScoreState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (state.n == 0) {
 			FlatVector::SetNull(result, i + offset, true);
 		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
+			duckdb_compat::FlatData<double>(result)[i + offset] =
 			    state.sum_ls / static_cast<double>(state.n);
 		}
 	}
 }
 
-unique_ptr<FunctionData> LogScoreBind(ClientContext &, AggregateFunction &,
+unique_ptr<FunctionData> LogScoreBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
                                        vector<unique_ptr<Expression>> &) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_log_score");
 	return nullptr;
@@ -606,11 +600,7 @@ struct IScoreState {
 	int64_t n;      // non-NULL valid rows
 };
 
-idx_t IScoreStateSize(const AggregateFunction &) {
-	return sizeof(IScoreState);
-}
-
-void IScoreStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void IScoreStateInit(data_ptr_t state_ptr) {
 	new (state_ptr) IScoreState{0.0, 0};
 }
 
@@ -627,7 +617,7 @@ void IScoreUpdate(Vector inputs[], AggregateInputData &aggr_input, idx_t, Vector
 	UnifiedVectorFormat sdata, actual_data;
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
-	auto states = reinterpret_cast<IScoreState **>(sdata.data);
+	auto states = reinterpret_cast<IScoreState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -690,8 +680,8 @@ void IScoreCombine(Vector &source_vector, Vector &target_vector, AggregateInputD
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<IScoreState **>(source_data.data);
-	auto targets = reinterpret_cast<IScoreState **>(target_data.data);
+	auto sources = reinterpret_cast<IScoreState *const *>(source_data.data);
+	auto targets = reinterpret_cast<IScoreState *const *>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &src = *sources[source_data.sel->get_index(i)];
 		auto &tgt = *targets[target_data.sel->get_index(i)];
@@ -704,23 +694,23 @@ void IScoreFinalize(Vector &state_vector, AggregateInputData &, Vector &result, 
                     idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<IScoreState **>(sdata.data);
+	auto states = reinterpret_cast<IScoreState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (state.n == 0) {
 			FlatVector::SetNull(result, i + offset, true);
 		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
+			duckdb_compat::FlatData<double>(result)[i + offset] =
 			    state.sum_is / static_cast<double>(state.n);
 		}
 	}
 }
 
-/// IScoreBind — resolves coverage from arg[2] (if present) or defaults to 0.9.
+/// duckdb_compat::AggregateBind<IScoreBind>() — resolves coverage from arg[2] (if present) or defaults to 0.9.
 /// Validates 0 < coverage < 1; throws InvalidInputException otherwise (T-03-05).
 /// Pattern: ExpressionExecutor::EvaluateScalar reading a constant at bind —
 ///   tabfm_metrics_classification.cpp:230 (F1BindData reading avg from arg[2]).
-unique_ptr<FunctionData> IScoreBind(ClientContext &context, AggregateFunction &,
+unique_ptr<FunctionData> IScoreBind(ClientContext &context, duckdb_compat::AggregateBindFunction &,
                                      vector<unique_ptr<Expression>> &arguments) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_interval_score");
 
@@ -753,6 +743,37 @@ unique_ptr<FunctionData> IScoreBind(ClientContext &context, AggregateFunction &,
 //===----------------------------------------------------------------------===//
 // RegisterScoringFunctions — entry point called from LoadInternal
 //===----------------------------------------------------------------------===//
+namespace {
+
+// Bind of an overload that exists only to reject a call with a clear message.
+unique_ptr<FunctionData> CrpsRejectBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
+                           vector<unique_ptr<Expression>> &) {
+	throw InvalidInputException(
+	    "tabfm_crps: second argument must be a distribution "
+	    "STRUCT(logits DOUBLE[], borders DOUBLE[]). "
+	    "Use output_mode := 'distribution' in tabfm_regress.");
+}
+
+// Bind of an overload that exists only to reject a call with a clear message.
+unique_ptr<FunctionData> LogScoreRejectBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
+                           vector<unique_ptr<Expression>> &) {
+	throw InvalidInputException(
+	    "tabfm_log_score: second argument must be a distribution "
+	    "STRUCT(logits DOUBLE[], borders DOUBLE[]). "
+	    "Use output_mode := 'distribution' in tabfm_regress.");
+}
+
+// Bind of an overload that exists only to reject a call with a clear message.
+unique_ptr<FunctionData> IntervalScoreRejectBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
+                           vector<unique_ptr<Expression>> &) {
+	throw InvalidInputException(
+	    "tabfm_interval_score: second argument must be a distribution "
+	    "STRUCT(logits DOUBLE[], borders DOUBLE[]). "
+	    "Use output_mode := 'distribution' in tabfm_regress.");
+}
+
+} // namespace
+
 void RegisterScoringFunctions(ExtensionLoader &loader) {
 	// --- tabfm_crps / anofox_tabfm_crps (PSR-01, PSR-04) ---
 	//
@@ -774,8 +795,8 @@ void RegisterScoringFunctions(ExtensionLoader &loader) {
 		// Overload 1 — STRUCT distribution argument (normal compute path)
 		AggregateFunction fn_dist("anofox_tabfm_crps",
 		                          {LogicalType::DOUBLE, yhat_dist_type}, LogicalType::DOUBLE,
-		                          CRPSStateSize, CRPSStateInit, CRPSUpdate, CRPSCombine,
-		                          CRPSFinalize, /*simple_update=*/nullptr, CRPSBind,
+		                          duckdb_compat::AggregateStateSize<sizeof(CRPSState)>(), duckdb_compat::AggregateInit<CRPSStateInit>(), CRPSUpdate, CRPSCombine,
+		                          duckdb_compat::AggregateFinalize<CRPSFinalize>(), /*simple_update=*/nullptr, duckdb_compat::AggregateBind<CRPSBind>(),
 		                          /*state_destroy=*/nullptr);
 		set.AddFunction(fn_dist);
 
@@ -784,16 +805,9 @@ void RegisterScoringFunctions(ExtensionLoader &loader) {
 		// Error message names the remedy per SQL-API §5.
 		AggregateFunction fn_point(
 		    "anofox_tabfm_crps", {LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::DOUBLE,
-		    CRPSStateSize, CRPSStateInit, CRPSUpdate, CRPSCombine, CRPSFinalize,
+		    duckdb_compat::AggregateStateSize<sizeof(CRPSState)>(), duckdb_compat::AggregateInit<CRPSStateInit>(), CRPSUpdate, CRPSCombine, duckdb_compat::AggregateFinalize<CRPSFinalize>(),
 		    /*simple_update=*/nullptr,
-		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
-		        -> unique_ptr<FunctionData> {
-			    throw InvalidInputException(
-			        "tabfm_crps: second argument must be a distribution "
-			        "STRUCT(logits DOUBLE[], borders DOUBLE[]). "
-			        "Use output_mode := 'distribution' in tabfm_regress.");
-			    return nullptr;
-		    },
+		    duckdb_compat::AggregateBind<CrpsRejectBind>(),
 		    /*state_destroy=*/nullptr);
 		set.AddFunction(fn_point);
 
@@ -827,24 +841,17 @@ void RegisterScoringFunctions(ExtensionLoader &loader) {
 		// Overload 1 — STRUCT distribution argument (normal compute path)
 		AggregateFunction fn_dist("anofox_tabfm_log_score",
 		                          {LogicalType::DOUBLE, yhat_dist_type}, LogicalType::DOUBLE,
-		                          LogScoreStateSize, LogScoreStateInit, LogScoreUpdate,
-		                          LogScoreCombine, LogScoreFinalize, /*simple_update=*/nullptr,
-		                          LogScoreBind, /*state_destroy=*/nullptr);
+		                          duckdb_compat::AggregateStateSize<sizeof(LogScoreState)>(), duckdb_compat::AggregateInit<LogScoreStateInit>(), LogScoreUpdate,
+		                          LogScoreCombine, duckdb_compat::AggregateFinalize<LogScoreFinalize>(), /*simple_update=*/nullptr,
+		                          duckdb_compat::AggregateBind<LogScoreBind>(), /*state_destroy=*/nullptr);
 		set.AddFunction(fn_dist);
 
 		// Overload 2 — PSR-04 bind-gate (STRUCT overload is registered first, per Pitfall 6)
 		AggregateFunction fn_point(
 		    "anofox_tabfm_log_score", {LogicalType::DOUBLE, LogicalType::DOUBLE},
-		    LogicalType::DOUBLE, LogScoreStateSize, LogScoreStateInit, LogScoreUpdate,
-		    LogScoreCombine, LogScoreFinalize, /*simple_update=*/nullptr,
-		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
-		        -> unique_ptr<FunctionData> {
-			    throw InvalidInputException(
-			        "tabfm_log_score: second argument must be a distribution "
-			        "STRUCT(logits DOUBLE[], borders DOUBLE[]). "
-			        "Use output_mode := 'distribution' in tabfm_regress.");
-			    return nullptr;
-		    },
+		    LogicalType::DOUBLE, duckdb_compat::AggregateStateSize<sizeof(LogScoreState)>(), duckdb_compat::AggregateInit<LogScoreStateInit>(), LogScoreUpdate,
+		    LogScoreCombine, duckdb_compat::AggregateFinalize<LogScoreFinalize>(), /*simple_update=*/nullptr,
+		    duckdb_compat::AggregateBind<LogScoreRejectBind>(),
 		    /*state_destroy=*/nullptr);
 		set.AddFunction(fn_point);
 
@@ -881,36 +888,29 @@ void RegisterScoringFunctions(ExtensionLoader &loader) {
 
 		AggregateFunctionSet set("anofox_tabfm_interval_score");
 
-		// Overload 1 — 2-arg STRUCT (default coverage=0.9 resolved in IScoreBind)
+		// Overload 1 — 2-arg STRUCT (default coverage=0.9 resolved in duckdb_compat::AggregateBind<IScoreBind>())
 		AggregateFunction fn_dist2("anofox_tabfm_interval_score",
 		                           {LogicalType::DOUBLE, yhat_dist_type}, LogicalType::DOUBLE,
-		                           IScoreStateSize, IScoreStateInit, IScoreUpdate, IScoreCombine,
-		                           IScoreFinalize, /*simple_update=*/nullptr, IScoreBind,
+		                           duckdb_compat::AggregateStateSize<sizeof(IScoreState)>(), duckdb_compat::AggregateInit<IScoreStateInit>(), IScoreUpdate, IScoreCombine,
+		                           duckdb_compat::AggregateFinalize<IScoreFinalize>(), /*simple_update=*/nullptr, duckdb_compat::AggregateBind<IScoreBind>(),
 		                           /*state_destroy=*/nullptr);
 		set.AddFunction(fn_dist2);
 
-		// Overload 2 — 3-arg STRUCT + explicit coverage (IScoreBind reads arg[2])
+		// Overload 2 — 3-arg STRUCT + explicit coverage (duckdb_compat::AggregateBind<IScoreBind>() reads arg[2])
 		AggregateFunction fn_dist3("anofox_tabfm_interval_score",
 		                           {LogicalType::DOUBLE, yhat_dist_type, LogicalType::DOUBLE},
-		                           LogicalType::DOUBLE, IScoreStateSize, IScoreStateInit,
-		                           IScoreUpdate, IScoreCombine, IScoreFinalize,
-		                           /*simple_update=*/nullptr, IScoreBind,
+		                           LogicalType::DOUBLE, duckdb_compat::AggregateStateSize<sizeof(IScoreState)>(), duckdb_compat::AggregateInit<IScoreStateInit>(),
+		                           IScoreUpdate, IScoreCombine, duckdb_compat::AggregateFinalize<IScoreFinalize>(),
+		                           /*simple_update=*/nullptr, duckdb_compat::AggregateBind<IScoreBind>(),
 		                           /*state_destroy=*/nullptr);
 		set.AddFunction(fn_dist3);
 
 		// Overload 3 — PSR-04 bind-gate (2-arg DOUBLE always throws)
 		AggregateFunction fn_point(
 		    "anofox_tabfm_interval_score", {LogicalType::DOUBLE, LogicalType::DOUBLE},
-		    LogicalType::DOUBLE, IScoreStateSize, IScoreStateInit, IScoreUpdate, IScoreCombine,
-		    IScoreFinalize, /*simple_update=*/nullptr,
-		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
-		        -> unique_ptr<FunctionData> {
-			    throw InvalidInputException(
-			        "tabfm_interval_score: second argument must be a distribution "
-			        "STRUCT(logits DOUBLE[], borders DOUBLE[]). "
-			        "Use output_mode := 'distribution' in tabfm_regress.");
-			    return nullptr;
-		    },
+		    LogicalType::DOUBLE, duckdb_compat::AggregateStateSize<sizeof(IScoreState)>(), duckdb_compat::AggregateInit<IScoreStateInit>(), IScoreUpdate, IScoreCombine,
+		    duckdb_compat::AggregateFinalize<IScoreFinalize>(), /*simple_update=*/nullptr,
+		    duckdb_compat::AggregateBind<IntervalScoreRejectBind>(),
 		    /*state_destroy=*/nullptr);
 		set.AddFunction(fn_point);
 
@@ -920,16 +920,9 @@ void RegisterScoringFunctions(ExtensionLoader &loader) {
 		AggregateFunction fn_point3(
 		    "anofox_tabfm_interval_score",
 		    {LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::DOUBLE,
-		    IScoreStateSize, IScoreStateInit, IScoreUpdate, IScoreCombine, IScoreFinalize,
+		    duckdb_compat::AggregateStateSize<sizeof(IScoreState)>(), duckdb_compat::AggregateInit<IScoreStateInit>(), IScoreUpdate, IScoreCombine, duckdb_compat::AggregateFinalize<IScoreFinalize>(),
 		    /*simple_update=*/nullptr,
-		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
-		        -> unique_ptr<FunctionData> {
-			    throw InvalidInputException(
-			        "tabfm_interval_score: second argument must be a distribution "
-			        "STRUCT(logits DOUBLE[], borders DOUBLE[]). "
-			        "Use output_mode := 'distribution' in tabfm_regress.");
-			    return nullptr;
-		    },
+		    duckdb_compat::AggregateBind<IntervalScoreRejectBind>(),
 		    /*state_destroy=*/nullptr);
 		set.AddFunction(fn_point3);
 

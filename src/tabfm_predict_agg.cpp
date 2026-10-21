@@ -9,6 +9,13 @@
 #include "duckdb/function/aggregate_function.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
+#include "duckdb_compat/aggregate.hpp"
+#include "duckdb_compat.hpp"
+// DuckDB 2.0 moved the vector helpers out of vector.hpp into their own headers.
+#if __has_include("duckdb/common/vector/list_vector.hpp")
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
+#endif
 #include "telemetry.hpp"
 
 #include <cstdlib>
@@ -190,7 +197,7 @@ void ParseOneOption(const string &fname, PredictBindData &bind, const string &ke
 }
 
 void ParseOptionsArgument(ClientContext &context, Expression &expr, PredictBindData &bind, const string &fname) {
-	const auto type_id = expr.return_type.id();
+	const auto type_id = duckdb_compat::ReturnType(expr).id();
 	if (type_id == LogicalTypeId::SQLNULL || type_id == LogicalTypeId::UNKNOWN) {
 		return; // NULL options → defaults
 	}
@@ -221,7 +228,7 @@ void ParseOptionsArgument(ClientContext &context, Expression &expr, PredictBindD
 		auto &child_types = StructType::GetChildTypes(opts_value.type());
 		auto &children = StructValue::GetChildren(opts_value);
 		for (idx_t i = 0; i < children.size(); i++) {
-			ParseOneOption(fname, bind, child_types[i].first, children[i].IsNull() ? string() : children[i].ToString());
+			ParseOneOption(fname, bind, duckdb_compat::Str(child_types[i].first), children[i].IsNull() ? string() : children[i].ToString());
 		}
 	}
 }
@@ -277,19 +284,19 @@ void CheckMemoryCeiling(const PredictBindData &bind) {
 }
 
 
-unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFunction &function,
+unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, duckdb_compat::AggregateBindFunction &function,
                                              vector<unique_ptr<Expression>> &arguments, const string &fname,
                                              bool is_window) {
 	auto bind = make_uniq<PredictBindData>();
 	bind->function_name = fname;
 
 	// arg 0: the whole row as a STRUCT (the table alias from query_table)
-	if (arguments[0]->return_type.id() != LogicalTypeId::STRUCT) {
+	if (duckdb_compat::ReturnType(*arguments[0]).id() != LogicalTypeId::STRUCT) {
 		throw BinderException("%s: first argument must be the whole-row STRUCT — pass the table alias, e.g. "
 		                      "SELECT %s(t, 'churned') FROM query_table('customers') t",
 		                      fname, fname);
 	}
-	bind->row_type = arguments[0]->return_type;
+	bind->row_type = duckdb_compat::ReturnType(*arguments[0]);
 	auto &fields = StructType::GetChildTypes(bind->row_type);
 
 	// arg 1: constant target column name, resolved case-insensitively
@@ -304,7 +311,7 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 
 	bool found = false;
 	for (idx_t i = 0; i < fields.size(); i++) {
-		if (StringUtil::CIEquals(fields[i].first, bind->target)) {
+		if (StringUtil::CIEquals(duckdb_compat::Str(fields[i].first), bind->target)) {
 			bind->target_idx = i;
 			bind->target_type = fields[i].second;
 			found = true;
@@ -328,7 +335,7 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 		throw BinderException("%s: feature column '%s' has unsupported type %s; feature columns must be scalar — "
 		                      "project it into scalar columns (e.g. %s[1] AS f1, %s[2] AS f2) or exclude it with "
 		                      "features := [...]",
-		                      fname, fields[i].first, fields[i].second.ToString(), fields[i].first, fields[i].first);
+		                      fname, duckdb_compat::Str(fields[i].first), fields[i].second.ToString(), duckdb_compat::Str(fields[i].first), duckdb_compat::Str(fields[i].first));
 	}
 
 	// FR-3.2 task inference: non-numeric target (VARCHAR/ENUM/BOOL/…) →
@@ -361,7 +368,7 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 			}
 			bool found = false;
 			for (auto &field : fields) {
-				if (StringUtil::CIEquals(field.first, wanted)) {
+				if (StringUtil::CIEquals(duckdb_compat::Str(field.first), wanted)) {
 					found = true;
 					break;
 				}
@@ -396,7 +403,7 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 		                      static_cast<unsigned long long>(feature_count));
 	}
 
-	function.return_type = is_window ? bind->WindowStructType() : bind->ListStructType();
+	duckdb_compat::SetReturnType(function, is_window ? bind->WindowStructType() : bind->ListStructType());
 
 	// capture engine settings + the DB handle now: finalize runs on a worker
 	// thread with no ClientContext (tabfm_engine.cpp reads these).
@@ -440,12 +447,12 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, AggregateFu
 	return std::move(bind);
 }
 
-unique_ptr<FunctionData> PredictAggBind(ClientContext &context, AggregateFunction &function,
+unique_ptr<FunctionData> PredictAggBind(ClientContext &context, duckdb_compat::AggregateBindFunction &function,
                                         vector<unique_ptr<Expression>> &arguments) {
 	return PredictBindInternal(context, function, arguments, "tabfm_predict_agg", false);
 }
 
-unique_ptr<FunctionData> PredictWinBind(ClientContext &context, AggregateFunction &function,
+unique_ptr<FunctionData> PredictWinBind(ClientContext &context, duckdb_compat::AggregateBindFunction &function,
                                         vector<unique_ptr<Expression>> &arguments) {
 	return PredictBindInternal(context, function, arguments, "tabfm_predict_win", true);
 }
@@ -468,7 +475,7 @@ struct PredictRowBuffer {
 	void Append(const Value &row_value) {
 		append_chunk.Reset();
 		append_chunk.SetValue(0, 0, row_value);
-		append_chunk.SetCardinality(1);
+		duckdb_compat::SetChildCardinality(append_chunk, 1);
 		collection.Append(append_chunk);
 	}
 };
@@ -501,7 +508,7 @@ struct PredictAggState {
 	WindowRowReader *reader;
 };
 
-void PredictStateInitialize(const AggregateFunction &, data_ptr_t state_ptr) {
+void PredictStateInitialize(data_ptr_t state_ptr) {
 	auto &state = *reinterpret_cast<PredictAggState *>(state_ptr);
 	state.rows = nullptr;
 	state.reader = nullptr;
@@ -517,7 +524,7 @@ void FreeState(PredictAggState &state) {
 void PredictStateDestroy(Vector &state_vector, AggregateInputData &, idx_t count) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<PredictAggState **>(sdata.data);
+	auto states = reinterpret_cast<PredictAggState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		FreeState(*states[sdata.sel->get_index(i)]);
 	}
@@ -539,16 +546,12 @@ struct StateVectorCleanup {
 		}
 		UnifiedVectorFormat sdata;
 		state_vector.ToUnifiedFormat(count, sdata);
-		auto states = reinterpret_cast<PredictAggState **>(sdata.data);
+		auto states = reinterpret_cast<PredictAggState *const *>(sdata.data);
 		for (idx_t i = 0; i < count; i++) {
 			FreeState(*states[sdata.sel->get_index(i)]);
 		}
 	}
 };
-
-idx_t PredictStateSize(const AggregateFunction &) {
-	return sizeof(PredictAggState);
-}
 
 //===--------------------------------------------------------------------===//
 // Aggregate update / combine / finalize
@@ -559,7 +562,7 @@ void PredictAggUpdate(Vector inputs[], AggregateInputData &aggr_input_data, idx_
 
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<PredictAggState **>(sdata.data);
+	auto states = reinterpret_cast<PredictAggState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
@@ -587,8 +590,8 @@ void PredictAggCombine(Vector &source_vector, Vector &target_vector, AggregateIn
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<PredictAggState **>(source_data.data);
-	auto targets = reinterpret_cast<PredictAggState **>(target_data.data);
+	auto sources = reinterpret_cast<PredictAggState *const *>(source_data.data);
+	auto targets = reinterpret_cast<PredictAggState *const *>(target_data.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &source = *sources[source_data.sel->get_index(i)];
@@ -635,8 +638,8 @@ void PredictAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_dat
 
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<PredictAggState **>(sdata.data);
-	auto list_entries = FlatVector::GetData<list_entry_t>(result);
+	auto states = reinterpret_cast<PredictAggState *const *>(sdata.data);
+	auto list_entries = duckdb_compat::FlatData<list_entry_t>(result);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
@@ -736,13 +739,21 @@ void PredictWinFinalize(Vector &, AggregateInputData &, Vector &, idx_t, idx_t) 
 // row, including partition starts) — see tabfm_predict.hpp for why `rid`
 // cannot be used as a partition index in v1.5.4.
 //===--------------------------------------------------------------------===//
+// StructVector::GetEntries holds Vectors on DuckDB 2.0, unique_ptr<Vector> before.
+inline Vector &StructEntry(Vector &entry) {
+	return entry;
+}
+inline Vector &StructEntry(unique_ptr<Vector> &entry) {
+	return *entry;
+}
+
 void WriteWindowResult(Vector &result, idx_t rid, const PredictBindData &bind, const Value &yhat, const Value &score,
                        const Value &proba) {
 	auto &entries = StructVector::GetEntries(result);
-	entries[0]->SetValue(rid, yhat);
-	entries[1]->SetValue(rid, score);
+	StructEntry(entries[0]).SetValue(rid, yhat);
+	StructEntry(entries[1]).SetValue(rid, score);
 	if (bind.EmitProba()) {
-		entries[2]->SetValue(rid, proba);
+		StructEntry(entries[2]).SetValue(rid, proba);
 	}
 }
 
@@ -839,11 +850,11 @@ AggregateFunction MakePredictFunction(const string &name, bool with_opts, bool i
 	if (with_opts) {
 		arguments.push_back(LogicalType::ANY); // MAP or STRUCT; LIST redirects at bind
 	}
-	AggregateFunction function(name, std::move(arguments), LogicalType::ANY, PredictStateSize,
-	                           PredictStateInitialize, is_window ? PredictWinUpdate : PredictAggUpdate,
+	AggregateFunction function(duckdb_compat::FunctionName(name), std::move(arguments), LogicalType::ANY, duckdb_compat::AggregateStateSize<sizeof(PredictAggState)>(),
+	                           duckdb_compat::AggregateInit<PredictStateInitialize>(), is_window ? PredictWinUpdate : PredictAggUpdate,
 	                           is_window ? PredictWinCombine : PredictAggCombine,
-	                           is_window ? PredictWinFinalize : PredictAggFinalize,
-	                           /*simple_update=*/nullptr, is_window ? PredictWinBind : PredictAggBind,
+	                           is_window ? duckdb_compat::AggregateFinalize<PredictWinFinalize>() : duckdb_compat::AggregateFinalize<PredictAggFinalize>(),
+	                           /*simple_update=*/nullptr, is_window ? duckdb_compat::AggregateBind<PredictWinBind>() : duckdb_compat::AggregateBind<PredictAggBind>(),
 	                           PredictStateDestroy);
 	if (is_window) {
 		function.SetWindowCallback(PredictWinWindow);
@@ -852,7 +863,7 @@ AggregateFunction MakePredictFunction(const string &name, bool with_opts, bool i
 }
 
 void RegisterPredictSet(ExtensionLoader &loader, const string &full_name, bool is_window) {
-	AggregateFunctionSet set(full_name);
+	AggregateFunctionSet set(duckdb_compat::FunctionName(full_name));
 	set.AddFunction(MakePredictFunction(full_name, false, is_window));
 	set.AddFunction(MakePredictFunction(full_name, true, is_window));
 

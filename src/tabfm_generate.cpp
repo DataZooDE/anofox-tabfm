@@ -23,6 +23,13 @@
 #include "duckdb/function/aggregate_function.hpp"
 #include "duckdb/main/database.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
+#include "duckdb_compat/aggregate.hpp"
+#include "duckdb_compat.hpp"
+// DuckDB 2.0 moved the vector helpers out of vector.hpp into their own headers.
+#if __has_include("duckdb/common/vector/list_vector.hpp")
+#include "duckdb/common/vector/list_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
+#endif
 #include "telemetry.hpp"
 
 #include <algorithm>
@@ -586,7 +593,7 @@ vector<vector<Value>> RunChainRule(const vector<vector<Value>> &real_rows, const
 
 		const auto popts = StepOptions(opts, TabFMTask::CLASSIFICATION, /*detail=*/true);
 		const LogicalType target_type = LogicalType::VARCHAR;
-		const string &target_name = fields[target].first;
+		const string &target_name = duckdb_compat::Str(fields[target].first);
 		PredictInput input {rows, sub_type, step, target_type, target_name, popts, ctx};
 		auto predictions = GetPredictEngine().Predict(input);
 
@@ -739,7 +746,7 @@ vector<vector<Value>> RunImpute(const vector<vector<Value>> &input_rows, const c
 			const auto popts = StepOptions(opts, continuous ? TabFMTask::REGRESSION : TabFMTask::CLASSIFICATION,
 			                               /*detail=*/false);
 			const LogicalType target_type = fields[target].second;
-			const string &target_name = fields[target].first;
+			const string &target_name = duckdb_compat::Str(fields[target].first);
 			PredictInput input {rows, sub_type, features.size(), target_type, target_name, popts, ctx};
 			auto predictions = GetPredictEngine().Predict(input);
 
@@ -876,7 +883,7 @@ void ParseOneOption(const string &fname, GenerateBindData &bind, const string &k
 }
 
 void ParseOptionsArgument(ClientContext &context, Expression &expr, GenerateBindData &bind, const string &fname) {
-	const auto type_id = expr.return_type.id();
+	const auto type_id = duckdb_compat::ReturnType(expr).id();
 	if (type_id == LogicalTypeId::SQLNULL || type_id == LogicalTypeId::UNKNOWN) {
 		return;
 	}
@@ -899,7 +906,7 @@ void ParseOptionsArgument(ClientContext &context, Expression &expr, GenerateBind
 		auto &child_types = StructType::GetChildTypes(opts_value.type());
 		auto &children = StructValue::GetChildren(opts_value);
 		for (idx_t i = 0; i < children.size(); i++) {
-			ParseOneOption(fname, bind, child_types[i].first, children[i].IsNull() ? string() : children[i].ToString());
+			ParseOneOption(fname, bind, duckdb_compat::Str(child_types[i].first), children[i].IsNull() ? string() : children[i].ToString());
 		}
 	}
 }
@@ -946,19 +953,19 @@ void CaptureContext(ClientContext &context, GenerateBindData &bind) {
 	}
 }
 
-unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, AggregateFunction &function,
+unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, duckdb_compat::AggregateBindFunction &function,
                                               vector<unique_ptr<Expression>> &arguments, const string &fname,
                                               bool is_impute) {
 	auto bind = make_uniq<GenerateBindData>();
 	bind->function_name = fname;
 	bind->is_impute = is_impute;
 
-	if (arguments[0]->return_type.id() != LogicalTypeId::STRUCT) {
+	if (duckdb_compat::ReturnType(*arguments[0]).id() != LogicalTypeId::STRUCT) {
 		throw BinderException("%s: first argument must be the whole-row STRUCT — call the table macro, e.g. "
 		                      "SELECT * FROM %s('customers', 100)",
 		                      fname, fname);
 	}
-	bind->row_type = arguments[0]->return_type;
+	bind->row_type = duckdb_compat::ReturnType(*arguments[0]);
 	auto &fields = StructType::GetChildTypes(bind->row_type);
 	if (fields.empty()) {
 		throw BinderException("%s: the input relation has no columns", fname);
@@ -973,7 +980,7 @@ unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, AggregateF
 		}
 		throw BinderException("%s: column '%s' has unsupported type %s; columns must be scalar — project it into "
 		                      "scalar columns (e.g. %s[1] AS f1, %s[2] AS f2) or exclude it with features := [...]",
-		                      fname, field.first, field.second.ToString(), field.first, field.first);
+		                      fname, duckdb_compat::Str(field.first), field.second.ToString(), duckdb_compat::Str(field.first), duckdb_compat::Str(field.first));
 	}
 
 	// arg 1: generate -> n (BIGINT); impute -> columns (VARCHAR[] or NULL)
@@ -993,7 +1000,7 @@ unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, AggregateF
 				const auto wanted = entry.ToString();
 				bool found = false;
 				for (idx_t i = 0; i < fields.size(); i++) {
-					if (StringUtil::CIEquals(fields[i].first, wanted)) {
+					if (StringUtil::CIEquals(duckdb_compat::Str(fields[i].first), wanted)) {
 						bind->targets.push_back(i);
 						found = true;
 						break;
@@ -1063,7 +1070,7 @@ unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, AggregateF
 			}
 			bool found = false;
 			for (auto &field : fields) {
-				if (StringUtil::CIEquals(field.first, wanted)) {
+				if (StringUtil::CIEquals(duckdb_compat::Str(field.first), wanted)) {
 					found = true;
 					break;
 				}
@@ -1095,18 +1102,18 @@ unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, AggregateF
 		                      fname, (unsigned long long)bind->n, (unsigned long long)bind->max_rows);
 	}
 
-	function.return_type = bind->ResultType();
+	duckdb_compat::SetReturnType(function, bind->ResultType());
 	CaptureContext(context, *bind);
 	PostHogTelemetry::Instance().RecordFunctionCall(fname);
 	return std::move(bind);
 }
 
-unique_ptr<FunctionData> GenerateAggBind(ClientContext &context, AggregateFunction &function,
+unique_ptr<FunctionData> GenerateAggBind(ClientContext &context, duckdb_compat::AggregateBindFunction &function,
                                          vector<unique_ptr<Expression>> &arguments) {
 	return GenerateBindInternal(context, function, arguments, "tabfm_generate", false);
 }
 
-unique_ptr<FunctionData> ImputeAggBind(ClientContext &context, AggregateFunction &function,
+unique_ptr<FunctionData> ImputeAggBind(ClientContext &context, duckdb_compat::AggregateBindFunction &function,
                                        vector<unique_ptr<Expression>> &arguments) {
 	return GenerateBindInternal(context, function, arguments, "tabfm_impute", true);
 }
@@ -1127,7 +1134,7 @@ struct GenerateRowBuffer {
 	void Append(const Value &row_value) {
 		append_chunk.Reset();
 		append_chunk.SetValue(0, 0, row_value);
-		append_chunk.SetCardinality(1);
+		duckdb_compat::SetChildCardinality(append_chunk, 1);
 		collection.Append(append_chunk);
 	}
 };
@@ -1136,7 +1143,7 @@ struct GenerateAggState {
 	GenerateRowBuffer *rows;
 };
 
-void GenerateStateInitialize(const AggregateFunction &, data_ptr_t state_ptr) {
+void GenerateStateInitialize(data_ptr_t state_ptr) {
 	reinterpret_cast<GenerateAggState *>(state_ptr)->rows = nullptr;
 }
 
@@ -1148,7 +1155,7 @@ void FreeState(GenerateAggState &state) {
 void GenerateStateDestroy(Vector &state_vector, AggregateInputData &, idx_t count) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<GenerateAggState **>(sdata.data);
+	auto states = reinterpret_cast<GenerateAggState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		FreeState(*states[sdata.sel->get_index(i)]);
 	}
@@ -1168,16 +1175,12 @@ struct StateVectorCleanup {
 		}
 		UnifiedVectorFormat sdata;
 		state_vector.ToUnifiedFormat(count, sdata);
-		auto states = reinterpret_cast<GenerateAggState **>(sdata.data);
+		auto states = reinterpret_cast<GenerateAggState *const *>(sdata.data);
 		for (idx_t i = 0; i < count; i++) {
 			FreeState(*states[sdata.sel->get_index(i)]);
 		}
 	}
 };
-
-idx_t GenerateStateSize(const AggregateFunction &) {
-	return sizeof(GenerateAggState);
-}
 
 void GenerateAggUpdate(Vector inputs[], AggregateInputData &aggr_input_data, idx_t, Vector &state_vector,
                        idx_t count) {
@@ -1186,7 +1189,7 @@ void GenerateAggUpdate(Vector inputs[], AggregateInputData &aggr_input_data, idx
 
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<GenerateAggState **>(sdata.data);
+	auto states = reinterpret_cast<GenerateAggState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
@@ -1212,8 +1215,8 @@ void GenerateAggCombine(Vector &source_vector, Vector &target_vector, AggregateI
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<GenerateAggState **>(source_data.data);
-	auto targets = reinterpret_cast<GenerateAggState **>(target_data.data);
+	auto sources = reinterpret_cast<GenerateAggState *const *>(source_data.data);
+	auto targets = reinterpret_cast<GenerateAggState *const *>(target_data.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &source = *sources[source_data.sel->get_index(i)];
@@ -1279,7 +1282,7 @@ void NormalizeMissingCells(vector<vector<Value>> &rows, const child_list_t<Logic
 			}
 		}
 		if (infinite > 0) {
-			ThrowInvalidTarget(fields[c].first, TargetValueKind::INFINITE, infinite, first);
+			ThrowInvalidTarget(duckdb_compat::Str(fields[c].first), TargetValueKind::INFINITE, infinite, first);
 		}
 	}
 }
@@ -1297,7 +1300,7 @@ vector<ColumnPlan> PlanAll(const vector<vector<Value>> &rows, const child_list_t
 		for (auto &row : rows) {
 			column.push_back(row[c]);
 		}
-		plans.push_back(PlanColumn(fields[c].first, fields[c].second, column, opts.bins, opts.max_classes));
+		plans.push_back(PlanColumn(duckdb_compat::Str(fields[c].first), fields[c].second, column, opts.bins, opts.max_classes));
 	}
 	for (idx_t c = 0; c < plans.size(); c++) {
 		if (plans[c].kind != GenColumnKind::UNSUPPORTED) {
@@ -1327,8 +1330,8 @@ void GenerateAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_da
 
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<GenerateAggState **>(sdata.data);
-	auto list_entries = FlatVector::GetData<list_entry_t>(result);
+	auto states = reinterpret_cast<GenerateAggState *const *>(sdata.data);
+	auto list_entries = duckdb_compat::FlatData<list_entry_t>(result);
 	auto &fields = StructType::GetChildTypes(bind.row_type);
 
 	for (idx_t i = 0; i < count; i++) {
@@ -1411,14 +1414,14 @@ AggregateFunction MakeGenerateFunction(const string &name, bool with_opts, bool 
 	if (with_opts) {
 		arguments.push_back(LogicalType::ANY);
 	}
-	return AggregateFunction(name, std::move(arguments), LogicalType::ANY, GenerateStateSize, GenerateStateInitialize,
-	                         GenerateAggUpdate, GenerateAggCombine, GenerateAggFinalize,
-	                         /*simple_update=*/nullptr, is_impute ? ImputeAggBind : GenerateAggBind,
+	return AggregateFunction(duckdb_compat::FunctionName(name), std::move(arguments), LogicalType::ANY, duckdb_compat::AggregateStateSize<sizeof(GenerateAggState)>(), duckdb_compat::AggregateInit<GenerateStateInitialize>(),
+	                         GenerateAggUpdate, GenerateAggCombine, duckdb_compat::AggregateFinalize<GenerateAggFinalize>(),
+	                         /*simple_update=*/nullptr, is_impute ? duckdb_compat::AggregateBind<ImputeAggBind>() : duckdb_compat::AggregateBind<GenerateAggBind>(),
 	                         GenerateStateDestroy);
 }
 
 void RegisterGenerateSet(ExtensionLoader &loader, const string &full_name, bool is_impute) {
-	AggregateFunctionSet set(full_name);
+	AggregateFunctionSet set(duckdb_compat::FunctionName(full_name));
 	set.AddFunction(MakeGenerateFunction(full_name, false, is_impute));
 	set.AddFunction(MakeGenerateFunction(full_name, true, is_impute));
 	CreateAggregateFunctionInfo info(set);

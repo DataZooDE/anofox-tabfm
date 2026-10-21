@@ -7,6 +7,7 @@
 
 #include "catch.hpp"
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 
 using namespace duckdb;
 
@@ -16,15 +17,15 @@ static double run_scalar_double(Connection &con, const std::string &sql) {
 	auto result = con.Query(sql);
 	REQUIRE(!result->HasError());
 	REQUIRE(result->RowCount() == 1);
-	REQUIRE(!result->GetValue(0, 0).IsNull());
-	return result->GetValue(0, 0).GetValue<double>();
+	REQUIRE(!duckdb_compat::ResultValue(*result, 0, 0).IsNull());
+	return duckdb_compat::ResultValue(*result, 0, 0).GetValue<double>();
 }
 
 static bool is_null(Connection &con, const std::string &sql) {
 	auto result = con.Query(sql);
 	REQUIRE(!result->HasError());
 	REQUIRE(result->RowCount() == 1);
-	return result->GetValue(0, 0).IsNull();
+	return duckdb_compat::ResultValue(*result, 0, 0).IsNull();
 }
 
 TEST_CASE("tabfm_rmse: golden value matches sklearn root_mean_squared_error", "[tabfm][metrics_regression]") {

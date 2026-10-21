@@ -12,3 +12,10 @@ endif()
 duckdb_extension_load(anofox_tabfm
     SOURCE_DIR ${CMAKE_CURRENT_LIST_DIR}
     LOAD_TESTS)
+
+# DuckDB 2.0 links an extension into duckdb_static / unittest only when asked
+# (DONT_LINK was removed); the C++ unit tests and `require anofox_tabfm` in the
+# SQL tests need it linked. 1.x has no such command and links by default.
+if(COMMAND duckdb_extension_statically_link)
+    duckdb_extension_statically_link(anofox_tabfm)
+endif()

@@ -238,8 +238,10 @@ FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': '
 statement ok
 CREATE TABLE w_inf_hist AS SELECT id, f1, f2, f3, CASE WHEN id = 3 THEN 'infinity'::DOUBLE WHEN id < 12 THEN tgt END AS y FROM base;
 
+# count(p), not count(*): DuckDB 2.0 drops a window expression whose output is unused, so the prediction
+# (and its error) would never be computed.
 statement error
-SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+SELECT count(p) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
              OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_inf_hist t)
 ----
 <REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
@@ -252,7 +254,7 @@ statement ok
 CREATE TABLE w_inf_scored AS SELECT id, f1, f2, f3, CASE WHEN id = 19 THEN 'infinity'::DOUBLE WHEN id < 12 THEN tgt END AS y FROM base;
 
 statement error
-SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+SELECT count(p) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
              OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_inf_scored t)
 ----
 <REGEX>:.*target '?\"?[a-z0-9_]+\"?'? has [0-9]+ Infinity value.*
@@ -488,7 +490,7 @@ statement ok
 CREATE TABLE w_first_inf AS SELECT id, f1, f2, f3, 'infinity'::DOUBLE AS y FROM base WHERE id = 0;
 
 statement error
-SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+SELECT count(p) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
              OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_first_inf t)
 ----
 Infinity value
@@ -498,7 +500,7 @@ statement ok
 CREATE TABLE w_nan_then_inf AS SELECT id, f1, f2, f3, CASE WHEN id = 5 THEN 'infinity'::DOUBLE ELSE 'nan'::DOUBLE END AS y FROM base WHERE id < 6;
 
 statement error
-SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+SELECT count(p) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
              OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_nan_then_inf t)
 ----
 Infinity value
@@ -507,7 +509,7 @@ statement ok
 CREATE TABLE w_big_scored AS SELECT id, f1, f2, f3, CASE WHEN id = 19 THEN 1e300 WHEN id < 12 THEN tgt END AS y FROM base;
 
 statement error
-SELECT count(*) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
+SELECT count(p) FROM (SELECT __anofox_tabfm_predict_win(t, 'y', MAP{'model': 'nf-raw', 'task': 'regression'})
              OVER (ORDER BY id ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS p FROM w_big_scored t)
 ----
 float32 range
