@@ -13,6 +13,10 @@ set(DATAZOO_BANNER_TELEMETRY_INCLUDE_DIR
 add_subdirectory(datazoo-banner)
 
 include_directories(src/include)
+# DuckDB 1.4 / 1.5 / 2.0 API differences (header-only). Include path only: a
+# target_link_libraries() to duckdb_compat breaks DuckDB's export() of the
+# extension targets.
+include_directories(duckdb-compat/include)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
@@ -89,10 +93,11 @@ foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
         OpenSSL::Crypto)
 endforeach()
 
-# posthog-telemetry reads the machine id from the IORegistry on macOS.
+# posthog-telemetry reads the machine id from the IORegistry on macOS; DuckDB 2.0's httplib loads
+# system certificates through the Security framework.
 if(APPLE)
-    target_link_libraries(${EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
-    target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation")
+    target_link_libraries(${EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation" "-framework Security")
+    target_link_libraries(${LOADABLE_EXTENSION_NAME} "-framework IOKit" "-framework CoreFoundation" "-framework Security")
 endif()
 
 # posthog-telemetry's machine id (GetMacAddress -> GetAdaptersInfo) needs the
@@ -293,7 +298,11 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     target_compile_definitions(anofox_tabfm_fake_plugin_bad_abi PRIVATE TABFM_FAKE_PLUGIN_BAD_ABI=1)
     set_target_properties(anofox_tabfm_fake_plugin_bad_abi PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-    add_library(anofox_tabfm_unittest_tests OBJECT ${TABFM_CPP_TEST_SOURCES})
+    # src/tabfm_ensemble.cpp is not called from the extension yet, only from its
+    # tests. DuckDB 2.0 links the extension into unittest through libduckdb.so,
+    # which drops archive members nothing references, so the tests compile it
+    # themselves. (On 1.x the archive member then simply goes unused.)
+    add_library(anofox_tabfm_unittest_tests OBJECT ${TABFM_CPP_TEST_SOURCES} src/tabfm_ensemble.cpp)
     add_dependencies(anofox_tabfm_unittest_tests anofox_tabfm_fake_plugin anofox_tabfm_fake_plugin_bad_abi)
     target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
         TABFM_FAKE_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_fake_plugin>"

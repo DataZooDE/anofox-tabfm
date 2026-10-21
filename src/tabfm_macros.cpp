@@ -5,7 +5,8 @@
 #include "duckdb/parser/expression/columnref_expression.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
-#include "duckdb/parser/parser.hpp"
+#include "duckdb_compat.hpp"
+#include "tabfm_table_macro.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
 
 namespace duckdb {
@@ -289,45 +290,11 @@ R"(
     "SELECT * FROM tabfm_regress('sold_homes', 'price', test := 'listings');"};
 // clang-format on
 
-unique_ptr<MacroFunction> BuildTableMacroFunction(const PredictMacroDef &def) {
-	Parser parser;
-	parser.ParseQuery(def.body);
-	if (parser.statements.size() != 1 || parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
-		throw InternalException("tabfm predict macro body must be a single SELECT statement");
-	}
-	auto node = std::move(parser.statements[0]->Cast<SelectStatement>().node);
-	auto function = make_uniq<TableMacroFunction>(std::move(node));
-	// Required positional parameters. Every parameter goes into both
-	// `parameters` and `types` (matching DuckDB's own CREATE MACRO transformer).
-	for (idx_t i = 0; def.parameters[i] != nullptr; i++) {
-		function->parameters.push_back(make_uniq<ColumnRefExpression>(def.parameters[i]));
-		function->types.push_back(LogicalType::UNKNOWN);
-	}
-	// Trailing optional parameters ("name=sql_default"): also a parameter +
-	// type, PLUS an entry in default_parameters (aliased to the parameter name).
-	for (idx_t i = 0; def.default_params[i] != nullptr; i++) {
-		string spec = def.default_params[i];
-		auto eq = spec.find('=');
-		auto name = spec.substr(0, eq);
-		auto default_sql = spec.substr(eq + 1);
-		Parser expr_parser;
-		auto expr = expr_parser.ParseExpressionList(default_sql);
-		expr[0]->SetAlias(name);
-		function->parameters.push_back(make_uniq<ColumnRefExpression>(name));
-		function->types.push_back(LogicalType::UNKNOWN);
-		function->default_parameters[name] = std::move(expr[0]);
-	}
-	return std::move(function);
-}
-
 unique_ptr<CreateMacroInfo> BuildMacroInfo(const string &name, const PredictMacroDef &def, const string &alias_of) {
-	auto info = make_uniq<CreateMacroInfo>(CatalogType::TABLE_MACRO_ENTRY);
-	info->schema = DEFAULT_SCHEMA;
-	info->name = name;
+	auto info = MakeTableMacroInfo(name, def.parameters, def.default_params, def.body);
 	info->temporary = true;
 	info->internal = true;
-	info->alias_of = alias_of;
-	info->macros.push_back(BuildTableMacroFunction(def));
+	info->alias_of = duckdb_compat::Ident(alias_of);
 
 	// Surface the signature in duckdb_functions() (description + parameter names
 	// + a runnable example).

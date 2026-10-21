@@ -20,6 +20,7 @@
 #include "duckdb/main/client_context.hpp"
 
 #include "duckdb/common/numeric_utils.hpp"
+#include "duckdb_compat.hpp"
 
 #include "yyjson.hpp"
 #include "miniz.hpp"
@@ -188,8 +189,8 @@ string StringSetting(ClientContext &context, const char *name) {
 // optional `model :=` to target a specific registered model; empty resolves the
 // default (anofox_tabfm_default_model or the sole registered model).
 string ModelArg(TableFunctionBindInput &input) {
-	auto it = input.named_parameters.find("model");
-	return (it == input.named_parameters.end() || it->second.IsNull()) ? string() : it->second.ToString();
+	auto value = duckdb_compat::FindNamedParameter(input.named_parameters, "model");
+	return (!value || value->IsNull()) ? string() : value->ToString();
 }
 
 // Every (model, task) the registry knows this session — built-ins + user
@@ -341,7 +342,7 @@ struct DownloadGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> DownloadBind(ClientContext &context, TableFunctionBindInput &input,
-                                      vector<LogicalType> &return_types, vector<string> &names) {
+                                      vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_download");
 
 	auto task = RequireTaskArgument(input, "tabfm_download");
@@ -476,7 +477,7 @@ void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk
 		output.SetValue(3, out, Value(status));
 		out++;
 	}
-	output.SetCardinality(out);
+	duckdb_compat::SetChildCardinality(output, out);
 }
 
 //===--------------------------------------------------------------------===//
@@ -619,7 +620,7 @@ unique_ptr<GlobalTableFunctionState> DownloadRuntimeInit(ClientContext &, TableF
 }
 
 unique_ptr<FunctionData> DownloadRuntimeBind(ClientContext &context, TableFunctionBindInput &input,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                             vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_download_runtime");
 
 	if (input.inputs.empty() || input.inputs[0].IsNull()) {
@@ -889,7 +890,7 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 	auto &bind = data.bind_data->Cast<DownloadRuntimeBindData>();
 	auto &state = data.global_state->Cast<DownloadRuntimeGlobalState>();
 	if (state.done) {
-		output.SetCardinality(0);
+		duckdb_compat::SetChildCardinality(output, 0);
 		return;
 	}
 	state.done = true;
@@ -904,7 +905,7 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 		output.SetValue(2, out, Value(file.status));
 		out++;
 	}
-	output.SetCardinality(out);
+	duckdb_compat::SetChildCardinality(output, out);
 }
 
 } // anonymous namespace
@@ -989,7 +990,7 @@ struct AccelerateGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> AccelerateBind(ClientContext &context, TableFunctionBindInput &,
-                                        vector<LogicalType> &return_types, vector<string> &names) {
+                                        vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_accelerate");
 	auto result = make_uniq<AccelerateBindData>();
 	result->cache_dir = GetCacheDir(context);
@@ -1125,7 +1126,7 @@ void AccelerateExecute(ClientContext &context, TableFunctionInput &data, DataChu
 		output.SetValue(2, out, Value(r.detail));
 		out++;
 	}
-	output.SetCardinality(out);
+	duckdb_compat::SetChildCardinality(output, out);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1159,7 +1160,7 @@ struct ModelsGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> ModelsBind(ClientContext &context, TableFunctionBindInput &input,
-                                    vector<LogicalType> &return_types, vector<string> &names) {
+                                    vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_models");
 	names = {"model", "task", "revision", "path", "bytes", "loaded", "license", "device"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
@@ -1265,7 +1266,7 @@ void ModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 		output.SetValue(7, out, Value(row.device));
 		out++;
 	}
-	output.SetCardinality(out);
+	duckdb_compat::SetChildCardinality(output, out);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1311,7 +1312,7 @@ bool TaskWeightsComplete(FileSystem &fs, const string &base_dir, const vector<We
 }
 
 unique_ptr<FunctionData> ListModelsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
-                                        vector<string> &names) {
+                                        duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_list_models");
 	names = {"model",    "family",       "capabilities", "license",   "commercial",
 	         "max_rows", "max_features", "max_classes",  "downloaded"};
@@ -1368,7 +1369,7 @@ void ListModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 		output.SetValue(8, out, Value::BOOLEAN(r.downloaded));
 		out++;
 	}
-	output.SetCardinality(out);
+	duckdb_compat::SetChildCardinality(output, out);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1420,7 +1421,7 @@ struct BackendsGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> BackendsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
-                                      vector<string> &names) {
+                                      duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_backends");
 	names = {"model", "task", "device", "backend", "supported", "reason"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
@@ -1605,7 +1606,7 @@ void BackendsExecute(ClientContext &, TableFunctionInput &data, DataChunk &outpu
 		output.SetValue(5, out, r.reason.empty() ? Value(LogicalType::VARCHAR) : Value(r.reason));
 		out++;
 	}
-	output.SetCardinality(out);
+	duckdb_compat::SetChildCardinality(output, out);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1624,13 +1625,13 @@ struct LifecycleGlobalState : public GlobalTableFunctionState {
 	}
 };
 
-void SetLifecycleColumns(vector<LogicalType> &return_types, vector<string> &names) {
+void SetLifecycleColumns(vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	names = {"task", "status"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR};
 }
 
 unique_ptr<FunctionData> LoadBind(ClientContext &context, TableFunctionBindInput &input,
-                                  vector<LogicalType> &return_types, vector<string> &names) {
+                                  vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_load");
 	auto task = RequireTaskArgument(input, "tabfm_load");
 	auto manifest = FindManifest(context, "tabfm_load", ModelArg(input), task);
@@ -1656,7 +1657,7 @@ unique_ptr<FunctionData> LoadBind(ClientContext &context, TableFunctionBindInput
 }
 
 unique_ptr<FunctionData> UnloadBind(ClientContext &context, TableFunctionBindInput &input,
-                                    vector<LogicalType> &return_types, vector<string> &names) {
+                                    vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_unload");
 	auto result = make_uniq<LifecycleBindData>();
 	auto tabfm_state = TabFMState::Get(context);
@@ -1682,13 +1683,13 @@ void LifecycleExecute(ClientContext &, TableFunctionInput &data, DataChunk &outp
 	auto &bind = data.bind_data->Cast<LifecycleBindData>();
 	auto &state = data.global_state->Cast<LifecycleGlobalState>();
 	if (state.done) {
-		output.SetCardinality(0);
+		duckdb_compat::SetChildCardinality(output, 0);
 		return;
 	}
 	state.done = true;
 	output.SetValue(0, 0, Value(bind.task));
 	output.SetValue(1, 0, Value(bind.status));
-	output.SetCardinality(1);
+	duckdb_compat::SetChildCardinality(output, 1);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1711,7 +1712,7 @@ struct RemoveGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> RemoveBind(ClientContext &context, TableFunctionBindInput &input,
-                                    vector<LogicalType> &return_types, vector<string> &names) {
+                                    vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_remove");
 	auto task = RequireTaskArgument(input, "tabfm_remove");
 	auto manifest = FindManifest(context, "tabfm_remove", ModelArg(input), task);
@@ -1779,7 +1780,7 @@ void RemoveExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 		output.SetValue(1, out, Value("removed"));
 		out++;
 	}
-	output.SetCardinality(out);
+	duckdb_compat::SetChildCardinality(output, out);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1798,7 +1799,7 @@ struct PrecompileBindData : public TableFunctionData {
 };
 
 unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBindInput &input,
-                                        vector<LogicalType> &return_types, vector<string> &names) {
+                                        vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_gpu_precompile");
 	auto task = RequireTaskArgument(input, "tabfm_gpu_precompile");
 	// Resolve the model HERE and carry the id into the context, rather than
@@ -1848,7 +1849,7 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 void PrecompileExecute(ClientContext &, TableFunctionInput &data, DataChunk &output) {
 	auto &state = data.global_state->Cast<LifecycleGlobalState>();
 	if (state.done) {
-		output.SetCardinality(0);
+		duckdb_compat::SetChildCardinality(output, 0);
 		return;
 	}
 	state.done = true;
@@ -1859,7 +1860,7 @@ void PrecompileExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 	output.SetValue(2, 0, Value::BIGINT(bind.features));
 	output.SetValue(3, 0, Value(bind.ctx.device));
 	output.SetValue(4, 0, Value("compiled"));
-	output.SetCardinality(1);
+	duckdb_compat::SetChildCardinality(output, 1);
 }
 
 //===--------------------------------------------------------------------===//
@@ -1873,12 +1874,12 @@ void PrecompileExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 //===--------------------------------------------------------------------===//
 
 string NamedStr(TableFunctionBindInput &input, const char *key, const string &def = "") {
-	auto it = input.named_parameters.find(key);
-	return (it == input.named_parameters.end() || it->second.IsNull()) ? def : it->second.ToString();
+	auto value = duckdb_compat::FindNamedParameter(input.named_parameters, key);
+	return (!value || value->IsNull()) ? def : value->ToString();
 }
 int64_t NamedInt(TableFunctionBindInput &input, const char *key, int64_t def) {
-	auto it = input.named_parameters.find(key);
-	return (it == input.named_parameters.end() || it->second.IsNull()) ? def : it->second.GetValue<int64_t>();
+	auto value = duckdb_compat::FindNamedParameter(input.named_parameters, key);
+	return (!value || value->IsNull()) ? def : value->GetValue<int64_t>();
 }
 
 struct RegisterModelBindData : public TableFunctionData {
@@ -1887,7 +1888,7 @@ struct RegisterModelBindData : public TableFunctionData {
 };
 
 unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunctionBindInput &input,
-                                           vector<LogicalType> &return_types, vector<string> &names) {
+                                           vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_register_model");
 	auto id = NamedStr(input, "id");
 	if (id.empty()) {
@@ -1912,9 +1913,9 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	spec.preprocessing_profile = NamedStr(input, "preprocessing_profile", "tabfm_v1_minimal");
 	spec.license.id = NamedStr(input, "license", "none");
 	spec.license.gate_setting = NamedStr(input, "gate_setting", "");
-	auto comm = input.named_parameters.find("commercial");
-	spec.license.commercial = (comm != input.named_parameters.end() && !comm->second.IsNull())
-	                              ? BooleanValue::Get(comm->second.DefaultCastAs(LogicalType::BOOLEAN))
+	auto comm = duckdb_compat::FindNamedParameter(input.named_parameters, "commercial");
+	spec.license.commercial = (comm && !comm->IsNull())
+	                              ? BooleanValue::Get(comm->DefaultCastAs(LogicalType::BOOLEAN))
 	                              : spec.license.gate_setting.empty(); // gated ⇒ treated as restricted
 	spec.license.redistributable = spec.license.commercial;
 	spec.size_regime.max_rows = NamedInt(input, "max_rows", -1);
@@ -1928,11 +1929,11 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	auto weights_repo = NamedStr(input, "weights_repo");
 	auto weights_revision = NamedStr(input, "weights_revision", "main");
 	auto named_list = [&](const char *key) -> vector<Value> {
-		auto it = input.named_parameters.find(key);
-		if (it == input.named_parameters.end() || it->second.IsNull()) {
+		auto value = duckdb_compat::FindNamedParameter(input.named_parameters, key);
+		if (!value || value->IsNull()) {
 			return {};
 		}
-		return ListValue::GetChildren(it->second);
+		return ListValue::GetChildren(*value);
 	};
 	// Per-task weight files: a `<task>_files` LIST (with parallel _file_urls /
 	// _file_bytes) for multi-file models, else the single `<task>_weights` scalar.
@@ -2043,11 +2044,11 @@ unique_ptr<GlobalTableFunctionState> OneRowInit(ClientContext &, TableFunctionIn
 void RegisterModelExecute(ClientContext &, TableFunctionInput &data, DataChunk &output) {
 	auto &state = data.global_state->Cast<OneRowState>();
 	if (state.done) {
-		output.SetCardinality(0);
+		duckdb_compat::SetChildCardinality(output, 0);
 		return;
 	}
 	auto &bind = data.bind_data->Cast<RegisterModelBindData>();
-	output.SetCardinality(1);
+	duckdb_compat::SetChildCardinality(output, 1);
 	output.SetValue(0, 0, Value(bind.model_id));
 	output.SetValue(1, 0, Value(bind.capabilities));
 	output.SetValue(2, 0, Value("registered"));
@@ -2059,7 +2060,7 @@ struct UnregisterBindData : public TableFunctionData {
 	bool existed = false;
 };
 unique_ptr<FunctionData> UnregisterModelBind(ClientContext &context, TableFunctionBindInput &input,
-                                             vector<LogicalType> &return_types, vector<string> &names) {
+                                             vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_unregister_model");
 	if (input.inputs.empty() || input.inputs[0].IsNull()) {
 		throw InvalidInputException("tabfm_unregister_model: model id cannot be NULL");
@@ -2074,11 +2075,11 @@ unique_ptr<FunctionData> UnregisterModelBind(ClientContext &context, TableFuncti
 void UnregisterModelExecute(ClientContext &, TableFunctionInput &data, DataChunk &output) {
 	auto &state = data.global_state->Cast<OneRowState>();
 	if (state.done) {
-		output.SetCardinality(0);
+		duckdb_compat::SetChildCardinality(output, 0);
 		return;
 	}
 	auto &bind = data.bind_data->Cast<UnregisterBindData>();
-	output.SetCardinality(1);
+	duckdb_compat::SetChildCardinality(output, 1);
 	output.SetValue(0, 0, Value(bind.model_id));
 	output.SetValue(1, 0, Value(bind.existed ? "unregistered" : "not registered"));
 	state.done = true;
@@ -2088,12 +2089,12 @@ void RegisterSet(ExtensionLoader &loader, const string &full_name, const string 
                  const vector<vector<LogicalType>> &overloads, table_function_bind_t bind,
                  table_function_init_global_t init, table_function_t execute, const char *description = nullptr,
                  const char *example = nullptr, bool with_model = false) {
-	TableFunctionSet set(full_name);
+	TableFunctionSet set(duckdb_compat::FunctionName(full_name));
 	for (auto &arguments : overloads) {
-		TableFunction func(full_name, arguments, execute, bind, init);
+		TableFunction func(duckdb_compat::FunctionName(full_name), arguments, execute, bind, init);
 		if (with_model) {
 			// Optional `model :=` to target a specific model (else the default).
-			func.named_parameters["model"] = LogicalType::VARCHAR;
+			duckdb_compat::AddNamedParameter(func, "model", LogicalType::VARCHAR);
 		}
 		set.AddFunction(std::move(func));
 	}
@@ -2197,20 +2198,20 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 		                "regression_weights_url", "weights_revision", "tensor_map", "classification_tensor_map",
 		                "regression_tensor_map", "weights_repo", "license", "gate_setting", "preprocessing_profile",
 		                "base_dir", "contract_inputs", "contract_outputs"}) {
-			f.named_parameters[k] = LogicalType::VARCHAR;
+			duckdb_compat::AddNamedParameter(f, k, LogicalType::VARCHAR);
 		}
-		f.named_parameters["commercial"] = LogicalType::BOOLEAN;
+		duckdb_compat::AddNamedParameter(f, "commercial", LogicalType::BOOLEAN);
 		for (auto *k : {"max_rows", "max_features", "max_classes", "classification_weights_bytes",
 		                "regression_weights_bytes"}) {
-			f.named_parameters[k] = LogicalType::BIGINT;
+			duckdb_compat::AddNamedParameter(f, k, LogicalType::BIGINT);
 		}
 		// Multi-file-per-task (e.g. weights + config): parallel LISTs.
 		for (auto *k : {"classification_files", "regression_files", "classification_file_urls",
 		                "regression_file_urls"}) {
-			f.named_parameters[k] = LogicalType::LIST(LogicalType::VARCHAR);
+			duckdb_compat::AddNamedParameter(f, k, LogicalType::LIST(LogicalType::VARCHAR));
 		}
 		for (auto *k : {"classification_file_bytes", "regression_file_bytes"}) {
-			f.named_parameters[k] = LogicalType::LIST(LogicalType::BIGINT);
+			duckdb_compat::AddNamedParameter(f, k, LogicalType::LIST(LogicalType::BIGINT));
 		}
 		TableFunctionSet set("anofox_tabfm_register_model");
 		set.AddFunction(std::move(f));

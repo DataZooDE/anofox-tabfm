@@ -17,9 +17,10 @@
 #include "duckdb.hpp"
 
 #include <string>
+#include "duckdb_compat.hpp"
 
 // Helper: open an in-memory DuckDB, load the extension, optionally set model manifest.
-static duckdb::unique_ptr<duckdb::MaterializedQueryResult> qry(duckdb::Connection &con, const std::string &sql) {
+static auto qry(duckdb::Connection &con, const std::string &sql) {
 	return con.Query(sql);
 }
 
@@ -59,12 +60,12 @@ TEST_CASE("tabfm_fold_assign: fold ids are in [0, k-1]", "[tabfm][crossval]") {
 	// All fold ids in [0, 2] for k=3
 	auto res = qry(con, "SELECT count(*) FROM tabfm_fold_assign('fa_rows', 3, 'id', 42) WHERE fold_id < 0 OR fold_id >= 3");
 	REQUIRE(!res->HasError());
-	REQUIRE(res->GetValue(0, 0).GetValue<int64_t>() == 0);
+	REQUIRE(duckdb_compat::ResultValue(*res, 0, 0).GetValue<int64_t>() == 0);
 
 	// Total row count preserved
 	auto cnt = qry(con, "SELECT count(*) FROM tabfm_fold_assign('fa_rows', 3, 'id', 42)");
 	REQUIRE(!cnt->HasError());
-	REQUIRE(cnt->GetValue(0, 0).GetValue<int64_t>() == 8);
+	REQUIRE(duckdb_compat::ResultValue(*cnt, 0, 0).GetValue<int64_t>() == 8);
 }
 
 TEST_CASE("tabfm_fold_assign: deterministic — two runs agree", "[tabfm][crossval]") {
@@ -86,7 +87,7 @@ TEST_CASE("tabfm_fold_assign: deterministic — two runs agree", "[tabfm][crossv
 		)
 	)");
 	REQUIRE(!res->HasError());
-	REQUIRE(res->GetValue(0, 0).GetValue<int64_t>() == 0);
+	REQUIRE(duckdb_compat::ResultValue(*res, 0, 0).GetValue<int64_t>() == 0);
 }
 
 TEST_CASE("tabfm_fold_assign: seed-sensitive — different seeds differ", "[tabfm][crossval]") {
@@ -106,7 +107,7 @@ TEST_CASE("tabfm_fold_assign: seed-sensitive — different seeds differ", "[tabf
 	)");
 	REQUIRE(!res->HasError());
 	// Expect at least 1 difference (hash changes across seed change)
-	REQUIRE(res->GetValue(0, 0).GetValue<int64_t>() > 0);
+	REQUIRE(duckdb_compat::ResultValue(*res, 0, 0).GetValue<int64_t>() > 0);
 }
 
 TEST_CASE("tabfm_fold_assign: formula matches (hash(id,seed)%k)::INTEGER", "[tabfm][crossval]") {
@@ -128,7 +129,7 @@ TEST_CASE("tabfm_fold_assign: formula matches (hash(id,seed)%k)::INTEGER", "[tab
 		)
 	)");
 	REQUIRE(!res->HasError());
-	REQUIRE(res->GetValue(0, 0).GetValue<int64_t>() == 0);
+	REQUIRE(duckdb_compat::ResultValue(*res, 0, 0).GetValue<int64_t>() == 0);
 }
 
 // ============================================================================
@@ -155,12 +156,12 @@ TEST_CASE("tabfm_cross_validate: k=2 returns 3 rows (2 fold + 1 aggregate)", "[t
 
 	auto cnt = qry(con, "SELECT count(*) FROM tabfm_cross_validate('cv_t', 'label', 'id', k := 2, seed := 42)");
 	REQUIRE(!cnt->HasError());
-	REQUIRE(cnt->GetValue(0, 0).GetValue<int64_t>() == 3);
+	REQUIRE(duckdb_compat::ResultValue(*cnt, 0, 0).GetValue<int64_t>() == 3);
 
 	// Aggregate row exists with fold_id = -1
 	auto agg = qry(con, "SELECT count(*) FROM tabfm_cross_validate('cv_t', 'label', 'id', k := 2, seed := 42) WHERE fold_id = -1");
 	REQUIRE(!agg->HasError());
-	REQUIRE(agg->GetValue(0, 0).GetValue<int64_t>() == 1);
+	REQUIRE(duckdb_compat::ResultValue(*agg, 0, 0).GetValue<int64_t>() == 1);
 }
 
 TEST_CASE("tabfm_cross_validate: aggregate row has non-NULL mean and std", "[tabfm][crossval]") {
@@ -181,7 +182,7 @@ TEST_CASE("tabfm_cross_validate: aggregate row has non-NULL mean and std", "[tab
 		  WHERE fold_id = -1 AND (metric_value IS NULL OR metric_std IS NULL)
 	)");
 	REQUIRE(!res->HasError());
-	REQUIRE(res->GetValue(0, 0).GetValue<int64_t>() == 0);
+	REQUIRE(duckdb_compat::ResultValue(*res, 0, 0).GetValue<int64_t>() == 0);
 }
 
 TEST_CASE("tabfm_cross_validate: per-fold accuracy in [0,1]", "[tabfm][crossval]") {
@@ -203,7 +204,7 @@ TEST_CASE("tabfm_cross_validate: per-fold accuracy in [0,1]", "[tabfm][crossval]
 		  WHERE fold_id >= 0 AND (metric_value < 0 OR metric_value > 1)
 	)");
 	REQUIRE(!res->HasError());
-	REQUIRE(res->GetValue(0, 0).GetValue<int64_t>() == 0);
+	REQUIRE(duckdb_compat::ResultValue(*res, 0, 0).GetValue<int64_t>() == 0);
 }
 
 // ============================================================================
@@ -281,7 +282,7 @@ TEST_CASE("tabfm_cross_validate: NON-NEGOTIABLE leakage-detecting golden test", 
 	// Step 1: CV returns exactly 4 rows (3 folds + 1 aggregate)
 	auto cnt = qry(con, "SELECT count(*) FROM tabfm_cross_validate('cv_leak', 'label', 'id', k := 3, seed := 42)");
 	REQUIRE(!cnt->HasError());
-	REQUIRE(cnt->GetValue(0, 0).GetValue<int64_t>() == 4);
+	REQUIRE(duckdb_compat::ResultValue(*cnt, 0, 0).GetValue<int64_t>() == 4);
 
 	// Step 2: Aggregate row (fold_id=-1) must exist
 	auto agg_exists = qry(con, R"(
@@ -289,7 +290,7 @@ TEST_CASE("tabfm_cross_validate: NON-NEGOTIABLE leakage-detecting golden test", 
 		  WHERE fold_id = -1
 	)");
 	REQUIRE(!agg_exists->HasError());
-	REQUIRE(agg_exists->GetValue(0, 0).GetValue<int64_t>() == 1);
+	REQUIRE(duckdb_compat::ResultValue(*agg_exists, 0, 0).GetValue<int64_t>() == 1);
 
 	// Step 3: LEAKAGE-DETECTING ASSERTION
 	// Aggregate accuracy must be < 0.8.
@@ -303,7 +304,7 @@ TEST_CASE("tabfm_cross_validate: NON-NEGOTIABLE leakage-detecting golden test", 
 		WHERE fold_id = -1
 	)");
 	REQUIRE(!leak_check->HasError());
-	double agg_acc = leak_check->GetValue(0, 0).GetValue<double>();
+	double agg_acc = duckdb_compat::ResultValue(*leak_check, 0, 0).GetValue<double>();
 	// Leakage-safe accuracy ≈ 1/3 (chance level). Must be < 0.8.
 	REQUIRE(agg_acc < 0.8);
 
@@ -313,5 +314,5 @@ TEST_CASE("tabfm_cross_validate: NON-NEGOTIABLE leakage-detecting golden test", 
 		  WHERE fold_id >= 0 AND (metric_value < 0 OR metric_value > 1)
 	)");
 	REQUIRE(!bounds->HasError());
-	REQUIRE(bounds->GetValue(0, 0).GetValue<int64_t>() == 0);
+	REQUIRE(duckdb_compat::ResultValue(*bounds, 0, 0).GetValue<int64_t>() == 0);
 }

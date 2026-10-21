@@ -20,6 +20,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 #include "duckdb/function/table_function.hpp"
+#include "duckdb_compat.hpp"
 
 #include "telemetry.hpp"
 
@@ -648,7 +649,7 @@ struct DevicesGlobalState : public GlobalTableFunctionState {
 };
 
 unique_ptr<FunctionData> DevicesBind(ClientContext &context, TableFunctionBindInput &input,
-                                     vector<LogicalType> &return_types, vector<string> &names) {
+                                     vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_devices");
 
 	names = {"device_id", "ep", "name", "arch", "vram_total", "vram_free", "driver", "usable"};
@@ -678,7 +679,7 @@ void DevicesFunction(ClientContext &context, TableFunctionInput &data, DataChunk
 		output.SetValue(7, count, Value::BOOLEAN(device.usable));
 		count++;
 	}
-	output.SetCardinality(count);
+	duckdb_compat::SetChildCardinality(output, count);
 }
 
 } // anonymous namespace

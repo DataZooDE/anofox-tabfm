@@ -11,6 +11,7 @@
 
 #include "catch.hpp"
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 
 // Helper: load extension on a fresh connection
 static duckdb::Connection make_con() {
@@ -59,7 +60,7 @@ TEST_CASE("tabfm_accuracy: golden value 2/3 matches sklearn", "[tabfm][metrics]"
 
 	auto result = con.Query("SELECT round(tabfm_accuracy(actual, predicted), 6) FROM preds");
 	REQUIRE(!result->HasError());
-	REQUIRE(result->GetValue(0, 0).GetValue<double>() == 0.666667);
+	REQUIRE(duckdb_compat::ResultValue(*result, 0, 0).GetValue<double>() == 0.666667);
 }
 
 TEST_CASE("tabfm_accuracy: NULL rows skipped", "[tabfm][metrics]") {
@@ -72,7 +73,7 @@ TEST_CASE("tabfm_accuracy: NULL rows skipped", "[tabfm][metrics]") {
 
 	auto result = con.Query("SELECT tabfm_accuracy(actual, predicted) FROM preds_null");
 	REQUIRE(!result->HasError());
-	REQUIRE(result->GetValue(0, 0).GetValue<double>() == 1.0);
+	REQUIRE(duckdb_compat::ResultValue(*result, 0, 0).GetValue<double>() == 1.0);
 }
 
 TEST_CASE("tabfm_accuracy: all-NULL input returns NULL", "[tabfm][metrics]") {
@@ -85,7 +86,7 @@ TEST_CASE("tabfm_accuracy: all-NULL input returns NULL", "[tabfm][metrics]") {
 
 	auto result = con.Query("SELECT tabfm_accuracy(actual, predicted) FROM preds_empty");
 	REQUIRE(!result->HasError());
-	REQUIRE(result->GetValue(0, 0).IsNull());
+	REQUIRE(duckdb_compat::ResultValue(*result, 0, 0).IsNull());
 }
 
 TEST_CASE("tabfm_accuracy: alias parity with anofox_tabfm_accuracy", "[tabfm][metrics]") {
@@ -100,7 +101,7 @@ TEST_CASE("tabfm_accuracy: alias parity with anofox_tabfm_accuracy", "[tabfm][me
 	auto r2 = con.Query("SELECT round(anofox_tabfm_accuracy(actual, predicted), 10) FROM preds_alias");
 	REQUIRE(!r1->HasError());
 	REQUIRE(!r2->HasError());
-	REQUIRE(r1->GetValue(0, 0).GetValue<double>() == r2->GetValue(0, 0).GetValue<double>());
+	REQUIRE(duckdb_compat::ResultValue(*r1, 0, 0).GetValue<double>() == duckdb_compat::ResultValue(*r2, 0, 0).GetValue<double>());
 }
 
 // ============================================================
@@ -137,9 +138,9 @@ TEST_CASE("tabfm_f1: macro/weighted/micro on 3-class fixture match sklearn", "[t
 	REQUIRE(!r_weighted->HasError());
 	REQUIRE(!r_micro->HasError());
 
-	REQUIRE(r_macro->GetValue(0, 0).GetValue<double>() == Approx(0.4).epsilon(1e-6));
-	REQUIRE(r_weighted->GetValue(0, 0).GetValue<double>() == Approx(0.533333).epsilon(1e-5));
-	REQUIRE(r_micro->GetValue(0, 0).GetValue<double>() == Approx(0.666667).epsilon(1e-6));
+	REQUIRE(duckdb_compat::ResultValue(*r_macro, 0, 0).GetValue<double>() == Approx(0.4).epsilon(1e-6));
+	REQUIRE(duckdb_compat::ResultValue(*r_weighted, 0, 0).GetValue<double>() == Approx(0.533333).epsilon(1e-5));
+	REQUIRE(duckdb_compat::ResultValue(*r_micro, 0, 0).GetValue<double>() == Approx(0.666667).epsilon(1e-6));
 }
 
 // ============================================================
@@ -165,7 +166,7 @@ TEST_CASE("tabfm_roc_auc: tie handling matches sklearn rank-sum (OvR)", "[tabfm]
 
 	auto result = con.Query("SELECT round(tabfm_roc_auc(actual, proba, 'ovr'), 6) FROM auc_preds");
 	REQUIRE(!result->HasError());
-	REQUIRE(result->GetValue(0, 0).GetValue<double>() == Approx(0.958333).epsilon(1e-6));
+	REQUIRE(duckdb_compat::ResultValue(*result, 0, 0).GetValue<double>() == Approx(0.958333).epsilon(1e-6));
 }
 
 TEST_CASE("tabfm_roc_auc: OvO matches sklearn", "[tabfm][metrics]") {
@@ -183,7 +184,7 @@ TEST_CASE("tabfm_roc_auc: OvO matches sklearn", "[tabfm][metrics]") {
 
 	auto result = con.Query("SELECT round(tabfm_roc_auc(actual, proba, 'ovo'), 6) FROM auc_ovo");
 	REQUIRE(!result->HasError());
-	REQUIRE(result->GetValue(0, 0).GetValue<double>() == Approx(0.958333).epsilon(1e-6));
+	REQUIRE(duckdb_compat::ResultValue(*result, 0, 0).GetValue<double>() == Approx(0.958333).epsilon(1e-6));
 }
 
 TEST_CASE("tabfm_roc_auc: missing avg throws named exception", "[tabfm][metrics]") {
@@ -216,7 +217,7 @@ TEST_CASE("tabfm_log_loss: clipped p=0 never returns infinity", "[tabfm][metrics
 
 	auto result = con.Query("SELECT tabfm_log_loss(actual, proba) FROM ll_clip");
 	REQUIRE(!result->HasError());
-	double v = result->GetValue(0, 0).GetValue<double>();
+	double v = duckdb_compat::ResultValue(*result, 0, 0).GetValue<double>();
 	REQUIRE(std::isfinite(v));
 	REQUIRE(v > 30.0); // -log(1e-15) ≈ 34.5
 	REQUIRE(v < 40.0);
@@ -234,5 +235,5 @@ TEST_CASE("tabfm_log_loss: golden value matches sklearn on 3-row proba fixture",
 
 	auto result = con.Query("SELECT round(tabfm_log_loss(actual, proba), 6) FROM ll_preds");
 	REQUIRE(!result->HasError());
-	REQUIRE(result->GetValue(0, 0).GetValue<double>() == Approx(0.424322).epsilon(1e-5));
+	REQUIRE(duckdb_compat::ResultValue(*result, 0, 0).GetValue<double>() == Approx(0.424322).epsilon(1e-5));
 }

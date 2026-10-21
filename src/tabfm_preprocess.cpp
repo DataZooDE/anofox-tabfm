@@ -195,7 +195,7 @@ TargetValueKind ClassifyTargetValue(const Value &value) {
 		return IsFloat32Finite(d) ? TargetValueKind::USABLE : TargetValueKind::FLOAT32_OVERFLOW;
 	}
 	case LogicalTypeId::DATE:
-		return Date::IsFinite(DateValue::Get(value)) ? TargetValueKind::USABLE : TargetValueKind::INFINITE;
+		return Value::IsFinite(DateValue::Get(value)) ? TargetValueKind::USABLE : TargetValueKind::INFINITE;
 	case LogicalTypeId::TIMESTAMP:
 	case LogicalTypeId::TIMESTAMP_SEC:
 	case LogicalTypeId::TIMESTAMP_MS:

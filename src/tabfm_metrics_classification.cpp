@@ -32,8 +32,10 @@
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_macro_info.hpp"
-#include "duckdb/parser/parser.hpp"
+#include "tabfm_table_macro.hpp"
 #include "duckdb/parser/statement/select_statement.hpp"
+#include "duckdb_compat.hpp"
+#include "duckdb_compat/aggregate.hpp"
 #include "telemetry.hpp"
 
 #include <algorithm>
@@ -75,11 +77,7 @@ struct AccuracyState {
 	int64_t total;   // valid (non-NULL) pairs seen
 };
 
-idx_t AccuracyStateSize(const AggregateFunction &) {
-	return sizeof(AccuracyState);
-}
-
-void AccuracyStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void AccuracyStateInit(data_ptr_t state_ptr) {
 	new (state_ptr) AccuracyState{0, 0};
 }
 
@@ -95,7 +93,7 @@ void AccuracyUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, predicted_data);
-	auto states = reinterpret_cast<AccuracyState **>(sdata.data);
+	auto states = reinterpret_cast<AccuracyState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -132,8 +130,8 @@ void AccuracyCombine(Vector &source_vector, Vector &target_vector, AggregateInpu
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<AccuracyState **>(source_data.data);
-	auto targets = reinterpret_cast<AccuracyState **>(target_data.data);
+	auto sources = reinterpret_cast<AccuracyState *const *>(source_data.data);
+	auto targets = reinterpret_cast<AccuracyState *const *>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &src = *sources[source_data.sel->get_index(i)];
 		auto &tgt = *targets[target_data.sel->get_index(i)];
@@ -148,19 +146,19 @@ void AccuracyFinalize(Vector &state_vector, AggregateInputData &, Vector &result
                       idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<AccuracyState **>(sdata.data);
+	auto states = reinterpret_cast<AccuracyState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (state.total == 0) {
 			FlatVector::SetNull(result, i + offset, true);
 		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
+			duckdb_compat::FlatData<double>(result)[i + offset] =
 			    static_cast<double>(state.correct) / static_cast<double>(state.total);
 		}
 	}
 }
 
-unique_ptr<FunctionData> AccuracyBind(ClientContext &, AggregateFunction &,
+unique_ptr<FunctionData> AccuracyBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
                                        vector<unique_ptr<Expression>> &) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_accuracy");
 	return nullptr;
@@ -192,11 +190,7 @@ struct F1StateSlot {
 	std::unordered_map<std::string, ClassCounts> *data;
 };
 
-idx_t F1StateSize(const AggregateFunction &) {
-	return sizeof(F1StateSlot);
-}
-
-void F1StateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void F1StateInit(data_ptr_t state_ptr) {
 	auto &slot = *reinterpret_cast<F1StateSlot *>(state_ptr);
 	slot.data  = nullptr;
 }
@@ -204,7 +198,7 @@ void F1StateInit(const AggregateFunction &, data_ptr_t state_ptr) {
 void F1StateDestroy(Vector &state_vector, AggregateInputData &, idx_t count) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto slots = reinterpret_cast<F1StateSlot **>(sdata.data);
+	auto slots = reinterpret_cast<F1StateSlot *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &slot = *slots[sdata.sel->get_index(i)];
 		delete slot.data;
@@ -258,19 +252,19 @@ static unique_ptr<FunctionData> BindF1Metric(ClientContext &context, const char 
 	return make_uniq<F1BindData>(std::move(avg_mode), metric);
 }
 
-unique_ptr<FunctionData> PrecisionBind(ClientContext &ctx, AggregateFunction &,
+unique_ptr<FunctionData> PrecisionBind(ClientContext &ctx, duckdb_compat::AggregateBindFunction &,
                                         vector<unique_ptr<Expression>> &arguments) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_precision");
 	return BindF1Metric(ctx, "tabfm_precision", 'p', arguments);
 }
 
-unique_ptr<FunctionData> RecallBind(ClientContext &ctx, AggregateFunction &,
+unique_ptr<FunctionData> RecallBind(ClientContext &ctx, duckdb_compat::AggregateBindFunction &,
                                      vector<unique_ptr<Expression>> &arguments) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_recall");
 	return BindF1Metric(ctx, "tabfm_recall", 'r', arguments);
 }
 
-unique_ptr<FunctionData> F1ScoreBind(ClientContext &ctx, AggregateFunction &,
+unique_ptr<FunctionData> F1ScoreBind(ClientContext &ctx, duckdb_compat::AggregateBindFunction &,
                                       vector<unique_ptr<Expression>> &arguments) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_f1");
 	return BindF1Metric(ctx, "tabfm_f1", 'f', arguments);
@@ -281,7 +275,7 @@ void F1Update(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, predicted_data);
-	auto slots = reinterpret_cast<F1StateSlot **>(sdata.data);
+	auto slots = reinterpret_cast<F1StateSlot *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -332,8 +326,8 @@ void F1Combine(Vector &source_vector, Vector &target_vector, AggregateInputData 
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<F1StateSlot **>(source_data.data);
-	auto targets = reinterpret_cast<F1StateSlot **>(target_data.data);
+	auto sources = reinterpret_cast<F1StateSlot *const *>(source_data.data);
+	auto targets = reinterpret_cast<F1StateSlot *const *>(target_data.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &src = *sources[source_data.sel->get_index(i)];
@@ -357,7 +351,7 @@ void F1Finalize(Vector &state_vector, AggregateInputData &aggr_input, Vector &re
                 idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto slots = reinterpret_cast<F1StateSlot **>(sdata.data);
+	auto slots = reinterpret_cast<F1StateSlot *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &slot = *slots[sdata.sel->get_index(i)];
@@ -435,7 +429,7 @@ void F1Finalize(Vector &state_vector, AggregateInputData &aggr_input, Vector &re
 			}
 		}
 
-		FlatVector::GetData<double>(result)[i + offset] = value;
+		duckdb_compat::FlatData<double>(result)[i + offset] = value;
 	}
 }
 
@@ -458,11 +452,7 @@ struct LogLossState {
 	int64_t n      = 0;
 };
 
-idx_t LogLossStateSize(const AggregateFunction &) {
-	return sizeof(LogLossState);
-}
-
-void LogLossStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void LogLossStateInit(data_ptr_t state_ptr) {
 	new (state_ptr) LogLossState{0.0, 0};
 }
 
@@ -471,7 +461,7 @@ void LogLossUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_v
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, proba_data);
-	auto states = reinterpret_cast<LogLossState **>(sdata.data);
+	auto states = reinterpret_cast<LogLossState *const *>(sdata.data);
 
 	static constexpr double kEps = 1e-15;
 
@@ -515,8 +505,8 @@ void LogLossCombine(Vector &source_vector, Vector &target_vector, AggregateInput
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<LogLossState **>(source_data.data);
-	auto targets = reinterpret_cast<LogLossState **>(target_data.data);
+	auto sources = reinterpret_cast<LogLossState *const *>(source_data.data);
+	auto targets = reinterpret_cast<LogLossState *const *>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &src = *sources[source_data.sel->get_index(i)];
 		auto &tgt = *targets[target_data.sel->get_index(i)];
@@ -529,19 +519,19 @@ void LogLossFinalize(Vector &state_vector, AggregateInputData &, Vector &result,
                      idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<LogLossState **>(sdata.data);
+	auto states = reinterpret_cast<LogLossState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (state.n == 0) {
 			FlatVector::SetNull(result, i + offset, true);
 		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
+			duckdb_compat::FlatData<double>(result)[i + offset] =
 			    state.sum_ll / static_cast<double>(state.n);
 		}
 	}
 }
 
-unique_ptr<FunctionData> LogLossBind(ClientContext &, AggregateFunction &,
+unique_ptr<FunctionData> LogLossBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
                                       vector<unique_ptr<Expression>> &) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_log_loss");
 	return nullptr;
@@ -574,11 +564,7 @@ struct AUCStateSlot {
 	std::unordered_map<std::string, AUCClassData> *data;
 };
 
-idx_t AUCStateSize(const AggregateFunction &) {
-	return sizeof(AUCStateSlot);
-}
-
-void AUCStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void AUCStateInit(data_ptr_t state_ptr) {
 	auto &slot = *reinterpret_cast<AUCStateSlot *>(state_ptr);
 	slot.data  = nullptr;
 }
@@ -586,7 +572,7 @@ void AUCStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
 void AUCStateDestroy(Vector &state_vector, AggregateInputData &, idx_t count) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto slots = reinterpret_cast<AUCStateSlot **>(sdata.data);
+	auto slots = reinterpret_cast<AUCStateSlot *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &slot = *slots[sdata.sel->get_index(i)];
 		delete slot.data;
@@ -608,7 +594,7 @@ struct AUCBindData : FunctionData {
 	}
 };
 
-unique_ptr<FunctionData> AUCBind(ClientContext &ctx, AggregateFunction &,
+unique_ptr<FunctionData> AUCBind(ClientContext &ctx, duckdb_compat::AggregateBindFunction &,
                                   vector<unique_ptr<Expression>> &arguments) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_roc_auc");
 
@@ -636,7 +622,7 @@ void AUCUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vecto
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, proba_data);
-	auto slots = reinterpret_cast<AUCStateSlot **>(sdata.data);
+	auto slots = reinterpret_cast<AUCStateSlot *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -677,8 +663,8 @@ void AUCCombine(Vector &source_vector, Vector &target_vector, AggregateInputData
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<AUCStateSlot **>(source_data.data);
-	auto targets = reinterpret_cast<AUCStateSlot **>(target_data.data);
+	auto sources = reinterpret_cast<AUCStateSlot *const *>(source_data.data);
+	auto targets = reinterpret_cast<AUCStateSlot *const *>(target_data.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &src = *sources[source_data.sel->get_index(i)];
@@ -754,7 +740,7 @@ void AUCFinalize(Vector &state_vector, AggregateInputData &aggr_input, Vector &r
                  idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto slots = reinterpret_cast<AUCStateSlot **>(sdata.data);
+	auto slots = reinterpret_cast<AUCStateSlot *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &slot = *slots[sdata.sel->get_index(i)];
@@ -843,7 +829,7 @@ void AUCFinalize(Vector &state_vector, AggregateInputData &aggr_input, Vector &r
 		if (auc_count == 0) {
 			FlatVector::SetNull(result, i + offset, true);
 		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
+			duckdb_compat::FlatData<double>(result)[i + offset] =
 			    auc_sum / static_cast<double>(auc_count);
 		}
 	}
@@ -869,11 +855,7 @@ struct ECEState {
 	int64_t total;
 };
 
-idx_t ECEStateSize(const AggregateFunction &) {
-	return sizeof(ECEState);
-}
-
-void ECEStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void ECEStateInit(data_ptr_t state_ptr) {
 	auto &state = *reinterpret_cast<ECEState *>(state_ptr);
 	for (int m = 0; m < 10; m++) {
 		state.bin_n[m]       = 0;
@@ -888,7 +870,7 @@ void ECEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vecto
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, proba_data);
-	auto states = reinterpret_cast<ECEState **>(sdata.data);
+	auto states = reinterpret_cast<ECEState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -939,8 +921,8 @@ void ECECombine(Vector &source_vector, Vector &target_vector, AggregateInputData
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<ECEState **>(source_data.data);
-	auto targets = reinterpret_cast<ECEState **>(target_data.data);
+	auto sources = reinterpret_cast<ECEState *const *>(source_data.data);
+	auto targets = reinterpret_cast<ECEState *const *>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &src = *sources[source_data.sel->get_index(i)];
 		auto &tgt = *targets[target_data.sel->get_index(i)];
@@ -956,7 +938,7 @@ void ECECombine(Vector &source_vector, Vector &target_vector, AggregateInputData
 void ECEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_t count, idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<ECEState **>(sdata.data);
+	auto states = reinterpret_cast<ECEState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (state.total == 0) {
@@ -974,11 +956,11 @@ void ECEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx
 			double conf_m = state.bin_conf[m] / static_cast<double>(state.bin_n[m]);
 			ece += (static_cast<double>(state.bin_n[m]) / N) * std::abs(acc_m - conf_m);
 		}
-		FlatVector::GetData<double>(result)[i + offset] = ece;
+		duckdb_compat::FlatData<double>(result)[i + offset] = ece;
 	}
 }
 
-unique_ptr<FunctionData> ECEBind(ClientContext &, AggregateFunction &,
+unique_ptr<FunctionData> ECEBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
                                   vector<unique_ptr<Expression>> &) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_ece");
 	return nullptr;
@@ -1011,33 +993,14 @@ static const char *CONFUSION_MACRO_BODY = R"(
     )
 )";
 
-static unique_ptr<MacroFunction> BuildConfusionMacroFunction() {
-	Parser parser;
-	parser.ParseQuery(CONFUSION_MACRO_BODY);
-	if (parser.statements.size() != 1 ||
-	    parser.statements[0]->type != StatementType::SELECT_STATEMENT) {
-		throw InternalException("tabfm_confusion_matrix macro body must be a single SELECT");
-	}
-	auto node     = std::move(parser.statements[0]->Cast<SelectStatement>().node);
-	auto function = make_uniq<TableMacroFunction>(std::move(node));
-
-	const char *params[] = {"data", "actual_col", "predicted_col", nullptr};
-	for (int k = 0; params[k] != nullptr; k++) {
-		function->parameters.push_back(make_uniq<ColumnRefExpression>(params[k]));
-		function->types.push_back(LogicalType::UNKNOWN);
-	}
-	return std::move(function);
-}
-
 static unique_ptr<CreateMacroInfo> BuildConfusionMacroInfo(const std::string &name,
                                                             const std::string &alias_of) {
-	auto info       = make_uniq<CreateMacroInfo>(CatalogType::TABLE_MACRO_ENTRY);
-	info->schema    = DEFAULT_SCHEMA;
-	info->name      = name;
+	static const char *const params[] = {"data", "actual_col", "predicted_col", nullptr};
+	static const char *const no_defaults[] = {nullptr};
+	auto info       = MakeTableMacroInfo(name, params, no_defaults, CONFUSION_MACRO_BODY);
 	info->temporary = true;
 	info->internal  = true;
-	info->alias_of  = alias_of;
-	info->macros.push_back(BuildConfusionMacroFunction());
+	info->alias_of = duckdb_compat::Ident(alias_of);
 
 	FunctionDescription fd;
 	fd.parameter_names = {"data", "actual_col", "predicted_col"};
@@ -1058,6 +1021,38 @@ static unique_ptr<CreateMacroInfo> BuildConfusionMacroInfo(const std::string &na
 // Registration
 //===----------------------------------------------------------------------===//
 
+namespace {
+
+// Bind of an overload that exists only to reject a call with a clear message.
+unique_ptr<FunctionData> PrecisionRejectBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
+                           vector<unique_ptr<Expression>> &) {
+	throw InvalidInputException(
+	    "tabfm_precision: 'avg' is required — pass avg := 'micro', 'macro', or 'weighted'");
+}
+
+// Bind of an overload that exists only to reject a call with a clear message.
+unique_ptr<FunctionData> RecallRejectBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
+                           vector<unique_ptr<Expression>> &) {
+	throw InvalidInputException(
+	    "tabfm_recall: 'avg' is required — pass avg := 'micro', 'macro', or 'weighted'");
+}
+
+// Bind of an overload that exists only to reject a call with a clear message.
+unique_ptr<FunctionData> F1RejectBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
+                           vector<unique_ptr<Expression>> &) {
+	throw InvalidInputException(
+	    "tabfm_f1: 'avg' is required — pass avg := 'micro', 'macro', or 'weighted'");
+}
+
+// Bind of an overload that exists only to reject a call with a clear message.
+unique_ptr<FunctionData> RocAucRejectBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
+                           vector<unique_ptr<Expression>> &) {
+	throw InvalidInputException(
+	    "tabfm_roc_auc: 'avg' is required — pass avg := 'ovr' or 'ovo'");
+}
+
+} // namespace
+
 void RegisterClassificationMetrics(ExtensionLoader &loader) {
 	// --- tabfm_accuracy / anofox_tabfm_accuracy (CMET-01) ---
 	// Registered with {ANY, ANY} so DuckDB accepts INTEGER, BIGINT, DATE, VARCHAR,
@@ -1070,8 +1065,8 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		AggregateFunctionSet set("anofox_tabfm_accuracy");
 		AggregateFunction fn("anofox_tabfm_accuracy",
 		                     {LogicalType::ANY, LogicalType::ANY}, LogicalType::DOUBLE,
-		                     AccuracyStateSize, AccuracyStateInit, AccuracyUpdate, AccuracyCombine,
-		                     AccuracyFinalize, /*simple_update=*/nullptr, AccuracyBind,
+		                     duckdb_compat::AggregateStateSize<sizeof(AccuracyState)>(), duckdb_compat::AggregateInit<AccuracyStateInit>(), AccuracyUpdate, AccuracyCombine,
+		                     duckdb_compat::AggregateFinalize<AccuracyFinalize>(), /*simple_update=*/nullptr, duckdb_compat::AggregateBind<AccuracyBind>(),
 		                     /*state_destroy=*/nullptr);
 		set.AddFunction(fn);
 		FunctionDescription fd;
@@ -1094,19 +1089,14 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		AggregateFunctionSet set("anofox_tabfm_precision");
 		AggregateFunction fn3("anofox_tabfm_precision",
 		                      {LogicalType::ANY, LogicalType::ANY, LogicalType::VARCHAR},
-		                      LogicalType::DOUBLE, F1StateSize, F1StateInit, F1Update, F1Combine,
-		                      F1Finalize, /*simple_update=*/nullptr, PrecisionBind, F1StateDestroy);
+		                      LogicalType::DOUBLE, duckdb_compat::AggregateStateSize<sizeof(F1StateSlot)>(), duckdb_compat::AggregateInit<F1StateInit>(), F1Update, F1Combine,
+		                      duckdb_compat::AggregateFinalize<F1Finalize>(), /*simple_update=*/nullptr, duckdb_compat::AggregateBind<PrecisionBind>(), F1StateDestroy);
 		set.AddFunction(fn3);
 		AggregateFunction fn2(
 		    "anofox_tabfm_precision", {LogicalType::ANY, LogicalType::ANY}, LogicalType::DOUBLE,
-		    F1StateSize, F1StateInit, F1Update, F1Combine, F1Finalize,
+		    duckdb_compat::AggregateStateSize<sizeof(F1StateSlot)>(), duckdb_compat::AggregateInit<F1StateInit>(), F1Update, F1Combine, duckdb_compat::AggregateFinalize<F1Finalize>(),
 		    /*simple_update=*/nullptr,
-		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
-		        -> unique_ptr<FunctionData> {
-			    throw InvalidInputException(
-			        "tabfm_precision: 'avg' is required — pass avg := 'micro', 'macro', or 'weighted'");
-			    return nullptr;
-		    },
+		    duckdb_compat::AggregateBind<PrecisionRejectBind>(),
 		    F1StateDestroy);
 		set.AddFunction(fn2);
 		FunctionDescription fd;
@@ -1125,19 +1115,14 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		AggregateFunctionSet set("anofox_tabfm_recall");
 		AggregateFunction fn3("anofox_tabfm_recall",
 		                      {LogicalType::ANY, LogicalType::ANY, LogicalType::VARCHAR},
-		                      LogicalType::DOUBLE, F1StateSize, F1StateInit, F1Update, F1Combine,
-		                      F1Finalize, /*simple_update=*/nullptr, RecallBind, F1StateDestroy);
+		                      LogicalType::DOUBLE, duckdb_compat::AggregateStateSize<sizeof(F1StateSlot)>(), duckdb_compat::AggregateInit<F1StateInit>(), F1Update, F1Combine,
+		                      duckdb_compat::AggregateFinalize<F1Finalize>(), /*simple_update=*/nullptr, duckdb_compat::AggregateBind<RecallBind>(), F1StateDestroy);
 		set.AddFunction(fn3);
 		AggregateFunction fn2(
 		    "anofox_tabfm_recall", {LogicalType::ANY, LogicalType::ANY}, LogicalType::DOUBLE,
-		    F1StateSize, F1StateInit, F1Update, F1Combine, F1Finalize,
+		    duckdb_compat::AggregateStateSize<sizeof(F1StateSlot)>(), duckdb_compat::AggregateInit<F1StateInit>(), F1Update, F1Combine, duckdb_compat::AggregateFinalize<F1Finalize>(),
 		    /*simple_update=*/nullptr,
-		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
-		        -> unique_ptr<FunctionData> {
-			    throw InvalidInputException(
-			        "tabfm_recall: 'avg' is required — pass avg := 'micro', 'macro', or 'weighted'");
-			    return nullptr;
-		    },
+		    duckdb_compat::AggregateBind<RecallRejectBind>(),
 		    F1StateDestroy);
 		set.AddFunction(fn2);
 		FunctionDescription fd;
@@ -1156,19 +1141,14 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		AggregateFunctionSet set("anofox_tabfm_f1");
 		AggregateFunction fn3("anofox_tabfm_f1",
 		                      {LogicalType::ANY, LogicalType::ANY, LogicalType::VARCHAR},
-		                      LogicalType::DOUBLE, F1StateSize, F1StateInit, F1Update, F1Combine,
-		                      F1Finalize, /*simple_update=*/nullptr, F1ScoreBind, F1StateDestroy);
+		                      LogicalType::DOUBLE, duckdb_compat::AggregateStateSize<sizeof(F1StateSlot)>(), duckdb_compat::AggregateInit<F1StateInit>(), F1Update, F1Combine,
+		                      duckdb_compat::AggregateFinalize<F1Finalize>(), /*simple_update=*/nullptr, duckdb_compat::AggregateBind<F1ScoreBind>(), F1StateDestroy);
 		set.AddFunction(fn3);
 		AggregateFunction fn2(
 		    "anofox_tabfm_f1", {LogicalType::ANY, LogicalType::ANY}, LogicalType::DOUBLE,
-		    F1StateSize, F1StateInit, F1Update, F1Combine, F1Finalize,
+		    duckdb_compat::AggregateStateSize<sizeof(F1StateSlot)>(), duckdb_compat::AggregateInit<F1StateInit>(), F1Update, F1Combine, duckdb_compat::AggregateFinalize<F1Finalize>(),
 		    /*simple_update=*/nullptr,
-		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
-		        -> unique_ptr<FunctionData> {
-			    throw InvalidInputException(
-			        "tabfm_f1: 'avg' is required — pass avg := 'micro', 'macro', or 'weighted'");
-			    return nullptr;
-		    },
+		    duckdb_compat::AggregateBind<F1RejectBind>(),
 		    F1StateDestroy);
 		set.AddFunction(fn2);
 		FunctionDescription fd;
@@ -1188,8 +1168,8 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		AggregateFunction fn("anofox_tabfm_log_loss",
 		                     {LogicalType::VARCHAR,
 		                      LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE)},
-		                     LogicalType::DOUBLE, LogLossStateSize, LogLossStateInit, LogLossUpdate,
-		                     LogLossCombine, LogLossFinalize, /*simple_update=*/nullptr, LogLossBind,
+		                     LogicalType::DOUBLE, duckdb_compat::AggregateStateSize<sizeof(LogLossState)>(), duckdb_compat::AggregateInit<LogLossStateInit>(), LogLossUpdate,
+		                     LogLossCombine, duckdb_compat::AggregateFinalize<LogLossFinalize>(), /*simple_update=*/nullptr, duckdb_compat::AggregateBind<LogLossBind>(),
 		                     /*state_destroy=*/nullptr);
 		set.AddFunction(fn);
 		FunctionDescription fd;
@@ -1211,20 +1191,15 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		                      {LogicalType::VARCHAR,
 		                       LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE),
 		                       LogicalType::VARCHAR},
-		                      LogicalType::DOUBLE, AUCStateSize, AUCStateInit, AUCUpdate, AUCCombine,
-		                      AUCFinalize, /*simple_update=*/nullptr, AUCBind, AUCStateDestroy);
+		                      LogicalType::DOUBLE, duckdb_compat::AggregateStateSize<sizeof(AUCStateSlot)>(), duckdb_compat::AggregateInit<AUCStateInit>(), AUCUpdate, AUCCombine,
+		                      duckdb_compat::AggregateFinalize<AUCFinalize>(), /*simple_update=*/nullptr, duckdb_compat::AggregateBind<AUCBind>(), AUCStateDestroy);
 		set.AddFunction(fn3);
 		AggregateFunction fn2(
 		    "anofox_tabfm_roc_auc",
 		    {LogicalType::VARCHAR, LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE)},
-		    LogicalType::DOUBLE, AUCStateSize, AUCStateInit, AUCUpdate, AUCCombine, AUCFinalize,
+		    LogicalType::DOUBLE, duckdb_compat::AggregateStateSize<sizeof(AUCStateSlot)>(), duckdb_compat::AggregateInit<AUCStateInit>(), AUCUpdate, AUCCombine, duckdb_compat::AggregateFinalize<AUCFinalize>(),
 		    /*simple_update=*/nullptr,
-		    [](ClientContext &, AggregateFunction &, vector<unique_ptr<Expression>> &)
-		        -> unique_ptr<FunctionData> {
-			    throw InvalidInputException(
-			        "tabfm_roc_auc: 'avg' is required — pass avg := 'ovr' or 'ovo'");
-			    return nullptr;
-		    },
+		    duckdb_compat::AggregateBind<RocAucRejectBind>(),
 		    AUCStateDestroy);
 		set.AddFunction(fn2);
 		FunctionDescription fd;
@@ -1244,8 +1219,8 @@ void RegisterClassificationMetrics(ExtensionLoader &loader) {
 		AggregateFunction fn("anofox_tabfm_ece",
 		                     {LogicalType::VARCHAR,
 		                      LogicalType::MAP(LogicalType::VARCHAR, LogicalType::DOUBLE)},
-		                     LogicalType::DOUBLE, ECEStateSize, ECEStateInit, ECEUpdate, ECECombine,
-		                     ECEFinalize, /*simple_update=*/nullptr, ECEBind,
+		                     LogicalType::DOUBLE, duckdb_compat::AggregateStateSize<sizeof(ECEState)>(), duckdb_compat::AggregateInit<ECEStateInit>(), ECEUpdate, ECECombine,
+		                     duckdb_compat::AggregateFinalize<ECEFinalize>(), /*simple_update=*/nullptr, duckdb_compat::AggregateBind<ECEBind>(),
 		                     /*state_destroy=*/nullptr);
 		set.AddFunction(fn);
 		FunctionDescription fd;

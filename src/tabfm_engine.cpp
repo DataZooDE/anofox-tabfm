@@ -37,6 +37,7 @@
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/main/database.hpp"
+#include "duckdb_compat.hpp"
 
 #include "yyjson.hpp"
 
@@ -1680,7 +1681,7 @@ ColumnDataCollection BuildCollection(const vector<vector<Value>> &rows, const Lo
 	for (idx_t c = 0; c < fields.size(); c++) {
 		types.push_back(fields[c].second);
 		PreprocessColumnSpec spec;
-		spec.name = fields[c].first;
+		spec.name = duckdb_compat::Str(fields[c].first);
 		spec.type = fields[c].second;
 		spec.is_target = (c == target_idx);
 		spec.is_feature = (c != target_idx);
@@ -1699,7 +1700,7 @@ ColumnDataCollection BuildCollection(const vector<vector<Value>> &rows, const Lo
 		for (idx_t c = 0; c < types.size(); c++) {
 			chunk.SetValue(c, idx, row[c]);
 		}
-		chunk.SetCardinality(idx + 1);
+		duckdb_compat::SetChildCardinality(chunk, idx + 1);
 	}
 	if (chunk.size() > 0) {
 		collection.Append(chunk);

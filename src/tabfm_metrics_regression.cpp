@@ -29,6 +29,8 @@
 
 #include "duckdb/function/aggregate_function.hpp"
 #include "duckdb/parser/parsed_data/create_aggregate_function_info.hpp"
+#include "duckdb_compat.hpp"
+#include "duckdb_compat/aggregate.hpp"
 #include "telemetry.hpp"
 
 #include <algorithm>
@@ -56,11 +58,7 @@ struct RMSEState {
 	int64_t n;      // valid (non-NULL) pairs seen
 };
 
-idx_t RMSEStateSize(const AggregateFunction &) {
-	return sizeof(RMSEState);
-}
-
-void RMSEStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void RMSEStateInit(data_ptr_t state_ptr) {
 	new (state_ptr) RMSEState{0.0, 0};
 }
 
@@ -71,7 +69,7 @@ void RMSEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vect
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, predicted_data);
-	auto states = reinterpret_cast<RMSEState **>(sdata.data);
+	auto states = reinterpret_cast<RMSEState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -103,8 +101,8 @@ void RMSECombine(Vector &source_vector, Vector &target_vector, AggregateInputDat
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<RMSEState **>(source_data.data);
-	auto targets = reinterpret_cast<RMSEState **>(target_data.data);
+	auto sources = reinterpret_cast<RMSEState *const *>(source_data.data);
+	auto targets = reinterpret_cast<RMSEState *const *>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &src  = *sources[source_data.sel->get_index(i)];
 		auto &tgt  = *targets[target_data.sel->get_index(i)];
@@ -118,19 +116,19 @@ void RMSEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, id
                   idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<RMSEState **>(sdata.data);
+	auto states = reinterpret_cast<RMSEState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (state.n == 0) {
 			FlatVector::SetNull(result, i + offset, true);
 		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
+			duckdb_compat::FlatData<double>(result)[i + offset] =
 			    std::sqrt(state.sum_sq / static_cast<double>(state.n));
 		}
 	}
 }
 
-unique_ptr<FunctionData> RMSEBind(ClientContext &, AggregateFunction &,
+unique_ptr<FunctionData> RMSEBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
                                    vector<unique_ptr<Expression>> &) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_rmse");
 	return nullptr;
@@ -152,11 +150,7 @@ struct MAEState {
 	int64_t n;       // valid (non-NULL) pairs seen
 };
 
-idx_t MAEStateSize(const AggregateFunction &) {
-	return sizeof(MAEState);
-}
-
-void MAEStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void MAEStateInit(data_ptr_t state_ptr) {
 	new (state_ptr) MAEState{0.0, 0};
 }
 
@@ -165,7 +159,7 @@ void MAEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vecto
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, predicted_data);
-	auto states = reinterpret_cast<MAEState **>(sdata.data);
+	auto states = reinterpret_cast<MAEState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -195,8 +189,8 @@ void MAECombine(Vector &source_vector, Vector &target_vector, AggregateInputData
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<MAEState **>(source_data.data);
-	auto targets = reinterpret_cast<MAEState **>(target_data.data);
+	auto sources = reinterpret_cast<MAEState *const *>(source_data.data);
+	auto targets = reinterpret_cast<MAEState *const *>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &src     = *sources[source_data.sel->get_index(i)];
 		auto &tgt     = *targets[target_data.sel->get_index(i)];
@@ -209,19 +203,19 @@ void MAEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, idx
                  idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<MAEState **>(sdata.data);
+	auto states = reinterpret_cast<MAEState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (state.n == 0) {
 			FlatVector::SetNull(result, i + offset, true);
 		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
+			duckdb_compat::FlatData<double>(result)[i + offset] =
 			    state.sum_abs / static_cast<double>(state.n);
 		}
 	}
 }
 
-unique_ptr<FunctionData> MAEBind(ClientContext &, AggregateFunction &,
+unique_ptr<FunctionData> MAEBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
                                   vector<unique_ptr<Expression>> &) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_mae");
 	return nullptr;
@@ -264,11 +258,7 @@ struct R2State {
 	int64_t n;        // valid (non-NULL) pairs seen
 };
 
-idx_t R2StateSize(const AggregateFunction &) {
-	return sizeof(R2State);
-}
-
-void R2StateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void R2StateInit(data_ptr_t state_ptr) {
 	new (state_ptr) R2State{0.0, 0.0, 0.0, 0};
 }
 
@@ -277,7 +267,7 @@ void R2Update(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, predicted_data);
-	auto states = reinterpret_cast<R2State **>(sdata.data);
+	auto states = reinterpret_cast<R2State *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -315,8 +305,8 @@ void R2Combine(Vector &source_vector, Vector &target_vector, AggregateInputData 
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<R2State **>(source_data.data);
-	auto targets = reinterpret_cast<R2State **>(target_data.data);
+	auto sources = reinterpret_cast<R2State *const *>(source_data.data);
+	auto targets = reinterpret_cast<R2State *const *>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto  &src = *sources[source_data.sel->get_index(i)];
 		auto  &tgt = *targets[target_data.sel->get_index(i)];
@@ -345,7 +335,7 @@ void R2Finalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_
                 idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<R2State **>(sdata.data);
+	auto states = reinterpret_cast<R2State *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (state.n == 0) {
@@ -364,11 +354,11 @@ void R2Finalize(Vector &state_vector, AggregateInputData &, Vector &result, idx_
 		} else {
 			r2 = 1.0 - ss_res / ss_tot;
 		}
-		FlatVector::GetData<double>(result)[i + offset] = r2;
+		duckdb_compat::FlatData<double>(result)[i + offset] = r2;
 	}
 }
 
-unique_ptr<FunctionData> R2Bind(ClientContext &, AggregateFunction &,
+unique_ptr<FunctionData> R2Bind(ClientContext &, duckdb_compat::AggregateBindFunction &,
                                  vector<unique_ptr<Expression>> &) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_r2");
 	return nullptr;
@@ -396,11 +386,7 @@ struct MAPEState {
 	int64_t n;       // contributing rows (actual != 0 AND non-NULL)
 };
 
-idx_t MAPEStateSize(const AggregateFunction &) {
-	return sizeof(MAPEState);
-}
-
-void MAPEStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void MAPEStateInit(data_ptr_t state_ptr) {
 	new (state_ptr) MAPEState{0.0, 0};
 }
 
@@ -409,7 +395,7 @@ void MAPEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vect
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, predicted_data);
-	auto states = reinterpret_cast<MAPEState **>(sdata.data);
+	auto states = reinterpret_cast<MAPEState *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -447,8 +433,8 @@ void MAPECombine(Vector &source_vector, Vector &target_vector, AggregateInputDat
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<MAPEState **>(source_data.data);
-	auto targets = reinterpret_cast<MAPEState **>(target_data.data);
+	auto sources = reinterpret_cast<MAPEState *const *>(source_data.data);
+	auto targets = reinterpret_cast<MAPEState *const *>(target_data.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &src     = *sources[source_data.sel->get_index(i)];
 		auto &tgt     = *targets[target_data.sel->get_index(i)];
@@ -461,20 +447,20 @@ void MAPEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, id
                   idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto states = reinterpret_cast<MAPEState **>(sdata.data);
+	auto states = reinterpret_cast<MAPEState *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (state.n == 0) {
 			// No contributing rows (all-NULL, empty, or all-zero-actual)
 			FlatVector::SetNull(result, i + offset, true);
 		} else {
-			FlatVector::GetData<double>(result)[i + offset] =
+			duckdb_compat::FlatData<double>(result)[i + offset] =
 			    state.sum_ape / static_cast<double>(state.n);
 		}
 	}
 }
 
-unique_ptr<FunctionData> MAPEBind(ClientContext &, AggregateFunction &,
+unique_ptr<FunctionData> MAPEBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
                                    vector<unique_ptr<Expression>> &) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_mape");
 	return nullptr;
@@ -502,11 +488,7 @@ struct MedAEStateSlot {
 	std::vector<double> *data; // pointer to heap-allocated residuals vector
 };
 
-idx_t MedAEStateSize(const AggregateFunction &) {
-	return sizeof(MedAEStateSlot);
-}
-
-void MedAEStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
+void MedAEStateInit(data_ptr_t state_ptr) {
 	auto &slot = *reinterpret_cast<MedAEStateSlot *>(state_ptr);
 	slot.data  = nullptr;
 }
@@ -515,7 +497,7 @@ void MedAEStateInit(const AggregateFunction &, data_ptr_t state_ptr) {
 void MedAEStateDestroy(Vector &state_vector, AggregateInputData &, idx_t count) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto slots = reinterpret_cast<MedAEStateSlot **>(sdata.data);
+	auto slots = reinterpret_cast<MedAEStateSlot *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &slot = *slots[sdata.sel->get_index(i)];
 		delete slot.data;
@@ -529,7 +511,7 @@ void MedAEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vec
 	state_vector.ToUnifiedFormat(count, sdata);
 	inputs[0].ToUnifiedFormat(count, actual_data);
 	inputs[1].ToUnifiedFormat(count, predicted_data);
-	auto slots = reinterpret_cast<MedAEStateSlot **>(sdata.data);
+	auto slots = reinterpret_cast<MedAEStateSlot *const *>(sdata.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
@@ -563,8 +545,8 @@ void MedAECombine(Vector &source_vector, Vector &target_vector, AggregateInputDa
 	UnifiedVectorFormat source_data, target_data;
 	source_vector.ToUnifiedFormat(count, source_data);
 	target_vector.ToUnifiedFormat(count, target_data);
-	auto sources = reinterpret_cast<MedAEStateSlot **>(source_data.data);
-	auto targets = reinterpret_cast<MedAEStateSlot **>(target_data.data);
+	auto sources = reinterpret_cast<MedAEStateSlot *const *>(source_data.data);
+	auto targets = reinterpret_cast<MedAEStateSlot *const *>(target_data.data);
 
 	for (idx_t i = 0; i < count; i++) {
 		auto &src = *sources[source_data.sel->get_index(i)];
@@ -585,7 +567,7 @@ void MedAEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, i
                    idx_t offset) {
 	UnifiedVectorFormat sdata;
 	state_vector.ToUnifiedFormat(count, sdata);
-	auto slots = reinterpret_cast<MedAEStateSlot **>(sdata.data);
+	auto slots = reinterpret_cast<MedAEStateSlot *const *>(sdata.data);
 	for (idx_t i = 0; i < count; i++) {
 		auto &slot = *slots[sdata.sel->get_index(i)];
 		if (!slot.data || slot.data->empty()) {
@@ -603,11 +585,11 @@ void MedAEFinalize(Vector &state_vector, AggregateInputData &, Vector &result, i
 			// Even N: mean of two middle elements
 			median = (residuals[n / 2 - 1] + residuals[n / 2]) / 2.0;
 		}
-		FlatVector::GetData<double>(result)[i + offset] = median;
+		duckdb_compat::FlatData<double>(result)[i + offset] = median;
 	}
 }
 
-unique_ptr<FunctionData> MedAEBind(ClientContext &, AggregateFunction &,
+unique_ptr<FunctionData> MedAEBind(ClientContext &, duckdb_compat::AggregateBindFunction &,
                                     vector<unique_ptr<Expression>> &) {
 	PostHogTelemetry::Instance().CaptureFunctionExecution("tabfm_medae");
 	return nullptr;
@@ -625,8 +607,8 @@ void RegisterRegressionMetrics(ExtensionLoader &loader) {
 		AggregateFunctionSet set("anofox_tabfm_rmse");
 		AggregateFunction fn("anofox_tabfm_rmse",
 		                     {LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::DOUBLE,
-		                     RMSEStateSize, RMSEStateInit, RMSEUpdate, RMSECombine, RMSEFinalize,
-		                     /*simple_update=*/nullptr, RMSEBind,
+		                     duckdb_compat::AggregateStateSize<sizeof(RMSEState)>(), duckdb_compat::AggregateInit<RMSEStateInit>(), RMSEUpdate, RMSECombine, duckdb_compat::AggregateFinalize<RMSEFinalize>(),
+		                     /*simple_update=*/nullptr, duckdb_compat::AggregateBind<RMSEBind>(),
 		                     /*state_destroy=*/nullptr);
 		set.AddFunction(fn);
 		FunctionDescription fd;
@@ -647,8 +629,8 @@ void RegisterRegressionMetrics(ExtensionLoader &loader) {
 		AggregateFunctionSet set("anofox_tabfm_mae");
 		AggregateFunction fn("anofox_tabfm_mae",
 		                     {LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::DOUBLE,
-		                     MAEStateSize, MAEStateInit, MAEUpdate, MAECombine, MAEFinalize,
-		                     /*simple_update=*/nullptr, MAEBind,
+		                     duckdb_compat::AggregateStateSize<sizeof(MAEState)>(), duckdb_compat::AggregateInit<MAEStateInit>(), MAEUpdate, MAECombine, duckdb_compat::AggregateFinalize<MAEFinalize>(),
+		                     /*simple_update=*/nullptr, duckdb_compat::AggregateBind<MAEBind>(),
 		                     /*state_destroy=*/nullptr);
 		set.AddFunction(fn);
 		FunctionDescription fd;
@@ -671,8 +653,8 @@ void RegisterRegressionMetrics(ExtensionLoader &loader) {
 		AggregateFunctionSet set("anofox_tabfm_r2");
 		AggregateFunction fn("anofox_tabfm_r2",
 		                     {LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::DOUBLE,
-		                     R2StateSize, R2StateInit, R2Update, R2Combine, R2Finalize,
-		                     /*simple_update=*/nullptr, R2Bind,
+		                     duckdb_compat::AggregateStateSize<sizeof(R2State)>(), duckdb_compat::AggregateInit<R2StateInit>(), R2Update, R2Combine, duckdb_compat::AggregateFinalize<R2Finalize>(),
+		                     /*simple_update=*/nullptr, duckdb_compat::AggregateBind<R2Bind>(),
 		                     /*state_destroy=*/nullptr);
 		set.AddFunction(fn);
 		FunctionDescription fd;
@@ -698,8 +680,8 @@ void RegisterRegressionMetrics(ExtensionLoader &loader) {
 		AggregateFunctionSet set("anofox_tabfm_mape");
 		AggregateFunction fn("anofox_tabfm_mape",
 		                     {LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::DOUBLE,
-		                     MAPEStateSize, MAPEStateInit, MAPEUpdate, MAPECombine, MAPEFinalize,
-		                     /*simple_update=*/nullptr, MAPEBind,
+		                     duckdb_compat::AggregateStateSize<sizeof(MAPEState)>(), duckdb_compat::AggregateInit<MAPEStateInit>(), MAPEUpdate, MAPECombine, duckdb_compat::AggregateFinalize<MAPEFinalize>(),
+		                     /*simple_update=*/nullptr, duckdb_compat::AggregateBind<MAPEBind>(),
 		                     /*state_destroy=*/nullptr);
 		set.AddFunction(fn);
 		FunctionDescription fd;
@@ -723,8 +705,8 @@ void RegisterRegressionMetrics(ExtensionLoader &loader) {
 		AggregateFunctionSet set("anofox_tabfm_medae");
 		AggregateFunction fn("anofox_tabfm_medae",
 		                     {LogicalType::DOUBLE, LogicalType::DOUBLE}, LogicalType::DOUBLE,
-		                     MedAEStateSize, MedAEStateInit, MedAEUpdate, MedAECombine, MedAEFinalize,
-		                     /*simple_update=*/nullptr, MedAEBind, MedAEStateDestroy);
+		                     duckdb_compat::AggregateStateSize<sizeof(MedAEStateSlot)>(), duckdb_compat::AggregateInit<MedAEStateInit>(), MedAEUpdate, MedAECombine, duckdb_compat::AggregateFinalize<MedAEFinalize>(),
+		                     /*simple_update=*/nullptr, duckdb_compat::AggregateBind<MedAEBind>(), MedAEStateDestroy);
 		set.AddFunction(fn);
 		FunctionDescription fd;
 		fd.description =
