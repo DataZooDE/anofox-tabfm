@@ -13,7 +13,7 @@ set(DATAZOO_BANNER_TELEMETRY_INCLUDE_DIR
 add_subdirectory(datazoo-banner)
 
 include_directories(src/include)
-# DuckDB 1.4 / 1.5 / 2.0 API differences (header-only). Include path only: a
+# DuckDB 1.5 / 2.0 API differences (header-only). Include path only: a
 # target_link_libraries() to duckdb_compat breaks DuckDB's export() of the
 # extension targets.
 include_directories(duckdb-compat/include)

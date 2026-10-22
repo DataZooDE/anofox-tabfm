@@ -15,7 +15,7 @@ namespace anofox {
 // required positional names and `default_params` the trailing optionals as
 // "name=sql_default" (both nullptr-terminated, at most 7 each). DuckDB's own
 // DefaultTableFunctionGenerator parses the body and the defaults, so this
-// builds the same macro on DuckDB 1.4 / 1.5 / 2.0, whose parser and
+// builds the same macro on DuckDB 1.5 / 2.0, whose parser and
 // MacroFunction APIs differ.
 inline unique_ptr<CreateMacroInfo> MakeTableMacroInfo(const std::string &name, const char *const *parameters,
                                                       const char *const *default_params, const char *body) {
