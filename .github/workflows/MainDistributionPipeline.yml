@@ -54,9 +54,19 @@ jobs:
       extension_name: anofox_tabfm
       exclude_archs: 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64'
 
+  # anofox-visualization picks up the contract producers: the definition of done
+  # for docs/ANOFOX_CONTRACT_PLAN.md, so deploy waits for it.
+  duckdb-v1_5_6-visualization-pickup:
+    name: Visualization pickup (v1.5.6)
+    needs: duckdb-v1_5_6-build
+    uses: ./.github/workflows/_visualization_pickup.yml
+    with:
+      duckdb_version: v1.5.6
+      extension_name: anofox_tabfm
+
   duckdb-v1_5_6-deploy:
     name: Deploy extension binaries (v1.5.6)
-    needs: [duckdb-v1_5_6-build, duckdb-v1_5_6-smoke-test]
+    needs: [duckdb-v1_5_6-build, duckdb-v1_5_6-smoke-test, duckdb-v1_5_6-visualization-pickup]
     # Deploy only ever uploads on main or a v* tag (deploy_latest/deploy_versioned
     # below) -- everything else, including every PR, is a dry run that still pays
     # for "Configure AWS Credentials" and fails there for a fork PR (no repo

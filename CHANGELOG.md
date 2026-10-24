@@ -84,6 +84,18 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   wording for genuinely non-commercial models is unchanged.
 
 ### Added
+- **tabfm results plot in anofox-visualization** (the anofox integration contract, v1;
+  `docs/ANOFOX_CONTRACT_PLAN.md`). Four table macros give long tables that `anofox_plot(t)`
+  detects, each per group of a table (one group per model):
+  `tabfm_classification_metrics_by` and `tabfm_regression_metrics_by` (`summary`: one row per
+  metric, the values of tabfm's own metric aggregates), `tabfm_confusion_matrix_by` (`matrix`,
+  zero cells included; plot one model at a time) and `tabfm_augment_by` (`obs`: y, fitted and
+  residual per row, drawn as the diagnostics grid). They are tagged in `duckdb_functions()`
+  (`anofox.contract = '1'`, `anofox.output`), every tabfm function carries
+  `anofox.family = 'tabfm'`, and `anofox_contract_version()` returns `'1'` whichever anofox
+  extension loads first. `scripts/visualization_pickup.py` (`make test_visualization`, and the
+  CI job **Visualization pickup** that deploy waits for) renders every producer with a released
+  anofox_visualization, including predictions the offline fixture model scored.
 - **`limix-2m` (StableAI) is a built-in model**, both tasks. The small LimiX variant (2.4 M parameters), with
   **no conversion step**: one 9.5 MB checkpoint serves both tasks, downloaded once, and the engine reads its
   `.ckpt` directly. **Its weights permit commercial use**: the Stable AI Technology Co., Ltd. License v1.0

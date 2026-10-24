@@ -77,3 +77,8 @@ test_debug_internal:
 test_reldebug_internal:
 	$(TABFM_TEST_ENV) ./$(BUILD_ROOT)/reldebug/test/unittest "test/*"
 	$(TABFM_TEST_ENV) ./$(BUILD_ROOT)/reldebug/test/unittest "[tabfm]"
+
+# anofox-visualization picks up the contract producers (docs/ANOFOX_CONTRACT_PLAN.md): the
+# release artifact next to a released anofox_visualization in the official DuckDB CLI.
+test_visualization:
+	python3 scripts/visualization_pickup.py $(BUILD_ROOT)/release/extension/anofox_tabfm/anofox_tabfm.duckdb_extension

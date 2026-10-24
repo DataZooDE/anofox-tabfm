@@ -1,0 +1,48 @@
+#
+# Reusable workflow: anofox-visualization picks up the contract producers.
+#
+# Loads the artifact the build job produced next to a released anofox_visualization in the
+# official DuckDB CLI and runs scripts/visualization_pickup.py: both load orders, the
+# duckdb_functions() tags, and every producer's output through anofox_plot. This is the
+# definition of done for tabfm's contract producers (docs/ANOFOX_CONTRACT_PLAN.md), so it
+# runs before deploy.
+#
+# Rendering does not depend on the platform: linux_amd64 only. It installs the visualization
+# from its project repository (the build that follows the contract on this DuckDB version), so a
+# visualization release can turn this red; that is the drift it exists to catch.
+#
+name: Visualization Pickup
+
+on:
+  workflow_call:
+    inputs:
+      extension_name:
+        required: true
+        type: string
+      duckdb_version:
+        required: true
+        type: string
+
+jobs:
+  pickup:
+    name: Visualization pickup (linux_amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download extension artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.extension_name }}-${{ inputs.duckdb_version }}-extension-linux_amd64
+          path: ./extension_artifact
+
+      - name: anofox-visualization picks up the producers
+        run: |
+          python3 scripts/visualization_pickup.py \
+            "$(pwd)/extension_artifact/${{ inputs.extension_name }}.duckdb_extension" \
+            --duckdb-version "${{ inputs.duckdb_version }}" --arch linux_amd64

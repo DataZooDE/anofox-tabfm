@@ -437,6 +437,39 @@ FROM predictions;   -- `dist` is a STRUCT(logits[], borders[]) column
 > emits one. A built-in `tabfm_regress` distribution-output producer is not yet
 > wired on this branch (tracked as a follow-up).
 
+### Plot with anofox-visualization
+
+Four table macros turn scored rows into the long tables
+[anofox-visualization](https://github.com/DataZooDE/anofox-visualization) plots
+with `anofox_plot(t)`, one group per model (the anofox integration contract,
+[`docs/ANOFOX_CONTRACT_PLAN.md`](docs/ANOFOX_CONTRACT_PLAN.md)). `data` is a
+table name or a `'(SELECT …)'` string; the other arguments are column names.
+
+| Macro | Gives | `anofox_plot` draws |
+|---|---|---|
+| `tabfm_classification_metrics_by(data, group_col, actual_col, predicted_col, proba_col)` | accuracy, ece, f1_macro, log_loss, roc_auc_ovr per group | model comparison |
+| `tabfm_regression_metrics_by(data, group_col, actual_col, predicted_col)` | mae, mape, medae, r2, rmse per group | model comparison |
+| `tabfm_confusion_matrix_by(data, group_col, actual_col, predicted_col)` | row (actual), col (predicted), value (count), zero cells included | a heatmap per model |
+| `tabfm_augment_by(data, group_col, actual_col, predicted_col [, row_id_col])` | y, fitted, residual per row | the residual diagnostics grid |
+
+```sql
+INSTALL anofox_visualization FROM community; LOAD anofox_visualization;
+
+CREATE TABLE scored AS
+SELECT 'mitra' AS model, t.churned AS actual, p.yhat, p.proba
+FROM tabfm_classify('history', 'churned', test := 'holdout', model := 'mitra') p
+JOIN holdout_truth t USING (customer_id);
+
+SELECT anofox_plot(t) FROM tabfm_classification_metrics_by('scored', 'model', 'actual', 'yhat', 'proba') t;
+-- a confusion matrix is one plot per model
+SELECT model_id, anofox_plot(t) FROM tabfm_confusion_matrix_by('scored', 'model', 'actual', 'yhat') t
+GROUP BY model_id;
+```
+
+The values are the metric aggregates above, so the plots and your own queries
+agree. A metric that is undefined for a group (roc_auc_ovr with one class) is
+left out.
+
 See [`examples/`](examples/README.md) for runnable scripts.
 
 ---
