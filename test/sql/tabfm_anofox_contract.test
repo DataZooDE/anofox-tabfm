@@ -1,7 +1,7 @@
 # name: test/sql/tabfm_anofox_contract.test
 # description: tabfm's producers for the anofox integration contract
 #              (anofox-visualization docs/plans/integration-contract.md, v1): the
-#              summary, matrix and obs tables, their values against scikit-learn
+#              summary, matrix, obs and curve tables, their values against scikit-learn
 #              and tabfm's own metric aggregates, the errors, and the
 #              duckdb_functions() tags anofox_plot discovers them by.
 # group: [anofox_tabfm]
@@ -233,6 +233,170 @@ SELECT * FROM tabfm_augment_by('scored', 'model', 'actual', 'predicted')
 <REGEX>:.*tabfm_augment_by: the actual and predicted columns must be numeric.*
 
 #
+# curve: ROC, one-vs-rest per class
+#
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba'))
+----
+model	VARCHAR
+model_id	VARCHAR
+series	VARCHAR
+curve_type	VARCHAR
+x	DOUBLE
+y	DOUBLE
+y_low	DOUBLE
+y_high	DOUBLE
+threshold	DOUBLE
+weight	DOUBLE
+n_censor	BIGINT
+
+# Three classes: one curve per class, series = the class (scikit-learn roc_curve on actual = class).
+query TRRR
+SELECT series, round(x, 6), round(y, 6), threshold FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba') WHERE model_id = 'a'
+----
+x	0.0	0.0	inf
+x	0.0	0.5	0.7
+x	0.25	0.5	0.5
+x	0.25	1.0	0.3
+x	0.5	1.0	0.2
+x	1.0	1.0	0.1
+y	0.0	0.0	inf
+y	0.0	0.5	0.8
+y	0.0	1.0	0.6
+y	0.25	1.0	0.5
+y	0.75	1.0	0.2
+y	1.0	1.0	0.1
+z	0.0	0.0	inf
+z	0.0	0.5	0.7
+z	0.0	1.0	0.4
+z	1.0	1.0	0.1
+
+query I
+SELECT count(*) FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba', drop_intermediate := false) WHERE model_id = 'a' AND series = 'z'
+----
+5
+
+query TTTRRRR
+SELECT DISTINCT curve_type, typeof(series), model, y_low, y_high, weight, n_censor FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba') ORDER BY ALL
+----
+roc	VARCHAR	a	NULL	NULL	NULL	NULL
+roc	VARCHAR	b	NULL	NULL	NULL	NULL
+
+# The area under each curve is that class's AUC, and their mean is tabfm_roc_auc(avg := 'ovr').
+query I
+SELECT count(*) FROM (
+  SELECT model_id, avg(auc) AS ovr FROM (
+    SELECT model_id, series, sum((x - _x0) * (y + _y0) / 2) AS auc FROM (
+      SELECT *, lag(x) OVER w AS _x0, lag(y) OVER w AS _y0 FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba')
+      WINDOW w AS (PARTITION BY model_id, series ORDER BY x, y))
+    GROUP BY ALL)
+  GROUP BY model_id) c
+JOIN (SELECT model, tabfm_roc_auc(actual, proba, 'ovr') AS want FROM scored GROUP BY model) d ON c.model_id = d.model
+WHERE abs(ovr - want) > 1e-12
+----
+0
+
+# Two classes: one curve, for the greater label (scikit-learn's classes_[1]); a tied score is one point.
+statement ok
+CREATE TABLE two_class AS SELECT 'm' AS model, actual, MAP {'no': p_no, 'yes': p_yes} AS proba FROM (VALUES
+  ('no', 0.8, 0.2), ('yes', 0.2, 0.8), ('yes', 0.4, 0.6), ('no', 0.4, 0.6), ('yes', 0.1, 0.9), ('no', 0.9, 0.1),
+  ('yes', 0.6, 0.4)) t(actual, p_no, p_yes)
+
+query TRRR
+SELECT series, round(x, 6), round(y, 6), threshold FROM tabfm_roc_curve_by('two_class', 'model', 'actual', 'proba')
+----
+yes	0.0	0.0	inf
+yes	0.0	0.25	0.9
+yes	0.0	0.5	0.8
+yes	0.333333	0.75	0.6
+yes	0.333333	1.0	0.4
+yes	1.0	1.0	0.1
+
+# pos_label picks the class, also for two classes.
+query TRRR
+SELECT series, round(x, 6), round(y, 6), threshold FROM tabfm_roc_curve_by('two_class', 'model', 'actual', 'proba', pos_label := 'no')
+----
+no	0.0	0.0	inf
+no	0.0	0.333333	0.9
+no	0.0	0.666667	0.8
+no	0.25	0.666667	0.6
+no	0.5	1.0	0.4
+no	1.0	1.0	0.1
+
+query T
+SELECT DISTINCT series FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba', pos_label := 'y')
+----
+y
+
+# A class with no positives (or no negatives) in a group has no curve.
+query T
+SELECT list(DISTINCT series ORDER BY series) FROM tabfm_roc_curve_by('(SELECT * FROM scored WHERE actual <> ''z'')', 'model', 'actual', 'proba')
+----
+[x, y]
+
+query I
+SELECT count(*) FROM tabfm_roc_curve_by('one_class', 'model', 'actual', 'proba')
+----
+0
+
+#
+# curve: calibration, one-vs-rest per class
+#
+
+query TRRRRR
+SELECT series, x, y, round(y_low, 6), round(y_high, 6), weight FROM tabfm_calibration_curve_by('scored', 'model', 'actual', 'proba', n_bins := 2) WHERE model_id = 'a' AND series = 'x'
+----
+x	0.175	0.25	0.045587	0.699358	4.0
+x	0.6	0.5	0.094531	0.905469	2.0
+
+query TT
+SELECT DISTINCT curve_type, threshold FROM tabfm_calibration_curve_by('scored', 'model', 'actual', 'proba')
+----
+calibration	NULL
+
+# Every row lands in one bin per class (p = 1 in the last bin).
+query I
+SELECT sum(weight) FROM tabfm_calibration_curve_by('scored', 'model', 'actual', 'proba') WHERE model_id = 'a'
+----
+18.0
+
+query R
+SELECT x FROM tabfm_calibration_curve_by('(SELECT ''m'' AS model, ''yes'' AS actual, MAP {''no'': 0.0, ''yes'': 1.0} AS proba)', 'model', 'actual', 'proba', n_bins := 4)
+----
+1.0
+
+query T
+SELECT DISTINCT series FROM tabfm_calibration_curve_by('two_class', 'model', 'actual', 'proba')
+----
+yes
+
+# The curves have the columns of anofox-statistics' roc_curve_by and anofox-decide's decide_roc_curve_by.
+query I
+SELECT count(*) FROM (
+  SELECT * FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba')
+  UNION ALL
+  SELECT * FROM tabfm_calibration_curve_by('scored', 'model', 'actual', 'proba'))
+WHERE curve_type NOT IN ('roc', 'calibration')
+----
+0
+
+statement error
+SELECT * FROM tabfm_calibration_curve_by('scored', 'model', 'actual', 'proba', n_bins := 0)
+----
+<REGEX>:.*tabfm_calibration_curve_by: n_bins must be at least 1.*
+
+statement error
+SELECT * FROM tabfm_roc_curve_by('bad_p', 'model', 'actual', 'proba')
+----
+<REGEX>:.*tabfm_roc_curve_by: every probability must be a finite number in \[0, 1\].*
+
+statement error
+SELECT * FROM tabfm_calibration_curve_by('bad_p', 'model', 'actual', 'proba')
+----
+<REGEX>:.*tabfm_calibration_curve_by: every probability must be a finite number in \[0, 1\].*
+
+#
 # The contract: version, producer tags, family tag
 #
 
@@ -246,13 +410,17 @@ SELECT function_name, tags['anofox.output'] FROM duckdb_functions()
 WHERE tags['anofox.contract'] = '1' ORDER BY function_name
 ----
 anofox_tabfm_augment_by	obs
+anofox_tabfm_calibration_curve_by	curve
 anofox_tabfm_classification_metrics_by	summary
 anofox_tabfm_confusion_matrix_by	matrix
 anofox_tabfm_regression_metrics_by	summary
+anofox_tabfm_roc_curve_by	curve
 tabfm_augment_by	obs
+tabfm_calibration_curve_by	curve
 tabfm_classification_metrics_by	summary
 tabfm_confusion_matrix_by	matrix
 tabfm_regression_metrics_by	summary
+tabfm_roc_curve_by	curve
 
 query I
 SELECT count(*) FROM duckdb_functions()

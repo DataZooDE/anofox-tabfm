@@ -13,6 +13,10 @@
 //                                                            -> matrix
 //   tabfm_augment_by(data, group_col, actual_col, predicted_col [, row_id_col])
 //                                                            -> obs
+//   tabfm_roc_curve_by(data, group_col, actual_col, proba_col
+//                      [, pos_label, drop_intermediate := true])  -> curve
+//   tabfm_calibration_curve_by(data, group_col, actual_col, proba_col
+//                              [, pos_label, n_bins := 10])       -> curve
 //   anofox_contract_version()                                -> '1'
 //
 // The producers are table macros in tabfm's style (tabfm_confusion_matrix):
@@ -62,7 +66,9 @@ const struct {
 } CONTRACT_PRODUCERS[] = {{"anofox_tabfm_classification_metrics_by", "summary"},
                           {"anofox_tabfm_regression_metrics_by", "summary"},
                           {"anofox_tabfm_confusion_matrix_by", "matrix"},
-                          {"anofox_tabfm_augment_by", "obs"}};
+                          {"anofox_tabfm_augment_by", "obs"},
+                          {"anofox_tabfm_roc_curve_by", "curve"},
+                          {"anofox_tabfm_calibration_curve_by", "curve"}};
 
 // A catalog entry's name: a string member before DuckDB 2.0, GetName() from 2.0 on.
 template <class T>
@@ -124,6 +130,119 @@ std::string SummaryTail(const std::string &metrics) {
 
 std::string Metric(const char *name, const char *aggregate) {
 	return std::string("struct_pack(metric := ''") + name + "'', value := " + aggregate + ")";
+}
+
+// Dyn(sql): the SQL expression that builds `sql` as query() text. Plain SQL in, with placeholders:
+//   {data}            the data argument as given (a table name or a '(SELECT …)' string)
+//   {g} {a} {pr}      the group / actual / proba column, double-quoted
+//   {s:param}         the parameter as a SQL string literal, or NULL
+//   {v:param}         the parameter's value as SQL text (a number or boolean)
+// Single quotes in `sql` are doubled; the template itself must not contain braces.
+std::string DynExpr(const std::string &token) {
+	if (token == "data") {
+		return "data";
+	}
+	if (token == "g") {
+		return Q("group_col");
+	}
+	if (token == "a") {
+		return Q("actual_col");
+	}
+	if (token == "pr") {
+		return Q("proba_col");
+	}
+	const auto param = token.substr(2);
+	if (token.rfind("s:", 0) == 0) {
+		return "CASE WHEN " + param + " IS NULL THEN 'NULL' ELSE '''' || replace(" + param +
+		       "::VARCHAR, '''', '''''') || '''' END";
+	}
+	if (token.rfind("v:", 0) == 0) {
+		return "coalesce(" + param + "::VARCHAR, 'NULL')";
+	}
+	throw InternalException("tabfm_contract: unknown placeholder {%s}", token);
+}
+
+std::string Dyn(const std::string &sql) {
+	std::string out = "'";
+	for (size_t i = 0; i < sql.size(); i++) {
+		if (sql[i] == '{') {
+			const auto end = sql.find('}', i);
+			out += "' || " + DynExpr(sql.substr(i + 1, end - i - 1)) + " || '";
+			i = end;
+		} else {
+			out += sql[i] == '\'' ? std::string("''") : std::string(1, sql[i]);
+		}
+	}
+	return out + "'";
+}
+
+// The one-vs-rest rows of a classification table: one row per (input row, class) with _g, the class _k, its
+// probability _p and _y = 1 when the row's label is that class. The classes drawn: pos_label when given;
+// otherwise the greater label of a two-class group (scikit-learn's classes_[1]; the other curve is its mirror
+// image) and every class of a larger one.
+std::string OneVsRestRows(const std::string &fn) {
+	return "WITH _r AS (SELECT {g} AS _g, {a}::VARCHAR AS _a, CAST({pr} AS MAP(VARCHAR, DOUBLE)) AS _m "
+	       "FROM (FROM {data})), "
+	       "_v AS (SELECT _g, _a, CASE WHEN list_min(map_values(_m)) < 0 OR list_max(map_values(_m)) > 1 "
+	       "OR NOT isfinite(list_sum(map_values(_m))) THEN error('" +
+	       fn +
+	       ": every probability must be a finite number in [0, 1], got ' || _m::VARCHAR || '. Fix: pass the proba "
+	       "column tabfm_classify returns.') ELSE _m END AS _m FROM _r WHERE _a IS NOT NULL AND _m IS NOT NULL), "
+	       "_e AS (SELECT _g, _a, unnest(map_entries(_m)) AS _kv FROM _v), "
+	       "_l AS (SELECT _g, _kv.key AS _k, _kv.value AS _p, (_a = _kv.key)::INTEGER AS _y FROM _e "
+	       "WHERE _kv.value IS NOT NULL), "
+	       "_cls AS (SELECT _g, _k, count(*) OVER (PARTITION BY _g) AS _nk, max(_k) OVER (PARTITION BY _g) AS _kmax "
+	       "FROM (SELECT DISTINCT _g, _k FROM _l)), "
+	       "_sel AS (SELECT _l.* FROM _l JOIN _cls ON _l._g IS NOT DISTINCT FROM _cls._g AND _l._k = _cls._k "
+	       "WHERE CASE WHEN {s:pos_label} IS NOT NULL THEN _l._k = {s:pos_label} WHEN _nk = 2 THEN _l._k = _kmax "
+	       "ELSE true END) ";
+}
+
+// scikit-learn roc_curve per (group, class): tied probabilities are one point, the curve starts at (0, 0)
+// with threshold +inf, and drop_intermediate drops the points on straight segments. A class without
+// positives or without negatives in a group has no curve.
+std::string RocCurveBody() {
+	return "SELECT * FROM query(" +
+	       Dyn(OneVsRestRows("tabfm_roc_curve_by") +
+	           ", _pts AS (SELECT _g, _k, _thr, _i, _tps, _fps, _n_pos, _n_neg, _i = 1 OR _i = _n "
+	           "OR lag(_fps) OVER _w - 2 * _fps + lead(_fps) OVER _w <> 0 "
+	           "OR lag(_tps) OVER _w - 2 * _tps + lead(_tps) OVER _w <> 0 AS _keep "
+	           "FROM (SELECT _g, _k, _thr, row_number() OVER _c AS _i, count(*) OVER (PARTITION BY _g, _k) AS _n, "
+	           "sum(_tp) OVER _c AS _tps, sum(_fp) OVER _c AS _fps, sum(_tp) OVER (PARTITION BY _g, _k) AS _n_pos, "
+	           "sum(_fp) OVER (PARTITION BY _g, _k) AS _n_neg "
+	           "FROM (SELECT _g, _k, _p AS _thr, sum(_y) AS _tp, sum(1 - _y) AS _fp FROM _sel GROUP BY _g, _k, _p) "
+	           "WINDOW _c AS (PARTITION BY _g, _k ORDER BY _thr DESC ROWS UNBOUNDED PRECEDING)) "
+	           "WINDOW _w AS (PARTITION BY _g, _k ORDER BY _i)) "
+	           "SELECT _g AS {g}, _g::VARCHAR AS model_id, _k AS series, 'roc'::VARCHAR AS curve_type, x, y, "
+	           "NULL::DOUBLE AS y_low, NULL::DOUBLE AS y_high, threshold, NULL::DOUBLE AS weight, "
+	           "NULL::BIGINT AS n_censor FROM ("
+	           "SELECT _g, _k, 0 AS _i, 0::DOUBLE AS x, 0::DOUBLE AS y, 'inf'::DOUBLE AS threshold FROM _pts "
+	           "WHERE _i = 1 AND _n_pos > 0 AND _n_neg > 0 "
+	           "UNION ALL SELECT _g, _k, _i, _fps / _n_neg, _tps / _n_pos, _thr FROM _pts "
+	           "WHERE _n_pos > 0 AND _n_neg > 0 AND (_keep OR NOT {v:drop_intermediate})) ORDER BY 1, 3, _i") +
+	       ")";
+}
+
+// The reliability curve per (group, class): n_bins equal-width bins on the class probability (tabfm_ece's
+// edge rule: floor(p * n_bins), p = 1 in the last bin); x is the bin's mean probability, y its fraction of
+// rows with that label, y_low / y_high the 95% Wilson interval, weight the bin's row count. Empty bins are
+// left out.
+std::string CalibrationCurveBody() {
+	return "SELECT * FROM query(" +
+	       Dyn(OneVsRestRows("tabfm_calibration_curve_by") +
+	           "SELECT _g AS {g}, _g::VARCHAR AS model_id, _k AS series, 'calibration'::VARCHAR AS curve_type, "
+	           "_x AS x, _f AS y, greatest(0::DOUBLE, _c - _h) AS y_low, least(1::DOUBLE, _c + _h) AS y_high, "
+	           "NULL::DOUBLE AS threshold, _n::DOUBLE AS weight, NULL::BIGINT AS n_censor "
+	           "FROM (SELECT *, (_f + _z2 / (2 * _n)) / (1 + _z2 / _n) AS _c, "
+	           "sqrt(_z2 * (_f * (1 - _f) / _n + _z2 / (4 * _n * _n))) / (1 + _z2 / _n) AS _h "
+	           "FROM (SELECT _g, _k, _b, avg(_p) AS _x, avg(_y) AS _f, count(*) AS _n, "
+	           "pow(1.959963984540054::DOUBLE, 2) AS _z2 "
+	           "FROM (SELECT *, least(floor(_p * _nb), _nb - 1)::BIGINT AS _b FROM _sel, "
+	           "(SELECT CASE WHEN {v:n_bins}::BIGINT < 1 THEN error('tabfm_calibration_curve_by: n_bins must be at "
+	           "least 1, got {v:n_bins}. Fix: pass n_bins := 10 (the default) or another positive count.') "
+	           "ELSE {v:n_bins}::BIGINT END AS _nb)) "
+	           "GROUP BY _g, _k, _b)) ORDER BY 1, 3, _b") +
+	       ")";
 }
 
 std::string ClassificationMetricsBody() {
@@ -237,6 +356,9 @@ void RegisterContractFunctions(ExtensionLoader &loader) {
 	static const char *const five[] = {"data", "group_col", "actual_col", "predicted_col", "proba_col", nullptr};
 	static const char *const none[] = {nullptr};
 	static const char *const row_id[] = {"row_id_col=NULL", nullptr};
+	static const char *const curve[] = {"data", "group_col", "actual_col", "proba_col", nullptr};
+	static const char *const roc[] = {"pos_label=NULL", "drop_intermediate=true", nullptr};
+	static const char *const calibration[] = {"pos_label=NULL", "n_bins=10", nullptr};
 
 	const ProducerMacro producers[] = {
 	    {"classification_metrics_by", five, none, ClassificationMetricsBody(),
@@ -276,6 +398,29 @@ void RegisterContractFunctions(ExtensionLoader &loader) {
 	     "string; the column arguments are column names. Rows with a NULL or non-finite actual or prediction "
 	     "are skipped.",
 	     "SELECT * FROM tabfm_augment_by('fitted', 'model', 'price', 'yhat', row_id_col := 'id');"},
+	    {"roc_curve_by", curve, roc, RocCurveBody(),
+	     {"data", "group_col", "actual_col", "proba_col", "pos_label", "drop_intermediate"},
+	     "Table macro: the ROC curve of classification probabilities per group of data, one-vs-rest per class "
+	     "(scikit-learn roc_curve on actual = class; the anofox integration contract's `curve` schema, curve_type "
+	     "'roc', for anofox_plot). One row per point: the group column, model_id (the group as text), series (the "
+	     "class), curve_type, x (false positive rate), y (true positive rate), y_low, y_high, threshold (the "
+	     "probability; +inf for the (0, 0) start), weight, n_censor. Two classes give one curve, for the greater "
+	     "label; more classes give one per class; pos_label := picks one class. The mean area of a group's curves "
+	     "is tabfm_roc_auc(avg := 'ovr'). Tied probabilities form one point; drop_intermediate (default true) "
+	     "drops the points on straight segments. A class without positives or negatives in a group has no "
+	     "curve. data is a table name or a '(SELECT ...)' string; proba_col is the MAP(label, probability) "
+	     "column tabfm_classify returns.",
+	     "SELECT * FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba');"},
+	    {"calibration_curve_by", curve, calibration, CalibrationCurveBody(),
+	     {"data", "group_col", "actual_col", "proba_col", "pos_label", "n_bins"},
+	     "Table macro: the calibration (reliability) curve of classification probabilities per group of data, "
+	     "one-vs-rest per class (the anofox integration contract's `curve` schema, curve_type 'calibration', for "
+	     "anofox_plot). The class probabilities fall in n_bins equal-width bins (default 10); one row per "
+	     "non-empty bin: the group column, model_id (the group as text), series (the class), curve_type, x (mean "
+	     "probability), y (fraction of rows with that label), y_low / y_high (95% Wilson interval), threshold, "
+	     "weight (rows in the bin), n_censor. Classes are drawn as in tabfm_roc_curve_by. tabfm_ece bins the "
+	     "top-label confidence instead, so the curve does not reproduce the ECE number.",
+	     "SELECT * FROM tabfm_calibration_curve_by('scored', 'model', 'actual', 'proba', n_bins := 10);"},
 	};
 	for (auto &m : producers) {
 		std::string primary = std::string("anofox_tabfm_") + m.name;

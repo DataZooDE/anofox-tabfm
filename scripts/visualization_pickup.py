@@ -17,9 +17,13 @@ anofox_visualization in a stock DuckDB CLI and checks, each in a fresh process:
      build carries `anofox.consumes` tags, declares that schema);
   3. every producer's output renders: `anofox_plot(t)` is an SVG with no
      render warning, and it is the same SVG as the schema's own macro, so the
-     auto-detection chose that schema; every model is drawn. A matrix is one
-     plot per model (the visualization asks for GROUP BY model_id);
-  4. the values survive: the heatmap's cells add up to the scored rows;
+     auto-detection chose that schema; every model (or class) is drawn. A
+     matrix is one plot per model (the visualization asks for GROUP BY
+     model_id), and so are multiclass curves (it keys curve lines by `series`
+     or by `model_id`, not both); two-class curves compare models in one plot;
+  4. the values survive: the heatmap's cells add up to the scored rows, and
+     the ROC legend's AUC (the visualization integrates the curve) equals
+     tabfm_roc_auc for that class;
   5. predictions scored by tabfm itself (the offline fixture model in
      test/fixtures, with two different contexts as two models) plot the same way.
 
@@ -53,12 +57,14 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 EXPECTED_PRODUCERS = {
     name: schema
     for base, schema in (("classification_metrics_by", "summary"), ("regression_metrics_by", "summary"),
-                         ("confusion_matrix_by", "matrix"), ("augment_by", "obs"))
+                         ("confusion_matrix_by", "matrix"), ("augment_by", "obs"),
+                         ("roc_curve_by", "curve"), ("calibration_curve_by", "curve"))
     for name in (f"tabfm_{base}", f"anofox_tabfm_{base}")
 }
 
 # The visualization's macro for each schema; anofox_plot draws `obs` as the plot.lm diagnostics grid.
-SCHEMA_MACRO = {"summary": "anofox_plot_summary", "matrix": "anofox_plot_matrix", "obs": "anofox_plot_diagnostics"}
+SCHEMA_MACRO = {"summary": "anofox_plot_summary", "matrix": "anofox_plot_matrix", "obs": "anofox_plot_diagnostics",
+                "curve": "anofox_plot_curve"}
 
 DEFAULT_VIZ_REPO = "https://datazoode.github.io/anofox-visualization/extensions"
 
@@ -72,6 +78,11 @@ CREATE TABLE scored AS SELECT * FROM (VALUES
     ('b', 'y', 'z', MAP {'x': 0.2, 'y': 0.3, 'z': 0.5}), ('b', 'y', 'y', MAP {'x': 0.3, 'y': 0.4, 'z': 0.3}),
     ('b', 'z', 'z', MAP {'x': 0.2, 'y': 0.2, 'z': 0.6}), ('b', 'z', 'z', MAP {'x': 0.1, 'y': 0.1, 'z': 0.8})
 ) t(model, actual, yhat, proba);
+CREATE TABLE two_class AS SELECT model, actual, MAP {'no': 1 - p, 'yes': p} AS proba,
+    CASE WHEN p >= 0.5 THEN 'yes' ELSE 'no' END AS yhat FROM (VALUES
+    ('a', 'yes', 0.9), ('a', 'yes', 0.7), ('a', 'no', 0.6), ('a', 'yes', 0.4), ('a', 'no', 0.2), ('a', 'no', 0.1),
+    ('b', 'yes', 0.8), ('b', 'no', 0.8), ('b', 'yes', 0.55), ('b', 'no', 0.3), ('b', 'yes', 0.3), ('b', 'no', 0.05)
+) t(model, actual, p);
 CREATE TABLE fitted AS SELECT * FROM (VALUES
     ('r', 1, 1.0, 1.5), ('r', 2, 2.0, 1.5), ('r', 3, 3.0, 3.5), ('r', 4, 4.0, 3.0), ('r', 5, 0.0, 0.5),
     ('r', 6, NULL, 2.0), ('s', 1, 1.0, 1.2), ('s', 2, 2.0, 2.4), ('s', 3, 3.0, 2.7), ('s', 4, 4.0, 4.4),
@@ -103,6 +114,8 @@ FROM tabfm_classify('ctx_half', 'label', test := 'held', model := 'fixture') p J
 CLASSIFICATION_CALLS = {
     "tabfm_classification_metrics_by": "tabfm_classification_metrics_by('{src}', 'model', 'actual', 'yhat', 'proba')",
     "tabfm_confusion_matrix_by": "tabfm_confusion_matrix_by('{src}', 'model', 'actual', 'yhat')",
+    "tabfm_roc_curve_by": "tabfm_roc_curve_by('{src}', 'model', 'actual', 'proba')",
+    "tabfm_calibration_curve_by": "tabfm_calibration_curve_by('{src}', 'model', 'actual', 'proba', n_bins := 5)",
 }
 REGRESSION_CALLS = {
     "tabfm_regression_metrics_by": "tabfm_regression_metrics_by('{src}', 'model', 'actual', 'yhat')",
@@ -183,15 +196,20 @@ class Pickup:
                 self.check(f"anofox_plot declares it consumes '{schema}'", schema in consumes.split(","), consumes)
 
     # ── 3 / 4 / 5 ──
-    def render_one(self, producer: str, call: str, setup: str) -> None:
+    def render_one(self, producer: str, call: str, setup: str, per_model: bool) -> None:
+        """One plot of every model, or (per_model) one plot per model. The visualization keys curve lines
+        by `series` when it varies, else by `model_id` (never both), so multiclass curves - one series per
+        class - are drawn per model, like matrices (one matrix per plot)."""
         schema = EXPECTED_PRODUCERS[producer]
         macro = SCHEMA_MACRO[schema]
-        # A matrix is one plot per model; the other schemas draw every model in one plot.
-        per = "model_id" if schema == "matrix" else "NULL"
+        per = "model_id" if per_model else "NULL"
+        series = ("list(DISTINCT series ORDER BY series) FILTER (WHERE series IS NOT NULL)" if schema == "curve"
+                  else "NULL::VARCHAR[]")
         ok, out, rows = self.run(
             f"{setup}\nCREATE TABLE t AS SELECT * FROM {call};\n"
             f"SELECT {per}::VARCHAR AS model, anofox_plot(t, {SIZE}) AS auto, {macro}(t, {SIZE}) AS specific, "
-            f"list(DISTINCT model_id ORDER BY model_id) AS models FROM t GROUP BY ALL ORDER BY 1;")
+            f"list(DISTINCT model_id ORDER BY model_id) AS models, {series} AS series "
+            f"FROM t GROUP BY ALL ORDER BY 1;")
         if not self.check(f"{producer}: anofox_plot renders", ok and len(rows) >= 1, out.strip()[-600:]):
             return
         for r in rows:
@@ -200,17 +218,46 @@ class Pickup:
             warn = re.search(r'data-warnings="([^"]*)"', auto)
             self.check(f"{label}: no render warnings", warn is None, warn.group(1) if warn else "")
             self.check(f"{label}: auto-detected as '{schema}' (same SVG as {macro})", auto == r["specific"])
-            if schema != "matrix":
+            if schema == "curve":
+                drawn = sorted({x.split(" · ")[0] for x in re.findall(r'data-series="([^"]*)"', auto)})
+                want = sorted(r["series"] or []) if len(r["series"] or []) > 1 else r["models"]
+                self.check(f"{label}: every {'class' if per_model else 'model'} drawn as a line", drawn == want,
+                           f"want {want}, drawn {drawn}")
+            elif schema != "matrix":
                 self.check(f"{label}: every model drawn", all(f">{m}<" in auto for m in r["models"]),
                            str(r["models"]))
-        if schema == "matrix":
-            self.check(f"{producer}: one heatmap per model", len(rows) >= 2 and all(r["model"] for r in rows),
+        if per_model:
+            self.check(f"{producer}: one plot per model", len(rows) >= 2 and all(r["model"] for r in rows),
                        str([r["model"] for r in rows]))
 
-    def render(self, setup: str, label: str, calls: dict[str, str], src: str) -> None:
+    def roc_auc(self, setup: str, src: str, per_model: bool) -> None:
+        """The legend's AUC (the visualization integrates the curve) against tabfm_roc_auc of the same class."""
+        roc = CLASSIFICATION_CALLS["tabfm_roc_curve_by"].format(src=src)
+        per = "model_id" if per_model else "NULL"
+        key = "series" if per_model else "model_id"
+        ok, out, rows = self.run(
+            f"{setup}\nCREATE TABLE t AS SELECT * FROM {roc};\n"
+            "CREATE TABLE want AS SELECT model_id, series, printf('%.2f', tabfm_roc_auc("
+            "CASE WHEN s.actual = series THEN 'pos' ELSE 'neg' END, MAP {'pos': s.proba[series], "
+            "'neg': 1 - s.proba[series]}, 'ovr')) AS auc "
+            f"FROM (SELECT DISTINCT model_id, series FROM t) c JOIN {src} s ON s.model = c.model_id GROUP BY ALL;\n"
+            f"SELECT {per}::VARCHAR AS model, anofox_plot(t) AS svg, (SELECT list(w.{key} || ' · AUC ' || w.auc "
+            f"ORDER BY w.{key}) FROM want w WHERE {'w.model_id = t.model_id' if per_model else 'true'}) AS want "
+            "FROM t GROUP BY ALL ORDER BY 1;")
+        name = f"ROC legend AUC equals tabfm_roc_auc per {'class' if per_model else 'model'} ({src})"
+        if not self.check(name, ok and len(rows) >= 1, out.strip()[-500:]):
+            return
+        for r in rows:
+            series = sorted(set(re.findall(r'data-series="([^"]*)"', r["svg"])))
+            self.check(f"{name}" + (f" [{r['model']}]" if r["model"] else ""), series == r["want"],
+                       f"svg {series}, tabfm {r['want']}")
+
+    def render(self, setup: str, label: str, calls: dict[str, str], src: str, multiclass: bool = False) -> None:
         print(f"[{label}] rendering every producer's output ({src})")
         for producer, call in calls.items():
-            self.render_one(producer, call.format(src=src), setup)
+            schema = EXPECTED_PRODUCERS[producer]
+            self.render_one(producer, call.format(src=src), setup,
+                            per_model=schema == "matrix" or (schema == "curve" and multiclass))
 
     def values(self, setup: str, src: str) -> None:
         cm = CLASSIFICATION_CALLS["tabfm_confusion_matrix_by"].format(src=src)
@@ -250,12 +297,16 @@ def main() -> int:
         t.install()
         t.load_order()
         t.discovery()
-        t.render(FIXTURE, "3", CLASSIFICATION_CALLS, "scored")
+        t.render(FIXTURE, "3", CLASSIFICATION_CALLS, "scored", multiclass=True)
+        t.render(FIXTURE, "3", CLASSIFICATION_CALLS, "two_class")
         t.render(FIXTURE, "3", REGRESSION_CALLS, "fitted")
         print("[4] the values survive")
         t.values(FIXTURE, "scored")
-        t.render(TABFM_FIXTURE, "5", CLASSIFICATION_CALLS, "tabfm_scored")
+        t.roc_auc(FIXTURE, "scored", per_model=True)
+        t.roc_auc(FIXTURE, "two_class", per_model=False)
+        t.render(TABFM_FIXTURE, "5", CLASSIFICATION_CALLS, "tabfm_scored", multiclass=True)
         t.values(TABFM_FIXTURE, "tabfm_scored")
+        t.roc_auc(TABFM_FIXTURE, "tabfm_scored", per_model=True)
     if t.failures:
         print(f"\nVisualization pickup FAILED ({len(t.failures)}):\n  " + "\n  ".join(t.failures))
         return 1
