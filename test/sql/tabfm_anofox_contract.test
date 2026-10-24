@@ -1,0 +1,273 @@
+# name: test/sql/tabfm_anofox_contract.test
+# description: tabfm's producers for the anofox integration contract
+#              (anofox-visualization docs/plans/integration-contract.md, v1): the
+#              summary, matrix and obs tables, their values against scikit-learn
+#              and tabfm's own metric aggregates, the errors, and the
+#              duckdb_functions() tags anofox_plot discovers them by.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+# Two classifiers over three classes (expected values from scikit-learn 1.x).
+statement ok
+CREATE TABLE scored AS SELECT * FROM (VALUES
+  ('a', 'x', 'x', MAP {'x': 0.7, 'y': 0.2, 'z': 0.1}),
+  ('a', 'x', 'y', MAP {'x': 0.3, 'y': 0.5, 'z': 0.2}),
+  ('a', 'y', 'y', MAP {'x': 0.1, 'y': 0.8, 'z': 0.1}),
+  ('a', 'y', 'y', MAP {'x': 0.2, 'y': 0.6, 'z': 0.2}),
+  ('a', 'z', 'z', MAP {'x': 0.1, 'y': 0.2, 'z': 0.7}),
+  ('a', 'z', 'x', MAP {'x': 0.5, 'y': 0.1, 'z': 0.4}),
+  ('b', 'x', 'x', MAP {'x': 0.6, 'y': 0.3, 'z': 0.1}),
+  ('b', 'x', 'x', MAP {'x': 0.5, 'y': 0.4, 'z': 0.1}),
+  ('b', 'y', 'z', MAP {'x': 0.2, 'y': 0.3, 'z': 0.5}),
+  ('b', 'y', 'y', MAP {'x': 0.3, 'y': 0.4, 'z': 0.3}),
+  ('b', 'z', 'z', MAP {'x': 0.2, 'y': 0.2, 'z': 0.6}),
+  ('b', 'z', 'z', MAP {'x': 0.1, 'y': 0.1, 'z': 0.8})
+) t(model, actual, predicted, proba);
+
+# A regressor; the NULL actual is a scored row with nothing to compare to.
+statement ok
+CREATE TABLE fitted AS SELECT * FROM (VALUES
+  ('r', 1, 1.0, 1.5), ('r', 2, 2.0, 1.5), ('r', 3, 3.0, 3.5), ('r', 4, 4.0, 3.0),
+  ('r', 5, 0.0, 0.5), ('r', 6, NULL, 2.0)
+) t(model, id, price, yhat);
+
+#
+# summary: classification
+#
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM tabfm_classification_metrics_by('scored', 'model', 'actual', 'predicted', 'proba'))
+----
+model	VARCHAR
+model_id	VARCHAR
+metric	VARCHAR
+value	DOUBLE
+conf_low	DOUBLE
+conf_high	DOUBLE
+
+query TTR
+SELECT model_id, metric, round(value, 6) FROM tabfm_classification_metrics_by('scored', 'model', 'actual', 'predicted', 'proba') ORDER BY model_id, metric
+----
+a	accuracy	0.666667
+a	ece	0.366667
+a	f1_macro	0.655556
+a	log_loss	0.594597
+a	roc_auc_ovr	0.958333
+b	accuracy	0.833333
+b	ece	0.266667
+b	f1_macro	0.822222
+b	log_loss	0.676368
+b	roc_auc_ovr	0.916667
+
+# The values are tabfm's own aggregates, not a second implementation.
+query I
+SELECT count(*) FROM tabfm_classification_metrics_by('scored', 'model', 'actual', 'predicted', 'proba') m
+JOIN (SELECT model, tabfm_accuracy(actual, predicted) AS accuracy, tabfm_ece(actual, proba) AS ece,
+             tabfm_f1(actual, predicted, 'macro') AS f1_macro, tabfm_log_loss(actual, proba) AS log_loss,
+             tabfm_roc_auc(actual, proba, 'ovr') AS roc_auc_ovr
+      FROM scored GROUP BY model) d USING (model)
+WHERE m.value IS DISTINCT FROM CASE m.metric WHEN 'accuracy' THEN d.accuracy WHEN 'ece' THEN d.ece
+      WHEN 'f1_macro' THEN d.f1_macro WHEN 'log_loss' THEN d.log_loss WHEN 'roc_auc_ovr' THEN d.roc_auc_ovr END
+----
+0
+
+query I
+SELECT count(*) FROM tabfm_classification_metrics_by('scored', 'model', 'actual', 'predicted', 'proba') WHERE conf_low IS NOT NULL OR conf_high IS NOT NULL
+----
+0
+
+# A group with one class has no AUC: the row is left out, not NULL.
+statement ok
+CREATE TABLE one_class AS SELECT * FROM scored WHERE actual = 'x'
+
+query T
+SELECT list(metric ORDER BY metric) FROM tabfm_classification_metrics_by('one_class', 'model', 'actual', 'predicted', 'proba') WHERE model_id = 'a'
+----
+[accuracy, ece, f1_macro, log_loss]
+
+# data can be a subquery string, and identifiers are quoted.
+statement ok
+CREATE TABLE "odd names" AS SELECT model AS "the model", actual AS "y""true", predicted, proba FROM scored
+
+query I
+SELECT count(*) FROM tabfm_classification_metrics_by('(SELECT * FROM "odd names")', 'the model', 'y"true', 'predicted', 'proba')
+----
+10
+
+query T
+SELECT column_name FROM (DESCRIBE SELECT * FROM tabfm_classification_metrics_by('"odd names"', 'the model', 'y"true', 'predicted', 'proba')) LIMIT 1
+----
+the model
+
+#
+# summary: regression
+#
+
+query TTR
+SELECT model_id, metric, round(value, 6) FROM tabfm_regression_metrics_by('fitted', 'model', 'price', 'yhat') ORDER BY metric
+----
+r	mae	0.6
+r	mape	0.291667
+r	medae	0.5
+r	r2	0.8
+r	rmse	0.632456
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM tabfm_regression_metrics_by('fitted', 'model', 'price', 'yhat'))
+----
+model	VARCHAR
+model_id	VARCHAR
+metric	VARCHAR
+value	DOUBLE
+conf_low	DOUBLE
+conf_high	DOUBLE
+
+# Both summaries union into one comparison.
+query I
+SELECT count(*) FROM (
+  SELECT * FROM tabfm_classification_metrics_by('scored', 'model', 'actual', 'predicted', 'proba')
+  UNION ALL BY NAME
+  SELECT * FROM tabfm_regression_metrics_by('fitted', 'model', 'price', 'yhat'))
+----
+15
+
+#
+# matrix: the confusion matrix, zero cells included
+#
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM tabfm_confusion_matrix_by('scored', 'model', 'actual', 'predicted'))
+----
+model	VARCHAR
+model_id	VARCHAR
+row	VARCHAR
+col	VARCHAR
+value	BIGINT
+
+query TTTI
+SELECT model_id, row, col, value FROM tabfm_confusion_matrix_by('scored', 'model', 'actual', 'predicted') ORDER BY ALL
+----
+a	x	x	1
+a	x	y	1
+a	x	z	0
+a	y	x	0
+a	y	y	2
+a	y	z	0
+a	z	x	1
+a	z	y	0
+a	z	z	1
+b	x	x	2
+b	x	y	0
+b	x	z	0
+b	y	x	0
+b	y	y	1
+b	y	z	1
+b	z	x	0
+b	z	y	0
+b	z	z	2
+
+# Labels of other types are compared as text.
+query I
+SELECT sum(value) FROM tabfm_confusion_matrix_by('(SELECT model, (actual = ''x'')::INTEGER AS a, (predicted = ''x'')::INTEGER AS p FROM scored)', 'model', 'a', 'p')
+----
+12
+
+#
+# obs: actual against fitted
+#
+
+query TT
+SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM tabfm_augment_by('fitted', 'model', 'price', 'yhat', row_id_col := 'id'))
+----
+model	VARCHAR
+model_id	VARCHAR
+row_id	VARCHAR
+y	DOUBLE
+fitted	DOUBLE
+residual	DOUBLE
+
+query TTRRR
+SELECT model_id, row_id, y, fitted, residual FROM tabfm_augment_by('fitted', 'model', 'price', 'yhat', row_id_col := 'id') ORDER BY row_id
+----
+r	1	1.0	1.5	-0.5
+r	2	2.0	1.5	0.5
+r	3	3.0	3.5	-0.5
+r	4	4.0	3.0	1.0
+r	5	0.0	0.5	-0.5
+
+# Without row_id_col every row still gets a distinct id.
+query II
+SELECT count(*), count(DISTINCT row_id) FROM tabfm_augment_by('fitted', 'model', 'price', 'yhat')
+----
+5	5
+
+#
+# Errors name the function and the remedy
+#
+
+statement ok
+CREATE TABLE bad_p AS SELECT 'a' AS model, 'x' AS actual, 'x' AS predicted, MAP {'x': 1.5, 'y': -0.5} AS proba
+
+statement error
+SELECT * FROM tabfm_classification_metrics_by('bad_p', 'model', 'actual', 'predicted', 'proba')
+----
+<REGEX>:.*tabfm_classification_metrics_by: every probability must be a finite number in \[0, 1\].*
+
+statement error
+SELECT * FROM tabfm_classification_metrics_by('fitted', 'model', 'price', 'yhat', 'yhat')
+----
+<REGEX>:.*MAP\(VARCHAR, DOUBLE\).*
+
+statement error
+SELECT * FROM tabfm_regression_metrics_by('scored', 'model', 'actual', 'predicted')
+----
+<REGEX>:.*tabfm_regression_metrics_by: the actual and predicted columns must be numeric.*
+
+statement error
+SELECT * FROM tabfm_augment_by('scored', 'model', 'actual', 'predicted')
+----
+<REGEX>:.*tabfm_augment_by: the actual and predicted columns must be numeric.*
+
+#
+# The contract: version, producer tags, family tag
+#
+
+query T
+SELECT anofox_contract_version()
+----
+1
+
+query TT
+SELECT function_name, tags['anofox.output'] FROM duckdb_functions()
+WHERE tags['anofox.contract'] = '1' ORDER BY function_name
+----
+anofox_tabfm_augment_by	obs
+anofox_tabfm_classification_metrics_by	summary
+anofox_tabfm_confusion_matrix_by	matrix
+anofox_tabfm_regression_metrics_by	summary
+tabfm_augment_by	obs
+tabfm_classification_metrics_by	summary
+tabfm_confusion_matrix_by	matrix
+tabfm_regression_metrics_by	summary
+
+query I
+SELECT count(*) FROM duckdb_functions()
+WHERE (function_name LIKE 'tabfm\_%' ESCAPE '\' OR function_name LIKE 'anofox\_tabfm\_%' ESCAPE '\')
+  AND tags['anofox.family'] IS DISTINCT FROM 'tabfm'
+----
+0
+
+query I
+SELECT count(*) FROM duckdb_functions() WHERE function_name IN ('sum', 'read_csv') AND tags['anofox.family'] IS NOT NULL
+----
+0
+
+# The aliases point at their anofox_tabfm_ primaries.
+query T
+SELECT alias_of FROM duckdb_functions() WHERE function_name = 'tabfm_confusion_matrix_by'
+----
+anofox_tabfm_confusion_matrix_by

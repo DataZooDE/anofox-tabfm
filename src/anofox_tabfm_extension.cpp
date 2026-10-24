@@ -119,6 +119,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 		telemetry.SetExtensionName("anofox_tabfm");
 	}
 
+	// Before any registration: the contract tags only what this extension adds.
+	auto preexisting = anofox::SnapshotSystemFunctionNames(loader);
 	anofox::RegisterTabfmSettings(loader);
 	anofox::RegisterWeightsFunctions(loader);
 	anofox::RegisterDevicesFunctions(loader);
@@ -130,6 +132,8 @@ static void LoadInternal(ExtensionLoader &loader) {
 	anofox::RegisterRegressionMetrics(loader);
 	anofox::RegisterCrossValidateMacros(loader);
 	anofox::RegisterScoringFunctions(loader);
+	anofox::RegisterContractFunctions(loader);
+	anofox::ApplyContractTags(loader, preexisting);
 
 	datazoo::RegisterBannerOption(loader);
 	// Last, so a load that fails earlier never advertises itself. Silent unless

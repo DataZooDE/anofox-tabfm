@@ -72,6 +72,7 @@ set(EXTENSION_SOURCES
         src/tabfm_engine.cpp
         src/tabfm_plugin_backend.cpp
         src/tabfm_metrics_classification.cpp
+        src/tabfm_contract.cpp
         src/tabfm_metrics_regression.cpp
         src/tabfm_crossval.cpp
         src/tabfm_scoring.cpp
