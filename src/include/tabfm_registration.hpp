@@ -1,5 +1,6 @@
 #pragma once
 
+#include "duckdb/common/case_insensitive_map.hpp"
 #include "duckdb/main/extension/extension_loader.hpp"
 
 namespace duckdb {
@@ -18,6 +19,12 @@ void RegisterClassificationMetrics(ExtensionLoader &loader); // tabfm_metrics_cl
 void RegisterRegressionMetrics(ExtensionLoader &loader);     // tabfm_metrics_regression.cpp
 void RegisterCrossValidateMacros(ExtensionLoader &loader);   // tabfm_crossval.cpp
 void RegisterScoringFunctions(ExtensionLoader &loader);      // tabfm_scoring.cpp
+
+// The anofox integration contract (tabfm_contract.cpp): snapshot the function names before registering,
+// register the producers, then tag what this extension added.
+case_insensitive_set_t SnapshotSystemFunctionNames(ExtensionLoader &loader);
+void RegisterContractFunctions(ExtensionLoader &loader);
+void ApplyContractTags(ExtensionLoader &loader, const case_insensitive_set_t &preexisting);
 
 } // namespace anofox
 } // namespace duckdb
