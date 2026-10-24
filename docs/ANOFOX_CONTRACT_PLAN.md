@@ -85,7 +85,7 @@ the official DuckDB v1.5.6 CLI and checks:
 1. both load orders work, and `anofox_contract_version()` exists once and returns `'1'`;
 2. the tagged tabfm producers are exactly the expected twelve, and the
    visualization has the schema macros (`anofox_plot_curve`, `_summary`,
-   `_matrix`, `_obs`);
+   `_matrix`, `_diagnostics` for `obs`);
 3. for every producer, `anofox_plot(t)` is an SVG with no `data-warnings` and is
    the same SVG as the schema's own macro (at the same size: the defaults
    differ), and every model is drawn;
@@ -102,6 +102,14 @@ building the check:
   the README plot one model at a time.
 - `obs`: `anofox_plot` draws it as the plot.lm diagnostics grid, the same SVG as
   `anofox_plot_diagnostics` (not `anofox_plot_obs`'s default kind).
+- `curve`: the lines are keyed by `series` when it has more than one value,
+  else by `model_id` (`curve_series` in its `src/contract/stats.rs`), never by
+  both. Two-class curves (one series) therefore compare models in one plot;
+  multiclass curves of several models in one plot merge the same class of
+  different models into one line. The producers keep `series` = the class (the
+  contract's meaning), the check and the README plot multiclass curves one
+  model at a time, and the visualization should key by (`model_id`, `series`)
+  when both vary.
 
 ## Tests (red first)
 
@@ -122,7 +130,8 @@ building the check:
 
 1. PR 1: contract plumbing (version function, tags), `confusion_matrix_by`,
    both `metrics_by`, `augment_by`, the pickup script and CI job.
-2. PR 2: `roc_curve_by` and `calibration_curve_by` (the multiclass part).
+2. PR 2: `roc_curve_by` and `calibration_curve_by` (the multiclass part), and the
+   pickup check's ROC legend AUC against `tabfm_roc_auc` per class.
 3. Release, then the community-extensions descriptor bump.
 4. Tell the visualization side (anofox-visualization#172) the producer names,
    so its conformance harness gets recipes for them.

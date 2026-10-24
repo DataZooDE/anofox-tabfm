@@ -85,12 +85,14 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ### Added
 - **tabfm results plot in anofox-visualization** (the anofox integration contract, v1;
-  `docs/ANOFOX_CONTRACT_PLAN.md`). Four table macros give long tables that `anofox_plot(t)`
+  `docs/ANOFOX_CONTRACT_PLAN.md`). Six table macros give long tables that `anofox_plot(t)`
   detects, each per group of a table (one group per model):
   `tabfm_classification_metrics_by` and `tabfm_regression_metrics_by` (`summary`: one row per
   metric, the values of tabfm's own metric aggregates), `tabfm_confusion_matrix_by` (`matrix`,
-  zero cells included; plot one model at a time) and `tabfm_augment_by` (`obs`: y, fitted and
-  residual per row, drawn as the diagnostics grid). They are tagged in `duckdb_functions()`
+  zero cells included; plot one model at a time), `tabfm_augment_by` (`obs`: y, fitted and
+  residual per row, drawn as the diagnostics grid), and `tabfm_roc_curve_by` /
+  `tabfm_calibration_curve_by` (`curve`: one-vs-rest per class, one curve for two classes,
+  `pos_label :=` for one class; the mean ROC area is `tabfm_roc_auc(avg := 'ovr')`). They are tagged in `duckdb_functions()`
   (`anofox.contract = '1'`, `anofox.output`), every tabfm function carries
   `anofox.family = 'tabfm'`, and `anofox_contract_version()` returns `'1'` whichever anofox
   extension loads first. `scripts/visualization_pickup.py` (`make test_visualization`, and the
