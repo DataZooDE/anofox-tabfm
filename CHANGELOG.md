@@ -5,6 +5,8 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+## [v2026.10.26] - 2026-10-26
+
 ### Added
 - **`row_order` on the contract producers**: a last column on all six `tabfm_*_by` macros. It is the
   contract's optional 1-based ordinal over the whole table, in the producer's own order
@@ -17,7 +19,8 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ### Changed
 - **The DuckDB 2.0 build uses `v2.0.0`** (the same commit as before, stamped like the community build) and gets
-  a smoke test against the official v2.0.0 CLI (#74).
+  a smoke test against the official v2.0.0 CLI (#74). On pull requests that smoke test skips osx_arm64, which
+  the reduced PR matrix does not build (#76).
 
 ## [v2026.10.25] - 2026-10-25
 
