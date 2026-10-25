@@ -5,6 +5,8 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+## [v2026.10.25] - 2026-10-25
+
 ### Changed
 - **NaN and Infinity in target columns now have one meaning, on every entry point.**
   A `NaN` in a target was not `NULL`, so the row became a *training* row. Measured
@@ -34,7 +36,6 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   fitted, like `NaN` already was. Not covered: the metrics that bind labels as
   `VARCHAR` (log-loss, ROC-AUC, ECE) cannot tell a numeric `NaN` from the string
   `'nan'`.
-
 - **Two-table form returns only the `test` rows.** In
   `tabfm_classify(data, target, test := ...)` a row of `data` whose target is
   missing used to be scored *and returned* (a context table with 8 missing targets
@@ -44,44 +45,15 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   `is_training` was `false` for them and they were not what the caller asked for)
   should select them from `data` directly. Cross-validation scores its held-out
   fold through this form and is unaffected.
-
-- **`is_training` rows now carry real in-context fitted values for `tabdpt`.**
-  They previously carried a single constant: the export ran the model head over
-  the query rows only and zero-padded the context rows, so every training row
-  decoded to `argmax` of that pad. Over 80 context rows `tabdpt` returned ONE
-  distinct label where `tabicl-v2` and `mitra` returned three. The column is
-  documented as "in-context fitted values, handy for a sanity check", and for
-  this model it was neither. **Predictions for scored rows are unchanged** (the
-  head is applied per row, so their values cannot move); only the `is_training`
-  rows differ. Anything that relied on that column being constant — as an
-  is-this-a-training-row signal, say — should use the `is_training` flag
-  instead, which has always been the supported way to ask.
-
-- **The same fix, across the whole TabPFN family** (`tabpfn-v2`, `tabpfn-v2-5`,
-  `tabpfn-v2-5-real`, `tabpfn-v2-6`, `tabpfn-v3`), both tasks. Measuring the
-  rest with the oracles written for `tabdpt` found every generation doing it,
-  not just `tabpfn-v2-6`: on separable data where chance is 1/3 and `mitra` and
-  `tabicl-v2` score 1.0, all four scored **0.338** for classification and
-  returned a single value (correlation NaN) for regression. After: **3 distinct
-  / 1.0** classification and **80 distinct / corr 1.0** regression. Scored-row
-  predictions are **bit-identical** to before — 0.000e+00 on every architecture
-  and both tasks.
-
-  Two caveats worth knowing:
-
-  - `tabpfn-v2` and `tabpfn-v2-5`, and **regression on every architecture**,
-    now evaluate the training rows a second time as queries, which costs about
-    **1.5x** wall-clock (measured on v2.6 real dims: 198 -> 318 ms at T=500,
-    489 -> 738 ms at T=1000). The cheaper path is kept where it is measurably
-    correct — v2.6 and v3 classification — so the most-used models pay nothing.
-  - `tabdpt` is **not servable on the MLX backend**, before or after this work:
-    the interpreter has no `ConstantOfShape`, which that graph uses 32 times.
-    The request is refused by name rather than served on the CPU.
-
 - **A model that is commercial but gated no longer gets a "non-commercial" error.** `tabfm_download` said
   "(non-commercial, no redistribution)" for every gated model, which for `tabpfn-v2` and now `limix-2m` is the
   opposite of their licences. It now says the weights require accepting their terms and where to read them; the
   wording for genuinely non-commercial models is unchanged.
+- **Builds on DuckDB 2.0** (#69), the line community-extensions builds `repo.ref` against, as well as on
+  v1.5.6, from one source tree; the API differences sit behind the duckdb-compat shims. CI builds 2.0 on every
+  platform and runs the SQL suite there.
+- **DuckDB 1.4.x LTS is no longer supported** (#70): the supported lines are v1.5.6 and 2.0. Published 1.4
+  binaries stay where they are.
 
 ### Added
 - **tabfm results plot in anofox-visualization** (the anofox integration contract, v1;
@@ -121,7 +93,6 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   `docs/REAL_MODELS.md` is worth reading. **It is refused on ROCm** by name, like `tabicl-v2`. The CUDA/CPU
   external-data graphs are bundled (CPU results are byte-identical to the injection path on real weights);
   **CUDA and MLX were not run**, and a static check finds every op in the MLX interpreter's table.
-
 - **`causilo` (Nums AI) is a built-in model**, both tasks. A TabICL-style column-then-row model
   (36.1 M classifier / 37.1 M regressor, TabArena Elo 1785), with **no conversion step**: Nums AI
   publish safetensors and the Hugging Face repo is ungated. **The weights are non-commercial**
@@ -143,6 +114,72 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   The CUDA/CPU external-data graphs are bundled too (CPU results are bit-identical to the
   injection path on real weights). CUDA and MLX are prepared but not yet run on those devices.
 
+## [v2026.09.30] - 2026-09-30
+
+### Changed
+- **`is_training` rows now carry real in-context fitted values for `tabdpt`.**
+  They previously carried a single constant: the export ran the model head over
+  the query rows only and zero-padded the context rows, so every training row
+  decoded to `argmax` of that pad. Over 80 context rows `tabdpt` returned ONE
+  distinct label where `tabicl-v2` and `mitra` returned three. The column is
+  documented as "in-context fitted values, handy for a sanity check", and for
+  this model it was neither. **Predictions for scored rows are unchanged** (the
+  head is applied per row, so their values cannot move); only the `is_training`
+  rows differ. Anything that relied on that column being constant — as an
+  is-this-a-training-row signal, say — should use the `is_training` flag
+  instead, which has always been the supported way to ask.
+- **The same fix, across the whole TabPFN family** (`tabpfn-v2`, `tabpfn-v2-5`,
+  `tabpfn-v2-5-real`, `tabpfn-v2-6`, `tabpfn-v3`), both tasks. Measuring the
+  rest with the oracles written for `tabdpt` found every generation doing it,
+  not just `tabpfn-v2-6`: on separable data where chance is 1/3 and `mitra` and
+  `tabicl-v2` score 1.0, all four scored **0.338** for classification and
+  returned a single value (correlation NaN) for regression. After: **3 distinct
+  / 1.0** classification and **80 distinct / corr 1.0** regression. Scored-row
+  predictions are **bit-identical** to before — 0.000e+00 on every architecture
+  and both tasks.
+
+  Two caveats worth knowing:
+
+  - `tabpfn-v2` and `tabpfn-v2-5`, and **regression on every architecture**,
+    now evaluate the training rows a second time as queries, which costs about
+    **1.5x** wall-clock (measured on v2.6 real dims: 198 -> 318 ms at T=500,
+    489 -> 738 ms at T=1000). The cheaper path is kept where it is measurably
+    correct — v2.6 and v3 classification — so the most-used models pay nothing.
+  - `tabdpt` is **not servable on the MLX backend**, before or after this work:
+    the interpreter has no `ConstantOfShape`, which that graph uses 32 times.
+    The request is refused by name rather than served on the CPU.
+- The ensemble layer now draws from `duckdb::RandomEngine` (pcg32) via the new
+  `TabFMRandom` helper instead of a hand-ported CPython MT19937 (`PyRandom`,
+  removed). Member configs no longer match upstream TabFM draw-for-draw — the
+  ensemble is a variance-reduction device, so any valid set of permutations is
+  statistically equivalent — and the tests now assert the structural invariants
+  (a permutation is a permutation, `cat_mask` is composed through it, class
+  shifts are in range) rather than literal draws. Draws remain deterministic per
+  seed within a build.
+- Extension scaffold on the DuckDB extension template (DuckDB v1.5.4),
+  flavor-aware ONNX Runtime build (`TABFM_FLAVOR=cpu|cuda|rocm`, `cmake/ort.cmake`).
+- SQL surface (SQL-API rev 4): `tabfm_predict`, `tabfm_predict_by`,
+  `tabfm_predict_agg`, `tabfm_predict_win` (custom window callback),
+  `tabfm_download`/`tabfm_models`/`tabfm_load`/`tabfm_unload`/`tabfm_remove`,
+  `tabfm_devices`. Full names `anofox_tabfm_*` with short `tabfm_*` aliases.
+- Settings `anofox_tabfm_*` (license gate, cache dir, threads, guardrails,
+  device/ep_path, trace level) and house-style PostHog telemetry (opt-out).
+- Safetensors reader (F32/BF16/I64), model manifest (built-in tabfm-v1),
+  ORT engine (external-initializer injection), device discovery
+  (CUDA via NVML, ROCm/MIGraphX via KFD topology).
+- Weights lifecycle over DuckDB's VFS: license gate, 8 MiB chunked atomic
+  download, cache scan, air-gapped pre-seeded caches.
+- CI fixture model (weight-free, random-init) + real weight-free ONNX graphs
+  in `resources/`; model tooling under `tools/` (uv).
+- ONNX Runtime built with the MIGraphX EP for the ROCm flavor
+  (see `docs/rocm-build.md`); verified on gfx1201 (RX 9070 XT).
+- Real predict engine (`tabfm_engine.cpp`): the classify/regress surface runs
+  the full TabFM pipeline — preprocess (WS-F) → manifest/graph + safetensors
+  injection (WS-B) → ORT session cached in `TabFMState` (WS-C) → forward pass →
+  softmax/inverse-transform decode — validated end-to-end against the fixture
+  model. Errors with the SQL-API §5 remediation text when weights are missing.
+
+### Added
 - **`CALL tabfm_accelerate()` — GPU acceleration without configuring anything.**
   Discovers the hardware, downloads the right backend plugin to the default
   `ep_path`, verifies it by `dlopen` + ABI check, and reports what is left to do
@@ -152,17 +189,14 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   same session — no silent fallback, because no fallback event occurs. The new
   **`tabfm_backends()`** relation answers "why is this model not on my GPU?" as
   a query, one row per model x device with a `supported` flag and a `reason`.
-
 - **Evaluation primitives**: classification and regression metrics, k-fold
   cross-validation (`tabfm_cross_validate`, `tabfm_fold_assign`) and scoring,
   all model-agnostic and usable on any table, not just predictions.
-
 - **`tabdpt` runs on ROCm** — 2 of 11 catalog models becomes 3, at **5.6x** CPU
   with identical predictions. Its positional context split (`single_eval_pos`),
   which a fixed-shape MIGraphX compile cannot bucket, was converted to a mask
   over `arange(T) < train_size`; the rewrite was gated in PyTorch against the
   original before any ONNX was produced.
-
 - **`tabpfn-v2`, `tabpfn-v2-5`, `tabpfn-v2-6` and `tabpfn-v3` run on ROCm**, both
   tasks — the ROCm-servable set goes from 3 of 11 catalog models to 7
   (`tabpfn-v2-5-real` reuses the 2.5 graphs). On an RX 9070 XT every row, context and query, agrees
@@ -211,7 +245,6 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
     shown to fail on the bad graph before it was trusted. The K=1 case was first
     suspected to be a coincidence between the bucket width and the head dimension;
     that was tested and is wrong (it fails at every width tried).
-
 - **Synthetic data generation and imputation** (WS-G): `tabfm_generate(data, n, …)`
   samples new rows from a table's joint distribution, and `tabfm_impute(data, …)`
   fills NULL cells with the conditional best estimate. Both factorize the table
@@ -233,7 +266,6 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   feature pairs and zero synthetic rows identical to a real one. Correlations
   are attenuated by the binning (strongest pair 0.998 -> 0.954), which exact
   bar-distribution sampling would fix.
-
 - **TabPFN-3** (`tabpfn-v3`, Prior Labs, released 2026-05-12) onboarded:
   weight-free graphs + tensor maps for both tasks, export parity 2.4e-07
   (classification) / 2.4e-06 (regression). Architecturally distinct from 2.5 —
@@ -264,14 +296,12 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   longer found and each (rows, features) bucket recompiles once on first use
   after upgrading. The old `.mxr` files under `<cache_dir>/migraphx/` are
   orphaned and can be deleted.
-
 - **A feature column present on only one side is now an error.** When the
   context relation and the `test` relation exposed different feature columns,
   the missing side was filled with NULL and the model returned near-chance
   predictions with **no error at all**. It now fails, naming the offending
   column and the three ways to resolve it (drop it, add it to the other side,
   or name the shared columns with `features := [...]`).
-
 - **Checkpoint-based models could not load their converted weights.** Every
   `tools/export_*/convert_weights.py` writes a `model.safetensors` into the cache
   slug, but the manifests declare the downloadable `model.ckpt`, so nothing
@@ -283,40 +313,6 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   `model.safetensors` when the declared weights file is a `.ckpt`, and a
   checkpoint that matches zero tensor-map entries now fails with a message
   naming `convert_weights.py` instead of "corrupted — re-download it".
-
-### Changed
-- The ensemble layer now draws from `duckdb::RandomEngine` (pcg32) via the new
-  `TabFMRandom` helper instead of a hand-ported CPython MT19937 (`PyRandom`,
-  removed). Member configs no longer match upstream TabFM draw-for-draw — the
-  ensemble is a variance-reduction device, so any valid set of permutations is
-  statistically equivalent — and the tests now assert the structural invariants
-  (a permutation is a permutation, `cat_mask` is composed through it, class
-  shifts are in range) rather than literal draws. Draws remain deterministic per
-  seed within a build.
-
-- Extension scaffold on the DuckDB extension template (DuckDB v1.5.4),
-  flavor-aware ONNX Runtime build (`TABFM_FLAVOR=cpu|cuda|rocm`, `cmake/ort.cmake`).
-- SQL surface (SQL-API rev 4): `tabfm_predict`, `tabfm_predict_by`,
-  `tabfm_predict_agg`, `tabfm_predict_win` (custom window callback),
-  `tabfm_download`/`tabfm_models`/`tabfm_load`/`tabfm_unload`/`tabfm_remove`,
-  `tabfm_devices`. Full names `anofox_tabfm_*` with short `tabfm_*` aliases.
-- Settings `anofox_tabfm_*` (license gate, cache dir, threads, guardrails,
-  device/ep_path, trace level) and house-style PostHog telemetry (opt-out).
-- Safetensors reader (F32/BF16/I64), model manifest (built-in tabfm-v1),
-  ORT engine (external-initializer injection), device discovery
-  (CUDA via NVML, ROCm/MIGraphX via KFD topology).
-- Weights lifecycle over DuckDB's VFS: license gate, 8 MiB chunked atomic
-  download, cache scan, air-gapped pre-seeded caches.
-- CI fixture model (weight-free, random-init) + real weight-free ONNX graphs
-  in `resources/`; model tooling under `tools/` (uv).
-- ONNX Runtime built with the MIGraphX EP for the ROCm flavor
-  (see `docs/rocm-build.md`); verified on gfx1201 (RX 9070 XT).
-
-- Real predict engine (`tabfm_engine.cpp`): the classify/regress surface runs
-  the full TabFM pipeline — preprocess (WS-F) → manifest/graph + safetensors
-  injection (WS-B) → ORT session cached in `TabFMState` (WS-C) → forward pass →
-  softmax/inverse-transform decode — validated end-to-end against the fixture
-  model. Errors with the SQL-API §5 remediation text when weights are missing.
 
 ### Notes
 - The user-facing surface is `tabfm_classify` / `tabfm_regress` (upstream
