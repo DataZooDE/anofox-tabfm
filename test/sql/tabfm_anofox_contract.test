@@ -48,6 +48,7 @@ metric	VARCHAR
 value	DOUBLE
 conf_low	DOUBLE
 conf_high	DOUBLE
+row_order	BIGINT
 
 query TTR
 SELECT model_id, metric, round(value, 6) FROM tabfm_classification_metrics_by('scored', 'model', 'actual', 'predicted', 'proba') ORDER BY model_id, metric
@@ -125,6 +126,7 @@ metric	VARCHAR
 value	DOUBLE
 conf_low	DOUBLE
 conf_high	DOUBLE
+row_order	BIGINT
 
 # Both summaries union into one comparison.
 query I
@@ -147,6 +149,7 @@ model_id	VARCHAR
 row	VARCHAR
 col	VARCHAR
 value	BIGINT
+row_order	BIGINT
 
 query TTTI
 SELECT model_id, row, col, value FROM tabfm_confusion_matrix_by('scored', 'model', 'actual', 'predicted') ORDER BY ALL
@@ -189,6 +192,7 @@ row_id	VARCHAR
 y	DOUBLE
 fitted	DOUBLE
 residual	DOUBLE
+row_order	BIGINT
 
 query TTRRR
 SELECT model_id, row_id, y, fitted, residual FROM tabfm_augment_by('fitted', 'model', 'price', 'yhat', row_id_col := 'id') ORDER BY row_id
@@ -250,6 +254,7 @@ y_high	DOUBLE
 threshold	DOUBLE
 weight	DOUBLE
 n_censor	BIGINT
+row_order	BIGINT
 
 # Three classes: one curve per class, series = the class (scikit-learn roc_curve on actual = class).
 query TRRR
@@ -439,3 +444,32 @@ query T
 SELECT alias_of FROM duckdb_functions() WHERE function_name = 'tabfm_confusion_matrix_by'
 ----
 anofox_tabfm_confusion_matrix_by
+
+# ── row_order ────────────────────────────────────────────────────────────────
+# The contract's optional 1-based ordinal over the whole table (anofox-statistics#242,
+# anofox-visualization#445): the order the rows come out in, last column, on every producer.
+
+query I
+SELECT count(*) FROM (
+    SELECT row_order, row_number() OVER () AS pos, count(*) OVER () AS n FROM tabfm_classification_metrics_by('scored', 'model', 'actual', 'predicted', 'proba')
+    UNION ALL SELECT row_order, row_number() OVER (), count(*) OVER () FROM tabfm_regression_metrics_by('fitted', 'model', 'price', 'yhat')
+    UNION ALL SELECT row_order, row_number() OVER (), count(*) OVER () FROM tabfm_confusion_matrix_by('scored', 'model', 'actual', 'predicted')
+    UNION ALL SELECT row_order, row_number() OVER (), count(*) OVER () FROM tabfm_augment_by('fitted', 'model', 'price', 'yhat', row_id_col := 'id')
+    UNION ALL SELECT row_order, row_number() OVER (), count(*) OVER () FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba')
+    UNION ALL SELECT row_order, row_number() OVER (), count(*) OVER () FROM tabfm_calibration_curve_by('scored', 'model', 'actual', 'proba', n_bins := 4))
+WHERE row_order <> pos OR row_order < 1 OR row_order > n;
+----
+0
+
+query T
+SELECT list(column_name)[-1] FROM (DESCRIBE SELECT * FROM tabfm_calibration_curve_by('scored', 'model', 'actual', 'proba'));
+----
+row_order
+
+# Within a model and class the ROC points run along the curve (thresholds descending).
+query I
+SELECT bool_and(ok) FROM (
+    SELECT threshold <= lag(threshold, 1, 'inf'::DOUBLE) OVER (PARTITION BY model_id, series ORDER BY row_order) AS ok
+    FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba'));
+----
+true
