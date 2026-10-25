@@ -454,6 +454,10 @@ table name or a `'(SELECT …)'` string; the other arguments are column names.
 | `tabfm_roc_curve_by(data, group_col, actual_col, proba_col [, pos_label, drop_intermediate])` | the ROC curve, one-vs-rest per class | ROC curves with their AUC |
 | `tabfm_calibration_curve_by(data, group_col, actual_col, proba_col [, pos_label, n_bins])` | the reliability curve per class, 95% Wilson band | calibration curves |
 
+Every macro ends with `row_order`, the contract's optional 1-based ordinal: the
+order the rows come out in (metrics alphabetically, curves along the curve), so a
+consumer that aggregates the rows can keep that order.
+
 ```sql
 INSTALL anofox_visualization FROM community; LOAD anofox_visualization;
 

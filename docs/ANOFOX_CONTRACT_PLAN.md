@@ -32,9 +32,13 @@ as VARCHAR). Every producer also exists as `anofox_tabfm_*`.
 | `tabfm_confusion_matrix_by(data, group_col, actual_col, predicted_col)` | `matrix` | <group>, model_id, row (actual), col (predicted), value (count) |
 | `tabfm_augment_by(data, group_col, actual_col, predicted_col [, row_id_col])` | `obs` | <group>, model_id, row_id, y, fitted, residual |
 
-The curve columns are exactly anofox-statistics' `roc_curve_by` and
-anofox-decide's `decide_roc_curve_by`, so curves from all three `UNION ALL`
-into one plot.
+The curve columns are anofox-statistics' `roc_curve_by` and anofox-decide's
+`decide_roc_curve_by`, so curves from all three `UNION ALL BY NAME` into one
+plot. Every producer (here, in decide and in optimize) ends with `row_order
+BIGINT`: the contract's optional 1-based ordinal over the whole table, in the
+producer's own order (anofox-statistics#242, anofox-visualization#445). Until
+statistics has it too, a positional `UNION ALL` with statistics' curves does not
+line up.
 
 ### Decisions
 

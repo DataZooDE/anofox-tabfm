@@ -6,6 +6,11 @@
 # fix-pr-7390.patch (the OpSchemaRegisterOnce "explicit" fix) is upstream as of
 # 1.22.0 and dropped here — see fix-cmakelists.patch's own header for why that
 # one hunk is still needed.
+#
+# ONNX_DISABLE_STATIC_REGISTRATION=ON: the onnxruntime port needs it (see ../onnxruntime/portfile.cmake, first
+# line). onnx 1.22.0 adds the public compile definition __ONNX_DISABLE_STATIC_REGISTRATION to its targets
+# (cmake/Utils.cmake) so the operator schemas are meant to be registered once, by onnxruntime, instead of twice: without
+# it every first load of a local model printed hundreds of "Schema error ... already registered" lines.
 vcpkg_check_linkage(ONLY_STATIC_LIBRARY)
 
 vcpkg_from_github(
@@ -45,6 +50,7 @@ vcpkg_cmake_configure(
         -DONNX_USE_MSVC_STATIC_RUNTIME=${USE_STATIC_RUNTIME}
         -DONNX_BUILD_TESTS=OFF
         -DONNX_BUILD_CUSTOM_PROTOBUF=OFF
+        -DONNX_DISABLE_STATIC_REGISTRATION=ON
     MAYBE_UNUSED_VARIABLES
         ONNX_USE_MSVC_STATIC_RUNTIME
         Python_EXECUTABLE
