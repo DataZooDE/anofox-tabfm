@@ -103,7 +103,10 @@ jobs:
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
 
   # Loads the packaged 2.0 artifact into the official v2.0.0 CLI (smoke_test.py
-  # fetches 2.0's duckdb-cli-*.tar.gz assets) and runs the fixture model.
+  # fetches 2.0's duckdb-cli-*.tar.gz assets) and runs the fixture model. On a
+  # pull request the 2.0 build runs extension-ci-tools' reduced matrix, which
+  # builds no osx_arm64, so the smoke test skips that arch there; main and tags
+  # build and smoke-test it.
   duckdb-next-smoke-test:
     name: Smoke test (v2.0.0)
     needs: duckdb-next-build
@@ -111,4 +114,4 @@ jobs:
     with:
       duckdb_version: v2.0.0
       extension_name: anofox_tabfm
-      exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
+      exclude_archs: ${{ github.event_name == 'pull_request' && 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64;osx_arm64' || 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64' }}
