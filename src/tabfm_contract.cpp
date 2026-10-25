@@ -125,7 +125,8 @@ std::string SummaryTail(const std::string &metrics) {
 	       " || 'SELECT _g AS ' || " +
 	       Q("group_col") +
 	       " || ', _g::VARCHAR AS model_id, _x.metric AS metric, _x.value AS value, NULL::DOUBLE AS conf_low, "
-	       "NULL::DOUBLE AS conf_high FROM _s WHERE _x.value IS NOT NULL AND isfinite(_x.value) ORDER BY 1, 3'";
+	       "NULL::DOUBLE AS conf_high, row_number() OVER (ORDER BY _g, _x.metric) AS row_order FROM _s "
+	       "WHERE _x.value IS NOT NULL AND isfinite(_x.value) ORDER BY row_order'";
 }
 
 std::string Metric(const char *name, const char *aggregate) {
@@ -215,11 +216,11 @@ std::string RocCurveBody() {
 	           "WINDOW _w AS (PARTITION BY _g, _k ORDER BY _i)) "
 	           "SELECT _g AS {g}, _g::VARCHAR AS model_id, _k AS series, 'roc'::VARCHAR AS curve_type, x, y, "
 	           "NULL::DOUBLE AS y_low, NULL::DOUBLE AS y_high, threshold, NULL::DOUBLE AS weight, "
-	           "NULL::BIGINT AS n_censor FROM ("
+	           "NULL::BIGINT AS n_censor, row_number() OVER (ORDER BY _g, _k, _i) AS row_order FROM ("
 	           "SELECT _g, _k, 0 AS _i, 0::DOUBLE AS x, 0::DOUBLE AS y, 'inf'::DOUBLE AS threshold FROM _pts "
 	           "WHERE _i = 1 AND _n_pos > 0 AND _n_neg > 0 "
 	           "UNION ALL SELECT _g, _k, _i, _fps / _n_neg, _tps / _n_pos, _thr FROM _pts "
-	           "WHERE _n_pos > 0 AND _n_neg > 0 AND (_keep OR NOT {v:drop_intermediate})) ORDER BY 1, 3, _i") +
+	           "WHERE _n_pos > 0 AND _n_neg > 0 AND (_keep OR NOT {v:drop_intermediate})) ORDER BY row_order") +
 	       ")";
 }
 
@@ -232,7 +233,8 @@ std::string CalibrationCurveBody() {
 	       Dyn(OneVsRestRows("tabfm_calibration_curve_by") +
 	           "SELECT _g AS {g}, _g::VARCHAR AS model_id, _k AS series, 'calibration'::VARCHAR AS curve_type, "
 	           "_x AS x, _f AS y, greatest(0::DOUBLE, _c - _h) AS y_low, least(1::DOUBLE, _c + _h) AS y_high, "
-	           "NULL::DOUBLE AS threshold, _n::DOUBLE AS weight, NULL::BIGINT AS n_censor "
+	           "NULL::DOUBLE AS threshold, _n::DOUBLE AS weight, NULL::BIGINT AS n_censor, "
+	           "row_number() OVER (ORDER BY _g, _k, _b) AS row_order "
 	           "FROM (SELECT *, (_f + _z2 / (2 * _n)) / (1 + _z2 / _n) AS _c, "
 	           "sqrt(_z2 * (_f * (1 - _f) / _n + _z2 / (4 * _n * _n))) / (1 + _z2 / _n) AS _h "
 	           "FROM (SELECT _g, _k, _b, avg(_p) AS _x, avg(_y) AS _f, count(*) AS _n, "
@@ -241,7 +243,7 @@ std::string CalibrationCurveBody() {
 	           "(SELECT CASE WHEN {v:n_bins}::BIGINT < 1 THEN error('tabfm_calibration_curve_by: n_bins must be at "
 	           "least 1, got {v:n_bins}. Fix: pass n_bins := 10 (the default) or another positive count.') "
 	           "ELSE {v:n_bins}::BIGINT END AS _nb)) "
-	           "GROUP BY _g, _k, _b)) ORDER BY 1, 3, _b") +
+	           "GROUP BY _g, _k, _b)) ORDER BY row_order") +
 	       ")";
 }
 
@@ -282,8 +284,8 @@ std::string ConfusionMatrixBody() {
 	       " || 'SELECT r._g AS ' || " +
 	       Q("group_col") +
 	       " || ', r._g::VARCHAR AS model_id, r._lab AS \"row\", c._lab AS \"col\", coalesce(_c._n, 0)::BIGINT AS "
-	       "value FROM _l r JOIN _l c ON r._g = c._g LEFT JOIN _c ON _c._g = r._g AND _c._a = r._lab AND _c._p = "
-	       "c._lab ORDER BY 1, 3, 4')";
+	       "value, row_number() OVER (ORDER BY r._g, r._lab, c._lab) AS row_order FROM _l r JOIN _l c ON r._g = c._g "
+	       "LEFT JOIN _c ON _c._g = r._g AND _c._a = r._lab AND _c._p = c._lab ORDER BY row_order')";
 }
 
 std::string AugmentBody() {
@@ -292,8 +294,8 @@ std::string AugmentBody() {
 	                           Q("group_col") + " || ')' ELSE " + Q("row_id_col") + " END || ' AS _id'";
 	return "SELECT * FROM query(" + NumericRows("tabfm_augment_by", row_id) +
 	       " || 'SELECT _g AS ' || " + Q("group_col") +
-	       " || ', _g::VARCHAR AS model_id, _id::VARCHAR AS row_id, _y AS y, _f AS fitted, _y - _f AS residual "
-	       "FROM _ok ORDER BY 1, _id')";
+	       " || ', _g::VARCHAR AS model_id, _id::VARCHAR AS row_id, _y AS y, _f AS fitted, _y - _f AS residual"
+	       ", row_number() OVER (ORDER BY _g, _id) AS row_order FROM _ok ORDER BY row_order')";
 }
 
 struct ProducerMacro {
@@ -365,7 +367,7 @@ void RegisterContractFunctions(ExtensionLoader &loader) {
 	     {"data", "group_col", "actual_col", "predicted_col", "proba_col"},
 	     "Table macro: classification metrics per group of data, one row per metric (the anofox integration "
 	     "contract's `summary` schema, for anofox_plot): the group column, model_id (the group as text), metric "
-	     "(accuracy, ece, f1_macro, log_loss, roc_auc_ovr), value, conf_low, conf_high. The values are tabfm's "
+	     "(accuracy, ece, f1_macro, log_loss, roc_auc_ovr), value, conf_low, conf_high, row_order. The values are tabfm's "
 	     "own aggregates (tabfm_accuracy, tabfm_ece, tabfm_f1 with avg 'macro', tabfm_log_loss, tabfm_roc_auc "
 	     "with avg 'ovr'). data is a table name or a '(SELECT ...)' string; the column arguments are column "
 	     "names. proba_col is the MAP(label, probability) column tabfm_classify returns. A metric that is "
@@ -376,7 +378,7 @@ void RegisterContractFunctions(ExtensionLoader &loader) {
 	     {"data", "group_col", "actual_col", "predicted_col"},
 	     "Table macro: regression metrics per group of data, one row per metric (the anofox integration "
 	     "contract's `summary` schema, for anofox_plot): the group column, model_id (the group as text), metric "
-	     "(mae, mape, medae, r2, rmse), value, conf_low, conf_high. The values are tabfm's own aggregates "
+	     "(mae, mape, medae, r2, rmse), value, conf_low, conf_high, row_order. The values are tabfm's own aggregates "
 	     "(mape skips zero actuals). data is a table name or a '(SELECT ...)' string; the column arguments are "
 	     "column names. Rows with a NULL or non-finite actual or prediction (the scored rows of a single-"
 	     "relation tabfm_regress) are skipped.",
@@ -385,7 +387,7 @@ void RegisterContractFunctions(ExtensionLoader &loader) {
 	     {"data", "group_col", "actual_col", "predicted_col"},
 	     "Table macro: the confusion matrix per group of data (the anofox integration contract's `matrix` "
 	     "schema, for anofox_plot): the group column, model_id (the group as text), row (actual label), col "
-	     "(predicted label), value (row count). Every (actual, predicted) pair of the group's labels is listed, "
+	     "(predicted label), value (row count), row_order. Every (actual, predicted) pair of the group's labels is listed, "
 	     "zero cells included. Labels are compared as text. data is a table name or a '(SELECT ...)' string; "
 	     "the column arguments are column names. tabfm_confusion_matrix gives the observed pairs of one table.",
 	     "SELECT * FROM tabfm_confusion_matrix_by('scored', 'model', 'actual', 'yhat');"},
@@ -393,7 +395,7 @@ void RegisterContractFunctions(ExtensionLoader &loader) {
 	     {"data", "group_col", "actual_col", "predicted_col", "row_id_col"},
 	     "Table macro: actual against predicted per row and group of data (the anofox integration contract's "
 	     "`obs` schema, for anofox_plot's predicted-vs-actual and residual plots): the group column, model_id "
-	     "(the group as text), row_id, y, fitted, residual (y - fitted). row_id is row_id_col as text, or the "
+	     "(the group as text), row_id, y, fitted, residual (y - fitted), row_order. row_id is row_id_col as text, or the "
 	     "row's position in its group when row_id_col is not given. data is a table name or a '(SELECT ...)' "
 	     "string; the column arguments are column names. Rows with a NULL or non-finite actual or prediction "
 	     "are skipped.",
@@ -404,7 +406,7 @@ void RegisterContractFunctions(ExtensionLoader &loader) {
 	     "(scikit-learn roc_curve on actual = class; the anofox integration contract's `curve` schema, curve_type "
 	     "'roc', for anofox_plot). One row per point: the group column, model_id (the group as text), series (the "
 	     "class), curve_type, x (false positive rate), y (true positive rate), y_low, y_high, threshold (the "
-	     "probability; +inf for the (0, 0) start), weight, n_censor. Two classes give one curve, for the greater "
+	     "probability; +inf for the (0, 0) start), weight, n_censor, row_order. Two classes give one curve, for the greater "
 	     "label; more classes give one per class; pos_label := picks one class. The mean area of a group's curves "
 	     "is tabfm_roc_auc(avg := 'ovr'). Tied probabilities form one point; drop_intermediate (default true) "
 	     "drops the points on straight segments. A class without positives or negatives in a group has no "
@@ -418,7 +420,7 @@ void RegisterContractFunctions(ExtensionLoader &loader) {
 	     "anofox_plot). The class probabilities fall in n_bins equal-width bins (default 10); one row per "
 	     "non-empty bin: the group column, model_id (the group as text), series (the class), curve_type, x (mean "
 	     "probability), y (fraction of rows with that label), y_low / y_high (95% Wilson interval), threshold, "
-	     "weight (rows in the bin), n_censor. Classes are drawn as in tabfm_roc_curve_by. tabfm_ece bins the "
+	     "weight (rows in the bin), n_censor, row_order. Classes are drawn as in tabfm_roc_curve_by. tabfm_ece bins the "
 	     "top-label confidence instead, so the curve does not reproduce the ECE number.",
 	     "SELECT * FROM tabfm_calibration_curve_by('scored', 'model', 'actual', 'proba', n_bins := 10);"},
 	};

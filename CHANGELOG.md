@@ -5,6 +5,20 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`row_order` on the contract producers**: a last column on all six `tabfm_*_by` macros. It is the
+  contract's optional 1-based ordinal over the whole table, in the producer's own order
+  (DataZooDE/anofox-statistics#242, DataZooDE/anofox-visualization#445). The rows also come out in that order.
+
+### Fixed
+- **No more "Schema error … already registered" on the first model run** (#74). The vcpkg `onnx` port now
+  builds with `ONNX_DISABLE_STATIC_REGISTRATION`, as the onnxruntime port requires. Before, every operator
+  schema registered twice and printed 634 lines on stderr. The smoke test now fails on that noise.
+
+### Changed
+- **The DuckDB 2.0 build uses `v2.0.0`** (the same commit as before, stamped like the community build) and gets
+  a smoke test against the official v2.0.0 CLI (#74).
+
 ## [v2026.10.25] - 2026-10-25
 
 ### Changed
