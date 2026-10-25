@@ -22,6 +22,8 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+import urllib.error
+import tarfile
 import sys
 import tempfile
 import urllib.request
@@ -77,28 +79,56 @@ ARCH_TO_CLI_ZIP: dict[str, str] = {
 }
 
 
+# DuckDB 2.0 renamed the release assets to hyphenated tarballs, e.g.
+# duckdb-cli-linux-amd64.tar.gz. Releases before 2.0 only have the zips above.
+ARCH_TO_CLI_TARBALL: dict[str, str] = {
+    "linux_amd64": "duckdb-cli-linux-amd64.tar.gz",
+    "linux_arm64": "duckdb-cli-linux-arm64.tar.gz",
+    "linux_amd64_musl": "duckdb-cli-linux-amd64-musl.tar.gz",
+    "osx_amd64": "duckdb-cli-osx-amd64.tar.gz",
+    "osx_arm64": "duckdb-cli-osx-arm64.tar.gz",
+    "windows_amd64": "duckdb-cli-windows-amd64.tar.gz",
+}
+
+
 def _download_duckdb_cli(version: str, arch: str, dest_dir: str) -> str:
-    zip_name = ARCH_TO_CLI_ZIP.get(arch)
-    if zip_name is None:
+    if arch not in ARCH_TO_CLI_ZIP:
         raise SystemExit(
             f"Unsupported arch '{arch}'. Supported: {sorted(ARCH_TO_CLI_ZIP)}"
         )
 
-    url = f"https://github.com/duckdb/duckdb/releases/download/{version}/{zip_name}"
-    zip_path = os.path.join(dest_dir, "duckdb_cli.zip")
+    # Try the 2.0+ tarball first, then the pre-2.0 zip; a release has only one.
+    base = f"https://github.com/duckdb/duckdb/releases/download/{version}"
+    candidates = [ARCH_TO_CLI_TARBALL[arch], ARCH_TO_CLI_ZIP[arch]]
+    archive = None
+    for name in candidates:
+        url = f"{base}/{name}"
+        path = os.path.join(dest_dir, name)
+        print(f"Downloading official DuckDB {version} CLI ({arch}):\n  {url}")
+        try:
+            urllib.request.urlretrieve(url, path)
+        except urllib.error.HTTPError as err:
+            if err.code == 404:
+                print(f"  not published ({err.code}), trying the next name")
+                continue
+            raise
+        archive = path
+        break
+    if archive is None:
+        raise SystemExit(f"No DuckDB CLI asset for {version}/{arch}: tried {candidates}")
 
-    print(f"Downloading official DuckDB {version} CLI ({arch}):\n  {url}")
-    urllib.request.urlretrieve(url, zip_path)
-
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(dest_dir)
+    if archive.endswith(".zip"):
+        with zipfile.ZipFile(archive, "r") as zf:
+            zf.extractall(dest_dir)
+    else:
+        with tarfile.open(archive, "r:gz") as tf:
+            tf.extractall(dest_dir)
 
     bin_name = "duckdb.exe" if platform.system() == "Windows" else "duckdb"
     binary = os.path.join(dest_dir, bin_name)
     if not os.path.isfile(binary):
         raise SystemExit(
-            f"DuckDB binary not found after extraction: {binary}\n"
-            f"Zip contents: {zipfile.ZipFile(zip_path).namelist()}"
+            f"DuckDB binary not found after extracting {os.path.basename(archive)}: {binary}"
         )
 
     if platform.system() != "Windows":
@@ -207,6 +237,13 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
                 proc,
             )
         print(f"      -> rows={lines[-2]} served_by={lines[-1]}")
+        # ONNX operator schemas must be registered once, by ONNX Runtime. A build whose onnx library also
+        # registers them at static-init time prints hundreds of "Schema error ... already registered" lines
+        # on the first model run (vcpkg_ports/onnx: ONNX_DISABLE_STATIC_REGISTRATION).
+        noise = [ln for ln in (proc.stderr or "").splitlines() if "already registered" in ln]
+        if noise:
+            _fail(f"the first model run printed {len(noise)} ONNX schema registration error(s) on stderr, "
+                  f"e.g. {noise[0][:200]!r}")
 
     print(f"\nSmoke test PASSED ({EXTENSION_NAME} on {arch})")
 
