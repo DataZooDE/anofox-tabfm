@@ -1641,8 +1641,9 @@ unique_ptr<FunctionData> LoadBind(ClientContext &context, TableFunctionBindInput
 	auto base_dir = GetCacheDir(context) + "/" + manifest.CacheSlug(manifest.revision);
 	for (auto &file : manifest.files) {
 		if (!fs.FileExists(base_dir + "/" + file.path)) {
-			throw InvalidInputException("tabfm_load: model '%s' is not downloaded. Run: CALL tabfm_download('%s');",
-			                            task, task);
+			throw InvalidInputException(
+			    "tabfm_load: model '%s' has no %s weights downloaded. Run: CALL tabfm_download('%s', model := '%s');",
+			    manifest.model, task, task, manifest.model);
 		}
 	}
 
@@ -2158,8 +2159,9 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	// CALL tabfm_load(task);
 	RegisterSet(loader, "anofox_tabfm_load", "tabfm_load", {{LogicalType::VARCHAR}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, LoadBind), LifecycleInit,
 	            LifecycleExecute,
-	            "Eagerly load a downloaded TabFM model for a task into memory so the first predict is warm "
-	            "(otherwise the model loads lazily on first use).",
+	            "Check that a model's weights for a task are downloaded and ready (errors with the download call "
+	            "when they are not). The inference session itself is built on the first predict; on ROCm, "
+	            "tabfm_gpu_precompile warms it ahead of time.",
 	            "CALL tabfm_load('classification');", true);
 	// CALL tabfm_unload([task]);
 	RegisterSet(loader, "anofox_tabfm_unload", "tabfm_unload", {{}, {LogicalType::VARCHAR}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, UnloadBind),
