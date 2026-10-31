@@ -1,5 +1,7 @@
 # One artifact, backends resolved at runtime
 
+> **Status (2026-10):** design history. Every phase has landed except phase 4 (CoreML), which was dropped; the status line below is out of date. Current behaviour: [docs/api/04-gpu.md](api/04-gpu.md).
+
 **Goal:** a single `anofox_tabfm.duckdb_extension` that runs on CPU everywhere
 and lights up CUDA, ROCm or CoreML when the machine can, instead of three
 mutually exclusive build flavors chosen at compile time.

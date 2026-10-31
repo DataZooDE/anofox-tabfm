@@ -554,9 +554,11 @@ Built-in path, CPU, against upstream's own eager single forward on the same spli
 | 3000 x 50 | 142 s | 14.3 GB |
 | 5000 x 20 | 132 s | 15.3 GB |
 
-Memory grows roughly with rows^1.7 and linearly with features. The engine caps the model at **5,000 rows and
-100 features**, which are independent limits: their corner (5000 x 100) would need on the order of 70 GB, so
-check the table above against your machine. (The first cap, 10,000 x 500, was a guess and was wrong.)
+Memory grows roughly with rows^1.7 and linearly with features. The registry declares **5,000 rows and
+100 features** for the model as measured, recommended limits; they are not enforced (only the global
+`anofox_tabfm_max_rows` / `anofox_tabfm_max_features` are), so set `SET anofox_tabfm_max_rows = 5000` to hold
+to the row limit. They are independent limits: their corner (5000 x 100) would need on the order of 70 GB, so
+check the table above against your machine. (The first declared limit, 10,000 x 500, was a guess and was wrong.)
 
 ### Platforms
 

@@ -1,5 +1,7 @@
 # anofox-tabfm — performance plan (2026-07-04)
 
+> **Status (2026-10):** historical plan. The GPU precision default is now `fp32`, not `bf16` as stated below. Current settings: [docs/api/05-settings.md](api/05-settings.md).
+
 Consolidated from three independent analyses (Claude + `codex` + `gemini`/Antigravity)
 plus first-party benchmarks on this box: **Ryzen 3950X (16C/32T, Zen2, AVX2, no
 bf16) + RX 9070 XT (RDNA4/gfx1201, 64 CUs, 16 GB VRAM) + ROCm 7.2.4 / MIGraphX 7.2.3.**

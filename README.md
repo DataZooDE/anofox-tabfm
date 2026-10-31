@@ -1,61 +1,87 @@
-# anofox-tabfm
+<h1 align="center">Anofox TabFM</h1>
+<p align="center"><strong>Zero-shot machine learning for tabular data, inside DuckDB</strong></p>
 
-**Zero-shot machine learning for tabular data, inside DuckDB.** This extension
-runs **tabular foundation models** — TabPFN-style in-context learners — so
-classification and regression become a single SQL statement. No Python, no
-training loop, no MLOps: the model reads your labelled rows as context and
-predicts the rest.
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+  <a href="https://duckdb.org"><img src="https://img.shields.io/badge/DuckDB-1.5.6%20%7C%202.0-green.svg" alt="DuckDB 1.5.6 | 2.0"></a>
+  <a href="https://github.com/DataZooDE/anofox-tabfm/actions/workflows/MainDistributionPipeline.yml"><img src="https://github.com/DataZooDE/anofox-tabfm/actions/workflows/MainDistributionPipeline.yml/badge.svg?branch=main" alt="Build"></a>
+</p>
 
-**Thirteen models are built in and selectable by name** — `mitra` (AWS AutoGluon,
-Apache-2.0), `tabdpt` (Layer 6 AI, Apache-2.0), `tabpfn-v2`, `tabpfn-v2-5`,
-`tabpfn-v2-5-real`, `tabpfn-v2-6` and `tabpfn-v3` (Prior Labs), `tabicl-v2`
-(Inria), `causilo` (Nums AI), `limix-2m` (StableAI), `orion-bix` and `orion-msp` (Lexsi
-Labs, MIT), and `tabfm-v1` (Google TabFM) — and you can register your own entirely in SQL.
-Everything is operated in SQL: no manifest file, no config.
-
-**Built with StableAI LimiX.** The `limix-2m` model is StableAI's LimiX-2M, used under the
-Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 plus an attribution clause): see
-[`docs/REAL_MODELS.md`](docs/REAL_MODELS.md#limix-2m-stableai--shipped-classify--regress)
-and the [licence](https://huggingface.co/stable-ai/LimiX-2M/blob/main/LICENSE.txt).
-
----
-
-## Quickstart
-
-### 1. Install & load
+This extension runs **tabular foundation models**, TabPFN-style in-context learners, so classification
+and regression become a single SQL statement. No Python, no training loop, no MLOps: the model reads your
+labelled rows as context and predicts the rest.
 
 ```sql
-INSTALL httpfs;          -- weights are fetched over HTTPS. Install it FIRST, before
-LOAD httpfs;             -- any custom repository is set (see the note below).
+SELECT customer_id, yhat AS will_churn, yhat_score
+FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra');
+```
 
+> **Built with StableAI LimiX.** The `limix-2m` model is StableAI's LimiX-2M, used under the Stable AI
+> Technology Co., Ltd. License v1.0 ([licence](https://huggingface.co/stable-ai/LimiX-2M/blob/main/LICENSE.txt)).
+> Several models are **non-commercial**: check the `commercial` column in [Models](#models) before you build
+> on one.
+
+## Key Features
+
+### Predict
+- **Classification and regression** in one call: `tabfm_classify`, `tabfm_regress`
+- **Two forms**: an explicit train / test pair, or one table whose missing targets are the rows to score
+- **Probabilities**, not just labels: `yhat_score` and a `proba` map per row
+
+### 13 models, plus your own
+- **Built in, selectable by name**: Mitra, TabDPT, TabPFN v2 / 2.5 / 2.5-real / 2.6 / 3, TabICL v2, Causilo,
+  LimiX-2M, Orion-BiX, Orion-MSP and Google TabFM v1
+- **Your own model**, registered entirely in SQL with `tabfm_register_model`
+- **One SQL surface**: swap `model :=` to compare models on your own data
+
+### Generate and impute
+- **Synthetic rows** that keep the relationships between columns: `tabfm_generate`
+- **Fill NULL cells**, conditioned on the rest of each row: `tabfm_impute`
+
+### Evaluate and plot
+- **Metrics** as SQL aggregates: accuracy, F1, ROC-AUC, log loss, ECE, RMSE, MAE, R², and more
+- **Leakage-safe cross-validation**: `tabfm_cross_validate`
+- **Plots** through [anofox-visualization](https://github.com/DataZooDE/anofox-visualization): model comparison,
+  confusion matrix, ROC and calibration curves
+
+### Run anywhere
+- **CPU** on Linux, macOS (arm64) and Windows
+- **GPU** with one call, `CALL tabfm_accelerate()`: NVIDIA CUDA, AMD ROCm, Apple MLX
+
+### Safe by default
+- **No weights shipped**: you download each model's weights from Hugging Face yourself
+- **Licence gates**: a model whose licence needs an acknowledgement will not download without one
+- **Errors that say what to run**
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Models](#models)
+- [Documentation](#documentation)
+- [Status](#status)
+- [Development](#development)
+- [License](#license)
+- [Telemetry](#telemetry)
+- [Feedback](#feedback)
+
+## Installation
+
+```sql
 INSTALL anofox_tabfm FROM community;
 LOAD anofox_tabfm;
 ```
 
-The community build is signed, so no extra flags are needed — but it is
-published by a separate submission and can trail a release by days. To take a
-release the moment it is out, use the anofox repository instead. Those builds
-are **unsigned**, so DuckDB must be started with `-unsigned`:
+**Latest builds:** the community build can trail a release by days. The DataZoo repository has it the
+moment it is out, but its builds are unsigned: start DuckDB with `duckdb -unsigned`, and install `httpfs`
+**first** ([why](docs/guides/01-getting-started.md#1-install-and-load)):
 
-```bash
-duckdb -unsigned
-```
 ```sql
-INSTALL httpfs; LOAD httpfs;   -- FIRST: see below
+INSTALL httpfs; LOAD httpfs;
 SET custom_extension_repository = 'https://get.anofox.com';
 INSTALL anofox_tabfm;
 LOAD anofox_tabfm;
 ```
-
-Two things that are easy to hit and give unhelpful errors:
-
-* Without `-unsigned`, installing from `get.anofox.com` fails with *"Attempting
-  to install an extension file that doesn't have a valid signature"*. The
-  community repository needs no flag.
-* `custom_extension_repository` applies to **every** install, including ones
-  DuckDB triggers for you. If it is set before `httpfs` is present, DuckDB
-  autoloads `httpfs` from `get.anofox.com`, which does not serve it, and the
-  failure names `httpfs` rather than the setting. Install `httpfs` first.
 
 Check which build you got:
 
@@ -63,704 +89,161 @@ Check which build you got:
 SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox_tabfm';
 ```
 
-### 2. Pick a model and download its weights (once)
-
-`SELECT * FROM tabfm_list_models();` shows the seven built-in models. `mitra` is a
-good default — Apache-2.0, ~303 MB. It also has a permissive license. The extension ships only
-**weight-free** graphs; the weights have to be downloaded from Hugging Face before using the model:
+## Quick Start
 
 ```sql
-CALL tabfm_download('classification', model := 'mitra');    -- ~303 MB, cached in ~/.cache/anofox-tabfm
-```
+-- 1. Weights are fetched over HTTPS, once: mitra is Apache-2.0, ungated, about 303 MB
+INSTALL httpfs; LOAD httpfs;
+CALL tabfm_download('classification', model := 'mitra');
 
-Models whose license needs an explicit nod (`tabfm-v1`, `tabpfn-v2`, `tabpfn-v2-5`,
-`tabpfn-v3` — "(gated)" in the table below) additionally need
-`SET anofox_tabfm_accept_hf_license = true;` before `tabfm_download`.
-
-Some repositories are additionally **gated by Hugging Face** — accept the license on
-the model page while signed in, then pass your token via a standard DuckDB secret:
-
-```sql
-CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_xxx', SCOPE 'https://huggingface.co');
-```
-
-A download that needs this fails with an error naming both steps. See
-[`docs/REAL_MODELS.md`](docs/REAL_MODELS.md#gated-huggingface-repositories).
-
-### 3. Predict
-
-A concrete example — the classic **iris** dataset (classifying four flower measurements into 
-species), read straight from Hugging Face, with 20% of the species hidden as
-`NULL` so we can predict them:
-
-```sql
+-- 2. iris, read from Hugging Face, with every fifth species hidden as NULL
 CREATE TABLE iris AS
 SELECT SepalLengthCm AS sepal_len, SepalWidthCm AS sepal_wid,
        PetalLengthCm AS petal_len, PetalWidthCm AS petal_wid,
        CASE WHEN row_number() OVER () % 5 = 0 THEN NULL ELSE Species END AS species
 FROM 'hf://datasets/scikit-learn/iris/**/*.csv';
-```
 
-Rows with a known `species` are the **context**; the `NULL` rows are the ones to
-score:
-
-| sepal_len | sepal_wid | petal_len | petal_wid | species |
-|--:|--:|--:|--:|:--|
-| 4.9 | 3.0 | 1.4 | 0.2 | Iris-setosa |
-| 5.0 | 3.6 | 1.4 | 0.2 | **NULL** |
-| 5.2 | 2.7 | 3.9 | 1.4 | **NULL** |
-| 6.5 | 3.0 | 5.8 | 2.2 | **NULL** |
-
-Predict the hidden species — zero-shot, no training. Every function takes
-`model :=` (or `SET anofox_tabfm_default_model = 'mitra'` once for the session):
-
-```sql
-SELECT sepal_len, sepal_wid, petal_len, petal_wid, yhat AS predicted_species, yhat_score
+-- 3. Rows with a species are the context; predict the NULL ones, zero-shot
+SELECT sepal_len, petal_len, yhat AS predicted_species, yhat_score
 FROM tabfm_classify('iris', 'species', model := 'mitra')
 WHERE species IS NULL;
 ```
 
-| sepal_len | sepal_wid | petal_len | petal_wid | predicted_species | yhat_score |
-|--:|--:|--:|--:|:--|--:|
-| 5.0 | 3.6 | 1.4 | 0.2 | Iris-setosa | 1.00 |
-| 5.2 | 2.7 | 3.9 | 1.4 | Iris-versicolor | 1.00 |
-| 6.5 | 3.0 | 5.8 | 2.2 | Iris-virginica | 1.00 |
+Every predict, generate / impute and weight-lifecycle function takes `model :=`; cross-validation uses the
+default model. Downloading does not choose a model for you: with no `model :=` and no
+`SET anofox_tabfm_default_model = 'mitra'`, a call fails and says how to pick one. Regression needs its own
+weights: `CALL tabfm_download('regression', model := 'mitra');`. The full walk-through with output:
+[Getting Started](docs/guides/01-getting-started.md); runnable files in [`examples/`](examples/README.md).
 
-That's it — a foundation model scoring your data, from SQL. (On a held-out split
-`mitra` gets iris **96%** right; see [`examples/`](examples/README.md).)
+## Models
 
----
+| Model | By | Tasks | Licence (`tabfm_list_models()`) | Commercial | Gated |
+|---|---|---|---|---|---|
+| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | yes | no |
+| `tabdpt` | Layer 6 AI | classify, regress | `apache-2.0` | yes | no |
+| `tabicl-v2` | Inria (soda-inria) | classify, regress | `bsd-3-clause` | yes | no |
+| `orion-bix` | Lexsi Labs | classify | `mit` | yes | no |
+| `orion-msp` | Lexsi Labs | classify | `mit` | yes | no |
+| `tabpfn-v2` | Prior Labs | classify, regress | `apache-2.0` (Prior Labs License v1.1: Apache-2.0 + attribution) | yes | yes |
+| `limix-2m` | StableAI | classify, regress | `limix-2m-license-v1.0` (Apache-2.0 + attribution: "Built with StableAI LimiX") | yes | yes |
+| `tabpfn-v2-5` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | **no** | yes |
+| `tabpfn-v2-5-real` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | **no** | yes |
+| `tabpfn-v2-6` | Prior Labs | classify, regress | `tabpfn-2.6-license-v1.0` | **no** | yes |
+| `tabpfn-v3` | Prior Labs | classify, regress | `tabpfn-3-license-v1.0` | **no** | yes |
+| `causilo` | Nums AI | classify, regress | `causilo-license-v1.0` (hosted, API or SaaS use needs a separate licence) | **no** | yes |
+| `tabfm-v1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | **no** | yes |
 
-## We support classification and regression
+**Gated** means the download needs `SET anofox_tabfm_accept_hf_license = true;` first, your acknowledgement
+of that licence. Some Hugging Face repositories also need account approval and a token, which is a separate
+step: [Getting Started](docs/guides/01-getting-started.md#licence-acknowledgement-and-gated-repositories).
+Which model to pick, and how they compared: [Choosing a model](docs/guides/02-choosing-a-model.md). Sizes,
+backends and attribution texts: [Models and weights](docs/api/02-models-and-weights.md).
 
-Both functions have the same signature; the task (classification vs
-regression) is fixed by which one you call.
+## Documentation
 
-```sql
-tabfm_classify(data, target [, test] [, features] [, opts])
-tabfm_regress (data, target [, test] [, features] [, opts])
-```
+### Guides
 
-**Explicit train / test** — like `clf.fit(X_train, y_train).predict(X_test)`.
-Only the scored rows are returned.
-
-```sql
-SELECT * FROM tabfm_classify('history', 'churned', test := 'prospects');
-SELECT * FROM tabfm_regress('sold_homes', 'price', test := 'listings');
-```
-
-**Single relation** — rows whose target is missing are the ones to score; every
-row comes back with an `is_training` flag (context rows get in-context fitted
-values, handy for a sanity check).
-
-```sql
-SELECT * FROM tabfm_classify('customers', 'churned');
-```
-
-**What counts as a missing target.** `NULL`, and `NaN` in a `FLOAT`/`DOUBLE`
-column (pandas exports missing numbers as `NaN`): both mean *predict this
-row*. `+Infinity`, `-Infinity` and a `DATE`/`TIMESTAMP` infinity are an **error**
-that names the column, so a stray sentinel cannot become a label or skew a mean;
-`CASE WHEN isfinite(y) THEN y END` turns them into `NULL` and keeps the `NaN`
-rows. The string `'nan'` is an ordinary class label. A value beyond the float32
-range (about 3.4e38) is also an error for a regression target. In the two-table
-form a row of the context relation with a missing target is neither context nor
-output: only the `test` rows come back. The same rule applies to `tabfm_impute`
-(a `NaN` cell in a column being filled is filled), the regression metrics and
-scoring functions (a `NaN` operand is skipped, like `NULL`; `Infinity` is an
-error) and the typed classification metrics. Feature columns are never an error:
-`NaN`, `Infinity`, a value beyond float32 and a date infinity are all imputed like
-`NULL`. One limit: the metrics that bind labels as `VARCHAR` (log-loss, ROC-AUC,
-ECE) cannot tell a numeric `NaN` from the string `'nan'`.
-
-**A subquery** works anywhere where a table name does:
-
-```sql
-SELECT * FROM tabfm_classify(
-    '(SELECT * FROM history WHERE signup_year = 2025)', 'churned',
-    test := 'prospects');
-```
-
-**One model per segment.** The model learns in context, so each call sees
-exactly the labelled rows you hand it. To predict each segment from its own
-history, make one call per segment with a subquery and stack the results; the
-segment column is excluded so it does not act as a feature:
-
-```sql
-SELECT 'north' AS region, * FROM tabfm_classify(
-    '(SELECT * EXCLUDE (region) FROM customers WHERE region = ''north'')', 'churned')
-UNION ALL
-SELECT 'south', * FROM tabfm_classify(
-    '(SELECT * EXCLUDE (region) FROM customers WHERE region = ''south'')', 'churned');
-```
-
-This is the supported way to predict per group. Each call is one forward pass over
-that segment's context and queries together, which is why a row-at-a-time form such
-as a `LATERAL` join would be slower: it would repeat the whole context for every
-row. (The grouped and windowed aggregates are internal; `tabfm_classify` and
-`tabfm_regress` are the public surface.)
-
-**Feature selection and options** (named parameters lead to the best readability):
-
-```sql
-SELECT * FROM tabfm_classify(
-    'history', 'churned',
-    test     := 'prospects',
-    features := ['age', 'plan', 'usage_gb'],   -- default: all other columns
-    opts     := MAP{'seed': '42', 'output_mode': 'detail'});
-```
-
-### Output columns
-
-Every column of the scored rows, plus:
-
-| column | meaning |
+| Guide | Description |
 |---|---|
-| `yhat` | predicted label (classification) or value (regression) |
-| `yhat_score` | top-class probability; `NULL` for regression |
-| `proba` | `MAP(label → probability)` — classification, `output_mode = 'detail'` (the default) |
-| `is_training` | present in single-relation mode: was this a context row? |
+| [Getting Started](docs/guides/01-getting-started.md) | Install, download a model, licence gates, a first prediction on iris |
+| [Choosing a model](docs/guides/02-choosing-a-model.md) | Selecting a model, the default, your own model, how the models compared |
+| [Evaluate and compare](docs/guides/03-evaluate-and-compare.md) | A churn walk-through, cross-validation, plotting the results |
+| [GPU acceleration](docs/guides/04-gpu-acceleration.md) | `tabfm_accelerate()`, checking which device served a query, the ROCm first compile |
+| [Generate and impute](docs/guides/05-generate-and-impute.md) | Synthetic rows and filling NULL cells |
 
----
+### API reference
 
-## Generate synthetic data and fill gaps
-
-The same in-context engine also works *backwards*: instead of predicting one
-column, it can model the whole table as a joint distribution and sample from it.
-
-```sql
-tabfm_generate(data, n [, features] [, opts] [, model])           -- sample new rows
-tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
-```
-
-```sql
--- 500 synthetic customers that look like the real ones
-SELECT * FROM tabfm_generate('customers', 500);
-
--- ...and straight back into the table, since the shape matches
-INSERT INTO customers SELECT * EXCLUDE (synthetic_id) FROM tabfm_generate('customers', 500);
-
--- fill every NULL cell, conditioned on the rest of each row
-CREATE TABLE clean AS SELECT * FROM tabfm_impute('raw');
-SELECT * FROM tabfm_impute('raw', columns := ['income', 'plan']);
-```
-
-Generation works column by column: each column is sampled conditioned on the
-ones already generated (the chain rule), so the **relationships between columns
-survive** — not just each column's marginal. It needs only classification
-weights, and works with every model in the registry, including classify-only
-ones.
-
-Imputation is the deterministic sibling: it takes the conditional best estimate
-rather than sampling, so continuous fills keep full precision. Non-NULL cells
-are never modified.
-
-### Output columns
-
-`tabfm_generate` returns every column of `data`, plus:
-
-| column | meaning |
+| Topic | Description |
 |---|---|
-| `synthetic_id` | `1..n` in generation order — joinable and reproducible |
+| [Functions](docs/api/01-functions.md) | `tabfm_classify`, `tabfm_regress`, missing targets, segments, `opts`, output columns |
+| [Models and weights](docs/api/02-models-and-weights.md) | Every model, download / load / unload / remove, the cache, secrets, `tabfm_register_model` |
+| [Generation](docs/api/03-generation.md) | `tabfm_generate`, `tabfm_impute`, options, outputs, cost |
+| [GPU acceleration](docs/api/04-gpu.md) | CUDA, ROCm and MLX plugins, the support matrix, precision, platform limits |
+| [Settings](docs/api/05-settings.md) | Every setting with its default, and the `opts` keys |
+| [Troubleshooting](docs/api/06-troubleshooting.md) | Error messages, what they mean, what to run |
+| [Evaluation](docs/api/07-evaluation.md) | Metrics, cross-validation, scoring rules |
+| [Plotting](docs/api/08-plotting.md) | The six `_by` macros for anofox-visualization |
 
-`tabfm_impute` returns **exactly** the columns of `data`, so it round-trips.
+### Background
 
-### Options
+The full index, including design notes and the history of plans and reviews, is
+[docs/README.md](docs/README.md).
 
-| key | default | applies to | meaning |
-|---|---|---|---|
-| `seed` | `42` | both | RNG seed; same seed → same rows within a build |
-| `temperature` | `1.0` | generate | diversity; higher explores more, lower hugs the data |
-| `bins` | `10` | generate | quantile buckets per continuous column, 2–10 (clamped to the model's class-head width) |
-| `column_order` | `random` | both | `random` \| `natural` \| `missingness` |
-| `rounds` | `1` | impute | MICE-style refinement sweeps, 1–16 |
+| Document | What it is |
+|---|---|
+| [docs/REAL_MODELS.md](docs/REAL_MODELS.md) | Reference: each real model, how it was ported and verified, licences, gated repositories |
+| [docs/GENERATE.md](docs/GENERATE.md) | Reference: how generation and imputation work, and what binning costs |
+| [docs/BUILDING.md](docs/BUILDING.md) | Reference: building and testing from source |
+| [docs/DYNAMIC_BACKENDS.md](docs/DYNAMIC_BACKENDS.md), [docs/KV_CACHE_DESIGN.md](docs/KV_CACHE_DESIGN.md) | Design: GPU backends as runtime plugins; the context cache |
+| [docs/ROCM_SINGLE_EVAL_POS.md](docs/ROCM_SINGLE_EVAL_POS.md), [docs/MLX_SPIKE_RESULTS.md](docs/MLX_SPIKE_RESULTS.md) | Report: why some models cannot use ROCm; the MLX spike |
+| [docs/README.md](docs/README.md#history-plans-and-reviews) | History: the plans and reviews behind each feature |
+| [CHANGELOG.md](CHANGELOG.md) | Every release |
 
-Cost is one model call per column, run sequentially — it scales with the number
-of **columns**, not with `n`. Continuous columns are sampled through quantile
-bins, so generated values never leave the observed range and resolution is
-capped at `bins` levels; high-cardinality and temporal columns cannot be
-generation targets and must be excluded with `features :=`.
+**Moved sections.** The old README's sections now live here (their links still land on this table):
 
-**[`docs/GENERATE.md`](docs/GENERATE.md)** explains the method, what the binning
-does and does not preserve, and why this is *not* a privacy mechanism.
-Runnable samples: [`examples/generate_synthetic.sql`](examples/generate_synthetic.sql),
-[`examples/impute_missing.sql`](examples/impute_missing.sql),
-[`examples/generate_fidelity.sql`](examples/generate_fidelity.sql),
-[`examples/generate_conditional.sql`](examples/generate_conditional.sql).
+| Old section | Now |
+|---|---|
+| <a id="quickstart"></a><a id="1-install--load"></a><a id="2-pick-a-model-and-download-its-weights-once"></a><a id="3-predict"></a>Quickstart | [Quick Start](#quick-start), [Getting Started](docs/guides/01-getting-started.md) |
+| <a id="we-support-classification-and-regression"></a><a id="output-columns"></a>Classification and regression | [Functions](docs/api/01-functions.md) |
+| <a id="generate-synthetic-data-and-fill-gaps"></a><a id="output-columns-1"></a><a id="options"></a>Generate synthetic data and fill gaps | [Generate and impute](docs/guides/05-generate-and-impute.md), [Generation](docs/api/03-generation.md) |
+| <a id="multiple-models-the-registry"></a><a id="managing-weights-and-devices"></a>The registry, managing weights | [Choosing a model](docs/guides/02-choosing-a-model.md), [Models and weights](docs/api/02-models-and-weights.md) |
+| <a id="a-full-worked-example"></a><a id="evaluation-cross-validation--scoring"></a><a id="plot-with-anofox-visualization"></a>Worked example, evaluation, plotting | [Evaluate and compare](docs/guides/03-evaluate-and-compare.md), [Evaluation](docs/api/07-evaluation.md), [Plotting](docs/api/08-plotting.md) |
+| <a id="settings"></a>Settings | [Settings](docs/api/05-settings.md) |
+| <a id="flavors-cpu--gpu"></a><a id="status--scope"></a>Flavors (CPU / GPU), Status & scope | [GPU acceleration](docs/guides/04-gpu-acceleration.md), [GPU](docs/api/04-gpu.md) |
+| <a id="building"></a>Building | [docs/BUILDING.md](docs/BUILDING.md) |
 
----
+## Status
 
-## Multiple models (the registry)
+The extension is calendar-versioned (`2026.10.26` is the twenty-sixth of October 2026) and is built and
+tested on Linux (amd64, arm64), macOS (arm64) and Windows (amd64) against DuckDB 1.5.6, and on DuckDB 2.0.
+Every model runs a single estimator (`n_estimators` > 1 is not available yet). What each GPU backend serves:
+[the support matrix](docs/api/04-gpu.md#backend-support-matrix).
 
-`anofox_tabfm` is one entrypoint for many **tabular foundation models** — "TabFM"
-is the *category*, not a single model. Twelve models are **built in** and usable by
-name with no config, no manifest file:
+## Development
 
-```sql
-SELECT * FROM tabfm_list_models();          -- the registry: every known model
+```bash
+git clone --recurse-submodules https://github.com/DataZooDE/anofox-tabfm.git
+cd anofox-tabfm
+GEN=ninja make release      # needs vcpkg: see docs/BUILDING.md
+make test_release           # sqllogictests + C++ unit tests (fixture models, no real weights)
 ```
 
-| `model` | family | license | `commercial` |
-|---|---|---|---|
-| `tabfm-v1` | Google TabFM | non-commercial (gated) | `false` |
-| `mitra` | AWS AutoGluon | Apache-2.0 | `true` |
-| `tabpfn-v2` | Prior Labs | Apache-2.0 + attribution (gated) | `true` |
-| `tabicl-v2` | Inria | BSD-3-Clause | `true` |
-| `orion-bix` | Lexsi Labs | MIT | `true` (classify only) |
-| `tabdpt` | Layer 6 AI | Apache-2.0 | `true` |
-| `orion-msp` | Lexsi Labs | MIT | `true` (classify only) |
-| `tabpfn-v2-5` | Prior Labs | TabPFN-2.5 (non-commercial, gated) | `false` |
-| `tabpfn-v2-5-real` | Prior Labs | TabPFN-2.5 (non-commercial, gated) | `false` |
-| `tabpfn-v2-6` | Prior Labs | TabPFN-2.6 (non-commercial, gated) | `false` |
-| `tabpfn-v3` | Prior Labs | TabPFN-3 (non-commercial, gated) | `false` |
-| `causilo` | Nums AI | Causilo License v1.0 (non-commercial, gated; hosted/API/SaaS use needs a separate license) | `false` |
-| `limix-2m` | StableAI | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution: "Built with StableAI LimiX"; gated by the licence acknowledgement; verified on CPU, CUDA and MLX not run, refused on ROCm) | `true` |
-
-Pick a model per call (a first-class argument, promoted out of `opts`), or set a
-session default; precedence is **per-call → `anofox_tabfm_default_model` → a
-single SQL-registered model**:
-
-```sql
-SELECT * FROM tabfm_classify('customers', 'churned', model := 'mitra');
-SET anofox_tabfm_default_model = 'mitra';            -- session-wide
-```
-
-Register your **own** model entirely in SQL — no JSON file — with
-`CALL tabfm_register_model(id := 'my', classification_graph := '<path|url>', …)`
-(and `tabfm_unregister_model('my')`). The only external thing is the weight-free
-ONNX graph blob; every other field is a named argument. An unknown `model :=`, or
-a model that lacks the requested task, is a clean error naming the alternatives.
-`tabfm_download` / `tabfm_load` / `tabfm_unload` / `tabfm_remove` /
-`tabfm_gpu_precompile` each take the same `model :=` argument (or fall back to the
-default) so the whole lifecycle is per-model.
-
----
-
-## A full worked example
-
-Zero-shot churn prediction on a public dataset, split into train/test, scored,
-and evaluated — **entirely in SQL**:
-
-```sql
-INSTALL httpfs; LOAD httpfs; LOAD anofox_tabfm;
-
--- 1. load + a deterministic 70/30 split
-CREATE TABLE churn AS
-SELECT *, hash(customerID) % 100 AS bucket
-FROM 'hf://datasets/scikit-learn/churn-prediction/**/*.csv';
-
-CREATE TABLE train AS SELECT * EXCLUDE (bucket) FROM (FROM churn WHERE bucket < 70) USING SAMPLE 500 ROWS (reservoir, 42);
-CREATE TABLE test  AS SELECT * EXCLUDE (bucket) FROM (FROM churn WHERE bucket >= 70) USING SAMPLE 150 ROWS (reservoir, 42);
-CREATE TABLE test_features AS SELECT * EXCLUDE (Churn) FROM test;   -- no target for the test rows
-
--- 2. predict the test rows using the train rows as context
---    (assumes `model := 'tabfm-v1'`'s weights are downloaded — see Quickstart)
-CREATE TABLE preds AS
-SELECT customerID, yhat AS pred
-FROM tabfm_classify('train', 'Churn', test := 'test_features', model := 'tabfm-v1');
-
--- 3. F1 of the positive class, in SQL
-WITH cm AS (
-  SELECT count(*) FILTER (WHERE p.pred AND t.Churn)         AS tp,
-         count(*) FILTER (WHERE p.pred AND NOT t.Churn)     AS fp,
-         count(*) FILTER (WHERE NOT p.pred AND t.Churn)     AS fn
-  FROM preds p JOIN test t USING (customerID))
-SELECT 2.0*tp / nullif(2.0*tp + fp + fn, 0) AS f1 FROM cm;
-```
-
-On this dataset `tabfm-v1` reaches **F1 0.667 / accuracy 0.827** zero-shot. The
-same recipe generalizes across models and tasks — swap `model :=` to compare: on
-iris, `mitra` / `tabpfn-v2` / `tabicl-v2` all reach **0.962** vs `tabfm-v1`'s
-0.943, at a fraction of the size and ~40–60× the speed. The runnable scripts
-(including `compare_models.sql`, a real head-to-head) and full numbers are in
-[`examples/`](examples/README.md).
-
----
-
-## Evaluation, cross-validation & scoring
-
-Model-agnostic evaluation primitives — they operate on plain `(actual,
-predicted[, proba])` columns, so they score **any** model's output, not just
-this extension's. Each has a full `anofox_tabfm_*` name and a short `tabfm_*`
-alias.
-
-**Classification metrics** (SQL aggregates):
-
-```sql
-SELECT tabfm_accuracy(actual, predicted)           AS acc,
-       tabfm_f1(actual, predicted, avg := 'macro') AS f1,       -- avg is REQUIRED
-       tabfm_roc_auc(actual, proba, avg := 'ovr')  AS auc,      -- rank-sum, tie-safe
-       tabfm_log_loss(actual, proba)               AS logloss,  -- ε-clipped
-       tabfm_ece(actual, proba)                    AS ece
-FROM scored;
--- tabfm_precision / tabfm_recall take the same required avg ('micro'|'macro'|'weighted'; roc_auc: 'ovr'|'ovo')
--- confusion matrix is a table macro → tidy (actual, predicted, count):
-SELECT * FROM tabfm_confusion_matrix('scored', 'actual', 'predicted');
-```
-
-**Regression metrics** (SQL aggregates over `(actual, predicted)`):
-
-```sql
-SELECT tabfm_rmse(actual, predicted), tabfm_mae(actual, predicted),
-       tabfm_r2(actual, predicted),    -- constant-target safe
-       tabfm_mape(actual, predicted),  -- skips zero-actual rows
-       tabfm_medae(actual, predicted)
-FROM scored;
-```
-
-**Leakage-safe k-fold cross-validation** — deterministic, seedable folds
-(`hash(row_key, seed) % k`); trains each fold on the others and predicts its
-held-out rows via the two-table form; returns per-fold plus aggregate
-(mean ± std) results:
-
-```sql
--- positional: data, target, row_key; then optional named k / seed / task / metric
-SELECT * FROM tabfm_cross_validate('customers', 'churned', 'id', k := 5, seed := 42);
--- tabfm_fold_assign('customers', 5, 'id', 42) exposes the fold ids directly (data, k, row_key, seed)
-```
-
-**Proper scoring rules** for a regression predictive distribution shaped
-`STRUCT(logits DOUBLE[], borders DOUBLE[])` (softmax'd bar distribution; the
-model-provided, possibly non-uniform bin widths are honoured). They are
-bind-gated on a distribution input and error with a named remedy if handed a
-point estimate:
-
-```sql
-SELECT tabfm_crps(actual, dist)                AS crps,   -- closed-form CRPS
-       tabfm_log_score(actual, dist)           AS nll,
-       tabfm_interval_score(actual, dist, 0.9) AS is90    -- 3rd arg = coverage, default 0.9
-FROM predictions;   -- `dist` is a STRUCT(logits[], borders[]) column
-```
-
-> Note: these score a distribution column you supply — construct the
-> `STRUCT(logits[], borders[])` yourself (as the tests do) or from a model that
-> emits one. A built-in `tabfm_regress` distribution-output producer is not yet
-> wired on this branch (tracked as a follow-up).
-
-### Plot with anofox-visualization
-
-Six table macros turn scored rows into the long tables
-[anofox-visualization](https://github.com/DataZooDE/anofox-visualization) plots
-with `anofox_plot(t)`, one group per model (the anofox integration contract,
-[`docs/ANOFOX_CONTRACT_PLAN.md`](docs/ANOFOX_CONTRACT_PLAN.md)). `data` is a
-table name or a `'(SELECT …)'` string; the other arguments are column names.
-
-| Macro | Gives | `anofox_plot` draws |
-|---|---|---|
-| `tabfm_classification_metrics_by(data, group_col, actual_col, predicted_col, proba_col)` | accuracy, ece, f1_macro, log_loss, roc_auc_ovr per group | model comparison |
-| `tabfm_regression_metrics_by(data, group_col, actual_col, predicted_col)` | mae, mape, medae, r2, rmse per group | model comparison |
-| `tabfm_confusion_matrix_by(data, group_col, actual_col, predicted_col)` | row (actual), col (predicted), value (count), zero cells included | a heatmap per model |
-| `tabfm_augment_by(data, group_col, actual_col, predicted_col [, row_id_col])` | y, fitted, residual per row | the residual diagnostics grid |
-| `tabfm_roc_curve_by(data, group_col, actual_col, proba_col [, pos_label, drop_intermediate])` | the ROC curve, one-vs-rest per class | ROC curves with their AUC |
-| `tabfm_calibration_curve_by(data, group_col, actual_col, proba_col [, pos_label, n_bins])` | the reliability curve per class, 95% Wilson band | calibration curves |
-
-Every macro ends with `row_order`, the contract's optional 1-based ordinal: the
-order the rows come out in (metrics alphabetically, curves along the curve), so a
-consumer that aggregates the rows can keep that order.
-
-```sql
-INSTALL anofox_visualization FROM community; LOAD anofox_visualization;
-
-CREATE TABLE scored AS
-SELECT 'mitra' AS model, t.churned AS actual, p.yhat, p.proba
-FROM tabfm_classify('history', 'churned', test := 'holdout', model := 'mitra') p
-JOIN holdout_truth t USING (customer_id);
-
-SELECT anofox_plot(t) FROM tabfm_classification_metrics_by('scored', 'model', 'actual', 'yhat', 'proba') t;
--- a confusion matrix is one plot per model
-SELECT model_id, anofox_plot(t) FROM tabfm_confusion_matrix_by('scored', 'model', 'actual', 'yhat') t
-GROUP BY model_id;
--- two classes: one curve per model, all models in one plot
-SELECT anofox_plot(t) FROM tabfm_roc_curve_by('scored', 'model', 'actual', 'proba') t;
-```
-
-**Curves and classes.** A two-class table gives one curve per model, for the
-greater label (scikit-learn's `classes_[1]`; the other curve is its mirror
-image), so models compare in one plot. More classes give one curve per class
-(`series` = the class); the mean area of a model's ROC curves is
-`tabfm_roc_auc(avg := 'ovr')`. `pos_label := 'churned'` draws one class only.
-The visualization keys curve lines by `series` or by `model_id`, not both, so
-plot multiclass curves one model at a time (`GROUP BY model_id`), as with the
-confusion matrix. The calibration curve bins each class's probability;
-`tabfm_ece` bins the top-label confidence, so the curve does not reproduce the
-ECE number.
-
-The values are the metric aggregates above, so the plots and your own queries
-agree. A metric that is undefined for a group (roc_auc_ovr with one class) is
-left out.
-
-See [`examples/`](examples/README.md) for runnable scripts.
-
----
-
-## Managing weights and devices
-
-```sql
-SELECT * FROM tabfm_models();     -- what's cached / loaded
-```
-```
-┌───────────┬────────────────┬──────────┬──────────────┬────────────┬─────────┬───────────────────────────┬─────────┐
-│   model   │      task      │ revision │     path     │   bytes    │ loaded  │          license          │ device  │
-├───────────┼────────────────┼──────────┼──────────────┼────────────┼─────────┼───────────────────────────┼─────────┤
-│ tabfm-v1  │ classification │ main     │ …/model.saf… │ 6557888408 │ true    │ tabfm-non-commercial-v1.0 │ rocm:0  │
-└───────────┴────────────────┴──────────┴──────────────┴────────────┴─────────┴───────────────────────────┴─────────┘
-```
-
-`device` is which backend is serving the model right now — `cpu`, `cuda:0`,
-`rocm:0`, `mlx:0` — and is empty until a predict warms a session. It is the way to check
-that a GPU is actually being used: a device that silently fell back to the CPU
-produces the same answers, only slower, so agreement alone will not tell you.
-
-```sql
-CALL tabfm_load('classification');    -- warm the model (else lazy on first predict)
-CALL tabfm_unload();                  -- free the weights, memory returns to baseline
-CALL tabfm_remove('regression');      -- delete from the cache
-SELECT * FROM tabfm_devices();         -- discovered execution devices (CPU / CUDA / ROCm / CoreML)
-```
-
-For a gated or private HF repo, add a bearer token — no custom credential store:
-
-```sql
-CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_…', SCOPE 'https://huggingface.co');
-```
-
----
-
-## Settings
-
-| Setting | Default | Purpose |
-|---|---|---|
-| `anofox_tabfm_accept_hf_license` | `false` | license gate — downloads fail without it |
-| `anofox_tabfm_cache_dir` | `~/.cache/anofox-tabfm` | weight cache root (pre-seed for air-gapped use) |
-| `anofox_tabfm_threads` | cores / 2 | ONNX Runtime intra-op threads |
-| `anofox_tabfm_cpu_prepack` | `true` | prepack weights for faster CPU matmuls (~+16% RSS) |
-| `anofox_tabfm_context_cache` | `false` | encode the labelled context once and reuse it, for models that ship a prepare/query graph pair — see [docs/KV_CACHE_DESIGN.md](docs/KV_CACHE_DESIGN.md) |
-| `anofox_tabfm_max_rows` | `10000` | guardrail per predict / group |
-| `anofox_tabfm_max_features` | `500` | guardrail |
-| `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `mlx` / `coreml` (`migraphx` alias for `rocm`). `cuda`, `rocm` and `mlx` are explicit opt-ins — `auto` never selects a device whose plugin is fetched separately |
-| `anofox_tabfm_gpu_precision` | `fp32` | GPU numeric mode: `fp32` (strict — same answers as CPU, measured exact on both GPUs) / `tf32` (CUDA tensor-core rounding) / `bf16` / `fp16` (ROCm quantize; flip rates vs fp32 are model-dependent — measured: tabfm-v1 bf16 flipped ~2% including high-confidence rows, mitra bf16 flipped 30% of query rows but only at near-ties (margins ≤ 0.023) while fp16 flipped 10% at margins ≤ 0.002 — validate on your data) |
-| `anofox_tabfm_max_sessions` | `4` | loaded (device, precision) sessions kept per model; oldest evicted beyond this |
-| `anofox_tabfm_max_memory` | `''` | refuse predicts once resident memory is at/above this (e.g. `'16GB'`); `''` disables |
-| `anofox_tabfm_default_model` | `''` | session-wide model when `model :=` is not given |
-| `anofox_tabfm_mxr_source` | `''` | directory of precompiled ROCm `.mxr` programs to stage from |
-| `anofox_tabfm_ep_path` | `''` | directory holding the GPU backend plugin (and the runtime libraries beside it) |
-| `anofox_tabfm_trace_level` | `warn` | log verbosity: `error` / `warn` / `info` / `debug` / `trace` |
-
-Options (the trailing `opts` MAP, all values VARCHAR): `task`, `n_estimators`
-(v1: `1`), `seed`, `output_mode` (`compact` / `detail`), `context_rows`,
-`softmax_temperature`, `model`. Unknown keys error.
-
-Every failure is a DuckDB exception that names the fix, e.g.:
-
-```
-Invalid Input Error: tabfm: model 'classification' is not downloaded.
-Run: CALL tabfm_download('classification');
-```
-
----
-
-## Status & scope
-
-The full SQL surface runs the **real TabFM v1 model** end to end (preprocess →
-ONNX Runtime forward → decode); per-row outputs match the PyTorch reference to
-~1e-5. The weight-free graphs are compiled into the extension, so after
-`tabfm_download` the model works with no companion files. A **model registry**
-(`model :=`, `tabfm_list_models()`, `tabfm_register_model`) makes a second model a
-data change, not new C++ (FR-5.1). v1 runs a single estimator; it ships CPU
-(`cpu`) plus accelerated flavors (`cuda`, `rocm` via a direct MIGraphX backend,
-and `coreml` for Apple Silicon — see below). Not yet wired up: the
-`n_estimators > 1` ensemble, and the grouped / composable-aggregate / windowed
-surfaces (`tabfm_predict_by` / `_agg` / `_win`) — planned on the same engine.
-
-## Flavors (CPU / GPU)
-
-**A GPU is not a build.** The published artifact is the `cpu` flavor on every
-platform, and each accelerator is a plugin it loads at runtime: `cuda`
-(NVIDIA, via its own ONNX Runtime GPU distribution), `rocm` (AMD via a
-**direct MIGraphX backend** — ONNX Runtime's MIGraphX EP can't load the >2 GB
-model, so ROCm bypasses it and drives libMIGraphX directly, with a
-compiled-program `.mxr` cache), and `mlx` (Apple Silicon, running the shipped
-ONNX graph itself). `CALL tabfm_accelerate()` fetches the right one.
-
-`TABFM_FLAVOR` still selects which ONNX Runtime gets linked for a source
-build, and remains the mechanism for `coreml` alone — which is
-[dropped](docs/DYNAMIC_BACKENDS.md#phase-4--coreml--dropped-2026-09-19), since
-MLX supersedes it on the only platform it targets.
-
-No vendor runtime is linked — CUDA/cuDNN or ROCm resolve from your system, and
-`tabfm_devices()` reports what was found. GPU dtype is set by
-`anofox_tabfm_gpu_precision` (default `fp32` — strict CPU parity; faster modes are opt-in).
-
-**ROCm first-run cost — plan for it.** MIGraphX compiles a program per
-(GPU arch, precision, shape bucket), and on the full-size model that compile is
-**~25 minutes** (measured, gfx1201, fp32 or bf16) — while every *later* predict
-in that bucket is sub-second. Two tools manage this:
-
-```sql
-CALL tabfm_gpu_precompile('classification');   -- warm the bucket now, on purpose
-SET anofox_tabfm_mxr_source = '/shared/mxr';   -- or stage programs compiled elsewhere
-```
-
-Precompile once per shape bucket you will use (the compiled `.mxr` persists in
-the weight cache across sessions); `mxr_source` lets a fleet share one
-machine's compiles. CUDA has no analogous cost (~30 s cold start, no long
-compile).
-Released cpu builds are served from the anofox extension repository
-(`SET custom_extension_repository = 'https://get.anofox.com'`, which requires
-`duckdb -unsigned`) as well as from the DuckDB community repository (signed, no
-flag, but published by a separate submission that can trail a release). See
-[Install & load](#1-install--load) for both paths and the `httpfs` ordering.
-
-**Backend support matrix** (what is verified, not what might work):
-
-| backend | platforms | models | verified on |
-|---|---|---|---|
-| CPU | Linux x64/arm64, macOS **arm64**, Windows x64 | all 7 built-ins | CI suites + install-smoke with inference on every platform |
-| CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | **all 7 built-ins** | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max |
-| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | tabfm-v1, mitra, **tabdpt**, **tabpfn-v2, tabpfn-v2-5, tabpfn-v2-6, tabpfn-v3** (both tasks) — `SELECT * FROM tabfm_backends()` says which, and why not for the rest | RX 9070 XT: parity, concurrency, user workflow; tabdpt 5.6x CPU with identical predictions; TabPFN v2/v2.5/v2.6 3.5-7x CPU wall-clock and ~40x less CPU time, every row agreeing with the CPU to float noise; TabPFN-3 ~3-4x CPU wall-clock at small sizes, 0 label differences in 100 rows. **First call per (rows, features) bucket compiles for 2.5-9 min (about 16 min for `tabpfn-v3`)** — `CALL tabfm_gpu_precompile(...)` does it off the query path |
-| CoreML | — | — | **dropped** — MLX supersedes it on Apple Silicon ([why](docs/DYNAMIC_BACKENDS.md#phase-4--coreml--dropped-2026-09-19)) |
-| MLX (plugin) | macOS arm64 (Apple Silicon) | every model CPU serves (6 verified through SQL; tabfm-v1 via the graph harness) | Apple M3: 10 model×task pairs cpu-compared (0 disagreements), 4000-row stress, device/precision alternation |
-
-macOS is **arm64 only**: ONNX Runtime published its last macOS x86_64 /
-universal2 archive at v1.23.2, so there is nothing to link an Intel-Mac build
-against at the version this project needs. `osx_amd64` is therefore not built.
-
-The CUDA and ROCm plugins are Linux-only; Windows artifacts are CPU-only by
-design. On Apple Silicon the MLX plugin is the accelerator — unlike the other
-two it runs the model's own ONNX graph directly (no ONNX Runtime), which is why
-its model coverage matches CPU's. The single_eval_pos models (TabPFN/TabICL/Orion) cannot use ROCm's
-bucketed compilation (y's length is the train/test split) — CUDA serves them.
-
-**Using a GPU.** A GPU backend is a plugin the extension `dlopen`s at runtime,
-not a separate build of the extension: fetch it, then select the device.
-
-```sql
-CALL tabfm_accelerate();   -- finds the card, fetches its plugin, verifies it loads
--- that is it: anofox_tabfm_device defaults to 'auto', which now routes each
--- model to the best device IT can be served on, in this session.
-```
-
-It reports what it did as `(step, status, detail)` rows, including what is
-still ahead of you (MIGraphX's first-shape compile, MLX's `brew install mlx
-mlx-c`). Re-running it re-verifies without re-downloading.
-
-To see the routing — and the reason for every model that stays on the CPU:
-
-```sql
-SELECT * FROM tabfm_backends() WHERE NOT supported;
--- and confirm what actually served a query, rather than trusting the answers:
-SELECT model, device FROM tabfm_models() WHERE loaded;
-```
-
-The manual equivalent, if you want to place things yourself:
-
-```sql
-CALL tabfm_download_runtime('cuda');    -- plugin + ORT GPU runtime, into the cache dir
-SET anofox_tabfm_device  = 'cuda';      -- or 'rocm', or 'mlx' on Apple Silicon
--- anofox_tabfm_ep_path is only needed to override where the plugin lives
-```
-
-Naming a device explicitly is a hard request: if it cannot be served it
-errors, rather than quietly running on the CPU.
-
-`tabfm_download_runtime` fetches the plugin itself, and for CUDA the ONNX
-Runtime GPU libraries it loads alongside it. The plugins are published as
-release assets and are verified against the extension's plugin ABI version on
-load, so a mismatched pair refuses rather than misbehaves.
-
-You can still build one from source (`src/tabfm_cuda_plugin.cpp`,
-`src/tabfm_migraphx_plugin.cpp`, `src/tabfm_mlx_plugin.cpp` — the last needs
-`brew install mlx mlx-c` and builds via the `anofox_tabfm_mlx_plugin` CMake
-target; see [`docs/rocm-build.md`](docs/rocm-build.md) for the ROCm toolchain
-and [`docs/DYNAMIC_BACKENDS.md`](docs/DYNAMIC_BACKENDS.md) for how the pieces
-fit together).
-
-**Any build can host the CUDA plugin now.** Earlier, a host that loaded a
-*shared* `libonnxruntime.so` (the local `make debug` build) shadowed the
-plugin's own ONNX Runtime — same SONAME, first one loaded wins — so CUDA
-required the statically-linked release build. Fixed at both ends
-(`docs/GPU_HARDENING_PLAN.md` S2): the plugin's core ships under a private
-SONAME (`libanofoxort_gpu.so`, applied by `tabfm_download_runtime` and by the
-plugin build itself), and the plugin loader binds with `RTLD_DEEPBIND`.
-Verified on hardware including the hostile case — a foreign upstream-SONAME
-ORT preloaded into the global scope — which the plugin no longer notices.
-
-`anofox_tabfm_gpu_precision` now means something on both GPUs, with fp32 the
-default everywhere: strict fp32 (on CUDA that disables the TF32 tensor-core
-rounding ORT would otherwise apply to fp32 matmuls) so a device switch does
-not change answers. `tf32` re-enables that rounding (CUDA only); `bf16`/`fp16`
-quantize the MIGraphX program (ROCm only) for ~2x speed at the cost of a few
-near-tie label flips. A mode a backend cannot honour is an error, never a
-silent fp32 run.
-
-## Feedback
-
-If `anofox_tabfm` misbehaves — a model that will not load, a prediction that looks
-wrong, a device it will not use — please
-[open an issue](https://github.com/DataZooDE/anofox-tabfm/issues). Hardware, drivers and
-hub availability differ in ways we cannot reproduce here, so a report with your setup is
-the fastest path to a fix. Errors from the model functions end with that link.
-
-If it saved you time, a star on the repo helps other people find it.
-
-The first time you load the extension in an interactive terminal each day, a small
-banner says the same thing. It never prints when output is piped, in notebooks, or in
-CI. Silence it with `SET datazoo_banner = false;` or `DATAZOO_NO_BANNER=1`.
+Prerequisites, the GPU plugins and source-build flavors: [docs/BUILDING.md](docs/BUILDING.md).
 
 ## License
 
-- **This extension's code:** MIT.
-- **Model weights:** each model's weights are **your own Hugging Face download**,
-  under that model's license — `mitra` Apache-2.0, `tabpfn-v2` Prior Labs License
-  (Apache-2.0 + attribution), `tabicl-v2` BSD-3-Clause, `tabfm-v1`
-  `tabfm-non-commercial-v1.0` (non-commercial, gated behind
-  `anofox_tabfm_accept_hf_license`). The extension ships only **weight-free**
-  graphs and never redistributes weights; `tabfm_list_models()` shows each
-  model's license and whether it's commercially usable. The repository and test
-  fixtures contain **zero model weight bytes** (fixtures are random-init).
+- **This extension's code:** MIT, see [LICENSE](LICENSE).
+- **Model weights:** the extension ships only **weight-free** graphs and never redistributes weights. Each
+  model's weights are **your own Hugging Face download**, under that model's licence, listed in
+  [Models](#models) and in `tabfm_list_models()` (`license`, `commercial`). The repository and test fixtures
+  contain **zero model weight bytes** (fixtures are random-init).
+- **Non-commercial models:** `tabfm-v1`, `tabpfn-v2-5`, `tabpfn-v2-5-real`, `tabpfn-v2-6`, `tabpfn-v3` and
+  `causilo`. `causilo`'s licence also requires a separate licence for hosted, API or SaaS use.
+- **Attribution:** `tabpfn-v2` is under the Prior Labs License v1.1 (Apache-2.0 plus attribution).
+  `limix-2m` is under the Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 plus Section 10): if you
+  make available a product or service that incorporates it, link the
+  [licence](https://huggingface.co/stable-ai/LimiX-2M/blob/main/LICENSE.txt) and display
+  **"Built with StableAI LimiX"**; a model derived from its weights must start its name with "LimiX". Details:
+  [docs/REAL_MODELS.md](docs/REAL_MODELS.md#licence).
+
+Licences are as published by each project at the time of writing; this is not legal advice.
 
 ## Telemetry
 
-Sends **anonymous** usage telemetry (extension load + per-function call counts —
-no data, no queries, no identifiers beyond a hashed machine id) to PostHog EU,
-matching the other anofox extensions. Opt out any time:
+Sends **anonymous** usage telemetry (extension load and per-function call counts: no data, no queries, no
+identifiers beyond a hashed machine id) to PostHog EU, matching the other anofox extensions. CI environments
+are auto-detected and telemetry is disabled there. Opt out any time with `export DATAZOO_DISABLE_TELEMETRY=1`
+or `SET anofox_telemetry_enabled = false;`. What is collected: [TELEMETRY.md](TELEMETRY.md).
 
-```bash
-export DATAZOO_DISABLE_TELEMETRY=1        # environment
-```
-```sql
-SET anofox_telemetry_enabled = false;      -- SQL
-```
-CI environments are auto-detected and telemetry is disabled there.
+## Feedback
 
-## Building
+If `anofox_tabfm` misbehaves — a model that will not load, a prediction that looks wrong, a device it will
+not use — please [open an issue](https://github.com/DataZooDE/anofox-tabfm/issues). Hardware, drivers and
+hub availability differ in ways we cannot reproduce here, so a report with your setup is the fastest path to
+a fix. Errors from the model functions end with that link.
 
-```bash
-# vcpkg is required for EVERY flavor: vcpkg.json depends on openssl unconditionally.
-git clone https://github.com/microsoft/vcpkg && ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
-export VCPKG_TOOLCHAIN_PATH=$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake
+If it saved you time, a star on the repo helps other people find it.
 
-GEN=ninja make release                     # cpu flavor
-GEN=ninja TABFM_FLAVOR=cuda make release   # cuda flavor (linux_amd64 / win_amd64)
-make test_release                          # sqllogictests + C++ unit tests
-```
-
-Without `VCPKG_TOOLCHAIN_PATH` the build stops during configure with a cascade in which only the
-first line is the real cause:
-
-```
-CMake Error: Could not find toolchain file:
-  .../vcpkg_installed//share/vcpkg/scripts/buildsystems/vcpkg.cmake
-CMake Error: CMake was unable to find a build program corresponding to "Ninja".
-CMake Error: CMAKE_C_COMPILER not set, after EnableLanguage
-CMake Error: CMAKE_CXX_COMPILER not set, after EnableLanguage
-```
-
-CMake aborts before probing for the generator or the compilers, so the last three are reported
-missing even when Ninja and the toolchain are installed and on `PATH`.
-
-Requires CMake ≥ 3.10 (≥ 3.19 to also build the bundled C++ unit tests) and a
-C++17 toolchain, and vcpkg. ONNX Runtime is fetched as a
-prebuilt archive by default; enable the `ort-vcpkg` manifest feature to build it
-from source. See [`CLAUDE.md`](CLAUDE.md) for the module map and
-[`examples/`](examples/README.md) for end-to-end examples.
+The first time you load the extension in an interactive terminal each day, a small banner says the same
+thing. It never prints when output is piped, in notebooks, or in CI. Silence it with
+`SET datazoo_banner = false;` or `DATAZOO_NO_BANNER=1`.
