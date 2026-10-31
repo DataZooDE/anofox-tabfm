@@ -97,6 +97,29 @@ const std::unordered_map<std::string, Handler> &Handlers() {
 		     Ok(mlx_round(r.out(), in[0]->get(), 0, c.s), "round");
 		     return Wrap(std::move(r));
 	     }},
+	    {"ConstantOfShape",
+	     [](const Node &n, const Args &in, const Ctx &c) {
+		     // `value` is a one-element tensor whose dtype is the output's; absent, the fill is float32 0.
+		     auto shape = ToShape(ToInts(*in[0], c.s));
+		     mlx_dtype dt = MLX_FLOAT32;
+		     Arr fill(mlx_array_new_float32(0.0f));
+		     if (const auto *a = n.Attr("value")) {
+			     const auto &t = a->t;
+			     const void *bytes = !t.raw.empty()      ? static_cast<const void *>(t.raw.data())
+			                         : !t.int64s.empty() ? static_cast<const void *>(t.int64s.data())
+			                         : !t.int32s.empty() ? static_cast<const void *>(t.int32s.data())
+			                         : !t.floats.empty() ? static_cast<const void *>(t.floats.data())
+			                                             : nullptr;
+			     if (!bytes) {
+				     Fail("ConstantOfShape '" + n.name + "' has a value attribute with no data");
+			     }
+			     dt = OnnxDtype(t.data_type);
+			     fill = Arr(mlx_array_new_data(bytes, nullptr, 0, dt)); // rank 0: the one element
+		     }
+		     Arr r;
+		     Ok(mlx_full(r.out(), shape.data(), shape.size(), fill.get(), dt, c.s), "constant_of_shape");
+		     return Wrap(std::move(r));
+	     }},
 	    {"Where",
 	     [](const Node &, const Args &in, const Ctx &c) {
 		     Arr r;
@@ -468,6 +491,10 @@ const std::unordered_map<std::string, Handler> &Handlers() {
 	    {"ReduceMean",
 	     [](const Node &n, const Args &in, const Ctx &c) {
 		     return Wrap(Reduce(n, in, c, mlx_mean_axes, mlx_mean));
+	     }},
+	    {"ReduceProd",
+	     [](const Node &n, const Args &in, const Ctx &c) {
+		     return Wrap(Reduce(n, in, c, mlx_prod_axes, mlx_prod));
 	     }},
 	    {"ReduceMin",
 	     [](const Node &n, const Args &in, const Ctx &c) {

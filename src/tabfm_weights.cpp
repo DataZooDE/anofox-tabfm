@@ -11,6 +11,7 @@
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_ckpt.hpp"
 #include "tabfm_model_spec.hpp"
+#include "tabfm_mlx_ops.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -1704,6 +1705,7 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				// MLX executes the graph op by op: the same question 'auto' asks, about the graph that
 				// would be served -- the model's own, else the bundled one once it matches the weights.
 				if (row.backend == "mlx") {
+					in.known_wrong = MlxKnownWrong(spec.id, task_name);
 					if (!model_graph.empty()) {
 						in.unsupported_ops = MlxUnsupportedOps(nullptr, 0, model_graph);
 					} else if (in.bundled_header_matches) {
