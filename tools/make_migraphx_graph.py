@@ -23,7 +23,8 @@ Usage: make_migraphx_graph.py <task> [--weights PATH] [--graph PATH]
        [--tensor-map PATH] [--rows N --features M] [--dynamic] [--out PATH]
 
 Defaults target tabfm-v1; pass the three paths for any other model (the mitra
-variants in resources/ are produced this way).
+variants in resources/ are produced this way). A BF16 checkpoint (TabFM 1.1.0)
+gets its initializers retyped + a Cast(to=FLOAT) each: see retype_external().
 """
 import argparse, json, os, struct, sys
 
@@ -117,7 +118,68 @@ def externalize(m, weights, tmap, inline_ok=()):
         # graph silently predicts garbage -- the one failure mode this tool
         # must never allow (review finding, 2026-08-22).
         raise SystemExit(f"REFUSING: {len(missing)} initializers not in the tensor map: {missing[:5]}")
+    n_cast = retype_external(m, {k: v for k, v in header.items() if k != "__metadata__"}, st_for)
+    if n_cast:
+        print(f"  retyped {n_cast} initializers to their stored dtype + Cast(to=FLOAT) (BF16/F16 checkpoint)")
     return inlined
+
+
+
+#: safetensors dtype -> (ONNX TensorProto type, bytes per element)
+ST_DTYPES = {"F32": (TensorProto.FLOAT, 4), "BF16": (TensorProto.BFLOAT16, 2), "F16": (TensorProto.FLOAT16, 2),
+             "I64": (TensorProto.INT64, 8), "I32": (TensorProto.INT32, 4)}
+
+
+def retype_external(m, header, st_for):
+    """Make every externalized initializer's TYPE match the bytes it now points at.
+
+    The exported graph declares its initializers FLOAT, and until TabFM 1.1.0 every checkpoint fed
+    to these tools was F32, so pointing an initializer at safetensors bytes never had to look at
+    the dtype. TabFM 1.1.0 ships BF16: a FLOAT initializer over half as many bytes is not a
+    smaller tensor, it is garbage (or a length error, depending on the reader). So:
+
+      * F32 bytes, FLOAT initializer   -> unchanged;
+      * BF16/F16 bytes, FLOAT initializer -> the initializer is retyped to the stored dtype and
+        renamed `<name>__stored`, and a `Cast(to=FLOAT)` restores `<name>` for every consumer.
+        Numerically identical to the CPU injection path, which upcasts BF16 -> F32 exactly;
+      * anything else, or a byte length that does not equal numel * itemsize -> refuse.
+
+    Returns the number of initializers that got a Cast. Shared by make_external_graph.py.
+    """
+    casts = []
+    for init in m.graph.initializer:
+        if init.data_location != TensorProto.EXTERNAL:
+            continue
+        st = st_for(init.name)
+        if st not in header:
+            continue
+        h = header[st]
+        if h["dtype"] not in ST_DTYPES:
+            raise SystemExit(f"REFUSING: '{init.name}' is stored as {h['dtype']}, which this tool cannot type")
+        st_type, itemsize = ST_DTYPES[h["dtype"]]
+        numel = 1
+        for dim in h["shape"]:
+            numel *= dim
+        b, e = h["data_offsets"]
+        if e - b != numel * itemsize:
+            raise SystemExit(f"REFUSING: '{init.name}' spans {e - b} bytes but {h['dtype']}{h['shape']} needs "
+                             f"{numel * itemsize}")
+        if st_type == init.data_type:
+            continue
+        if init.data_type == TensorProto.FLOAT and st_type in (TensorProto.BFLOAT16, TensorProto.FLOAT16):
+            orig = init.name
+            init.name = orig + "__stored"
+            init.data_type = st_type
+            casts.append(helper.make_node("Cast", [init.name], [orig], to=TensorProto.FLOAT,
+                                          name=orig + "__upcast"))
+            continue
+        raise SystemExit(f"REFUSING: '{init.name}' is declared {TensorProto.DataType.Name(init.data_type)} in the "
+                         f"graph but stored as {h['dtype']}; only a FLOAT <- BF16/F16 upcast is supported")
+    if casts:
+        nodes = list(m.graph.node)
+        del m.graph.node[:]
+        m.graph.node.extend(casts + nodes)
+    return len(casts)
 
 
 def rewrite_shapes(g):

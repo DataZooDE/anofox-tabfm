@@ -34,9 +34,15 @@ def main(argv=None) -> int:
   ap.add_argument("--config-json", default=None,
                   help="local config.json for --config real (skips the "
                        "anonymous HF fetch)")
+  ap.add_argument("--hf-repo", default=configs.DEFAULT_REPO,
+                  help="HF repo whose config.json gives the dims for --config "
+                       "real (google/tabfm-1.1.0-pytorch for tabfm-v1-1)")
+  ap.add_argument("--hf-revision", default=configs.DEFAULT_REVISION,
+                  help="revision of --hf-repo (pin a commit for a bundled graph)")
   args = ap.parse_args(argv)
 
-  cfg = configs.get(args.config, args.task, args.config_json)
+  cfg = configs.get(args.config, args.task, args.config_json,
+                    args.hf_repo, args.hf_revision)
   out = pathlib.Path(args.out)
   out.mkdir(parents=True, exist_ok=True)
   graph_path = out / f"graph_{args.task}.onnx"

@@ -122,6 +122,17 @@ set(_tabfm_inputs
     "graph_ext_limix2m_regression.onnx"
     "tensor_map_limix2m_classification.json"
     "tensor_map_limix2m_regression.json"
+    # Google TabFM 1.1.0 (tabfm-v1-1; non-commercial like v1). New graphs only: the dims are baked in
+    # (embed_dim 128), but the tensor maps are byte-identical to v1's, so it reuses those.
+    "graph_tabfm_v1_1_classification.onnx"
+    "graph_tabfm_v1_1_regression.onnx"
+    # Its GPU variants (+ the CPU low-memory path): the checkpoint is BF16, so each initializer is
+    # retyped to BF16 and Cast to FLOAT in-graph; valid only for the pinned header (see
+    # ExpectedWeightsHeaderShaFor). The MIGraphX graph serves ROCm with the same shape buckets as v1.
+    "graph_ext_tabfm_v1_1_classification.onnx"
+    "graph_ext_tabfm_v1_1_regression.onnx"
+    "graph_migraphx_tabfm_v1_1_classification.onnx"
+    "graph_migraphx_tabfm_v1_1_regression.onnx"
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
     "graph_tabpfn25_classification.onnx"
     "graph_tabpfn25_regression.onnx"

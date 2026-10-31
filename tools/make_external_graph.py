@@ -68,8 +68,14 @@ def main():
             en = init.external_data.add()
             en.key, en.value = k, v
         n += 1
+    # BF16 checkpoints (TabFM 1.1.0): retype + Cast, exactly as the migraphx tool does.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from make_migraphx_graph import retype_external
+    st_for = lambda name: onnx2st.get(name) or (name[2:] if name.startswith("m.") else name)
+    n_cast = retype_external(m, {k: v for k, v in header.items() if k != "__metadata__"}, st_for)
     onnx.save(m, out)
-    print(f"task={task}  initializers={len(m.graph.initializer)}  externalized={n}  inline_left={len(missing)}")
+    print(f"task={task}  initializers={len(m.graph.initializer)}  externalized={n}  inline_left={len(missing)}"
+          f"  bf16_upcasts={n_cast}")
     print(f"header_sha256={header_sha}")
     print(f"wrote {out} ({os.path.getsize(out)} bytes, weight-free)")
 
