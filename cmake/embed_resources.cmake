@@ -52,6 +52,22 @@ set(_tabfm_inputs
     # out of the tensor map, which make_migraphx_graph.py refuses outright.
     "graph_migraphx_tabdpt_classification.onnx"
     "graph_migraphx_tabdpt_regression.onnx"
+    # TabDPT v1.3 (`tabdpt-v1-3`): the same masked conversion, re-exported for v1.3's per-task
+    # y-encoders (tools/export_tabdpt --config real13 --contract mask).
+    "graph_migraphx_tabdpt13_classification.onnx"
+    "graph_migraphx_tabdpt13_regression.onnx"
+    # Mitra-v2 (`mitra-v2`): the 1000-bin regressor only -- the v2 classifier reuses mitra's graphs
+    # (byte-identical safetensors header). bin_edges/bin_centres stay inline (code-generated).
+    "graph_mitra2_regression.onnx"
+    "graph_ext_mitra2_regression.onnx"
+    "graph_migraphx_mitra2_regression.onnx"
+    "tensor_map_mitra2_regression.json"
+    "graph_tabdpt13_classification.onnx"
+    "graph_tabdpt13_regression.onnx"
+    "graph_ext_tabdpt13_classification.onnx"
+    "graph_ext_tabdpt13_regression.onnx"
+    "tensor_map_tabdpt13_classification.json"
+    "tensor_map_tabdpt13_regression.json"
     # TabPFN v2 / v2.5 / v2.6 MIGraphX graphs, both tasks (tools/export_tabpfn
     # --contract mask; docs/ROCM_TABPFN_PLAN.md). Unlike tabdpt's they take a
     # FIFTH input, `n_rows`, the real row count before bucket padding: TabPFN's
@@ -122,6 +138,35 @@ set(_tabfm_inputs
     "graph_ext_limix2m_regression.onnx"
     "tensor_map_limix2m_classification.json"
     "tensor_map_limix2m_regression.json"
+    # Google TabFM 1.1.0 (tabfm-v1-1; non-commercial like v1). New graphs only: the dims are baked in
+    # (embed_dim 128), but the tensor maps are byte-identical to v1's, so it reuses those.
+    "graph_tabfm_v1_1_classification.onnx"
+    "graph_tabfm_v1_1_regression.onnx"
+    # Its GPU variants (+ the CPU low-memory path): the checkpoint is BF16, so each initializer is
+    # retyped to BF16 and Cast to FLOAT in-graph; valid only for the pinned header (see
+    # ExpectedWeightsHeaderShaFor). The MIGraphX graph serves ROCm with the same shape buckets as v1.
+    "graph_ext_tabfm_v1_1_classification.onnx"
+    "graph_ext_tabfm_v1_1_regression.onnx"
+    "graph_migraphx_tabfm_v1_1_classification.onnx"
+    "graph_migraphx_tabfm_v1_1_regression.onnx"
+    # Nori-30M (Synthefy, Apache-2.0) -- regression ONLY, (x, y)-only on the CPU like its LimiX ancestor: one
+    # plain graph and one tensor map. The engine reads nori.pt natively ({model_config, ema_state_dict}). The
+    # migraphx graph is the MASKED contract (tools/export_nori --contract mask) and reads the safetensors that
+    # convert_nori_weights writes beside the checkpoint (header sha in ExpectedWeightsHeaderShaFor).
+    "graph_nori30m_regression.onnx"
+    "graph_migraphx_nori30m_regression.onnx"
+    "tensor_map_nori30m_regression.json"
+    # EXAONE Tabular v1 (LG AI Research; non-commercial EXAONE NC 1.2 weights) -- (x, y)-only on the CPU, one
+    # plain graph and one tensor map per task. The released files are safetensors keyed by the module
+    # namespace, so there is no converter. The migraphx graphs are the MASKED contract (x, y_full, train_size,
+    # d, n_rows; tools/export_exaone --contract mask), so ROCm can bucket them; they bake offsets into LG's
+    # released files, checked by the header sha in ExpectedWeightsHeaderShaFor.
+    "graph_exaone_tabular_classification.onnx"
+    "graph_exaone_tabular_regression.onnx"
+    "graph_migraphx_exaone_tabular_classification.onnx"
+    "graph_migraphx_exaone_tabular_regression.onnx"
+    "tensor_map_exaone_tabular_classification.json"
+    "tensor_map_exaone_tabular_regression.json"
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
     "graph_tabpfn25_classification.onnx"
     "graph_tabpfn25_regression.onnx"
@@ -149,7 +194,26 @@ set(_tabfm_inputs
     "graph_tabpfn3_classification.onnx"
     "graph_tabpfn3_regression.onnx"
     "tensor_map_tabpfn3_classification.json"
-    "tensor_map_tabpfn3_regression.json")
+    "tensor_map_tabpfn3_regression.json"
+    # TabPFN-3.5 and 3.5-Fast (Prior Labs, non-commercial; tools/export_tabpfn35). Same depth-only
+    # difference between the two (24 vs 8 ICL layers), so separate stems. Every kind is bundled: the
+    # plain CPU graph, the external-data graph (CUDA + CPU low-memory) and the masked MIGraphX graph.
+    "graph_tabpfn35_classification.onnx"
+    "graph_tabpfn35_regression.onnx"
+    "tensor_map_tabpfn35_classification.json"
+    "tensor_map_tabpfn35_regression.json"
+    "graph_ext_tabpfn35_classification.onnx"
+    "graph_ext_tabpfn35_regression.onnx"
+    "graph_migraphx_tabpfn35_classification.onnx"
+    "graph_migraphx_tabpfn35_regression.onnx"
+    "graph_tabpfn35fast_classification.onnx"
+    "graph_tabpfn35fast_regression.onnx"
+    "tensor_map_tabpfn35fast_classification.json"
+    "tensor_map_tabpfn35fast_regression.json"
+    "graph_ext_tabpfn35fast_classification.onnx"
+    "graph_ext_tabpfn35fast_regression.onnx"
+    "graph_migraphx_tabpfn35fast_classification.onnx"
+    "graph_migraphx_tabpfn35fast_regression.onnx")
 
 # Re-run configure when a resource changes so the generated source stays fresh.
 foreach(_f ${_tabfm_inputs})

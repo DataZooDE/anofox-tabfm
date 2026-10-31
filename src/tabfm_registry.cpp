@@ -130,6 +130,79 @@ static const char *const BUILTIN_TABPFN3 = R"json({
   "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
 })json";
 
+// TabPFN-3.5 and TabPFN-3.5-Fast (Prior Labs, released 2026-09-09; HF
+// Prior-Labs/tabpfn_3_5). A new architecture, not v3 retrained: every cell gets
+// a midrank-ECDF channel against the train rows of its column, a Fourier cell
+// embedding, q/k RMSNorm in every attention, and multi-task heads. Upstream's
+// ECDF uses torch.searchsorted (no ONNX operator), so the graphs come from a
+// re-driven forward with a fixed-step binary search in its place
+// (tools/export_tabpfn35, tabpfn 9.2.0); parity with upstream's own forward on
+// the released weights 1.7e-05 clf / 3.8e-06 reg (3.5), 1.5e-04 / 6.2e-06 (Fast).
+//
+// Licensing: tabpfn-3-5-license-v1.0 is word for word tabpfn-3-license-v1.0
+// (only the model name and revision date differ) -- testing / evaluation /
+// research only, no commercial or production use, no hosted/API/SaaS service.
+// Hence commercial:false + accept_hf_license, exactly like tabpfn-v3.
+//
+// Weights: ONE published safetensors per variant holds BOTH heads (a 160-class
+// many-class decoder and a 5000-bucket regression head) under the model's own
+// state_dict names, so -- like tabdpt -- both tasks read the same downloaded file
+// and there is no conversion step. The two variants live in the SAME repo, and
+// CacheSlug keys on the repo, so each gets its own directory (v3.5/, v3.5-fast/):
+// identical paths would download over each other and serve the wrong weights.
+//
+// The two variants differ only in depth (24 vs 8 ICL layers), which is still a
+// different graph, so they get separate stems (tabpfn35 / tabpfn35fast).
+// Not shipped: the experimental `_multiclass` checkpoint (a third, different
+// architecture variant) and the API-only "Thinking" model.
+static const char *const BUILTIN_TABPFN35 = R"json({
+  "schema_version": 2, "id": "tabpfn-v3-5", "display_name": "TabPFN 3.5 (Prior Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "tabpfn-3-5-license-v1.0", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "TabPFN-3.5 by Prior Labs GmbH. Weights are testing/evaluation/research only — NO commercial or production use, and no hosted/API/SaaS service. Contact sales@priorlabs.ai for a commercial license."},
+  "preprocessing_profile": "tabpfn_v3_5_raw",
+  "weights": {
+    "classification": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+      "files": [{"path": "v3.5/model.safetensors", "bytes": 876027932,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-20260909.safetensors"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+      "files": [{"path": "v3.5/model.safetensors", "bytes": 876027932,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-20260909.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabpfn35_classification", "regression": "graph_tabpfn35_regression",
+    "tensor_map": {"classification": "tensor_map_tabpfn35_classification.json",
+                   "regression": "tensor_map_tabpfn35_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+})json";
+
+static const char *const BUILTIN_TABPFN35_FAST = R"json({
+  "schema_version": 2, "id": "tabpfn-v3-5-fast", "display_name": "TabPFN 3.5 Fast (Prior Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "tabpfn-3-5-license-v1.0", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "TabPFN-3.5-Fast by Prior Labs GmbH. Weights are testing/evaluation/research only — NO commercial or production use, and no hosted/API/SaaS service. Contact sales@priorlabs.ai for a commercial license."},
+  "preprocessing_profile": "tabpfn_v3_5_raw",
+  "weights": {
+    "classification": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+      "files": [{"path": "v3.5-fast/model.safetensors", "bytes": 334181708,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-fast-20260909.safetensors"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+      "files": [{"path": "v3.5-fast/model.safetensors", "bytes": 334181708,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-fast-20260909.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabpfn35fast_classification", "regression": "graph_tabpfn35fast_regression",
+    "tensor_map": {"classification": "tensor_map_tabpfn35fast_classification.json",
+                   "regression": "tensor_map_tabpfn35fast_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+})json";
+
 // RealTabPFN-2.5: the SAME 2.5 architecture, continued pre-training on real
 // tabular data (TabArena v0.1.4 ranks it above TabICLv2). It ships as its own
 // catalog entry rather than a flag on `tabpfn-v2-5` because the two score
@@ -446,6 +519,236 @@ static const char *const BUILTIN_LIMIX2M = R"json({
   "size_regime": {"max_rows": 5000, "max_features": 100, "max_classes": 10}
 })json";
 
+// Google TabFM 1.1.0 (HF google/tabfm-1.1.0-pytorch, 2026-08-01). The SAME architecture code as
+// tabfm-v1 (vendor/tabfm model.py at the pinned submodule needs no change, and upstream's public
+// repo has no 1.1-specific code at all), but a different checkpoint, so it is its own catalog entry
+// rather than a flag on tabfm-v1 -- the two score differently and v1 must keep working unchanged:
+//   * embed_dim 256 -> 128 (icl_dim 2048 -> 1024): 410 M params instead of 1.64 B, 0.82 GB per task
+//     instead of 6.56 GB, because the dims are 2x smaller AND the tensors ship as BF16 (v1: F32).
+//     The engine's safetensors reader upcasts BF16 -> F32 exactly (a 16-bit shift), so the CPU
+//     graph computes in f32 on the bf16 values, which is what upstream's torch load does too.
+//   * decoder_hidden is explicit (2048) where v1 has null; 2048 is also v1's fallback rule
+//     (icl_dim * 2), so the graph needs nothing new, but tools/export_onnx now carries the value
+//     through instead of relying on the coincidence.
+// Same licence text as v1 (the LICENSE files are byte-identical): TabFM Non-Commercial License
+// v1.0, so commercial:false + accept_hf_license. The HF repo itself is NOT access-gated (no token).
+// Tensor maps are REUSED from tabfm-v1: same 913 / 918 state_dict keys, and the exporter writes
+// byte-identical maps. The graphs are new (dims are baked into Reshape constants). Pinned to the
+// revision the graphs and the GPU-graph header sha were made against.
+static const char *const BUILTIN_TABFM_V1_1 = R"json({
+  "schema_version": 2, "id": "tabfm-v1-1", "display_name": "Google TabFM 1.1",
+  "family": "icl-transformer",
+  "license": {"id": "tabfm-non-commercial-v1.0", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "TabFM 1.1.0 by Google Research. Code Apache-2.0; weights TabFM Non-Commercial License v1.0 -- non-commercial testing, evaluation and research only, no production use, no redistribution. Checkpoints: HF google/tabfm-1.1.0-pytorch."},
+  "preprocessing_profile": "tabfm-v1",
+  "weights": {
+    "classification": {"repo": "google/tabfm-1.1.0-pytorch", "revision": "d7cfd3b8d184d7c8fed4210aeba9e1c967d45f2a",
+      "files": [{"path": "classification/model.safetensors", "bytes": 820550772,
+                 "url": "https://huggingface.co/google/tabfm-1.1.0-pytorch/resolve/d7cfd3b8d184d7c8fed4210aeba9e1c967d45f2a/classification/model.safetensors"}]},
+    "regression": {"repo": "google/tabfm-1.1.0-pytorch", "revision": "d7cfd3b8d184d7c8fed4210aeba9e1c967d45f2a",
+      "files": [{"path": "regression/model.safetensors", "bytes": 824695714,
+                 "url": "https://huggingface.co/google/tabfm-1.1.0-pytorch/resolve/d7cfd3b8d184d7c8fed4210aeba9e1c967d45f2a/regression/model.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabfm_v1_1_classification", "regression": "graph_tabfm_v1_1_regression",
+    "tensor_map": {"classification": "tensor_map_classification.json",
+                   "regression": "tensor_map_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
+                                 "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 100000, "max_features": 500, "max_classes": 10}
+})json";
+
+// Mitra-v2 (AWS AutoGluon, Apache-2.0, ungated; arXiv 2609.04540). A NEW entry: `mitra` (v1) is
+// unchanged. The two tasks are not equally new:
+//
+//  * autogluon/mitra-classifier-2 is a drop-in. config.json is byte-identical to v1's and the
+//    safetensors JSON header is byte-identical too (sha cb1a261b..., 392 tensors -- same names,
+//    shapes, dtypes and offsets; only the values differ), so classification reuses mitra's graph,
+//    tensor map and GPU graphs verbatim (see BundledGpuGraphId) and embeds no new bytes.
+//  * autogluon/mitra-regressor-2 is NOT: dim_output 1 -> 1000. Regression is cast as classification
+//    over 1,000 target bins: final_layer is [1000, 512], and each support target is embedded by its
+//    BIN (y_embedding becomes an Embedding [1000, 512] with no bias; 393 -> 392 tensors). Its graph
+//    (tools/export_mitra --config real2) min-max scales the raw target over the context rows, bins it
+//    on linspace(-0.5, 1.5, 1001), and decodes the mean of the bin distribution back to raw units --
+//    raw in, raw out, hence the "_raw" profile. Features are passed raw too: Mitra's quantile
+//    embedding is rank-based, i.e. invariant to the engine's monotone scaling either way, and raw is
+//    what upstream feeds it.
+//
+// The size regime is v2's documented operating range rather than v1's: prediction draws up to 32,768
+// support rows and the deployment feature budget is 256 (Mitra-v2 Technical Report sec. 3.1, 3.5;
+// pre-trained on 1-50 features, 160-5,120 support rows -- "10x longer context, 3x features"). The
+// card's headline numbers use 50-step fine-tuning with 8-fold bagging; this entry is in-context only.
+static const char *const BUILTIN_MITRA2 = R"json({
+  "schema_version": 2, "id": "mitra-v2", "display_name": "Mitra-v2 (AWS AutoGluon)",
+  "family": "icl-transformer",
+  "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "Mitra-v2 by AWS AutoGluon, Apache-2.0. Checkpoints: HF autogluon/mitra-classifier-2, autogluon/mitra-regressor-2."},
+  "preprocessing_profile": "mitra_v2_raw",
+  "weights": {
+    "classification": {"repo": "autogluon/mitra-classifier-2", "revision": "main",
+      "files": [{"path": "model.safetensors", "bytes": 302717904,
+                 "url": "https://huggingface.co/autogluon/mitra-classifier-2/resolve/main/model.safetensors"}]},
+    "regression": {"repo": "autogluon/mitra-regressor-2", "revision": "main",
+      "files": [{"path": "model.safetensors", "bytes": 306776952,
+                 "url": "https://huggingface.co/autogluon/mitra-regressor-2/resolve/main/model.safetensors"}]}
+  },
+  "graph": {"classification": "graph_mitra_classification", "regression": "graph_mitra2_regression",
+    "tensor_map": {"classification": "tensor_map_mitra_classification.json",
+                   "regression": "tensor_map_mitra2_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
+                                 "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 32768, "max_features": 256, "max_classes": 10}
+})json";
+
+// TabDPT v1.3 (Layer 6 AI, Apache-2.0, ungated). A NEW entry: `tabdpt` stays on v1.2. Same HF repo
+// (Layer6/TabDPT), new file tabdpt1_3.safetensors; TabArena 1545 Elo (v1.3 default) vs 1457 (v1.2).
+//
+// The checkpoint cfg carries v1.2's exact dims, but the y-encoders changed: v1.2's per-layer MLP
+// (y_encoders.*) became a per-TASK pair -- cls_y_encoders.* (Embedding(16, 128) over the class id) and
+// reg_y_encoders.* (Linear(1,128) -> GELU -> Linear(128,128)); 647 -> 679 tensors, every other tensor
+// unchanged, head (16 logits + 2048 regression bins) unchanged. So it has its own graphs
+// (tools/export_tabdpt --config real13) under the stem "tabdpt13". v1.3's "full probabilistic
+// regression outputs" are an estimator API over the same bins; the engine returns the point estimate
+// (the bar-distribution mean), as for v1.2.
+//
+// The cache slug is keyed by repo and is SHARED with `tabdpt`, so the file lives under tabdpt1_3/ --
+// a shared files[].path would make the two entries overwrite each other (the tabpfn-v2-5-real rule).
+static const char *const BUILTIN_TABDPT13 = R"json({
+  "schema_version": 2, "id": "tabdpt-v1-3", "display_name": "TabDPT v1.3 (Layer 6 AI)",
+  "family": "icl-transformer",
+  "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "TabDPT by Layer 6 AI, Apache-2.0. Checkpoint: HF Layer6/TabDPT (tabdpt1_3.safetensors)."},
+  "preprocessing_profile": "tabdpt_v1_raw",
+  "weights": {
+    "classification": {"repo": "Layer6/TabDPT", "revision": "main",
+      "files": [{"path": "tabdpt1_3/model.safetensors", "bytes": 252233296,
+                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/main/tabdpt1_3.safetensors"}]},
+    "regression": {"repo": "Layer6/TabDPT", "revision": "main",
+      "files": [{"path": "tabdpt1_3/model.safetensors", "bytes": 252233296,
+                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/main/tabdpt1_3.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabdpt13_classification", "regression": "graph_tabdpt13_regression",
+    "tensor_map": {"classification": "tensor_map_tabdpt13_classification.json",
+                   "regression": "tensor_map_tabdpt13_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 100000, "max_features": 128, "max_classes": 16}
+})json";
+
+// Nori-30M (Synthefy), 29.2M parameters: a LimiX fork (upstream NOTICE: "originated as a fork of LimiX")
+// grown to 28 pre-norm `smf` layers with RMSNorm, SwiGLU, DeepNorm residual scaling, a query-adaptive
+// softmax temperature (QASSMax) in the sample attention and a target-aware embedding of the context labels.
+// CODE AND WEIGHTS are Apache-2.0 (model card front matter and body agree; repo LICENSE + NOTICE) and the
+// HF repo is ungated, so it is registered like tabdpt: commercial, redistributable, no licence gate.
+//
+// REGRESSION ONLY. The checkpoint config carries a 10-class head, but upstream's build_model refuses any
+// task_type other than "reg" and the model card calls it a regression model; `capabilities` is
+// ["regress"], so tabfm_classify is refused before any download with the actionable unsupported-task error
+// (which names the models that do classify).
+//
+// Its graph is (x, y)-only like LimiX-2M's: the split is the length of y, so the engine needs no
+// model-specific code (tools/export_nori). For ROCm a second, MASKED graph (x, y_full, train_size, d, n_rows;
+// tools/export_nori --contract mask) is bundled; it reads the safetensors convert_nori_weights writes beside
+// nori.pt, and without that file ROCm reports the bundled graph as not matching the weights. The
+// model standardises its own features and the export wrapper standardises the target in-graph and inverts
+// it, hence a *_raw profile. The 999-quantile pinball head is reduced IN-GRAPH to the mean of the implied
+// quantile function, upstream's default point estimate (NoriRegressor quantile_collapse="mean"); on the
+// uniform tau grid that is a closed form without a sort (tools/export_nori nori_patches.quantile_mean).
+//
+// The engine reads nori.pt natively (a torch.save archive {model_config, ema_state_dict}; the reader
+// prefers ema_state_dict, as upstream's load_model does), so there is no converter. Pinned to the commit
+// the graph was exported from.
+//
+// What this does NOT reproduce, so the docs do not over-claim: upstream's default NoriRegressor runs an
+// 8-member preprocessing ensemble (quantile / adaptive feature transforms, polynomial interactions,
+// fingerprint features, feature shuffles); the engine runs ONE forward on the raw table, which is
+// upstream's own model.forward. The engine mean-imputes missing cells before the graph, so Nori's
+// missing-value embedding is unused.
+//
+// size_regime is an engine cap chosen from MEASUREMENT (CPU, default threads, 200 query rows; rows x
+// features -> wall, peak RSS): 500x20 5.6 s / 0.85 GB; 1000x20 10.8 s / 1.5 GB; 2000x20 28 s / 3.3 GB;
+// 3000x20 53 s / 6.1 GB; 5000x20 127 s / 15.4 GB; 1000x100 40 s / 5.0 GB. The two limits are independent
+// (their corner is far larger); docs/REAL_MODELS.md gives the table.
+static const char *const BUILTIN_NORI30M = R"json({
+  "schema_version": 2, "id": "nori-30m", "display_name": "Nori-30M (Synthefy)",
+  "family": "icl-transformer",
+  "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "Nori-30M by Synthefy, Apache-2.0 (code and weights). Checkpoint: HF Synthefy/Nori-30M (nori.pt). Regression only."},
+  "preprocessing_profile": "nori_v1_raw",
+  "weights": {
+    "regression": {"repo": "Synthefy/Nori-30M", "revision": "63c9f7facf9fb32c37ce3fc2fba331d524696318",
+      "files": [{"path": "model.ckpt", "bytes": 117093952,
+                 "url": "https://huggingface.co/Synthefy/Nori-30M/resolve/63c9f7facf9fb32c37ce3fc2fba331d524696318/nori.pt"}]}
+  },
+  "graph": {"regression": "graph_nori30m_regression",
+    "tensor_map": {"regression": "tensor_map_nori30m_regression.json"}},
+  "capabilities": ["regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 5000, "max_features": 100, "max_classes": 10}
+})json";
+
+// EXAONE Tabular v1 (LG AI Research; TabArena v0.1.4 classification Elo 1759, regression 1883 per the model
+// card), a Cross-Axis Summary Transformer: width 192, 12 blocks, one column per feature token, 3 item-summary
+// and 32 feature-summary tokens, SSMax attention; 20.8M (classifier) / 21.1M (regressor) parameters.
+// Upstream CODE is BSD-3-Clause-LG. The WEIGHTS are under the EXAONE AI Model License Agreement 1.2 - NC:
+// research and educational use only (s. 2.1a: "evaluation, testing, academic research, experimentation"), and
+// "the Licensee is expressly prohibited from using the Model, Derivatives, or Output for any commercial
+// purposes" (s. 3.1). Registered like the other non-commercial entries (commercial:false, redistributable:false,
+// gated by accept_hf_license); the engine never redistributes the weights (the user downloads them from LG's
+// Hugging Face repo, which is ungated). docs/REAL_MODELS.md quotes the clauses and the reasoning.
+//
+// Its graph is (x, y)-only like TabICL's: the split is the length of y, so the engine needs no model-specific
+// code (tools/export_exaone). For ROCm a second, MASKED graph per task (x, y_full, train_size, d, n_rows;
+// tools/export_exaone --contract mask) is bundled, keyed to LG's released files by header sha. The model standardises
+// its own features and the wrapper standardises the regression target in-graph, hence a *_raw profile. The
+// 999-quantile regression head is reduced in-graph to the MEAN of the bank, the released regressor's own
+// point_estimate="mean". Upstream pins part of the attention to FlashAttention on CUDA (fp16/bf16 only);
+// the export writes the plain softmax(q k^T / sqrt(d)) v path, the same function in float32.
+//
+// The released files are safetensors keyed by the module namespace, so there is no converter; they are pinned to
+// the commit the graphs were exported against. The classifier and the regressor are DIFFERENT checkpoints in the
+// same repo, hence per-task paths (classification/ and regression/), as for causilo.
+//
+// What this does NOT reproduce, so the docs do not over-claim: the TabArena figures come from upstream's
+// 8-member ensemble (four numeric transforms, sign flips, feature permutations, and for >10 classes
+// error-correcting output codes); the engine runs ONE forward on the raw table, upstream's own model.forward.
+// The engine mean-imputes missing cells before the graph, so EXAONE's non-finite code channel never sees a NaN.
+//
+// size_regime is an engine cap chosen from MEASUREMENT, not upstream's support_row_limit (100000, which its
+// cached, chunked CUDA runtime serves): the engine runs the dense forward on the whole table. CPU, default
+// threads, 200 query rows (rows x features -> wall, peak RSS): 500x20 4.3 s / 1.2 GB; 1000x20 9.7 s / 2.5 GB;
+// 2000x20 26 s / 6.7 GB; 3000x20 49 s / 13.1 GB; 1000x100 37 s / 10.5 GB. Memory grows roughly with rows^1.7
+// and linearly in features; the limits are independent, and docs/REAL_MODELS.md gives the table.
+static const char *const BUILTIN_EXAONE_TABULAR = R"json({
+  "schema_version": 2, "id": "exaone-tabular", "display_name": "EXAONE Tabular v1 (LG AI Research)",
+  "family": "icl-transformer",
+  "license": {"id": "exaone-nc-1.2", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "EXAONE Tabular by LG AI Research (LG Management Development Institute Co., Ltd.). Code BSD-3-Clause-LG; weights under the EXAONE AI Model License Agreement 1.2 - NC: research and educational use only, NO commercial use of the Model, Derivatives or Output (s. 3.1); a commercial license is a separate agreement with LG. Publications must attribute the Model's name and version (s. 4.3). License: https://huggingface.co/LG-AI-Research/EXAONE-Tabular/blob/main/LICENSE. Checkpoints: HF LG-AI-Research/EXAONE-Tabular."},
+  "preprocessing_profile": "exaone_v1_raw",
+  "weights": {
+    "classification": {"repo": "LG-AI-Research/EXAONE-Tabular", "revision": "093ad1c2613e1e95d26df8610451d2e02ed53cbe",
+      "files": [{"path": "classification/model.safetensors", "bytes": 83286800,
+                 "url": "https://huggingface.co/LG-AI-Research/EXAONE-Tabular/resolve/093ad1c2613e1e95d26df8610451d2e02ed53cbe/exaone-tabular-classifier-v1_default.safetensors"}]},
+    "regression": {"repo": "LG-AI-Research/EXAONE-Tabular", "revision": "093ad1c2613e1e95d26df8610451d2e02ed53cbe",
+      "files": [{"path": "regression/model.safetensors", "bytes": 84502160,
+                 "url": "https://huggingface.co/LG-AI-Research/EXAONE-Tabular/resolve/093ad1c2613e1e95d26df8610451d2e02ed53cbe/exaone-tabular-regressor-v1_default.safetensors"}]}
+  },
+  "graph": {"classification": "graph_exaone_tabular_classification", "regression": "graph_exaone_tabular_regression",
+    "tensor_map": {"classification": "tensor_map_exaone_tabular_classification.json",
+                   "regression": "tensor_map_exaone_tabular_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 3000, "max_features": 100, "max_classes": 10}
+})json";
+
 vector<ModelSpec> BuiltinModelSpecs() {
 	// Merge the two per-task built-in TabFM v1 manifests into one multi-task
 	// model spec (id "tabfm-v1"). Each task keeps its own graph/tensor-map/repo.
@@ -477,12 +780,33 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_ORION_MSP, "(built-in orion-msp)"));
 	specs.push_back(ParseModelSpec(BUILTIN_CAUSILO, "(built-in causilo)"));
 	specs.push_back(ParseModelSpec(BUILTIN_LIMIX2M, "(built-in limix-2m)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABFM_V1_1, "(built-in tabfm-v1-1)"));
+	specs.push_back(ParseModelSpec(BUILTIN_MITRA2, "(built-in mitra-v2)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABDPT13, "(built-in tabdpt-v1-3)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABPFN35, "(built-in tabpfn-v3-5)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABPFN35_FAST, "(built-in tabpfn-v3-5-fast)"));
+	specs.push_back(ParseModelSpec(BUILTIN_NORI30M, "(built-in nori-30m)"));
+	specs.push_back(ParseModelSpec(BUILTIN_EXAONE_TABULAR, "(built-in exaone-tabular)"));
 	return specs;
 }
 
 string ModelRegistry::RegisteredIds() const {
 	string out; // models_ is a std::map → keys already sorted
 	for (auto &kv : models_) {
+		if (!out.empty()) {
+			out += ", ";
+		}
+		out += kv.first;
+	}
+	return out;
+}
+
+string ModelRegistry::IdsWithTask(TabFMTask task) const {
+	string out;
+	for (auto &kv : models_) {
+		if (!kv.second.HasTask(task)) {
+			continue;
+		}
 		if (!out.empty()) {
 			out += ", ";
 		}

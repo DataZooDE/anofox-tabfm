@@ -379,20 +379,39 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 		// RealTabPFN-2.5 is the same architecture as 2.5 (identical config and
 		// state_dict signature), so it reuses 2.5's bundled graphs outright.
 		stem = "tabpfn25";
+	} else if (model == "mitra-v2") {
+		// The v2 classifier is v1's architecture with a byte-identical safetensors header, so it
+		// reuses mitra's graphs; only the 1000-bin regressor has its own.
+		stem = task_name == "classification" ? "mitra" : "mitra2";
+	} else if (model == "tabdpt-v1-3") {
+		stem = "tabdpt13";
 	} else if (model == "tabpfn-v2-6") {
 		stem = "tabpfn26";
 	} else if (model == "tabpfn-v3") {
 		stem = "tabpfn3";
+	} else if (model == "tabpfn-v3-5") {
+		stem = "tabpfn35";
+	} else if (model == "tabpfn-v3-5-fast") {
+		// Its own stem: 3.5-Fast is the 3.5 architecture at 8 ICL layers instead of 24, so it cannot share
+		// 3.5's graphs.
+		stem = "tabpfn35fast";
 	} else if (model == "tabicl-v2") {
 		stem = "tabicl";
 	} else if (model == "orion-bix") {
 		stem = "orion_bix";
 	} else if (model == "orion-msp") {
 		stem = "orion_msp";
+	} else if (model == "tabfm-v1-1") {
+		// Google TabFM 1.1.0: the v1 architecture at embed_dim 128, its own graphs (dims are baked in)
+		stem = "tabfm_v1_1";
 	} else if (model == "limix-2m") {
 		// "limix2m", not "limix": LimiX-2 (400M) is a different model, and a bare stem would hand its graphs
 		// to the wrong one
 		stem = "limix2m";
+	} else if (model == "exaone-tabular") {
+		stem = "exaone_tabular";
+	} else if (model == "nori-30m") {
+		stem = "nori30m";
 	}
 	return "graph_" + kind + "_" + stem + "_" + task_name;
 }
@@ -411,12 +430,39 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 			return "35c346e4e29f61b493a9e601e66bf0ae241d0fb76623a3336c61408cfc3e88d0";
 		}
 	}
+	// Google TabFM 1.1.0, pinned revision d7cfd3b8. Its tensors are BF16, so the ext/migraphx graphs
+	// retype each initializer to BF16 and Cast it to FLOAT (tools/make_migraphx_graph.py
+	// retype_external); the offsets are still only valid for exactly this header.
+	if (model == "tabfm-v1-1") {
+		if (task_name == "classification") {
+			return "37f754ec784e9a0f7be9f605c608b353ca4f214de936bb6baa21a6a277c3bf2e";
+		}
+		if (task_name == "regression") {
+			return "62fcd024cb068a83d8e5623ab4a8661eebb49f8e8de4b537e5ceeb9c307303fa";
+		}
+	}
 	if (model == "mitra") {
 		if (task_name == "classification") {
 			return "cb1a261bb3d9ca505e0db66e21df85bec6777f7e104247d4a71a8eb8d8b3b96a";
 		}
 		if (task_name == "regression") {
 			return "44f9293fa2d81ccf56dffab09600ec4f775c5c30bbc2af551cf4f6b2cf889f01";
+		}
+	}
+	// Mitra-v2: classifier-2's header is byte-identical to classifier-1's (verified against both HF
+	// files), so it shares mitra's sha and graphs; regressor-2 (1000-bin head) has its own.
+	if (model == "mitra-v2") {
+		if (task_name == "classification") {
+			return "cb1a261bb3d9ca505e0db66e21df85bec6777f7e104247d4a71a8eb8d8b3b96a";
+		}
+		if (task_name == "regression") {
+			return "ff7288fd5eda3910b21863813683614eaddcceb60ef9e60be4eb79bf9c69c7cb";
+		}
+	}
+	// TabDPT v1.3: one checkpoint (tabdpt1_3.safetensors) for both tasks, like v1.2.
+	if (model == "tabdpt-v1-3") {
+		if (task_name == "classification" || task_name == "regression") {
+			return "8ab85c0bf4ce2fc87a81f040b4170ae7c10b50d75bad937d2f8009558767b5a3";
 		}
 	}
 	// The single_eval_pos family (x, y inputs only): ext graphs bundle for the
@@ -497,6 +543,32 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	if (model == "limix-2m") {
 		if (task_name == "classification" || task_name == "regression") {
 			return "0c6a868493ea16aaa88bd604b7f769b34018e82941eae90abd9d16072cf283eb";
+		}
+	}
+	// TabPFN-3.5 / 3.5-Fast: ONE published safetensors per variant holds both heads, so both tasks pin the
+	// same header -- that of the file Prior Labs publish, read with no conversion step (the keys are already
+	// the model's state_dict names, `__metadata__` config block included in the hashed header).
+	if (model == "tabpfn-v3-5" && (task_name == "classification" || task_name == "regression")) {
+		return "8a237b22e16aeb1e2b0d15a280d17fdd030054643b53dae86c8552f640ba9302";
+	}
+	if (model == "tabpfn-v3-5-fast" && (task_name == "classification" || task_name == "regression")) {
+		return "733da85d68f73d3a18eabbc01ded64b19da6cabeecf0549f1980a3773d11508f";
+	}
+	// Nori-30M: the masked ROCm graph (tools/export_nori --contract mask) bakes offsets into the safetensors
+	// convert_nori_weights writes from nori.pt (773 tensors, sorted keys, float32: byte-deterministic). Without it
+	// the bundled graph does not match and ROCm says so; the CPU path reads the .ckpt natively either way.
+	if (model == "nori-30m" && task_name == "regression") {
+		return "49797138da9ce6d7bb76895cb00514bc6967732051811c217548f32c75a02363";
+	}
+	// EXAONE Tabular: the masked ROCm graphs (tools/export_exaone, --contract mask) bake offsets into LG's
+	// released safetensors at the revision the registry pins (093ad1c2). The classifier and the regressor are
+	// different checkpoints, hence two headers.
+	if (model == "exaone-tabular") {
+		if (task_name == "classification") {
+			return "d211d3dc9c8a8af8b2cfc74e58435640424725a802af5995d5cbd3e719246285";
+		}
+		if (task_name == "regression") {
+			return "8888839dd2aef01b1f9e01603edfdb77ab2b99eb789b110613074d3cac9da1e1";
 		}
 	}
 	if (model == "tabpfn-v3") {

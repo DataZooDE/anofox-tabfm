@@ -50,6 +50,8 @@ import math
 import torch
 import torch.nn.functional as F
 
+from export_tabdpt.tabdpt_patches import y_embedding
+
 #: Additive bias for masked-out keys.
 #:
 #: -1e4, not -1e30. fp16's maximum is 65504, so -1e30 OVERFLOWS to -inf there --
@@ -226,7 +228,7 @@ def masked_get_scale_param(layer, train_size: torch.Tensor, *, device, dtype) ->
 
 
 def masked_model_forward(model, x_src: torch.Tensor, y_src: torch.Tensor,
-                         train_size: torch.Tensor) -> torch.Tensor:
+                         train_size: torch.Tensor, is_cls: bool = True) -> torch.Tensor:
     """TabDPTModel.forward with the split as a value.
 
     Transcribed from upstream so the diff against it stays readable; the only
@@ -255,7 +257,7 @@ def masked_model_forward(model, x_src: torch.Tensor, y_src: torch.Tensor,
         layer_mask = torch.cat([torch.ones(n_think, dtype=ctx_mask.dtype, device=ctx_mask.device), ctx_mask], dim=0)
 
     for l, layer in enumerate(model.transformer_encoder):
-        y_emb = model.y_encoders[l](y_src.unsqueeze(-1))
+        y_emb = y_embedding(model, l, y_src, is_cls)
         if n_think > 0:
             B = y_emb.shape[1]
             y_emb = torch.cat([y_emb.new_zeros(n_think, B, y_emb.shape[-1]), y_emb], dim=0)
@@ -339,7 +341,8 @@ class MaskExportWrapper(torch.nn.Module):
 
         y_src = y if self.task == "classification" else (y - mean_y) / std_y
 
-        out = masked_model_forward(self.m, x, y_src, train_size)  # (T, B, O)
+        out = masked_model_forward(self.m, x, y_src, train_size,
+                                   is_cls=self.task == "classification")  # (T, B, O)
         out = out.transpose(0, 1)                                 # (B, T, O)
 
         if self.task == "classification":

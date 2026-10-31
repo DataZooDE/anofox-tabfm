@@ -39,26 +39,42 @@ PARITY_RTOL = 1e-4
 
 TASKS = ("classification", "regression")
 WEIGHTS_FILE = "model.safetensors"
-FILES = [
-    "graph_tabdpt_classification.onnx",
-    "graph_tabdpt_regression.onnx",
-    "tensor_map_tabdpt_classification.json",
-    "tensor_map_tabdpt_regression.json",
-    "golden_classification.json",
-    "golden_regression.json",
-    WEIGHTS_FILE,
-    "manifest.json",
-]
+def files_for(slug: str = "tabdpt") -> list:
+    return [
+        f"graph_{slug}_classification.onnx",
+        f"graph_{slug}_regression.onnx",
+        f"tensor_map_{slug}_classification.json",
+        f"tensor_map_{slug}_regression.json",
+        "golden_classification.json",
+        "golden_regression.json",
+        WEIGHTS_FILE,
+        "manifest.json",
+    ]
 
 
-def seeded_model():
-    cfg = x_configs.fixture()
+FILES = files_for("tabdpt")
+
+
+_SCALE_BUFFERS = (".n0", ".max_len_f", ".kappa")
+
+
+def seeded_model(cfg_name: str = "fixture"):
+    cfg = x_configs.get(cfg_name)
     model = build_model(cfg, seed=0)
     gen = torch.Generator().manual_seed(SEED_WEIGHTS)
     with torch.no_grad():
         sd = model.state_dict()
         for key in sorted(sd):  # sorted: init-order independent
             p = sd[key]
+            if cfg.arch != "v1.2" and key.endswith(_SCALE_BUFFERS):
+                # Keep the attention-temperature buffers at their constructed
+                # values. Randomising them is meaningless (they are config, not
+                # learned) and can be fatal: get_scale_param computes
+                # log(min(n, max_len_f) / n0), so a negative max_len_f or n0
+                # makes every attention NaN. The v1.2 fixture randomises them too
+                # and survives only because its draws happen to keep the ratio
+                # positive; it is left as is so its committed bytes stay pinned.
+                continue
             if p.dtype.is_floating_point:
                 p.copy_(torch.randn(p.shape, generator=gen, dtype=p.dtype) * WEIGHT_SCALE)
     return model.eval()
@@ -87,13 +103,23 @@ def sha256_file(p: pathlib.Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
-def build(out: pathlib.Path) -> dict:
-    """Build the committed CI fixture (graphs + weights + goldens + manifest)."""
+def build(out: pathlib.Path, cfg_name: str = "fixture") -> dict:
+    """Build the committed CI fixture (graphs + weights + goldens + manifest).
+
+    ``cfg_name`` "fixture" -> test/fixtures/tabdpt (v1.2), "fixture13" ->
+    test/fixtures/tabdpt13 (v1.3: same dims, the per-task y-encoders).
+    """
+    from export_tabdpt.cli import SLUGS
+
     apply()
     out.mkdir(parents=True, exist_ok=True)
+    cfg = x_configs.get(cfg_name)
+    slug = SLUGS[cfg.arch]
+    fixture_id = {"tabdpt": "tabdpt-fixture", "tabdpt13": "tabdpt13-fixture"}[slug]
+    rel_dir = f"test/fixtures/{slug}"
 
-    model = seeded_model()
-    model2 = seeded_model()
+    model = seeded_model(cfg_name)
+    model2 = seeded_model(cfg_name)
     sd, sd2 = model.state_dict(), model2.state_dict()
     assert sorted(sd) == sorted(sd2)
     for k in sd:
@@ -106,13 +132,12 @@ def build(out: pathlib.Path) -> dict:
     tmp.unlink()
     assert digest == digest2, f"safetensors bytes not deterministic: {digest} != {digest2}"
 
-    cfg = x_configs.fixture()
     for task in TASKS:
         wrapper = build_wrapper(model, task)
-        graph_path = out / f"graph_tabdpt_{task}.onnx"
+        graph_path = out / f"graph_{slug}_{task}.onnx"
         x_export.export_graph(wrapper, graph_path, cfg=cfg)
         tensor_map = x_export.postprocess(graph_path, dict(model.state_dict()))
-        x_export.write_tensor_map(out / f"tensor_map_tabdpt_{task}.json", tensor_map,
+        x_export.write_tensor_map(out / f"tensor_map_{slug}_{task}.json", tensor_map,
                                   task=task, safetensors_rel=WEIGHTS_FILE)
 
         parity = x_export.check_parity(graph_path, wrapper, cfg.parity_shapes)
@@ -132,7 +157,7 @@ def build(out: pathlib.Path) -> dict:
         (out / f"golden_{task}.json").write_text(json.dumps({
             "_doc": {
                 "purpose": "C++ parity: safetensors -> initializer injection -> ORT run "
-                           f"on graph_tabdpt_{task}.onnx must reproduce these fp32 logits.",
+                           f"on graph_{slug}_{task}.onnx must reproduce these fp32 logits.",
                 "parity_slice": "asserted on logits[:, train_size:, :] (test rows)",
                 "rtol": PARITY_RTOL,
                 "y_convention": "y holds ONLY the training labels (length S = train_size); "
@@ -150,8 +175,9 @@ def build(out: pathlib.Path) -> dict:
         return {"path": name, "bytes": p.stat().st_size, "sha256": sha256_file(p)}
 
     manifest = {
-        "schema_version": 2, "id": "tabdpt-fixture",
-        "display_name": "TabDPT CI fixture (random init, schema v2)",
+        "schema_version": 2, "id": fixture_id,
+        "display_name": ("TabDPT CI fixture (random init, schema v2)" if slug == "tabdpt"
+                         else "TabDPT v1.3 CI fixture (random init, schema v2)"),
         "family": "icl-transformer",
         "license": {"id": "apache-2.0", "commercial": True,
                     "redistributable": True, "gate_setting": None},
@@ -161,16 +187,16 @@ def build(out: pathlib.Path) -> dict:
         # graph is raw-in / raw-out like TabPFN's and TabICL's.
         "preprocessing_profile": "tabdpt_v1_raw",
         "weights": {
-            task: {"repo": "local:test/fixtures/tabdpt", "revision": "fixture-v1",
+            task: {"repo": f"local:{rel_dir}", "revision": "fixture-v1",
                    "files": [file_entry(WEIGHTS_FILE)]}
             for task in TASKS
         },
         "graph": {
-            "classification": "graph_tabdpt_classification.onnx",
-            "regression": "graph_tabdpt_regression.onnx",
+            "classification": f"graph_{slug}_classification.onnx",
+            "regression": f"graph_{slug}_regression.onnx",
             "tensor_map": {
-                "classification": "tensor_map_tabdpt_classification.json",
-                "regression": "tensor_map_tabdpt_regression.json",
+                "classification": f"tensor_map_{slug}_classification.json",
+                "regression": f"tensor_map_{slug}_regression.json",
             },
         },
         "capabilities": ["classify", "regress"],
@@ -191,7 +217,8 @@ def build(out: pathlib.Path) -> dict:
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
-    hashes = {name: sha256_file(out / name) for name in FILES}
-    total = sum((out / name).stat().st_size for name in FILES)
+    files = files_for(slug)
+    hashes = {name: sha256_file(out / name) for name in files}
+    total = sum((out / name).stat().st_size for name in files)
     assert total < 5 * 1024 * 1024, f"fixture total {total} B >= 5 MB budget"
     return hashes

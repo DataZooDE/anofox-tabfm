@@ -1,0 +1,90 @@
+{
+  "schema_version": 2,
+  "id": "exaone-fixture",
+  "display_name": "EXAONE Tabular CI fixture (random init, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "bsd-3-clause-lg",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "exaone_v1_raw",
+  "weights": {
+    "classification": {
+      "repo": "local:test/fixtures/exaone",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model_classification.safetensors",
+          "bytes": 163252,
+          "sha256": "474c8fe0bacc7f0ace55939f4430bf90c65b3756908c854a67f56cbd72b03379"
+        }
+      ]
+    },
+    "regression": {
+      "repo": "local:test/fixtures/exaone",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model_regression.safetensors",
+          "bytes": 163720,
+          "sha256": "1946c202626f20b169cf018c7e14a1b3e658c85b7f77950c825077a1f0f21f49"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_exaone_classification.onnx",
+    "regression": "graph_exaone_regression.onnx",
+    "tensor_map": {
+      "classification": "tensor_map_exaone_classification.json",
+      "regression": "tensor_map_exaone_regression.json"
+    }
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 3
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init EXAONE Tabular fixture (BSD-3-Clause-LG architecture, our weights; the fixture weights are ours, so the commercial/redistributable flags describe THEM, not LG's released checkpoints). One safetensors per task. H is DYNAMIC; y carries train labels only (length = train_size). The model standardises its features itself and the wrapper standardises the regression target in-graph, so the engine profile is *_raw. Classification outputs class logits; regression outputs ONE raw-space point estimate (the mean of the quantile head). Rows < S are in-context fitted values (context rows presented a second time as queries)."
+}

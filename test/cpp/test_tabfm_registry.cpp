@@ -7,6 +7,7 @@
 #include "tabfm_model_spec.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 
 using namespace duckdb;
 using namespace duckdb::anofox;
@@ -302,4 +303,163 @@ TEST_CASE("registry: Causilo ships built in, non-commercial and gated, pinned to
 	// Exact sizes: the engine treats a size mismatch as "not downloaded".
 	REQUIRE(m.tasks.at(TabFMTask::CLASSIFICATION).files[0].bytes == 144385448);
 	REQUIRE(m.tasks.at(TabFMTask::REGRESSION).files[0].bytes == 148417316);
+}
+
+TEST_CASE("registry: Mitra-v2 is a new entry beside mitra, its classifier reusing v1's graph",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("mitra"));
+	REQUIRE(reg.Has("mitra-v2"));
+	auto &v1 = reg.Get("mitra");
+	auto &v2 = reg.Get("mitra-v2");
+
+	// Apache-2.0 and ungated, like v1 (autogluon/mitra-{classifier,regressor}-2 model cards).
+	REQUIRE(v2.license.id == "apache-2.0");
+	REQUIRE(v2.license.commercial == true);
+	REQUIRE(v2.license.gate_setting.empty());
+	REQUIRE(v2.HasCapability("classify"));
+	REQUIRE(v2.HasCapability("regress"));
+
+	auto &c1 = v1.tasks.at(TabFMTask::CLASSIFICATION);
+	auto &c2 = v2.tasks.at(TabFMTask::CLASSIFICATION);
+	auto &r2 = v2.tasks.at(TabFMTask::REGRESSION);
+	// Separate HF repos, so separate cache slugs: v1 and v2 can never overwrite each other.
+	REQUIRE(c2.repo == "autogluon/mitra-classifier-2");
+	REQUIRE(r2.repo == "autogluon/mitra-regressor-2");
+	REQUIRE(c2.repo != c1.repo);
+	REQUIRE(c2.files[0].bytes == 302717904);
+	REQUIRE(r2.files[0].bytes == 306776952);
+
+	// The v2 classifier checkpoint has v1's exact safetensors header (same names, shapes, dtypes,
+	// offsets), so its graph and tensor map are v1's verbatim -- no new embedded bytes.
+	REQUIRE(c2.graph == c1.graph);
+	REQUIRE(c2.tensor_map_path == c1.tensor_map_path);
+	// The v2 REGRESSOR is not drop-in: a 1000-bin distributional head (final_layer [1000, 512]) and a
+	// bin-id label embedding (y_embedding [1000, 512], no bias) replace v1's scalar head, so it needs its
+	// own graph.
+	REQUIRE(r2.graph == "graph_mitra2_regression");
+	REQUIRE(r2.graph != v1.tasks.at(TabFMTask::REGRESSION).graph);
+
+	// The regression graph min-max scales the target and bins it itself (raw in, raw out), so the
+	// profile is a *_raw one. Mitra's feature embedding is rank based, so raw features are exactly
+	// what upstream feeds it.
+	REQUIRE(StringUtil::EndsWith(v2.preprocessing_profile, "_raw"));
+
+	// Wider than v1 (10000 / 100): Mitra-v2 predicts with up to 32,768 support rows and a 256-feature
+	// budget (Mitra-v2 Technical Report, arXiv 2609.04540, sec. 3.1 / 3.5).
+	REQUIRE(v2.size_regime.max_rows == 32768);
+	REQUIRE(v2.size_regime.max_features == 256);
+	REQUIRE(v2.size_regime.max_classes == 10);
+}
+
+TEST_CASE("registry: TabDPT v1.3 is a new entry in tabdpt's repo that cannot clobber v1.2's cache",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("tabdpt"));
+	REQUIRE(reg.Has("tabdpt-v1-3"));
+	auto &v12 = reg.Get("tabdpt");
+	auto &v13 = reg.Get("tabdpt-v1-3");
+
+	REQUIRE(v13.license.id == "apache-2.0");
+	REQUIRE(v13.license.commercial == true);
+	REQUIRE(v13.license.gate_setting.empty());
+	REQUIRE(v13.HasCapability("classify"));
+	REQUIRE(v13.HasCapability("regress"));
+	REQUIRE(v13.preprocessing_profile == v12.preprocessing_profile);
+	REQUIRE(v13.size_regime.max_features == 128);
+	REQUIRE(v13.size_regime.max_classes == 16);
+
+	auto &clf = v13.tasks.at(TabFMTask::CLASSIFICATION);
+	auto &rgr = v13.tasks.at(TabFMTask::REGRESSION);
+	// One checkpoint serves both tasks, as in v1.2.
+	REQUIRE(clf.files[0].path == rgr.files[0].path);
+	REQUIRE(clf.files[0].url == rgr.files[0].url);
+	REQUIRE_THAT(clf.files[0].url, Catch::Matchers::EndsWith("/tabdpt1_3.safetensors"));
+	REQUIRE(clf.files[0].bytes == 252233296);
+	// Same HF repo as v1.2, so the cache slug is shared: the path must differ or the two entries
+	// would download over each other (the tabpfn-v2-5-real lesson).
+	REQUIRE(clf.repo == v12.tasks.at(TabFMTask::CLASSIFICATION).repo);
+	REQUIRE(clf.files[0].path != v12.tasks.at(TabFMTask::CLASSIFICATION).files[0].path);
+	// New y-encoders (per-layer class embeddings + a narrower regression MLP), so new graphs.
+	REQUIRE(clf.graph == "graph_tabdpt13_classification");
+	REQUIRE(rgr.graph == "graph_tabdpt13_regression");
+}
+
+TEST_CASE("registry: Nori-30M ships built in, Apache-2.0 and ungated, REGRESSION ONLY, read natively from nori.pt",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("nori-30m"));
+	auto &m = reg.Get("nori-30m");
+
+	// Code and weights are Apache-2.0 (model card front matter and body agree) and the HF repo is
+	// ungated, so there is no licence gate at all, as for tabdpt.
+	REQUIRE(m.license.id == "apache-2.0");
+	REQUIRE(m.license.commercial == true);
+	REQUIRE(m.license.redistributable == true);
+	REQUIRE(m.license.gate_setting.empty());
+	REQUIRE_THAT(m.license.attribution, Contains("Synthefy"));
+
+	// Regression only: upstream's build_model refuses any task_type but "reg"
+	REQUIRE(m.HasCapability("regress"));
+	REQUIRE_FALSE(m.HasCapability("classify"));
+	REQUIRE(m.HasTask(TabFMTask::REGRESSION));
+	REQUIRE_FALSE(m.HasTask(TabFMTask::CLASSIFICATION));
+	REQUIRE(m.preprocessing_profile == "nori_v1_raw");
+	// measured caps (registry comment + docs/REAL_MODELS.md): 5000x20 peaks at 15.4 GB on the CPU
+	REQUIRE(m.size_regime.max_rows == 5000);
+	REQUIRE(m.size_regime.max_features == 100);
+
+	// the released nori.pt itself, pinned to the commit the graph was exported from; no converter
+	auto &t = m.tasks.at(TabFMTask::REGRESSION);
+	REQUIRE(t.repo == "Synthefy/Nori-30M");
+	REQUIRE(t.revision == "63c9f7facf9fb32c37ce3fc2fba331d524696318");
+	REQUIRE(t.files.size() == 1);
+	REQUIRE_THAT(t.files[0].url, Contains("/resolve/63c9f7facf9fb32c37ce3fc2fba331d524696318/nori.pt"));
+	REQUIRE(t.files[0].bytes == 117093952);
+	REQUIRE_THAT(t.files[0].path, Catch::Matchers::EndsWith(".ckpt"));
+
+	// the unsupported-task error names the models that CAN classify, and nori-30m is not among them
+	auto classify = reg.IdsWithTask(TabFMTask::CLASSIFICATION);
+	REQUIRE_THAT(classify, Contains("mitra"));
+	REQUIRE(classify.find("nori-30m") == string::npos);
+	REQUIRE_THAT(reg.IdsWithTask(TabFMTask::REGRESSION), Contains("nori-30m"));
+}
+
+TEST_CASE("registry: EXAONE Tabular ships built in, non-commercial (EXAONE NC 1.2) and gated, one checkpoint per task",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("exaone-tabular"));
+	auto &m = reg.Get("exaone-tabular");
+
+	// EXAONE AI Model License Agreement 1.2 - NC: research/educational use only, no commercial use of the
+	// Model, Derivatives or Output. Gated like the other non-commercial entries, and the attribution says so.
+	REQUIRE(m.license.id == "exaone-nc-1.2");
+	REQUIRE(m.license.commercial == false);
+	REQUIRE(m.license.redistributable == false);
+	REQUIRE(m.license.gate_setting == "accept_hf_license");
+	REQUIRE_THAT(m.license.attribution, Contains("LG AI Research"));
+	REQUIRE_THAT(m.license.attribution, Contains("NO commercial use"));
+	REQUIRE_THAT(m.license.attribution, Contains("LG-AI-Research/EXAONE-Tabular/blob/main/LICENSE"));
+
+	REQUIRE(m.HasCapability("classify"));
+	REQUIRE(m.HasCapability("regress"));
+	REQUIRE(m.preprocessing_profile == "exaone_v1_raw");
+	REQUIRE(m.size_regime.max_classes == 10);
+	// measured caps, not upstream's 100000-row support limit (its chunked CUDA runtime): the engine runs the
+	// dense forward, and 3000x20 already peaks at 13.1 GB on the CPU
+	REQUIRE(m.size_regime.max_rows == 3000);
+	REQUIRE(m.size_regime.max_features == 100);
+
+	for (auto task : {TabFMTask::CLASSIFICATION, TabFMTask::REGRESSION}) {
+		auto &t = m.tasks.at(task);
+		REQUIRE(t.repo == "LG-AI-Research/EXAONE-Tabular");
+		REQUIRE(t.revision == "093ad1c2613e1e95d26df8610451d2e02ed53cbe");
+		REQUIRE(t.files.size() == 1);
+		REQUIRE_THAT(t.files[0].url, Contains("/resolve/093ad1c2613e1e95d26df8610451d2e02ed53cbe/"));
+	}
+	// the classifier and the regressor are DIFFERENT checkpoints in one repo: their cache paths must differ
+	REQUIRE_THAT(m.tasks.at(TabFMTask::CLASSIFICATION).files[0].url, Contains("classifier-v1_default"));
+	REQUIRE_THAT(m.tasks.at(TabFMTask::REGRESSION).files[0].url, Contains("regressor-v1_default"));
+	REQUIRE(m.tasks.at(TabFMTask::CLASSIFICATION).files[0].path !=
+	        m.tasks.at(TabFMTask::REGRESSION).files[0].path);
 }

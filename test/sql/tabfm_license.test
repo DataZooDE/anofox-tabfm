@@ -130,3 +130,38 @@ statement error
 CALL tabfm_download('classification', model := 'limix-2m')
 ----
 licensed 'limix-2m-license-v1.0' and require you to accept its terms before they are downloaded (read the licence in that Hugging Face repo, and docs/REAL_MODELS.md for what it asks of you). Run: SET anofox_tabfm_accept_hf_license = true;
+
+# --- New versions keep their family's licence posture ---------------------------
+#
+# mitra-v2 (autogluon/mitra-{classifier,regressor}-2) and tabdpt-v1-3 (Layer6/TabDPT ::
+# tabdpt1_3.safetensors) are Apache-2.0 on their Hugging Face cards, commercial and ungated, exactly
+# like the mitra / tabdpt entries they sit beside (no gate_setting: test/cpp/test_tabfm_registry.cpp).
+query TTT
+SELECT model, license, commercial FROM tabfm_list_models()
+WHERE model IN ('mitra', 'mitra-v2', 'tabdpt', 'tabdpt-v1-3') ORDER BY model
+----
+mitra	apache-2.0	true
+mitra-v2	apache-2.0	true
+tabdpt	apache-2.0	true
+tabdpt-v1-3	apache-2.0	true
+
+# --- EXAONE Tabular: non-commercial weights, gated ------------------------------
+#
+# The weights are under the EXAONE AI Model License Agreement 1.2 - NC: research/educational use only
+# (s. 2.1a), no commercial use of the Model, Derivatives or Output (s. 3.1). Registered like the other
+# non-commercial entries, so the gate fires before any network with the non-commercial wording.
+statement error
+CALL tabfm_download('classification', model := 'exaone-tabular')
+----
+licensed 'exaone-nc-1.2' (non-commercial, no redistribution). Run: SET anofox_tabfm_accept_hf_license = true;
+
+statement error
+CALL tabfm_download('regression', model := 'exaone-tabular')
+----
+licensed 'exaone-nc-1.2' (non-commercial, no redistribution). Run: SET anofox_tabfm_accept_hf_license = true;
+
+# Nori-30M is Apache-2.0 (code and weights) and ungated: no licence gate applies to it at all.
+query TT
+SELECT license, commercial FROM tabfm_list_models() WHERE model = 'nori-30m'
+----
+apache-2.0	true

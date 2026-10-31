@@ -1,0 +1,77 @@
+{
+  "command": [
+    "export_tabpfn35",
+    "--task",
+    "classification",
+    "--contract",
+    "positional",
+    "--config",
+    "real35fast",
+    "--out",
+    "../../resources"
+  ],
+  "task": "classification",
+  "config": "real35fast",
+  "arch": "v3.5",
+  "contract": "positional",
+  "model_kwargs": {
+    "cell_ecdf_num_buckets": 8192,
+    "cell_ecdf_num_frequencies": 4,
+    "cell_embed_row_chunk_size": 2048,
+    "decoder_head_dim": 64,
+    "decoder_num_heads": 6,
+    "decoder_use_softmax_scaling": true,
+    "dist_embed_num_blocks": 3,
+    "dist_embed_num_heads": 8,
+    "dist_embed_num_inducing_points": 128,
+    "embed_dim": 128,
+    "feat_agg_num_blocks": 3,
+    "feat_agg_num_cls_tokens": 8,
+    "feat_agg_num_heads": 8,
+    "feat_agg_rope_base": 100000.0,
+    "feature_group_size": 3,
+    "ff_factor": 2,
+    "fourier_encoding_num_frequencies": 32,
+    "icl_num_heads": 16,
+    "icl_num_kv_heads_test": 1,
+    "inference_col_chunk_size": 4,
+    "max_num_classes": 160,
+    "num_buckets": 5000,
+    "softmax_scaling_mlp_hidden_dim": 64,
+    "nlayers": 8
+  },
+  "n_params": 83529984,
+  "seed": 0,
+  "opset": 18,
+  "example_input_THN": [
+    16,
+    6,
+    10
+  ],
+  "graph_bytes": 704103,
+  "n_initializers_mapped": 297,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst_ort_vs_torch": 3.5762786865234375e-07,
+    "worst_torch_vs_upstream": 2.384185791015625e-07,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 32,
+        "H": 7,
+        "train": 20,
+        "ort_vs_torch": 3.5762786865234375e-07,
+        "torch_vs_upstream": 2.384185791015625e-07,
+        "argmax_agree_upstream": true,
+        "ort_ms": 183.48073959350586
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.15.0+cpu",
+    "onnx": "1.23.2",
+    "onnxruntime": "1.31.1",
+    "tabpfn": "9.2.0"
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "command": [
+    "export_exaone",
+    "--task",
+    "regression",
+    "--config",
+    "real",
+    "--out",
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-decide/7e409e93-cc2c-4f92-8eed-43d9e96cd3da/scratchpad/ex_real"
+  ],
+  "task": "regression",
+  "config": "real",
+  "model_config": {
+    "feature_attention_repeats": 2
+  },
+  "regression_config": {
+    "quantile_count": 999,
+    "decoder_hidden_width": 384
+  },
+  "n_params": 21110247,
+  "seed": 0,
+  "opset": 18,
+  "upstream": {
+    "package": "exaonetabular @ git+https://github.com/LGAI-Research/EXAONE-Tabular.git@d149d0f0441053f0cf6b2b45f4b2067a81619cf9",
+    "code_license": "BSD-3-Clause-LG AI Research License",
+    "weights_license": "EXAONE AI Model License Agreement 1.2 - NC (non-commercial)",
+    "checkpoint": "LG-AI-Research/EXAONE-Tabular :: exaone-tabular-regressor-v1_default.safetensors"
+  },
+  "input_signature": {
+    "x": "[1,T,H] f32",
+    "y": "[1,S] f32 (S=len(y), train labels / RAW targets only)"
+  },
+  "output": {
+    "logits": "[1,T,1] RAW-space point estimate: mean of the 999-quantile head"
+  },
+  "H_dynamic": true,
+  "train_size": "runtime (implicit = len(y))",
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_train": [
+    "train",
+    2,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    1,
+    500
+  ],
+  "example_THS": [
+    20,
+    8,
+    12
+  ],
+  "graph_bytes": 1000589,
+  "n_initializers_mapped": 438,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 4.76837158203125e-07,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 16,
+        "H": 3,
+        "train": 10,
+        "max_abs_delta_context_rows": 0.0,
+        "max_abs_delta_query_rows": 4.76837158203125e-07,
+        "ort_ms": 356.2278747558594
+      },
+      {
+        "T": 60,
+        "H": 20,
+        "train": 40,
+        "max_abs_delta_context_rows": 4.76837158203125e-07,
+        "max_abs_delta_query_rows": 4.76837158203125e-07,
+        "ort_ms": 1691.1795139312744
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.23.2",
+    "onnxruntime": "1.31.1",
+    "onnxscript": "0.7.2"
+  }
+}

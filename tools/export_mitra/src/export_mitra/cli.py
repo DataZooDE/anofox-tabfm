@@ -29,7 +29,12 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="export_mitra")
     ap.add_argument("--task", required=True,
                     choices=["classification", "regression"])
-    ap.add_argument("--config", required=True, choices=["real", "fixture"])
+    ap.add_argument("--config", required=True,
+                    choices=["real", "fixture", "real2", "fixture2"],
+                    help="real/fixture: Mitra v1 (`mitra`); real2/fixture2: Mitra-v2 (`mitra-v2`)")
+    ap.add_argument("--weights", default=None,
+                    help="published safetensors; when given, the random-init model's state_dict "
+                         "signature (names + shapes) must match it exactly")
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
@@ -40,8 +45,9 @@ def main(argv=None) -> int:
     cfg = configs.get(args.config, args.task)
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    graph_path = out / f"graph_mitra_{args.task}.onnx"
-    map_path = out / f"tensor_map_mitra_{args.task}.json"
+    slug = "mitra2" if cfg.arch == "v2" else "mitra"
+    graph_path = out / f"graph_{slug}_{args.task}.onnx"
+    map_path = out / f"tensor_map_{slug}_{args.task}.json"
 
     print(f"[export_mitra] building random-weight Tab2D ({args.config}, "
           f"{args.task}) ...", flush=True)
@@ -49,11 +55,21 @@ def main(argv=None) -> int:
     model = export.build_model(args.task, cfg.model_kwargs, seed=args.seed)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[export_mitra] {n_params:,} params ({time.time()-t0:.1f}s)", flush=True)
+    if args.weights:
+        from safetensors import safe_open
+        sd = {k: tuple(v.shape) for k, v in model.state_dict().items()}
+        with safe_open(args.weights, framework="pt", device="cpu") as f:
+            ck = {k: tuple(f.get_slice(k).get_shape()) for k in f.keys()}
+        if sd != ck:
+            bad = sorted(set(sd) ^ set(ck)) + sorted(k for k in set(sd) & set(ck) if sd[k] != ck[k])
+            print(f"[export_mitra] state_dict does NOT match {args.weights}: {bad[:8]}", file=sys.stderr)
+            return 1
+        print(f"[export_mitra] state_dict signature matches {args.weights} ({len(sd)} tensors)", flush=True)
 
     t0 = time.time()
     wrapper = export.export_graph(
         model, graph_path, dim_rows=cfg.dim_rows,
-        dim_features=cfg.dim_features, example=cfg.example)
+        dim_features=cfg.dim_features, example=cfg.example, arch=cfg.arch)
     print(f"[export_mitra] dynamo export done ({time.time()-t0:.1f}s)", flush=True)
 
     t0 = time.time()
@@ -93,6 +109,9 @@ def main(argv=None) -> int:
         n_classes = model.dim_output if args.task == "classification" else 1
         feed = export.make_feed(*cfg.example[:1], cfg.example[1], cfg.example[2],
                                 cfg.example[3], n_classes=max(n_classes, 2), seed=123)
+        if isinstance(wrapper, export.BinnedRegressionWrapper):
+            feed["y"] = (np.random.default_rng(124).standard_normal(feed["y"].shape) * 3.0
+                         + 5.0).astype(np.float32)
         sess = ort.InferenceSession(str(graph_path),
                                     providers=["CPUExecutionProvider"])
         (logits,) = sess.run(["logits"], feed)
@@ -125,7 +144,7 @@ def main(argv=None) -> int:
         print(f"[export_mitra] wrote golden -> {gp}", flush=True)
 
     report = {
-        "model": "mitra-tab2d",
+        "model": "mitra-tab2d" if cfg.arch == "v1" else "mitra-v2-tab2d",
         "task": args.task,
         "config": args.config,
         "opset": export.OPSET,
@@ -134,7 +153,8 @@ def main(argv=None) -> int:
         "input_signature": {
             "x": "[1,T,H] f32", "y": "[1,T] f32",
             "train_size": "[1] i64", "d": "[1] i64"},
-        "output": {"logits": "[1,T,C] f32"},
+        "output": {"logits": "[1,T,C] f32"} if not isinstance(wrapper, export.BinnedRegressionWrapper)
+                  else {"logits": "[1,T,1] f32 raw-space point prediction (mean of the bin distribution)"},
         "cat_mask": "omitted (Mitra has no categorical embedding)",
         "graph_bytes": graph_path.stat().st_size,
         "initializers_mapped": len(tensor_map["initializers"]),
@@ -154,7 +174,7 @@ def main(argv=None) -> int:
     export.delete_weight_data(graph_path)
     export.assert_weight_free(graph_path, tensor_map)
     report["weight_free"] = True
-    (out / f"export_report_mitra_{args.task}.json").write_text(
+    (out / f"export_report_{slug}_{args.task}.json").write_text(
         json.dumps(report, indent=2) + "\n")
     print(f"[export_mitra] DONE -> {graph_path} (weight-free), {map_path}",
           flush=True)

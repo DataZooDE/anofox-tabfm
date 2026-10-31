@@ -631,3 +631,84 @@ TEST_CASE("model_spec: the served artifact is the converted sibling, tried first
 	REQUIRE(ServedArtifactPath(reg, exists_in({reg, "/c/m/model.safetensors"})) == reg);
 	REQUIRE(ServedArtifactPath(reg, exists_in({"/c/m/model.safetensors"})).empty());
 }
+
+TEST_CASE("model_spec: Mitra-v2 shares v1's classification GPU graphs, not its regression ones",
+          "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// The classifier-2 safetensors header is byte-identical to classifier-1's (verified against both
+	// HF files: sha below), so the baked ext/migraphx offsets index v2 weights correctly.
+	REQUIRE(BundledGpuGraphId("mitra-v2", "ext", "classification") == "graph_ext_mitra_classification");
+	REQUIRE(BundledGpuGraphId("mitra-v2", "migraphx", "classification") == "graph_migraphx_mitra_classification");
+	REQUIRE(ExpectedWeightsHeaderShaFor("mitra-v2", "classification") ==
+	        ExpectedWeightsHeaderShaFor("mitra", "classification"));
+	// The regressor-2 header differs (1000-bin head), so it has its own graphs and its own sha.
+	REQUIRE(BundledGpuGraphId("mitra-v2", "ext", "regression") == "graph_ext_mitra2_regression");
+	REQUIRE(BundledGpuGraphId("mitra-v2", "migraphx", "regression") == "graph_migraphx_mitra2_regression");
+	REQUIRE(ExpectedWeightsHeaderShaFor("mitra-v2", "regression") ==
+	        "ff7288fd5eda3910b21863813683614eaddcceb60ef9e60be4eb79bf9c69c7cb");
+}
+
+TEST_CASE("model_spec: TabDPT v1.3 has its own stem and one header sha for both tasks", "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	REQUIRE(BundledGpuGraphId("tabdpt-v1-3", "ext", "classification") == "graph_ext_tabdpt13_classification");
+	REQUIRE(BundledGpuGraphId("tabdpt-v1-3", "migraphx", "regression") == "graph_migraphx_tabdpt13_regression");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt-v1-3", "classification") ==
+	        "8ab85c0bf4ce2fc87a81f040b4170ae7c10b50d75bad937d2f8009558767b5a3");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt-v1-3", "regression") ==
+	        ExpectedWeightsHeaderShaFor("tabdpt-v1-3", "classification"));
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt-v1-3", "classification") !=
+	        ExpectedWeightsHeaderShaFor("tabdpt", "classification"));
+}
+
+TEST_CASE("model_spec: TabPFN-3.5 and 3.5-Fast map to their own stems and header shas", "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// Two variants, two architectures (24 vs 8 ICL layers), so two stems -- a
+	// shared stem would hand 3.5-Fast the 24-layer graph. Neither may fall back
+	// onto tabpfn-v3's graphs: 3.5 is a different architecture (ECDF cell
+	// channel, Fourier cell embedding, q/k RMSNorm, multi-task heads).
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5", "migraphx", "classification") ==
+	        "graph_migraphx_tabpfn35_classification");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5", "ext", "regression") == "graph_ext_tabpfn35_regression");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5-fast", "migraphx", "regression") ==
+	        "graph_migraphx_tabpfn35fast_regression");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5-fast", "ext", "classification") ==
+	        "graph_ext_tabpfn35fast_classification");
+	// Unchanged by the addition.
+	REQUIRE(BundledGpuGraphId("tabpfn-v3", "migraphx", "classification") == "graph_migraphx_tabpfn3_classification");
+
+	// ONE published safetensors per variant serves both tasks (both heads live
+	// in it), so both tasks pin the same header -- the one Prior Labs publish,
+	// read straight off the download with no conversion step.
+	const string sha35 = "8a237b22e16aeb1e2b0d15a280d17fdd030054643b53dae86c8552f640ba9302";
+	const string sha35fast = "733da85d68f73d3a18eabbc01ded64b19da6cabeecf0549f1980a3773d11508f";
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5", "classification") == sha35);
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5", "regression") == sha35);
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5-fast", "classification") == sha35fast);
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5-fast", "regression") == sha35fast);
+}
+
+TEST_CASE("model_spec: EXAONE Tabular and Nori-30M bundle masked ROCm graphs, keyed to the weights they were built against",
+          "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// the id has a dash and the resource stem an underscore; the id function owns that mapping
+	REQUIRE(BundledGpuGraphId("exaone-tabular", "migraphx", "classification") ==
+	        "graph_migraphx_exaone_tabular_classification");
+	REQUIRE(BundledGpuGraphId("exaone-tabular", "migraphx", "regression") ==
+	        "graph_migraphx_exaone_tabular_regression");
+	// the masked graphs bake offsets into LG's own files at the pinned revision (093ad1c2); the classifier and
+	// the regressor are different checkpoints, so their headers differ
+	REQUIRE(ExpectedWeightsHeaderShaFor("exaone-tabular", "classification") ==
+	        "d211d3dc9c8a8af8b2cfc74e58435640424725a802af5995d5cbd3e719246285");
+	REQUIRE(ExpectedWeightsHeaderShaFor("exaone-tabular", "regression") ==
+	        "8888839dd2aef01b1f9e01603edfdb77ab2b99eb789b110613074d3cac9da1e1");
+	// Nori-30M's masked ROCm graph reads the safetensors tools/export_nori's convert_nori_weights writes from
+	// nori.pt (773 tensors, sorted, float32: byte-deterministic). The CPU path still reads the .ckpt natively.
+	REQUIRE(BundledGpuGraphId("nori-30m", "migraphx", "regression") == "graph_migraphx_nori30m_regression");
+	REQUIRE(ExpectedWeightsHeaderShaFor("nori-30m", "regression") ==
+	        "49797138da9ce6d7bb76895cb00514bc6967732051811c217548f32c75a02363");
+	REQUIRE(ExpectedWeightsHeaderShaFor("nori-30m", "classification") == "");
+}

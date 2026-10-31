@@ -148,7 +148,61 @@ def _patched_get_scale_param(self, eval_pos, *, device, dtype) -> torch.Tensor:
     return beta
 
 
-def _patched_model_forward(self, x_src, y_src, num_features=None, **kwargs):
+def upgrade_to_v13(model):
+    """Give a (pinned tabdpt==1.2.0) TabDPTModel the TabDPT v1.3 y-encoders.
+
+    v1.3 (tabdpt 1.3.x, checkpoint tabdpt1_3.safetensors) changes exactly one
+    thing in the network: the per-layer target encoder. Transcribed from
+    upstream tabdpt 1.3.1 ``model.py``::
+
+        self.cls_y_encoders = nn.ModuleList(
+            [nn.Embedding(n_out, y_encoder_dim) for _ in range(nlayers)])
+        self.reg_y_encoders = nn.ModuleList([nn.Sequential(
+            nn.Linear(1, y_encoder_dim), nn.GELU(),
+            nn.Linear(y_encoder_dim, y_encoder_dim),
+            nn.LayerNorm(y_encoder_dim, elementwise_affine=False))
+            for _ in range(nlayers)])
+
+    and ``forward(..., is_cls)`` picks one: ``cls_y_encoders[l](y.long().clamp(0,
+    n_out - 1))`` for classification, ``reg_y_encoders[l](y.unsqueeze(-1))``
+    otherwise. Everything else (encoder, layers, head, scale param) is the v1.2
+    code verbatim, so the rest of this module applies unchanged.
+
+    Done as module surgery on the pinned 1.2 package rather than by bumping the
+    pin, because the pin is what (re-)exports the shipped v1.2 graphs: tabdpt
+    1.3 cannot even load tabdpt1_2.safetensors (its y_encoders keys are gone).
+    The upstream 1.3.1 package is the PARITY ORACLE instead (tests/test_v13.py).
+    """
+    import torch.nn as nn
+
+    if hasattr(model, "cls_y_encoders"):
+        return model
+    nlayers = len(model.y_encoders)
+    y_dim = model.y_encoders[0][2].out_features
+    model.cls_y_encoders = nn.ModuleList([nn.Embedding(model.n_out, y_dim) for _ in range(nlayers)])
+    model.reg_y_encoders = nn.ModuleList([
+        nn.Sequential(nn.Linear(1, y_dim), nn.GELU(), nn.Linear(y_dim, y_dim),
+                      nn.LayerNorm(y_dim, elementwise_affine=False))
+        for _ in range(nlayers)])
+    del model.y_encoders
+    return model
+
+
+def y_embedding(model, l: int, y_src: torch.Tensor, is_cls: bool) -> torch.Tensor:
+    """Layer ``l``'s target embedding of ``y_src`` (T, B) -> (T, B, y_dim).
+
+    v1.2: one MLP for both tasks. v1.3: an Embedding over the class id for
+    classification, an MLP for regression (see upgrade_to_v13).
+    """
+    if hasattr(model, "cls_y_encoders"):
+        if is_cls:
+            y_cls = y_src.long().clamp(min=0, max=model.n_out - 1)
+            return model.cls_y_encoders[l](y_cls)
+        return model.reg_y_encoders[l](y_src.unsqueeze(-1))
+    return model.y_encoders[l](y_src.unsqueeze(-1))
+
+
+def _patched_model_forward(self, x_src, y_src, num_features=None, is_cls=True, **kwargs):
     """Upstream TabDPTModel.forward, but the head runs over EVERY data row.
 
     Upstream ends with ``pred = self.head(src[eval_pos + n_think:])`` -- only
@@ -189,7 +243,7 @@ def _patched_model_forward(self, x_src, y_src, num_features=None, **kwargs):
         src = torch.cat([self.thinking_embed.unsqueeze(1).expand(n_think, B, -1), src], dim=0)
 
     for l, layer in enumerate(self.transformer_encoder):
-        y_emb = self.y_encoders[l](y_src.unsqueeze(-1))
+        y_emb = y_embedding(self, l, y_src, is_cls)
         if n_think > 0:
             B = y_emb.shape[1]
             y_emb = torch.cat([y_emb.new_zeros(n_think, B, y_emb.shape[-1]), y_emb], dim=0)
@@ -273,7 +327,9 @@ class ExportWrapper(torch.nn.Module):
         # it is passed for signature compatibility only.
         num_features = torch.tensor([self.num_features], dtype=torch.long,
                                     device=x.device)
-        out = self.m(x_src=x, y_src=y_src, num_features=num_features)  # (T-S, B, O)
+        # is_cls only matters for v1.3, whose y-encoder depends on the task.
+        out = self.m(x_src=x, y_src=y_src, num_features=num_features,
+                     is_cls=self.task == "classification")  # (T, B, O)
         out = out.transpose(0, 1)  # (B, T-S, O)
 
         if self.task == "classification":

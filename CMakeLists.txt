@@ -188,6 +188,25 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
             "${TABFM_MLX_DIR}/include")
         target_link_libraries(anofox_tabfm_mlx_plugin PRIVATE "${TABFM_MLX_C_LIB}" "${TABFM_MLX_LIB}")
         target_compile_features(anofox_tabfm_mlx_plugin PRIVATE cxx_std_17)
+        # mlx-c 0.7 changed two calls the plugin makes: cumsum over an axis became mlx_cumsum_axis with an
+        # output dtype, and fast_scaled_dot_product_attention gained force_fused. mlx-c has no version macro,
+        # so probe for the new API and let the sources pick the matching signature.
+        include(CheckCXXSourceCompiles)
+        set(CMAKE_REQUIRED_INCLUDES "${TABFM_MLX_DIR}/include")
+        set(CMAKE_REQUIRED_LIBRARIES "${TABFM_MLX_C_LIB}" "${TABFM_MLX_LIB}")
+        check_cxx_source_compiles("
+#include \"mlx/c/ops.h\"
+int main() {
+    mlx_array r = mlx_array_new();
+    mlx_optional_dtype none;
+    none.has_value = false;
+    return mlx_cumsum_axis(&r, r, 0, false, true, none, mlx_default_cpu_stream_new());
+}" TABFM_MLX_C_HAS_CUMSUM_AXIS)
+        unset(CMAKE_REQUIRED_INCLUDES)
+        unset(CMAKE_REQUIRED_LIBRARIES)
+        if(TABFM_MLX_C_HAS_CUMSUM_AXIS)
+            target_compile_definitions(anofox_tabfm_mlx_plugin PRIVATE TABFM_MLX_C_07=1)
+        endif()
         set_target_properties(anofox_tabfm_mlx_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
         set(TABFM_MLX_PLUGIN_BUILT TRUE)
     else()

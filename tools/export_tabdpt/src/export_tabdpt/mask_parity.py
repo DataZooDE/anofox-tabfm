@@ -47,8 +47,13 @@ def build_model(cfg, seed: int = 0, wake_residuals: bool = True):
     """
     from tabdpt.model import TabDPTModel
 
+    from export_tabdpt.tabdpt_patches import upgrade_to_v13
+
     torch.manual_seed(seed)
-    model = TabDPTModel(**cfg.model_kwargs).eval()
+    model = TabDPTModel(**cfg.model_kwargs)
+    if cfg.arch == "v1.3":
+        upgrade_to_v13(model)
+    model = model.eval()
     if wake_residuals:
         torch.manual_seed(seed + 977)
         woken = 0
@@ -155,7 +160,7 @@ def main(argv=None) -> int:
     labels into the scale of every prediction.
     """
     ap = argparse.ArgumentParser(prog="mask_parity")
-    ap.add_argument("--config", default="fixture", choices=["fixture", "real"])
+    ap.add_argument("--config", default="fixture", choices=["fixture", "real", "fixture13", "real13"])
     ap.add_argument("--rows", type=int, default=64)
     ap.add_argument("--features", type=int, default=8)
     ap.add_argument("--train-frac", type=float, default=0.75)
@@ -168,7 +173,8 @@ def main(argv=None) -> int:
     if args.only_compare:
         return compare(args.config, args.rows, args.features, args.train_frac, args.seed)
 
-    rc = self_test()
+    # The negative controls run on the fixture of the SAME architecture.
+    rc = self_test(fixture_cfg="fixture13" if args.config.endswith("13") else "fixture")
     if rc != 0:
         return rc
     for task in ("classification", "regression"):
@@ -179,7 +185,7 @@ def main(argv=None) -> int:
 
 
 
-def self_test(argv=None) -> int:
+def self_test(argv=None, fixture_cfg: str = "fixture") -> int:
     """Prove the gate can fail, then prove the conversion passes.
 
     A parity check that cannot fail is worse than none: it converts "untested"
@@ -191,7 +197,7 @@ def self_test(argv=None) -> int:
 
     from export_tabdpt import tabdpt_mask_patches as mp
 
-    shape = ("fixture", 64, 8, 0.75, 0)
+    shape = (fixture_cfg, 64, 8, 0.75, 0)
     controls = []
 
     saved_neg_inf = mp.NEG_INF

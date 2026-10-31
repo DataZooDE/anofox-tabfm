@@ -225,10 +225,11 @@ WeightsManifest FindManifest(ClientContext &context, const char *func_name, cons
 	auto registry = ModelRegistry::Build(TabFMState::Get(context)->RegisteredSpecs());
 	const ModelSpec &spec = registry.Resolve(model_id, StringSetting(context, "anofox_tabfm_default_model"));
 	if (!spec.HasTask(tfm_task)) {
+		const auto capable = registry.IdsWithTask(tfm_task);
 		throw InvalidInputException(
 		    "%s: model '%s' does not support task '%s'. Select a model that does (model := '<id>', or "
-		    "CALL tabfm_register_model(...)); see tabfm_list_models().",
-		    func_name, spec.id, task);
+		    "CALL tabfm_register_model(...)); see tabfm_list_models().%s",
+		    func_name, spec.id, task, capable.empty() ? string() : " Models that support it: " + capable + ".");
 	}
 	return WeightsFromSpec(spec, tfm_task);
 }

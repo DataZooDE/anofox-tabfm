@@ -473,9 +473,17 @@ const std::unordered_map<std::string, Handler> &Handlers() {
 	    {"CumSum",
 	     [](const Node &n, const Args &in, const Ctx &c) {
 		     Arr r;
+#ifdef TABFM_MLX_C_07 // mlx-c >= 0.7: the axis form is mlx_cumsum_axis and takes an output dtype (none = input's)
+		     mlx_optional_dtype same_dtype;
+		     same_dtype.has_value = false;
+		     Ok(mlx_cumsum_axis(r.out(), in[0]->get(), static_cast<int>(ToScalar(*in[1], c.s)),
+		                        AttrInt(n, "reverse", 0) != 0, AttrInt(n, "exclusive", 0) == 0, same_dtype, c.s),
+		        "cumsum");
+#else
 		     Ok(mlx_cumsum(r.out(), in[0]->get(), static_cast<int>(ToScalar(*in[1], c.s)),
 		                   AttrInt(n, "reverse", 0) != 0, AttrInt(n, "exclusive", 0) == 0, c.s),
 		        "cumsum");
+#endif
 		     return Wrap(std::move(r));
 	     }},
 	    {"Softmax",

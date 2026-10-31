@@ -19,6 +19,15 @@ HF_CONFIG_URL = (
     "https://huggingface.co/google/tabfm-1.0.0-pytorch/resolve/main/"
     "{task}/config.json"
 )
+# The v1 default. TabFM 1.1.0 lives in its own repo (google/tabfm-1.1.0-pytorch)
+# and is exported with --hf-repo/--hf-revision (registry id tabfm-v1-1).
+DEFAULT_REPO = "google/tabfm-1.0.0-pytorch"
+DEFAULT_REVISION = "main"
+
+
+def hf_config_url(task: str, repo: str = DEFAULT_REPO,
+                  revision: str = DEFAULT_REVISION) -> str:
+  return f"https://huggingface.co/{repo}/resolve/{revision}/{task}/config.json"
 
 # S01 shipping dynamic ranges.
 DIM_ROWS = ("rows", 4, 100_000)
@@ -82,7 +91,9 @@ def fixture() -> ExportConfig:
   )
 
 
-def fetch_real_config(task: str, config_json_path: str | None = None) -> dict:
+def fetch_real_config(task: str, config_json_path: str | None = None,
+                      repo: str = DEFAULT_REPO,
+                      revision: str = DEFAULT_REVISION) -> dict:
   """Read the real model's config.json (anonymous HTTPS or a local file).
 
   Returns {"kwargs": <TabFM kwargs>, "source": {url/path, sha256}}.
@@ -92,7 +103,7 @@ def fetch_real_config(task: str, config_json_path: str | None = None) -> dict:
     raw = open(config_json_path, "rb").read()
     origin = str(config_json_path)
   else:
-    url = HF_CONFIG_URL.format(task=task)
+    url = hf_config_url(task, repo, revision)
     with urllib.request.urlopen(url, timeout=60) as resp:
       raw = resp.read()
     origin = url
@@ -100,15 +111,20 @@ def fetch_real_config(task: str, config_json_path: str | None = None) -> dict:
   sha = hashlib.sha256(raw).hexdigest()
   # config.json holds TabFM kwargs directly (plus is_classifier, which the
   # caller overrides per task; decoder_hidden may be null).
+  # v1 ships decoder_hidden null -> dropped, so TabFM uses icl_dim*2; 1.1 ships
+  # an explicit 2048, which is kept and passed through to TabFM(...).
   kwargs = {k: v for k, v in cfg.items() if k != "is_classifier"}
   if kwargs.get("decoder_hidden") is None:
     kwargs.pop("decoder_hidden", None)
-  return {"kwargs": kwargs, "source": {"origin": origin, "sha256": sha},
-          "raw": cfg}
+  source = {"origin": origin, "sha256": sha}
+  if repo != DEFAULT_REPO or revision != DEFAULT_REVISION:
+    source.update(repo=repo, revision=revision)
+  return {"kwargs": kwargs, "source": source, "raw": cfg}
 
 
-def real(task: str, config_json_path: str | None = None) -> ExportConfig:
-  fetched = fetch_real_config(task, config_json_path)
+def real(task: str, config_json_path: str | None = None,
+         repo: str = DEFAULT_REPO, revision: str = DEFAULT_REVISION) -> ExportConfig:
+  fetched = fetch_real_config(task, config_json_path, repo, revision)
   return ExportConfig(
       name="real",
       model_kwargs=fetched["kwargs"],
@@ -122,11 +138,12 @@ def real(task: str, config_json_path: str | None = None) -> ExportConfig:
   )
 
 
-def get(name: str, task: str, config_json_path: str | None = None) -> ExportConfig:
+def get(name: str, task: str, config_json_path: str | None = None,
+        repo: str = DEFAULT_REPO, revision: str = DEFAULT_REVISION) -> ExportConfig:
   if name == "tiny":
     return tiny()
   if name == "fixture":
     return fixture()
   if name == "real":
-    return real(task, config_json_path)
+    return real(task, config_json_path, repo, revision)
   raise ValueError(f"unknown config {name!r} (tiny|fixture|real)")

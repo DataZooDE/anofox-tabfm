@@ -1,0 +1,59 @@
+# WS-A (EXAONE Tabular): LG AI Research EXAONE Tabular exporter -- see README.md.
+#
+#   uv sync
+#   uv run export_exaone --task classification --config real --out ./out   # graph + tensor map, weight-free
+#   uv run export_exaone --task regression     --config real --out ./out
+#   uv run make_exaone_fixture ../../test/fixtures/exaone                   # the committed random-init CI fixture
+#   uv run pytest                                                           # TABFM_REAL_WEIGHTS=1 adds the real-weight tests
+#
+# Upstream CODE is the `exaonetabular` package (BSD-3-Clause-LG AI Research License), which is not on PyPI,
+# so it is pinned to an exact commit of github.com/LGAI-Research/EXAONE-Tabular. The exporter patches its
+# modules at RUNTIME (exaone_patches.py); no upstream source is copied into this repo. The WEIGHTS are under
+# the EXAONE AI Model License Agreement 1.2 - NC (non-commercial; docs/REAL_MODELS.md) and are never part of
+# this project: the exported graphs are weight-free and the fixture is random-init.
+#
+# torch is pinned to the CPU index so no CUDA wheels are pulled.
+[project]
+name = "export-exaone"
+version = "0.1.0"
+description = "anofox-tabfm EXAONE Tabular exporter: CAST model -> weight-free ONNX graph + tensor-name map"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "torch==2.12.1",
+    "exaonetabular @ git+https://github.com/LGAI-Research/EXAONE-Tabular.git@d149d0f0441053f0cf6b2b45f4b2067a81619cf9",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "onnxscript>=0.2",
+    "numpy",
+    "safetensors",
+    "scikit-learn",
+    "huggingface_hub",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[project.scripts]
+export_exaone = "export_exaone.cli:main"
+make_exaone_fixture = "export_exaone.fixture_cli:main"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/export_exaone"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
