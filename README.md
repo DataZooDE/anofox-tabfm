@@ -178,33 +178,18 @@ The full index, including design notes and the history of plans and reviews, is
 | [docs/README.md](docs/README.md#history-plans-and-reviews) | History: the plans and reviews behind each feature |
 | [CHANGELOG.md](CHANGELOG.md) | Every release |
 
-<a id="quickstart"></a><a id="1-install--load"></a><a id="2-pick-a-model-and-download-its-weights-once"></a><a id="3-predict"></a>
-**Quickstart** moved to [Quick Start](#quick-start) and [Getting Started](docs/guides/01-getting-started.md).
+**Moved sections.** The old README's sections now live here (their links still land on this table):
 
-<a id="we-support-classification-and-regression"></a><a id="output-columns"></a>
-**Classification and regression** moved to [docs/api/01-functions.md](docs/api/01-functions.md).
-
-<a id="generate-synthetic-data-and-fill-gaps"></a><a id="output-columns-1"></a><a id="options"></a>
-**Generate synthetic data and fill gaps** moved to [Generate and impute](docs/guides/05-generate-and-impute.md)
-and [docs/api/03-generation.md](docs/api/03-generation.md).
-
-<a id="multiple-models-the-registry"></a><a id="managing-weights-and-devices"></a>
-**The registry** and **managing weights** moved to [Choosing a model](docs/guides/02-choosing-a-model.md) and
-[docs/api/02-models-and-weights.md](docs/api/02-models-and-weights.md).
-
-<a id="a-full-worked-example"></a><a id="evaluation-cross-validation--scoring"></a><a id="plot-with-anofox-visualization"></a>
-**The worked example, evaluation and plotting** moved to [Evaluate and compare](docs/guides/03-evaluate-and-compare.md),
-[docs/api/07-evaluation.md](docs/api/07-evaluation.md) and [docs/api/08-plotting.md](docs/api/08-plotting.md).
-
-<a id="settings"></a>
-**Settings** moved to [docs/api/05-settings.md](docs/api/05-settings.md).
-
-<a id="flavors-cpu--gpu"></a><a id="status--scope"></a>
-**Flavors (CPU / GPU)** moved to [GPU acceleration](docs/guides/04-gpu-acceleration.md) and
-[docs/api/04-gpu.md](docs/api/04-gpu.md).
-
-<a id="building"></a>
-**Building** moved to [docs/BUILDING.md](docs/BUILDING.md).
+| Old section | Now |
+|---|---|
+| <a id="quickstart"></a><a id="1-install--load"></a><a id="2-pick-a-model-and-download-its-weights-once"></a><a id="3-predict"></a>Quickstart | [Quick Start](#quick-start), [Getting Started](docs/guides/01-getting-started.md) |
+| <a id="we-support-classification-and-regression"></a><a id="output-columns"></a>Classification and regression | [Functions](docs/api/01-functions.md) |
+| <a id="generate-synthetic-data-and-fill-gaps"></a><a id="output-columns-1"></a><a id="options"></a>Generate synthetic data and fill gaps | [Generate and impute](docs/guides/05-generate-and-impute.md), [Generation](docs/api/03-generation.md) |
+| <a id="multiple-models-the-registry"></a><a id="managing-weights-and-devices"></a>The registry, managing weights | [Choosing a model](docs/guides/02-choosing-a-model.md), [Models and weights](docs/api/02-models-and-weights.md) |
+| <a id="a-full-worked-example"></a><a id="evaluation-cross-validation--scoring"></a><a id="plot-with-anofox-visualization"></a>Worked example, evaluation, plotting | [Evaluate and compare](docs/guides/03-evaluate-and-compare.md), [Evaluation](docs/api/07-evaluation.md), [Plotting](docs/api/08-plotting.md) |
+| <a id="settings"></a>Settings | [Settings](docs/api/05-settings.md) |
+| <a id="flavors-cpu--gpu"></a><a id="status--scope"></a>Flavors (CPU / GPU), Status & scope | [GPU acceleration](docs/guides/04-gpu-acceleration.md), [GPU](docs/api/04-gpu.md) |
+| <a id="building"></a>Building | [docs/BUILDING.md](docs/BUILDING.md) |
 
 ## Status
 
