@@ -3,7 +3,7 @@
 Model-agnostic evaluation primitives — they operate on plain `(actual,
 predicted[, proba])` columns, so they score **any** model's output, not just
 this extension's. Each has a full `anofox_tabfm_*` name and a short `tabfm_*`
-alias.
+alias. A worked example on real data: [Evaluate and compare](../guides/03-evaluate-and-compare.md).
 
 ## Classification metrics
 
@@ -20,6 +20,11 @@ FROM scored;
 -- confusion matrix is a table macro → tidy (actual, predicted, count):
 SELECT * FROM tabfm_confusion_matrix('scored', 'actual', 'predicted');
 ```
+
+`tabfm_accuracy`, `tabfm_precision`, `tabfm_recall` and `tabfm_f1` take labels of any type.
+`tabfm_log_loss`, `tabfm_roc_auc` and `tabfm_ece` take the label as `VARCHAR` and the probabilities as
+`MAP(VARCHAR, DOUBLE)`, which is the `proba` column of `tabfm_classify`; cast another label type with
+`::VARCHAR`. `NULL` rows are skipped.
 
 ## Regression metrics
 
@@ -38,9 +43,12 @@ FROM scored;
 **Leakage-safe k-fold cross-validation** — deterministic, seedable folds
 (`hash(row_key, seed) % k`); trains each fold on the others and predicts its
 held-out rows via the two-table form; returns per-fold plus aggregate
-(mean ± std) results:
+(mean ± std) results. It takes no `model :=`: it uses `anofox_tabfm_default_model`, so set that first.
+`metric` is one of `tabfm_accuracy` (the classification default), `tabfm_rmse` (the regression default),
+`tabfm_mae`, `tabfm_r2`, `tabfm_crps`, `tabfm_log_score`, `tabfm_interval_score`.
 
 ```sql
+SET anofox_tabfm_default_model = 'mitra';
 -- positional: data, target, row_key; then optional named k / seed / task / metric
 SELECT * FROM tabfm_cross_validate('customers', 'churned', 'id', k := 5, seed := 42);
 -- tabfm_fold_assign('customers', 5, 'id', 42) exposes the fold ids directly (data, k, row_key, seed)
@@ -63,5 +71,5 @@ FROM predictions;   -- `dist` is a STRUCT(logits[], borders[]) column
 
 > Note: these score a distribution column you supply — construct the
 > `STRUCT(logits[], borders[])` yourself (as the tests do) or from a model that
-> emits one. A built-in `tabfm_regress` distribution-output producer is not yet
-> wired on this branch (tracked as a follow-up).
+> emits one. `tabfm_regress` does not produce a distribution column yet: its
+> `output_mode` accepts only `compact` and `detail`.

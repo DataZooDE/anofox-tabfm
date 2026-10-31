@@ -1,24 +1,36 @@
 # GPU acceleration
 
-**Using a GPU.** A GPU backend is a plugin the extension `dlopen`s at runtime,
-not a separate build of the extension: fetch it, then select the device.
+A GPU backend is a plugin the extension `dlopen`s at runtime, not a separate build of the extension: fetch
+it, then select the device. Nothing changes until you ask; without a plugin every model runs on the CPU.
+The reference (support matrix, precision, platform limits) is [GPU](../api/04-gpu.md).
+
+## 1. Set it up
 
 ```sql
 CALL tabfm_accelerate();   -- finds the card, fetches its plugin, verifies it loads
--- that is it: anofox_tabfm_device defaults to 'auto', which now routes each
--- model to the best device IT can be served on, in this session.
 ```
 
 It reports what it did as `(step, status, detail)` rows, including what is
 still ahead of you (MIGraphX's first-shape compile, MLX's `brew install mlx
 mlx-c`). Re-running it re-verifies without re-downloading.
 
+That is all: `anofox_tabfm_device` defaults to `auto`, which routes each model to the best device whose
+plugin is present and which can serve that model, else the CPU.
+
+## 2. Check what serves each model
+
 To see the routing — and the reason for every model that stays on the CPU:
 
 ```sql
-SELECT * FROM tabfm_backends() WHERE NOT supported;
--- and confirm what actually served a query, rather than trusting the answers:
-SELECT model, device FROM tabfm_models() WHERE loaded;
+SELECT * FROM tabfm_devices();                       -- cpu, plus any CUDA / ROCm / MLX device found, and whether it is usable
+SELECT * FROM tabfm_backends() WHERE NOT supported;  -- per model and device: why not
+```
+
+Then confirm what actually served a query, rather than trusting the answers:
+
+```sql
+SELECT * FROM tabfm_classify('iris', 'species', model := 'mitra') WHERE species IS NULL;
+SELECT model, task, device FROM tabfm_models() WHERE loaded;
 ```
 
 `device` is which backend is serving the model right now — `cpu`, `cuda:0`,
@@ -26,7 +38,7 @@ SELECT model, device FROM tabfm_models() WHERE loaded;
 that a GPU is actually being used: a device that silently fell back to the CPU
 produces the same answers, only slower, so agreement alone will not tell you.
 
-The manual equivalent, if you want to place things yourself:
+## 3. Or place things yourself
 
 ```sql
 CALL tabfm_download_runtime('cuda');    -- plugin + ORT GPU runtime, into the cache dir
@@ -39,13 +51,13 @@ errors, rather than quietly running on the CPU.
 
 ## ROCm: the first-run compile
 
-**ROCm first-run cost — plan for it.** MIGraphX compiles a program per
-(GPU arch, precision, shape bucket), and on the full-size model that compile is
-**~25 minutes** (measured, gfx1201, fp32 or bf16) — while every *later* predict
-in that bucket is sub-second. Two tools manage this:
+MIGraphX compiles a program per (GPU arch, precision, shape bucket). The first predict in a bucket pays
+that compile, which takes minutes ([per model](../api/04-gpu.md#rocm-compile-time)); every *later* predict
+in that bucket is sub-second. Two tools keep it off the query path:
 
 ```sql
-CALL tabfm_gpu_precompile('classification');   -- warm the bucket now, on purpose
+-- warm a bucket now, on purpose: task, then optionally rows and features
+CALL tabfm_gpu_precompile('classification', 1000, 50, model := 'mitra');
 SET anofox_tabfm_mxr_source = '/shared/mxr';   -- or stage programs compiled elsewhere
 ```
 

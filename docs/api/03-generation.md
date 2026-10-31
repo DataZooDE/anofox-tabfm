@@ -1,9 +1,22 @@
 # Generation and imputation
 
+How to use them, and what to check: [Generate and impute](../guides/05-generate-and-impute.md). The method,
+what binning preserves and why this is not a privacy mechanism: [docs/GENERATE.md](../GENERATE.md).
+
 ```sql
 tabfm_generate(data, n [, features] [, opts] [, model])           -- sample new rows
 tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
 ```
+
+```sql
+SELECT * FROM tabfm_generate('customers', 500, opts := MAP{'seed': '7', 'temperature': '0.8'}, model := 'mitra');
+SELECT * FROM tabfm_impute('raw', columns := ['income'], opts := MAP{'rounds': '3'}, model := 'mitra');
+```
+
+`n` is a positive constant. `columns` limits which columns are filled (default: every column with a NULL);
+`features` limits which columns are used at all. Generation needs only classification weights, so it works
+with classify-only models; imputing a numeric column also needs the model's regression weights. A `NaN` in
+a `FLOAT`/`DOUBLE` column being filled counts as missing, like `NULL`; `+/-Infinity` there is an error.
 
 ## Output columns
 
@@ -16,6 +29,8 @@ tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
 `tabfm_impute` returns **exactly** the columns of `data`, so it round-trips.
 
 ## Options
+
+`opts` is a constant `MAP` with `VARCHAR` values; an unknown key or a value out of range is an error.
 
 | key | default | applies to | meaning |
 |---|---|---|---|

@@ -1,25 +1,47 @@
 # Settings
 
-| Setting | Default | Purpose |
+Set with `SET name = value;`. The texts below follow each setting's own description
+(`SELECT name, description FROM duckdb_settings() WHERE name LIKE 'anofox_tabfm%';`). Settings are not
+stored: repeat them in each new process.
+
+| Setting | Default | Meaning |
 |---|---|---|
-| `anofox_tabfm_accept_hf_license` | `false` | license gate — downloads fail without it |
-| `anofox_tabfm_cache_dir` | `~/.cache/anofox-tabfm` | weight cache root (pre-seed for air-gapped use) |
-| `anofox_tabfm_threads` | cores / 2 | ONNX Runtime intra-op threads |
-| `anofox_tabfm_cpu_prepack` | `true` | prepack weights for faster CPU matmuls (~+16% RSS) |
-| `anofox_tabfm_context_cache` | `false` | encode the labelled context once and reuse it, for models that ship a prepare/query graph pair — see [docs/KV_CACHE_DESIGN.md](../KV_CACHE_DESIGN.md) |
-| `anofox_tabfm_max_rows` | `10000` | guardrail per predict / group |
-| `anofox_tabfm_max_features` | `500` | guardrail |
-| `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `mlx` / `coreml` (`migraphx` alias for `rocm`). `cuda`, `rocm` and `mlx` are explicit opt-ins — `auto` never selects a device whose plugin is fetched separately |
-| `anofox_tabfm_gpu_precision` | `fp32` | GPU numeric mode: `fp32` (strict — same answers as CPU, measured exact on both GPUs) / `tf32` (CUDA tensor-core rounding) / `bf16` / `fp16` (ROCm quantize; flip rates vs fp32 are model-dependent — measured: tabfm-v1 bf16 flipped ~2% including high-confidence rows, mitra bf16 flipped 30% of query rows but only at near-ties (margins ≤ 0.023) while fp16 flipped 10% at margins ≤ 0.002 — validate on your data) |
-| `anofox_tabfm_max_sessions` | `4` | loaded (device, precision) sessions kept per model; oldest evicted beyond this |
-| `anofox_tabfm_max_memory` | `''` | refuse predicts once resident memory is at/above this (e.g. `'16GB'`); `''` disables |
-| `anofox_tabfm_default_model` | `''` | session-wide model when `model :=` is not given |
-| `anofox_tabfm_mxr_source` | `''` | directory of precompiled ROCm `.mxr` programs to stage from |
-| `anofox_tabfm_ep_path` | `''` | directory holding the GPU backend plugin (and the runtime libraries beside it) |
-| `anofox_tabfm_trace_level` | `warn` | log verbosity: `error` / `warn` / `info` / `debug` / `trace` |
+| `anofox_tabfm_accept_hf_license` | `false` | Your acknowledgement of a model's licence. Every model marked *gated* in the [Models table](../../README.md#models) fails to download without it ([licence acknowledgement](../guides/01-getting-started.md#licence-acknowledgement-and-gated-repositories)) |
+| `anofox_tabfm_default_model` | `''` | Model id used when `model :=` is not given. `''`: a single SQL-registered model if there is one, else every call must name a model |
+| `anofox_tabfm_cache_dir` | `~/.cache/anofox-tabfm` | Weight cache root directory (pre-seed it for air-gapped use) |
+| `anofox_tabfm_threads` | usable cores / 2 | ONNX Runtime intra-op thread count for CPU inference |
+| `anofox_tabfm_cpu_prepack` | `true` | ONNX Runtime weight prepacking on the CPU: faster matmuls at ~+16% resident memory |
+| `anofox_tabfm_context_cache` | `false` | Encode the labelled context once and reuse it across calls, for models that ship a split graph pair (prepare/query). It pays off when the same context is scored more than once (chunked scoring, repeated queries against a fixed training table) and costs extra on a single call. Test-row predictions match the combined graph; the fitted values on *context* rows differ, because the query half no longer sees a context row's own label. Inert for a model that ships no pair |
+| `anofox_tabfm_max_rows` | `10000` | Maximum rows per predict call or group |
+| `anofox_tabfm_max_features` | `500` | Maximum feature columns per predict call |
+| `anofox_tabfm_max_sessions` | `4` | Cap on cached model sessions **across all models, devices and precisions**; beyond it the oldest-loaded session is evicted. Sessions are cached per (model, device, precision) so switching devices does not rebuild multi-GB sessions |
+| `anofox_tabfm_max_memory` | `''` | Refuse a predict call when this process's resident memory is already at or above this size (e.g. `'16GB'`) before the call starts, so the failure is a DuckDB exception instead of an OOM kill. `''` disables the check. It does not bound how much a single large call can grow memory by itself |
+| `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `mlx` / `coreml` (`migraphx` is an alias for `rocm`). `auto` resolves per model: the best device that model can actually be served on (its plugin present and a graph available), else the CPU. Naming a device is a hard request: it errors rather than falling back. `coreml` needs a source build with `TABFM_FLAVOR=coreml` and `auto` does not reach for it ([GPU](04-gpu.md#choosing-the-device)) |
+| `anofox_tabfm_gpu_precision` | `fp32` | `fp32` / `tf32` / `bf16` / `fp16`. `fp32` is strict: a device switch does not change answers. `tf32` is CUDA only; `bf16` / `fp16` quantize the ROCm program and are rejected on CUDA. Label flips against fp32 are not confined to near-ties: validate on your own data ([Precision](04-gpu.md#precision)) |
+| `anofox_tabfm_ep_path` | `''` | Directory holding the GPU backend plugins and the runtime libraries they load. `''`: the `runtime` subdirectory of `anofox_tabfm_cache_dir`, where `tabfm_download_runtime` and `tabfm_accelerate` put them |
+| `anofox_tabfm_mxr_source` | `''` | Directory of precompiled MIGraphX `.mxr` programs. Before compiling a shape bucket, a matching program here is staged into the cache and reused; `''` always compiles on the device. Programs are arch- and ROCm-version-specific ([ROCm compile time](04-gpu.md#rocm-compile-time)) |
+| `anofox_tabfm_trace_level` | `warn` | Diagnostic verbosity: `error` / `warn` / `info` / `debug` / `trace` |
+| `anofox_telemetry_enabled` | `true` | Anonymous usage telemetry, see [TELEMETRY.md](../../TELEMETRY.md) |
+| `datazoo_banner` | `true` | The once-a-day feedback banner in interactive terminals |
 
 ## Options
 
-Options (the trailing `opts` MAP, all values VARCHAR): `task`, `n_estimators`
-(v1: `1`), `seed`, `output_mode` (`compact` / `detail`), `context_rows`,
-`softmax_temperature`, `model`. Unknown keys error.
+The trailing `opts` MAP of `tabfm_classify` / `tabfm_regress` (all values `VARCHAR`; an unknown key is an
+error that lists the valid ones). Generation options are in [Generation](03-generation.md#options).
+
+| key | values | default | meaning |
+|---|---|---|---|
+| `task` | `auto`, `classification`, `regression` | fixed by the function | which task to run; `tabfm_classify` and `tabfm_regress` set it for you |
+| `n_estimators` | `1` | `1` | ensemble size; only `1` today, a value above 1 is an error (not yet available) |
+| `seed` | integer | `42` | RNG seed |
+| `output_mode` | `compact`, `detail` | `detail` for `tabfm_classify` | `detail` adds the `proba` map |
+| `context_rows` | `''` or a non-negative integer | `''` | accepted and validated, but has no effect today: the full context is always used |
+| `softmax_temperature` | a positive number | `0.9` | temperature applied to the class probabilities |
+| `model` | a model id | | the same as `model :=` |
+
+## Environment variables
+
+| Variable | Used for |
+|---|---|
+| `DATAZOO_DISABLE_TELEMETRY=1` | turns telemetry off, like `SET anofox_telemetry_enabled = false` |
+| `DATAZOO_NO_BANNER=1` | silences the feedback banner, like `SET datazoo_banner = false` |

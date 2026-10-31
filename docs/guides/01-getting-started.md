@@ -46,31 +46,59 @@ SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox
 
 ## 2. Pick a model and download its weights (once)
 
-`SELECT * FROM tabfm_list_models();` shows the seven built-in models. `mitra` is a
-good default — Apache-2.0, ~303 MB. It also has a permissive license. The extension ships only
-**weight-free** graphs; the weights have to be downloaded from Hugging Face before using the model:
+`SELECT model, capabilities, license, commercial, downloaded FROM tabfm_list_models();` lists every
+built-in model ([the table](../../README.md#models) says the same). `mitra` is a good first model:
+Apache-2.0, ungated, about 303 MB per task. The extension ships only **weight-free** graphs; the weights
+are downloaded from Hugging Face before the model is used:
 
 ```sql
+INSTALL httpfs; LOAD httpfs;
 CALL tabfm_download('classification', model := 'mitra');    -- ~303 MB, cached in ~/.cache/anofox-tabfm
+CALL tabfm_download('regression', model := 'mitra');        -- only if you will call tabfm_regress
 ```
 
-Models whose license needs an explicit nod (`tabfm-v1`, `tabpfn-v2`, `tabpfn-v2-5`,
-`tabpfn-v3` — "(gated)" in the table below) additionally need
-`SET anofox_tabfm_accept_hf_license = true;` before `tabfm_download`.
-
-Some repositories are additionally **gated by Hugging Face** — accept the license on
-the model page while signed in, then pass your token via a standard DuckDB secret:
+Downloading does not select a model. Name it in every call with `model := 'mitra'`, or set it once for
+the session:
 
 ```sql
-CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_xxx', SCOPE 'https://huggingface.co');
+SET anofox_tabfm_default_model = 'mitra';
 ```
 
-A download that needs this fails with an error naming both steps. See
-[`docs/REAL_MODELS.md`](../REAL_MODELS.md#gated-huggingface-repositories).
+Without either, a call fails with *"N models are registered (...) and none is selected"* and names both
+remedies.
+
+### Licence acknowledgement and gated repositories
+
+Two separate gates can stand between you and a model's weights:
+
+* **Licence acknowledgement** (this extension's gate). A model whose *Gated* column in
+  [the Models table](../../README.md#models) says *yes* downloads only after you acknowledge its licence:
+
+  ```sql
+  SET anofox_tabfm_accept_hf_license = true;
+  CALL tabfm_download('classification', model := 'tabpfn-v2');
+  ```
+
+  Without it `tabfm_download` fails and prints that `SET` statement. The setting covers every gated model,
+  whatever its licence; read the licence in the model's Hugging Face repository first. The acceptance is
+  recorded in the cache on the first gated download.
+* **Gated Hugging Face repository** (Hugging Face's gate). Some repositories serve their files only to a
+  signed-in account that has accepted the licence on the model page. Accept it there, then pass your token
+  with a standard DuckDB secret:
+
+  ```sql
+  CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_xxx', SCOPE 'https://huggingface.co');
+  ```
+
+  A download that needs this fails with HTTP 401 (no token) or 403 (token fine, licence not accepted on the
+  model page), and the error names both steps. See
+  [`docs/REAL_MODELS.md`](../REAL_MODELS.md#gated-huggingface-repositories).
+
+A model can need both.
 
 ## 3. Predict
 
-A concrete example — the classic **iris** dataset (classifying four flower measurements into 
+A concrete example — the classic **iris** dataset (classifying four flower measurements into
 species), read straight from Hugging Face, with 20% of the species hidden as
 `NULL` so we can predict them:
 
@@ -92,8 +120,7 @@ score:
 | 5.2 | 2.7 | 3.9 | 1.4 | **NULL** |
 | 6.5 | 3.0 | 5.8 | 2.2 | **NULL** |
 
-Predict the hidden species — zero-shot, no training. Every function takes
-`model :=` (or `SET anofox_tabfm_default_model = 'mitra'` once for the session):
+Predict the hidden species — zero-shot, no training:
 
 ```sql
 SELECT sepal_len, sepal_wid, petal_len, petal_wid, yhat AS predicted_species, yhat_score
@@ -109,3 +136,10 @@ WHERE species IS NULL;
 
 That's it — a foundation model scoring your data, from SQL. (On a held-out split
 `mitra` gets iris **96%** right; see [`examples/`](../../examples/README.md).)
+
+## Next
+
+- Score a separate test table, choose features, options and output columns: [Functions](../api/01-functions.md)
+- Compare models and pick one: [Choosing a model](02-choosing-a-model.md)
+- Measure the predictions: [Evaluate and compare](03-evaluate-and-compare.md)
+- Use a GPU: [GPU acceleration](04-gpu-acceleration.md)
