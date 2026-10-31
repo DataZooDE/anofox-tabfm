@@ -122,6 +122,9 @@ struct WeightsManifest {
 	//! "non-commercial".
 	bool commercial = false;
 	vector<WeightsFileEntry> files;
+	//! The task's tensor map (a bundled resource id or a path); tabfm_download reads it to write the GPU
+	//! weights of a checkpoint whose graph uses a subset of its tensors.
+	string tensor_map_path;
 	bool builtin = false;
 	//! Registered/user models resolve their files here instead of the cache
 	//! ("" for built-ins). Without it tabfm_models() cannot see them at all.
@@ -169,6 +172,7 @@ WeightsManifest WeightsFromSpec(const ModelSpec &spec, TabFMTask task) {
 	result.commercial = spec.license.commercial;
 	result.builtin = spec.source_dir.empty(); // built-ins carry no source dir
 	result.source_dir = spec.source_dir;
+	result.tensor_map_path = art.tensor_map_path;
 	for (auto &f : art.files) {
 		WeightsFileEntry entry;
 		entry.path = f.path;
@@ -459,6 +463,42 @@ struct ConvertedWeights {
 	string status;
 };
 
+//! The state_dict entries a bundled tensor map that declares itself complete names (its initializer
+//! values); empty when the map is not bundled, not complete, or names a key the checkpoint lacks.
+unordered_map<string, CkptTensor> TensorMapSubset(const string &tensor_map_id,
+                                                  const unordered_map<string, CkptTensor> &state_dict) {
+	unordered_map<string, CkptTensor> subset;
+	auto res = GetBundledResource(tensor_map_id);
+	if (!res.data) {
+		return subset;
+	}
+	using namespace duckdb_yyjson; // NOLINT
+	auto doc = yyjson_read(res.data, res.size, 0);
+	if (!doc) {
+		return subset;
+	}
+	auto root = yyjson_doc_get_root(doc);
+	auto complete = yyjson_obj_get(root, "complete");
+	auto inits = yyjson_obj_get(root, "initializers");
+	if (complete && yyjson_is_true(complete) && inits && yyjson_is_obj(inits)) {
+		size_t idx, max;
+		yyjson_val *key, *val;
+		yyjson_obj_foreach(inits, idx, max, key, val) {
+			if (!yyjson_is_str(val)) {
+				continue;
+			}
+			auto it = state_dict.find(yyjson_get_str(val));
+			if (it == state_dict.end()) {
+				subset.clear();
+				break;
+			}
+			subset.emplace(it->first, it->second);
+		}
+	}
+	yyjson_doc_free(doc);
+	return subset;
+}
+
 bool WriteGpuWeights(FileSystem &fs, const WeightsManifest &manifest, const string &ckpt_path,
                      ConvertedWeights &result) {
 	if (!StringUtil::EndsWith(StringUtil::Lower(ckpt_path), ".ckpt")) {
@@ -503,7 +543,17 @@ bool WriteGpuWeights(FileSystem &fs, const WeightsManifest &manifest, const stri
 		return true;
 	}
 	if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected) {
-		return false; // these graphs were built from a renamed or retyped file; see above
+		// A checkpoint can also carry tensors its graph never reads (Orion-MSP); its tensor map then says
+		// "complete", and the file the graphs were pinned against holds exactly the map's tensors.
+		auto subset = TensorMapSubset(manifest.tensor_map_path, state_dict);
+		if (subset.empty()) {
+			return false; // these graphs were built from a renamed or retyped file; see above
+		}
+		header = CkptSafetensorsHeader(subset);
+		if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected) {
+			return false;
+		}
+		state_dict = std::move(subset);
 	}
 	const auto part = result.path + ".part";
 	{

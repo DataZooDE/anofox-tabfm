@@ -73,7 +73,11 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   ABI 1, so this release's plugins must be fetched with it (`CALL tabfm_accelerate()`).
 - **Orion-BiX and Orion-MSP read their `.ckpt` natively again.** The checkpoint reader rejected pickle opcode
   0x65 (`APPENDS`, which builds the lists in the checkpoint's config), so both needed
-  `tools/export_orion_*/convert_weights.py` before the CPU could read them; it now reads past lists.
+  `tools/export_orion_*/convert_weights.py` before the CPU could read them; it now reads past lists. Orion-MSP's
+  checkpoint also carries tensors its graph never reads, which made injection fail; its tensor map now declares
+  itself complete, and `tabfm_download` writes its GPU file from the map's tensors (byte-identical to the
+  converter's). `test/sql/tabfm_fresh_download.test` (real weights) runs Orion-MSP, Orion-BiX and Kumo-small from
+  an empty cache, the path every new user takes and the one the developer caches had hidden.
 - **MLX no longer claims models it cannot run.** `tabfm_backends()` listed tabdpt, tabdpt-v1-3, the Kumo
   models and orion-msp as runnable on `mlx`, and under `auto` an Apple-silicon machine picked mlx for them and
   then failed to load. The extension now knows the op set of the plugin's graph interpreter (a test keeps it

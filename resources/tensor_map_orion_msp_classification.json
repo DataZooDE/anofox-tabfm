@@ -1,4 +1,5 @@
 {
+  "complete": true,
   "initializers": {
     "m.col_embedder.in_linear.bias": "col_embedder.in_linear.bias",
     "m.col_embedder.in_linear.weight": "col_embedder.in_linear.weight",
