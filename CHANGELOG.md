@@ -50,6 +50,11 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   session is built on the first predict.
 - The `anofox_tabfm_accept_hf_license` help text names every gated model (tabfm-v1, the tabpfn-* models, causilo,
   limix-2m), not only Google's weights.
+- **MLX serves TabPFN-3.5 and 3.5-Fast**: the graph interpreter gained ONNX `Round` (half to even, as MLX's).
+  `test/sql/tabfm_mlx_real_models.test` (Apple silicon, real weights) runs mitra-v2, tabfm-v1-1, tabpfn-v3-5
+  and tabpfn-v3-5-fast on `mlx:0` and checks every row against the CPU (0/100 label differences each). TabDPT
+  (v1.2 and v1.3) stays refused on mlx by name: with `ConstantOfShape` added its graphs run but disagree with
+  the CPU, so the op is left out until that is found.
 - The MLX plugin (Apple silicon) builds against mlx-c 0.7 as well as earlier versions: CMake probes the new
   `mlx_cumsum_axis` signature and picks the matching `cumsum` and `scaled_dot_product_attention` calls
   (Homebrew ships mlx-c 0.7.0). Verified on an M3: the full suite is green, and mitra on `mlx:0` matches CPU.

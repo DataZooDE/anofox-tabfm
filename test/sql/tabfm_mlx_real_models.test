@@ -1,0 +1,213 @@
+# name: test/sql/tabfm_mlx_real_models.test
+# description: The MLX backend (Apple silicon) serves the newer models on mlx:0, with the real weights,
+#              and agrees with the CPU (ONNX Runtime) on every row.
+#
+#              MLX has no ONNX importer, so the plugin interprets each model's ext graph op by op
+#              (src/tabfm_mlx_graph_ops.inc) and refuses a graph that needs an op it lacks. This file is
+#              the check that every model the catalogue says is mlx-servable really runs there: it asks
+#              for device 'mlx' explicitly (a silent CPU fallback would also "agree with the CPU") and
+#              reads the serving device from tabfm_models().
+#
+#              Needs Apple silicon and the weights downloaded (see tabfm_real_models.test for the CALL
+#              tabfm_download lines; mitra-v2, tabdpt, tabdpt-v1-3, tabfm-v1-1, tabpfn-v3-5,
+#              tabpfn-v3-5-fast):
+#
+#                TABFM_REAL_WEIGHTS=1 TABFM_MLX=1 ./build/release/test/unittest test/sql/tabfm_mlx_real_models.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_REAL_WEIGHTS
+
+require-env TABFM_MLX
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true;
+
+statement ok
+SET anofox_tabfm_ep_path = 'build/release/extension/anofox_tabfm';
+
+# 100 rows x 8 features, 70 context rows and 30 queries; three classes and a smooth target.
+statement ok
+CREATE TABLE g AS SELECT i AS rid, sin(i * 0.11) f1, cos(i * 0.07) f2, (i % 13) / 13.0 f3, ln(1 + (i % 31)) f4,
+  (i % 5)::DOUBLE f5, sin(i * 0.3) * cos(i * 0.05) f6, (i * 7 % 11)::DOUBLE f7, i / 100.0 f8,
+  CASE WHEN i < 70 THEN (CASE WHEN sin(i * 0.11) + 0.5 * cos(i * 0.07) > 0.3 THEN 'a'
+                              WHEN sin(i * 0.11) + 0.5 * cos(i * 0.07) > -0.3 THEN 'b' ELSE 'c' END) END AS label,
+  CASE WHEN i < 70 THEN sin(i * 0.11) * 5 + cos(i * 0.07) * 2 + (i * 7 % 11) * 0.1 END AS target
+FROM range(100) t(i);
+
+statement ok
+CREATE TABLE gc AS SELECT * EXCLUDE (target) FROM g;
+
+statement ok
+CREATE TABLE gr AS SELECT * EXCLUDE (label) FROM g;
+
+# ---------------------------------------------------------------------------
+# mitra-v2
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE mitra_v2_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'mitra-v2') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE mitra_v2_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'mitra-v2') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE mitra_v2_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'mitra-v2') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE mitra_v2_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'mitra-v2') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'mitra-v2' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM mitra_v2_cc c JOIN mitra_v2_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM mitra_v2_cr c JOIN mitra_v2_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# tabfm-v1-1
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabfm_v1_1_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1-1') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabfm_v1_1_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1-1') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabfm_v1_1_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1-1') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabfm_v1_1_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1-1') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabfm-v1-1' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabfm_v1_1_cc c JOIN tabfm_v1_1_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabfm_v1_1_cr c JOIN tabfm_v1_1_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# TabDPT (v1.2 and v1.3) is REFUSED on mlx, by name. Its ext graphs need ConstantOfShape (and v1.3's
+# regression graph ReduceProd). With those two ops added the graph does run on mlx:0 -- and then 63-66 of
+# 100 labels disagree with the CPU (row 0 matches to 6 digits, later rows drift), so some op the TabDPT
+# graphs use is interpreted wrongly. An honest refusal beats a wrong answer: the ops stay out until that is
+# found, and this asserts the refusal names what is missing and the way out.
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement error
+SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt-v1-3')
+----
+<REGEX>:.*does not implement \(ConstantOfShape\).*anofox_tabfm_device='cpu'.*
+
+statement error
+SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt')
+----
+<REGEX>:.*does not implement \(ConstantOfShape\).*anofox_tabfm_device='cpu'.*
+
+# ---------------------------------------------------------------------------
+# tabpfn-v3-5-fast
+# tabpfn-v3-5-fast needs Round, which the interpreter did not implement until this file was added.
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabpfn_v3_5_fast_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3-5-fast') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v3_5_fast_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3-5-fast') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabpfn_v3_5_fast_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3-5-fast') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v3_5_fast_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3-5-fast') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v3-5-fast' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabpfn_v3_5_fast_cc c JOIN tabpfn_v3_5_fast_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabpfn_v3_5_fast_cr c JOIN tabpfn_v3_5_fast_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# tabpfn-v3-5
+# tabpfn-v3-5 needs Round, which the interpreter did not implement until this file was added.
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabpfn_v3_5_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3-5') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v3_5_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3-5') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabpfn_v3_5_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3-5') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v3_5_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3-5') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v3-5' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabpfn_v3_5_cc c JOIN tabpfn_v3_5_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabpfn_v3_5_cr c JOIN tabpfn_v3_5_gr g USING (rid)
+----
+true
