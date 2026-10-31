@@ -9,6 +9,8 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 
+#include <set>
+
 using namespace duckdb;
 using namespace duckdb::anofox;
 using Catch::Matchers::Contains;
@@ -462,4 +464,66 @@ TEST_CASE("registry: EXAONE Tabular ships built in, non-commercial (EXAONE NC 1.
 	REQUIRE_THAT(m.tasks.at(TabFMTask::REGRESSION).files[0].url, Contains("regressor-v1_default"));
 	REQUIRE(m.tasks.at(TabFMTask::CLASSIFICATION).files[0].path !=
 	        m.tasks.at(TabFMTask::REGRESSION).files[0].path);
+}
+
+TEST_CASE("registry: Kumo-Tabular ships built in at three sizes, commercial and ungated under OpenMDW-1.1, pinned to v1.0.1",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	struct Size {
+		const char *id;
+		const char *dir;
+		int64_t clf_bytes;
+		int64_t reg_bytes;
+	};
+	// Exact LFS sizes at the pinned revision (identical on main): the engine treats a size mismatch as
+	// "not downloaded".
+	const Size sizes[] = {{"kumo-tabular-small", "small", 109936978, 113968523},
+	                      {"kumo-tabular-medium", "medium", 246117940, 250144651},
+	                      {"kumo-tabular-large", "large", 854850034, 862909259}};
+	for (auto &size : sizes) {
+		INFO(size.id);
+		REQUIRE(reg.Has(size.id));
+		auto &m = reg.Get(size.id);
+		// OpenMDW-1.1 grants use "without restriction" (commercial included) and the HF repo is not gated, so
+		// there is no licence acknowledgement to require. Its one distribution duty -- keep a copy of the
+		// agreement and NVIDIA's copyright notices -- must be quoted where a user sees the model.
+		REQUIRE(m.license.id == "openmdw-1.1");
+		REQUIRE(m.license.commercial == true);
+		REQUIRE(m.license.redistributable == true);
+		REQUIRE(m.license.gate_setting.empty());
+		REQUIRE_THAT(m.license.attribution, Contains("Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES"));
+		REQUIRE_THAT(m.license.attribution, Contains("retain a copy of the OpenMDW-1.1 agreement"));
+		REQUIRE_THAT(m.license.attribution, Contains("https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE"));
+
+		REQUIRE(m.HasCapability("classify"));
+		REQUIRE(m.HasCapability("regress"));
+		// Kumo's single-estimator recipe IS the engine's standardising profile, so not *_raw
+		REQUIRE(m.preprocessing_profile == "kumo_tabular_v1_minimal");
+		REQUIRE(m.size_regime.max_classes == 10);
+		REQUIRE(m.size_regime.max_features == 500);
+		// measured cap: the masked graph attends over all rows; 10000 rows needed ~30 GB on the SMALL model
+		REQUIRE(m.size_regime.max_rows == 5000);
+
+		for (auto task : {TabFMTask::CLASSIFICATION, TabFMTask::REGRESSION}) {
+			auto &t = m.tasks.at(task);
+			REQUIRE(t.repo == "nvidia/Kumo-Tabular");
+			// the tag upstream's own loader pins (KumoTabular._load_from_pretrained, revision="v1.0.1")
+			REQUIRE(t.revision == "b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f");
+			REQUIRE(t.files.size() == 1);
+			const string pt = task == TabFMTask::CLASSIFICATION ? "classifier.pt" : "regressor.pt";
+			REQUIRE_THAT(t.files[0].url, Contains("/resolve/b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f/" +
+			                                      string(size.dir) + "/" + pt));
+			// declared as .ckpt so the converted sibling model.safetensors is preferred (GPU graphs)
+			REQUIRE(t.files[0].path == string(size.dir) + "/" + TabFMTaskName(task) + "/model.ckpt");
+			REQUIRE(t.files[0].bytes == (task == TabFMTask::CLASSIFICATION ? size.clf_bytes : size.reg_bytes));
+		}
+	}
+	// All six checkpoints live in ONE HF repo, so every (size, task) needs its own cache path.
+	std::set<string> paths;
+	for (auto &size : sizes) {
+		for (auto task : {TabFMTask::CLASSIFICATION, TabFMTask::REGRESSION}) {
+			paths.insert(reg.Get(size.id).tasks.at(task).files[0].path);
+		}
+	}
+	REQUIRE(paths.size() == 6);
 }

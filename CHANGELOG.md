@@ -32,6 +32,10 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   AI Model License 1.2 - NC), gated by `anofox_tabfm_accept_hf_license`. Plain attention in place of
   upstream's pinned FlashAttention; labels identical to upstream's single forward on iris and wine. ROCm is
   served through a second, masked graph per task (0/100 label differences against the CPU on a gfx1201).
+- **NVIDIA Kumo-Tabular, three sizes: `kumo-tabular-small`, `-medium`, `-large`** (classify + regress).
+  Weights OpenMDW-1.1: commercial use permitted, no licence gate. The `.pt` checkpoints run on the CPU with
+  no conversion; `tools/export_kumo` `convert_kumo_weights` enables the bundled CUDA/ROCm graphs. One estimator,
+  up to 10 classes, 5,000 rows. See docs/REAL_MODELS.md.
 
 ### Changed
 - **Documentation restructured**: a short README in the anofox-forecast / anofox-decide layout, with guides
