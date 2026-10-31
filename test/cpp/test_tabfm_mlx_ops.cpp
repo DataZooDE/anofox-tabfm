@@ -61,8 +61,27 @@ TEST_CASE("mlx ops: which bundled ext graphs MLX can run", "[tabfm][mlx_ops]") {
 	REQUIRE(missing_for("graph_ext_mitra_classification") == V {});
 	REQUIRE(missing_for("graph_ext_tabpfn35_regression") == V {});
 	REQUIRE(missing_for("graph_ext_classification") == V {}); // tabfm-v1
-	REQUIRE(missing_for("graph_ext_tabdpt_classification") == V {"ConstantOfShape"});
-	REQUIRE(missing_for("graph_ext_tabdpt13_regression") == V {"ConstantOfShape", "ReduceProd"});
-	REQUIRE(missing_for("graph_ext_kumo_small_classification") == V {"ConstantOfShape"});
-	REQUIRE(missing_for("graph_ext_orion_msp_classification") == V {"ConstantOfShape"});
+	// ConstantOfShape and ReduceProd are implemented, so every bundled ext graph is executable
+	REQUIRE(missing_for("graph_ext_tabdpt_classification") == V {});
+	REQUIRE(missing_for("graph_ext_tabdpt13_regression") == V {});
+	REQUIRE(missing_for("graph_ext_kumo_small_classification") == V {});
+	REQUIRE(missing_for("graph_ext_orion_msp_classification") == V {});
+}
+
+// Executable is not the same as right. With every op present, three graphs run on mlx and disagree with the
+// CPU (Apple M3, real weights, 100 rows): tabdpt and tabdpt-v1-3 classification (63-66 labels, and the
+// scores of CONTEXT rows near uniform where the CPU is near certain), and orion-msp (9 labels). Their
+// regression graphs, and all six Kumo graphs, agree. The wrong ones are refused by name until the
+// misinterpreted op is found.
+TEST_CASE("mlx ops: graphs that run but disagree with the CPU are refused by name", "[tabfm][mlx_ops]") {
+	REQUIRE_FALSE(MlxKnownWrong("tabdpt", "classification").empty());
+	REQUIRE_FALSE(MlxKnownWrong("tabdpt-v1-3", "classification").empty());
+	REQUIRE_FALSE(MlxKnownWrong("orion-msp", "classification").empty());
+	REQUIRE(MlxKnownWrong("tabdpt", "regression").empty());
+	REQUIRE(MlxKnownWrong("tabdpt-v1-3", "regression").empty());
+	for (auto *size : {"small", "medium", "large"}) {
+		for (auto *task : {"classification", "regression"}) {
+			REQUIRE(MlxKnownWrong(std::string("kumo-tabular-") + size, task).empty());
+		}
+	}
 }

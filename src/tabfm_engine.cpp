@@ -986,7 +986,7 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 GpuServabilityResult GpuServabilityFor(FileSystem &fs, const ResolvedModel &resolved, const string &backend,
                                        const string &task_name, bool model_provides_graph, bool bundled_graph_exists,
                                        bool bundled_header_matches, const string &precision,
-                                       vector<string> unsupported_ops = {}) {
+                                       vector<string> unsupported_ops = {}, string known_wrong = string()) {
 	GpuServabilityInputs in;
 	in.backend = backend;
 	in.model = resolved.manifest.model;
@@ -996,6 +996,7 @@ GpuServabilityResult GpuServabilityFor(FileSystem &fs, const ResolvedModel &reso
 	in.bundled_header_matches = bundled_header_matches;
 	in.precision = precision;
 	in.unsupported_ops = std::move(unsupported_ops);
+	in.known_wrong = std::move(known_wrong);
 	// Only a bundled graph needs staging; a model-provided one runs where it
 	// already is, so do not fail it on someone else's directory.
 	in.weights_dir_stageable = true;
@@ -1253,7 +1254,8 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 	// The plugin would refuse such a graph too, but only after being loaded; say it here, with the way out.
 	if (!graph_path.empty()) {
 		auto missing = MlxUnsupportedOps(nullptr, 0, graph_path);
-		if (!missing.empty()) {
+		auto known_wrong = MlxKnownWrong(resolved.manifest.model, task_name);
+		if (!missing.empty() || !known_wrong.empty()) {
 			GpuServabilityInputs in;
 			in.backend = "mlx";
 			in.model = resolved.manifest.model;
@@ -1261,6 +1263,7 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 			in.precision = ctx.gpu_precision;
 			in.model_provides_graph = true; // a graph exists; the ops are what block it
 			in.unsupported_ops = std::move(missing);
+			in.known_wrong = std::move(known_wrong);
 			throw InvalidInputException(GpuRefusalMessage(device.device_id, EvaluateGpuServability(in).reason));
 		}
 	}
@@ -1408,7 +1411,9 @@ string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, cons
 		}
 		auto verdict = GpuServabilityFor(fs, resolved, backend, task_name, !model_graph.empty(),
 		                                 bundled.data != nullptr, header_matches, ctx.gpu_precision,
-		                                 std::move(unsupported_ops));
+		                                 std::move(unsupported_ops),
+		                                 backend == "mlx" ? MlxKnownWrong(resolved.manifest.model, task_name)
+		                                                  : string());
 		if (verdict.supported) {
 			return device.device_id;
 		}

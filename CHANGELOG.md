@@ -48,6 +48,12 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   the binary now carries because the bundled graphs may be a portion of the Model Materials; see
   `THIRD_PARTY_NOTICES.md`.
 
+- **MLX serves Kumo-Tabular (all three sizes) and TabDPT regression.** The graph interpreter gains
+  `ConstantOfShape` and `ReduceProd`; on an Apple M3 with the real weights they agree with the CPU (0/100 label
+  differences, regression within 5e-5). TabDPT classification (63-66/100 labels differ) and orion-msp (9/100)
+  also run now but disagree, so they are refused on `mlx` by name, with the reason in `tabfm_backends()`, and
+  `auto` serves them on the CPU.
+
 ### Changed
 - **Documentation restructured**: a short README in the anofox-forecast / anofox-decide layout, with guides
   under `docs/guides/` and API pages under `docs/api/`, `docs/BUILDING.md` and a labelled index in

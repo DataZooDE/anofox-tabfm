@@ -763,3 +763,15 @@ TEST_CASE("servability: a graph using ops the backend does not implement is not 
 	in.model_provides_graph = true;
 	REQUIRE(!EvaluateGpuServability(in).supported);
 }
+
+TEST_CASE("servability: a graph the backend runs wrongly is refused with the reason",
+          "[tabfm][model_spec][servability]") {
+	auto in = ServableBase("mlx");
+	in.bundled_graph_exists = true;
+	in.bundled_header_matches = true;
+	in.known_wrong = "it disagrees with the CPU";
+	auto out = EvaluateGpuServability(in);
+	REQUIRE(!out.supported);
+	REQUIRE_THAT(out.reason, Contains("it disagrees with the CPU"));
+	REQUIRE_THAT(out.reason, Contains("'mlx'"));
+}
