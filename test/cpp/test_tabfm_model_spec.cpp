@@ -689,3 +689,26 @@ TEST_CASE("model_spec: TabPFN-3.5 and 3.5-Fast map to their own stems and header
 	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5-fast", "classification") == sha35fast);
 	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5-fast", "regression") == sha35fast);
 }
+
+TEST_CASE("model_spec: EXAONE Tabular and Nori-30M bundle masked ROCm graphs, keyed to the weights they were built against",
+          "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// the id has a dash and the resource stem an underscore; the id function owns that mapping
+	REQUIRE(BundledGpuGraphId("exaone-tabular", "migraphx", "classification") ==
+	        "graph_migraphx_exaone_tabular_classification");
+	REQUIRE(BundledGpuGraphId("exaone-tabular", "migraphx", "regression") ==
+	        "graph_migraphx_exaone_tabular_regression");
+	// the masked graphs bake offsets into LG's own files at the pinned revision (093ad1c2); the classifier and
+	// the regressor are different checkpoints, so their headers differ
+	REQUIRE(ExpectedWeightsHeaderShaFor("exaone-tabular", "classification") ==
+	        "d211d3dc9c8a8af8b2cfc74e58435640424725a802af5995d5cbd3e719246285");
+	REQUIRE(ExpectedWeightsHeaderShaFor("exaone-tabular", "regression") ==
+	        "8888839dd2aef01b1f9e01603edfdb77ab2b99eb789b110613074d3cac9da1e1");
+	// Nori-30M's masked ROCm graph reads the safetensors tools/export_nori's convert_nori_weights writes from
+	// nori.pt (773 tensors, sorted, float32: byte-deterministic). The CPU path still reads the .ckpt natively.
+	REQUIRE(BundledGpuGraphId("nori-30m", "migraphx", "regression") == "graph_migraphx_nori30m_regression");
+	REQUIRE(ExpectedWeightsHeaderShaFor("nori-30m", "regression") ==
+	        "49797138da9ce6d7bb76895cb00514bc6967732051811c217548f32c75a02363");
+	REQUIRE(ExpectedWeightsHeaderShaFor("nori-30m", "classification") == "");
+}

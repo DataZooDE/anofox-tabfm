@@ -492,16 +492,25 @@ unordered_map<string, CkptTensor> ReadTorchCkpt(const uint8_t *buf, idx_t size) 
 		throw InvalidInputException("tabfm: checkpoint top-level object is not a state_dict");
 	}
 	// Many checkpoints wrap the tensors under a "state_dict" (or "model") key,
-	// alongside a config; descend into it if present.
+	// alongside a config; descend into it if present. A training-style checkpoint
+	// ({"model_config", "ema_state_dict"[, "model_state_dict"]}, e.g. Synthefy
+	// Nori's nori.pt) is served from its EMA weights, as upstream's loader does:
+	// "ema_state_dict" wins over every other key, wherever it sits in the dict.
 	const PVal *sd = &top;
+	const PVal *ema = nullptr;
 	for (idx_t i = 0; i + 1 < top.items.size(); i += 2) {
 		if (top.items[i].k == PVal::STR && top.items[i + 1].k == PVal::DICT) {
 			const string &k = top.items[i].s;
-			if (k == "state_dict" || k == "model" || k == "model_state_dict" || k == "weights") {
+			if (k == "ema_state_dict") {
+				ema = &top.items[i + 1];
+			} else if (sd == &top &&
+			           (k == "state_dict" || k == "model" || k == "model_state_dict" || k == "weights")) {
 				sd = &top.items[i + 1];
-				break;
 			}
 		}
+	}
+	if (ema) {
+		sd = ema;
 	}
 
 	unordered_map<string, CkptTensor> out;

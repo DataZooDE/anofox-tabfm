@@ -371,10 +371,12 @@ ResolvedModel ResolveModelSpec(const PredictContext &ctx, TabFMTask task, const 
 	auto registry = ModelRegistry::Build(ctx.db ? TabFMState::Get(*ctx.db)->RegisteredSpecs() : vector<ModelSpec>());
 	const ModelSpec &spec = registry.Resolve(requested_model, ctx.default_model);
 	if (!spec.HasTask(task)) {
+		const auto capable = registry.IdsWithTask(task);
 		throw InvalidInputException(
 		    "tabfm: model '%s' does not support task '%s'. Choose a model that declares it, or use the matching "
-		    "tabfm_%s function.",
-		    spec.id, task_name, task == TabFMTask::CLASSIFICATION ? "classify" : "regress");
+		    "tabfm_%s function.%s",
+		    spec.id, task_name, task == TabFMTask::CLASSIFICATION ? "classify" : "regress",
+		    capable.empty() ? string() : " Models that support it: " + capable + " (model := '<id>').");
 	}
 	resolved.manifest = SpecTaskToManifest(spec, task);
 	for (auto &e : spec.tensor_contract.inputs) {

@@ -149,6 +149,24 @@ set(_tabfm_inputs
     "graph_ext_tabfm_v1_1_regression.onnx"
     "graph_migraphx_tabfm_v1_1_classification.onnx"
     "graph_migraphx_tabfm_v1_1_regression.onnx"
+    # Nori-30M (Synthefy, Apache-2.0) -- regression ONLY, (x, y)-only on the CPU like its LimiX ancestor: one
+    # plain graph and one tensor map. The engine reads nori.pt natively ({model_config, ema_state_dict}). The
+    # migraphx graph is the MASKED contract (tools/export_nori --contract mask) and reads the safetensors that
+    # convert_nori_weights writes beside the checkpoint (header sha in ExpectedWeightsHeaderShaFor).
+    "graph_nori30m_regression.onnx"
+    "graph_migraphx_nori30m_regression.onnx"
+    "tensor_map_nori30m_regression.json"
+    # EXAONE Tabular v1 (LG AI Research; non-commercial EXAONE NC 1.2 weights) -- (x, y)-only on the CPU, one
+    # plain graph and one tensor map per task. The released files are safetensors keyed by the module
+    # namespace, so there is no converter. The migraphx graphs are the MASKED contract (x, y_full, train_size,
+    # d, n_rows; tools/export_exaone --contract mask), so ROCm can bucket them; they bake offsets into LG's
+    # released files, checked by the header sha in ExpectedWeightsHeaderShaFor.
+    "graph_exaone_tabular_classification.onnx"
+    "graph_exaone_tabular_regression.onnx"
+    "graph_migraphx_exaone_tabular_classification.onnx"
+    "graph_migraphx_exaone_tabular_regression.onnx"
+    "tensor_map_exaone_tabular_classification.json"
+    "tensor_map_exaone_tabular_regression.json"
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
     "graph_tabpfn25_classification.onnx"
     "graph_tabpfn25_regression.onnx"

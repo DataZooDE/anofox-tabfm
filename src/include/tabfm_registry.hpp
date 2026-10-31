@@ -52,6 +52,11 @@ public:
 	//! Comma-separated registered ids (sorted) — for error messages / discovery.
 	string RegisteredIds() const;
 
+	//! Comma-separated ids (sorted) of the models that declare `task` — the actionable half of an
+	//! "unsupported task" error (a regression-only model is refused for classification by naming the
+	//! models that DO classify). "" when none does.
+	string IdsWithTask(TabFMTask task) const;
+
 private:
 	map<string, ModelSpec> models_;
 	string implicit_default_;

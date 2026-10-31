@@ -57,6 +57,16 @@
 #                CALL tabfm_download('classification', model := 'tabpfn-v3-5');
 #                CALL tabfm_download('classification', model := 'tabpfn-v3-5-fast');
 #
+#                # Nori-30M (Synthefy, Apache-2.0, ungated) needs NO converter either: the engine reads
+#                # nori.pt ({model_config, ema_state_dict}) natively. Regression only:
+#                CALL tabfm_download('regression', model := 'nori-30m');
+#
+#                # EXAONE Tabular (LG AI Research, non-commercial EXAONE NC 1.2 weights; the HF repo is
+#                # ungated) needs NO converter: LG publish safetensors keyed by the module namespace. One
+#                # file per task:
+#                CALL tabfm_download('classification', model := 'exaone-tabular');
+#                CALL tabfm_download('regression', model := 'exaone-tabular');
+#
 #                TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
 # group: [anofox_tabfm]
 
@@ -800,5 +810,135 @@ true
 query I
 SELECT min(yhat) > 0 AND max(yhat) < 70
 FROM tabfm_regress('reg_t', 'target', model := 'tabpfn-v3-5') WHERE is_training;
+----
+true
+
+# ---------------------------------------------------------------------------
+# Nori-30M (Synthefy): REGRESSION ONLY, query rows AND context rows, from the natively read nori.pt.
+#
+# Like LimiX-2M (its ancestor) the context rows come from a second pass (the context presented again as
+# queries), so both halves are checked. The model standardises its own features and the wrapper
+# standardises the target in-graph and reduces the 999-quantile head to its mean, so the engine must do
+# neither (profile nori_v1_raw).
+#
+# Parity with upstream's single forward is exercised out-of-band (tools/export_nori/tests/
+# test_real_weights.py and docs/REAL_MODELS.md): the built-in path agrees with upstream eager to 1.0e-4
+# on a 1000-row california_housing sample (query R2 0.7917 both) and to 9.4e-2 on diabetes (target std 71;
+# 1e-7 relative input noise moves upstream's own eager forward by 7.7e-2 there). It is a SINGLE forward,
+# not upstream's 8-member NoriRegressor ensemble.
+#
+# Measured on these tables (CPU): shared split query R2 0.99982; reg_t context corr 0.99997, query
+# corr(yhat, f1) 0.9955 with predictions reaching 74.2 against a truth of 72.3 (it extrapolates, unlike
+# LimiX-2M); reg_in query corr 0.99996, worst error 0.44.
+
+statement ok
+CREATE TABLE r_nori AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'nori-30m');
+
+query I
+SELECT count(*) FROM r_nori WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.95
+FROM r_nori r JOIN truth t USING (row_id)
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.99
+FROM tabfm_regress('reg_t', 'target', model := 'nori-30m') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, f1) > 0.98
+FROM tabfm_regress('reg_t', 'target', model := 'nori-30m') WHERE NOT is_training;
+----
+true
+
+query I
+SELECT corr(yhat, f1 * 0.7 + 3) > 0.999 AND max(abs(yhat - (f1 * 0.7 + 3))) < 1.5
+FROM tabfm_regress('reg_in', 'target', model := 'nori-30m') WHERE NOT is_training;
+----
+true
+
+# Regression only, with the weights on disk too: classification is refused, naming models that classify.
+statement error
+SELECT * FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'nori-30m')
+----
+<REGEX>:.*does not support task 'classification'.*Models that support it:.*
+
+# ---------------------------------------------------------------------------
+# EXAONE Tabular (LG AI Research): both tasks, query rows AND context rows, from the published safetensors.
+#
+# Like Causilo / LimiX the context rows come from a second pass (the context presented again as queries).
+# The model standardises its own features and the wrapper standardises the regression target in-graph and
+# reduces the 999-quantile head to its mean, so the engine does neither (profile exaone_v1_raw).
+#
+# Parity with upstream's own single forward (float32 CPU) is exercised out-of-band
+# (tools/export_exaone/tests/test_real_weights.py, docs/REAL_MODELS.md): through the built-in path iris 45/45
+# and wine 54/54 query labels identical, diabetes within 1.7e-4 (target std 71), california_housing (1000-row
+# sample) within 2.6e-5. It is a SINGLE forward, not upstream's 8-member ensemble.
+#
+# Measured on these tables (CPU): shared split accuracy 0.953 and query R2 0.99998; sep_t context and query
+# 1.000; reg_t context corr 0.999997, query corr(yhat, f1) 0.9993 (predictions 59.1..67.6 where the truth
+# reaches 72.3); reg_in query corr 0.999997, worst error 0.09. fitted_t is NOT asserted for this model: its
+# label (i % 3) is not learnable from its features by EXAONE, and upstream's own eager forward answers one
+# class for every row there too (probabilities within 0.34 / 0.33 / 0.33).
+
+statement ok
+CREATE TABLE c_exaone AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'exaone-tabular');
+
+query I
+SELECT count(*) FROM c_exaone WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_exaone c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_exaone AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'exaone-tabular');
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.95
+FROM r_exaone r JOIN truth t USING (row_id)
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'exaone-tabular') WHERE is_training;
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = 'c' || round(f1 / 10)::INTEGER THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'exaone-tabular') WHERE NOT is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.99
+FROM tabfm_regress('reg_t', 'target', model := 'exaone-tabular') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, f1) > 0.99
+FROM tabfm_regress('reg_t', 'target', model := 'exaone-tabular') WHERE NOT is_training;
+----
+true
+
+query I
+SELECT corr(yhat, f1 * 0.7 + 3) > 0.999 AND max(abs(yhat - (f1 * 0.7 + 3))) < 0.5
+FROM tabfm_regress('reg_in', 'target', model := 'exaone-tabular') WHERE NOT is_training;
 ----
 true

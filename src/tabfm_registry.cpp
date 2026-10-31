@@ -640,6 +640,115 @@ static const char *const BUILTIN_TABDPT13 = R"json({
   "size_regime": {"max_rows": 100000, "max_features": 128, "max_classes": 16}
 })json";
 
+// Nori-30M (Synthefy), 29.2M parameters: a LimiX fork (upstream NOTICE: "originated as a fork of LimiX")
+// grown to 28 pre-norm `smf` layers with RMSNorm, SwiGLU, DeepNorm residual scaling, a query-adaptive
+// softmax temperature (QASSMax) in the sample attention and a target-aware embedding of the context labels.
+// CODE AND WEIGHTS are Apache-2.0 (model card front matter and body agree; repo LICENSE + NOTICE) and the
+// HF repo is ungated, so it is registered like tabdpt: commercial, redistributable, no licence gate.
+//
+// REGRESSION ONLY. The checkpoint config carries a 10-class head, but upstream's build_model refuses any
+// task_type other than "reg" and the model card calls it a regression model; `capabilities` is
+// ["regress"], so tabfm_classify is refused before any download with the actionable unsupported-task error
+// (which names the models that do classify).
+//
+// Its graph is (x, y)-only like LimiX-2M's: the split is the length of y, so the engine needs no
+// model-specific code (tools/export_nori). For ROCm a second, MASKED graph (x, y_full, train_size, d, n_rows;
+// tools/export_nori --contract mask) is bundled; it reads the safetensors convert_nori_weights writes beside
+// nori.pt, and without that file ROCm reports the bundled graph as not matching the weights. The
+// model standardises its own features and the export wrapper standardises the target in-graph and inverts
+// it, hence a *_raw profile. The 999-quantile pinball head is reduced IN-GRAPH to the mean of the implied
+// quantile function, upstream's default point estimate (NoriRegressor quantile_collapse="mean"); on the
+// uniform tau grid that is a closed form without a sort (tools/export_nori nori_patches.quantile_mean).
+//
+// The engine reads nori.pt natively (a torch.save archive {model_config, ema_state_dict}; the reader
+// prefers ema_state_dict, as upstream's load_model does), so there is no converter. Pinned to the commit
+// the graph was exported from.
+//
+// What this does NOT reproduce, so the docs do not over-claim: upstream's default NoriRegressor runs an
+// 8-member preprocessing ensemble (quantile / adaptive feature transforms, polynomial interactions,
+// fingerprint features, feature shuffles); the engine runs ONE forward on the raw table, which is
+// upstream's own model.forward. The engine mean-imputes missing cells before the graph, so Nori's
+// missing-value embedding is unused.
+//
+// size_regime is an engine cap chosen from MEASUREMENT (CPU, default threads, 200 query rows; rows x
+// features -> wall, peak RSS): 500x20 5.6 s / 0.85 GB; 1000x20 10.8 s / 1.5 GB; 2000x20 28 s / 3.3 GB;
+// 3000x20 53 s / 6.1 GB; 5000x20 127 s / 15.4 GB; 1000x100 40 s / 5.0 GB. The two limits are independent
+// (their corner is far larger); docs/REAL_MODELS.md gives the table.
+static const char *const BUILTIN_NORI30M = R"json({
+  "schema_version": 2, "id": "nori-30m", "display_name": "Nori-30M (Synthefy)",
+  "family": "icl-transformer",
+  "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "Nori-30M by Synthefy, Apache-2.0 (code and weights). Checkpoint: HF Synthefy/Nori-30M (nori.pt). Regression only."},
+  "preprocessing_profile": "nori_v1_raw",
+  "weights": {
+    "regression": {"repo": "Synthefy/Nori-30M", "revision": "63c9f7facf9fb32c37ce3fc2fba331d524696318",
+      "files": [{"path": "model.ckpt", "bytes": 117093952,
+                 "url": "https://huggingface.co/Synthefy/Nori-30M/resolve/63c9f7facf9fb32c37ce3fc2fba331d524696318/nori.pt"}]}
+  },
+  "graph": {"regression": "graph_nori30m_regression",
+    "tensor_map": {"regression": "tensor_map_nori30m_regression.json"}},
+  "capabilities": ["regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 5000, "max_features": 100, "max_classes": 10}
+})json";
+
+// EXAONE Tabular v1 (LG AI Research; TabArena v0.1.4 classification Elo 1759, regression 1883 per the model
+// card), a Cross-Axis Summary Transformer: width 192, 12 blocks, one column per feature token, 3 item-summary
+// and 32 feature-summary tokens, SSMax attention; 20.8M (classifier) / 21.1M (regressor) parameters.
+// Upstream CODE is BSD-3-Clause-LG. The WEIGHTS are under the EXAONE AI Model License Agreement 1.2 - NC:
+// research and educational use only (s. 2.1a: "evaluation, testing, academic research, experimentation"), and
+// "the Licensee is expressly prohibited from using the Model, Derivatives, or Output for any commercial
+// purposes" (s. 3.1). Registered like the other non-commercial entries (commercial:false, redistributable:false,
+// gated by accept_hf_license); the engine never redistributes the weights (the user downloads them from LG's
+// Hugging Face repo, which is ungated). docs/REAL_MODELS.md quotes the clauses and the reasoning.
+//
+// Its graph is (x, y)-only like TabICL's: the split is the length of y, so the engine needs no model-specific
+// code (tools/export_exaone). For ROCm a second, MASKED graph per task (x, y_full, train_size, d, n_rows;
+// tools/export_exaone --contract mask) is bundled, keyed to LG's released files by header sha. The model standardises
+// its own features and the wrapper standardises the regression target in-graph, hence a *_raw profile. The
+// 999-quantile regression head is reduced in-graph to the MEAN of the bank, the released regressor's own
+// point_estimate="mean". Upstream pins part of the attention to FlashAttention on CUDA (fp16/bf16 only);
+// the export writes the plain softmax(q k^T / sqrt(d)) v path, the same function in float32.
+//
+// The released files are safetensors keyed by the module namespace, so there is no converter; they are pinned to
+// the commit the graphs were exported against. The classifier and the regressor are DIFFERENT checkpoints in the
+// same repo, hence per-task paths (classification/ and regression/), as for causilo.
+//
+// What this does NOT reproduce, so the docs do not over-claim: the TabArena figures come from upstream's
+// 8-member ensemble (four numeric transforms, sign flips, feature permutations, and for >10 classes
+// error-correcting output codes); the engine runs ONE forward on the raw table, upstream's own model.forward.
+// The engine mean-imputes missing cells before the graph, so EXAONE's non-finite code channel never sees a NaN.
+//
+// size_regime is an engine cap chosen from MEASUREMENT, not upstream's support_row_limit (100000, which its
+// cached, chunked CUDA runtime serves): the engine runs the dense forward on the whole table. CPU, default
+// threads, 200 query rows (rows x features -> wall, peak RSS): 500x20 4.3 s / 1.2 GB; 1000x20 9.7 s / 2.5 GB;
+// 2000x20 26 s / 6.7 GB; 3000x20 49 s / 13.1 GB; 1000x100 37 s / 10.5 GB. Memory grows roughly with rows^1.7
+// and linearly in features; the limits are independent, and docs/REAL_MODELS.md gives the table.
+static const char *const BUILTIN_EXAONE_TABULAR = R"json({
+  "schema_version": 2, "id": "exaone-tabular", "display_name": "EXAONE Tabular v1 (LG AI Research)",
+  "family": "icl-transformer",
+  "license": {"id": "exaone-nc-1.2", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "EXAONE Tabular by LG AI Research (LG Management Development Institute Co., Ltd.). Code BSD-3-Clause-LG; weights under the EXAONE AI Model License Agreement 1.2 - NC: research and educational use only, NO commercial use of the Model, Derivatives or Output (s. 3.1); a commercial license is a separate agreement with LG. Publications must attribute the Model's name and version (s. 4.3). License: https://huggingface.co/LG-AI-Research/EXAONE-Tabular/blob/main/LICENSE. Checkpoints: HF LG-AI-Research/EXAONE-Tabular."},
+  "preprocessing_profile": "exaone_v1_raw",
+  "weights": {
+    "classification": {"repo": "LG-AI-Research/EXAONE-Tabular", "revision": "093ad1c2613e1e95d26df8610451d2e02ed53cbe",
+      "files": [{"path": "classification/model.safetensors", "bytes": 83286800,
+                 "url": "https://huggingface.co/LG-AI-Research/EXAONE-Tabular/resolve/093ad1c2613e1e95d26df8610451d2e02ed53cbe/exaone-tabular-classifier-v1_default.safetensors"}]},
+    "regression": {"repo": "LG-AI-Research/EXAONE-Tabular", "revision": "093ad1c2613e1e95d26df8610451d2e02ed53cbe",
+      "files": [{"path": "regression/model.safetensors", "bytes": 84502160,
+                 "url": "https://huggingface.co/LG-AI-Research/EXAONE-Tabular/resolve/093ad1c2613e1e95d26df8610451d2e02ed53cbe/exaone-tabular-regressor-v1_default.safetensors"}]}
+  },
+  "graph": {"classification": "graph_exaone_tabular_classification", "regression": "graph_exaone_tabular_regression",
+    "tensor_map": {"classification": "tensor_map_exaone_tabular_classification.json",
+                   "regression": "tensor_map_exaone_tabular_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 3000, "max_features": 100, "max_classes": 10}
+})json";
+
 vector<ModelSpec> BuiltinModelSpecs() {
 	// Merge the two per-task built-in TabFM v1 manifests into one multi-task
 	// model spec (id "tabfm-v1"). Each task keeps its own graph/tensor-map/repo.
@@ -676,12 +785,28 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_TABDPT13, "(built-in tabdpt-v1-3)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN35, "(built-in tabpfn-v3-5)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN35_FAST, "(built-in tabpfn-v3-5-fast)"));
+	specs.push_back(ParseModelSpec(BUILTIN_NORI30M, "(built-in nori-30m)"));
+	specs.push_back(ParseModelSpec(BUILTIN_EXAONE_TABULAR, "(built-in exaone-tabular)"));
 	return specs;
 }
 
 string ModelRegistry::RegisteredIds() const {
 	string out; // models_ is a std::map → keys already sorted
 	for (auto &kv : models_) {
+		if (!out.empty()) {
+			out += ", ";
+		}
+		out += kv.first;
+	}
+	return out;
+}
+
+string ModelRegistry::IdsWithTask(TabFMTask task) const {
+	string out;
+	for (auto &kv : models_) {
+		if (!kv.second.HasTask(task)) {
+			continue;
+		}
 		if (!out.empty()) {
 			out += ", ";
 		}

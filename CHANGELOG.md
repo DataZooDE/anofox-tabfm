@@ -24,6 +24,14 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   (bundled MIGraphX graphs), read straight from Prior Labs' safetensors with no conversion step; one file per
   variant serves both tasks. A tensor map can now declare `"complete": true`, so a weights file may carry tensors
   a task's graph does not use. See docs/REAL_MODELS.md.
+- **`nori-30m`** (Synthefy Nori-30M, Apache-2.0, ungated): the first REGRESSION-ONLY built-in. The engine
+  reads the released `nori.pt` natively (the checkpoint reader now prefers `ema_state_dict`); the 999-quantile
+  head is reduced in-graph to its mean. `tabfm_classify` is refused and the error now names the models that do
+  classify. ROCm is served through a second, masked graph (after the one-time `convert_nori_weights`).
+- **`exaone-tabular`** (LG AI Research EXAONE Tabular v1, classify + regress): non-commercial weights (EXAONE
+  AI Model License 1.2 - NC), gated by `anofox_tabfm_accept_hf_license`. Plain attention in place of
+  upstream's pinned FlashAttention; labels identical to upstream's single forward on iris and wine. ROCm is
+  served through a second, masked graph per task (0/100 label differences against the CPU on a gfx1201).
 
 ### Changed
 - **Documentation restructured**: a short README in the anofox-forecast / anofox-decide layout, with guides
