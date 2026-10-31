@@ -46,6 +46,11 @@
 #                # nested {"config", "state_dict"} pickle) directly. ONE 9.5 MB file serves both tasks:
 #                CALL tabfm_download('classification', model := 'limix-2m');
 #
+#                # TabPFN-3.5 / 3.5-Fast need NO converter: Prior Labs publish safetensors under the
+#                # model's own names. ONE file per variant serves both tasks (876 MB / 334 MB):
+#                CALL tabfm_download('classification', model := 'tabpfn-v3-5');
+#                CALL tabfm_download('classification', model := 'tabpfn-v3-5-fast');
+#
 #                TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
 # group: [anofox_tabfm]
 
@@ -486,5 +491,98 @@ FROM range(100) s(i);
 query I
 SELECT corr(yhat, f1 * 0.7 + 3) > 0.99 AND max(abs(yhat - (f1 * 0.7 + 3))) < 3
 FROM tabfm_regress('reg_in', 'target', model := 'limix-2m') WHERE NOT is_training;
+----
+true
+
+# ---------------------------------------------------------------------------
+# TabPFN-3.5 and TabPFN-3.5-Fast (Prior Labs). One published safetensors per
+# variant serves both tasks with no conversion, and each task's graph uses only
+# its own head -- so these are also the check that the engine injects exactly
+# what each map names (tensor maps marked "complete") rather than offering ORT
+# the other head. Measured on this split (CPU): 3.5 acc 0.969 / R^2 0.99997,
+# 3.5-Fast acc 0.953 / R^2 0.99993; fitted and query accuracy on sep_t 1.0, fitted
+# regression corr 0.999998 (the duplicate route; the embedding route measured
+# 0.65-0.86 on real weights and is not used for regression).
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE c_35 AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'tabpfn-v3-5');
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_35 c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_35 AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'tabpfn-v3-5');
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.80
+FROM r_35 r JOIN truth t USING (row_id)
+----
+true
+
+statement ok
+CREATE TABLE c_35f AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'tabpfn-v3-5-fast');
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_35f c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_35f AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'tabpfn-v3-5-fast');
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.80
+FROM r_35f r JOIN truth t USING (row_id)
+----
+true
+
+# 3.5 and 3.5-Fast share a repo, so their cache paths must not collide: genuinely
+# different weights give different continuous estimates.
+query I
+SELECT max(abs(a.yhat - b.yhat)) > 1e-6 FROM r_35 a JOIN r_35f b USING (row_id)
+----
+true
+
+# in-context fitted values and query rows on separable data, both variants
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'tabpfn-v3-5') WHERE is_training;
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = 'c' || round(f1 / 10)::INTEGER THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'tabpfn-v3-5-fast') WHERE NOT is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'tabpfn-v3-5') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'tabpfn-v3-5-fast') WHERE is_training;
+----
+true
+
+# raw-in / raw-out: the regression graph de-standardises its own output, so the
+# estimates sit on the target's scale (3 .. 58.3 over the context rows)
+query I
+SELECT min(yhat) > 0 AND max(yhat) < 70
+FROM tabfm_regress('reg_t', 'target', model := 'tabpfn-v3-5') WHERE is_training;
 ----
 true

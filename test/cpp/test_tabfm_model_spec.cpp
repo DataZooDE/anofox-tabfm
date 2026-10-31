@@ -631,3 +631,31 @@ TEST_CASE("model_spec: the served artifact is the converted sibling, tried first
 	REQUIRE(ServedArtifactPath(reg, exists_in({reg, "/c/m/model.safetensors"})) == reg);
 	REQUIRE(ServedArtifactPath(reg, exists_in({"/c/m/model.safetensors"})).empty());
 }
+
+TEST_CASE("model_spec: TabPFN-3.5 and 3.5-Fast map to their own stems and header shas", "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// Two variants, two architectures (24 vs 8 ICL layers), so two stems -- a
+	// shared stem would hand 3.5-Fast the 24-layer graph. Neither may fall back
+	// onto tabpfn-v3's graphs: 3.5 is a different architecture (ECDF cell
+	// channel, Fourier cell embedding, q/k RMSNorm, multi-task heads).
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5", "migraphx", "classification") ==
+	        "graph_migraphx_tabpfn35_classification");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5", "ext", "regression") == "graph_ext_tabpfn35_regression");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5-fast", "migraphx", "regression") ==
+	        "graph_migraphx_tabpfn35fast_regression");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5-fast", "ext", "classification") ==
+	        "graph_ext_tabpfn35fast_classification");
+	// Unchanged by the addition.
+	REQUIRE(BundledGpuGraphId("tabpfn-v3", "migraphx", "classification") == "graph_migraphx_tabpfn3_classification");
+
+	// ONE published safetensors per variant serves both tasks (both heads live
+	// in it), so both tasks pin the same header -- the one Prior Labs publish,
+	// read straight off the download with no conversion step.
+	const string sha35 = "8a237b22e16aeb1e2b0d15a280d17fdd030054643b53dae86c8552f640ba9302";
+	const string sha35fast = "733da85d68f73d3a18eabbc01ded64b19da6cabeecf0549f1980a3773d11508f";
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5", "classification") == sha35);
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5", "regression") == sha35);
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5-fast", "classification") == sha35fast);
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5-fast", "regression") == sha35fast);
+}

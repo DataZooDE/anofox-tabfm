@@ -1,0 +1,53 @@
+# TabPFN-3.5 / TabPFN-3.5-Fast exporter: weight-free ONNX graphs + tensor maps.
+#
+# A separate uv project from tools/export_tabpfn on purpose. TabPFN-3.5 ships in
+# `tabpfn` >= 9.0 (architectures/tabpfn_v3_5.py), and moving tools/export_tabpfn
+# off its locked 8.1.0 would change the v3 config surface (9.x drops
+# `inference_row_chunk_size`, which configs.real3() passes) and so break the
+# byte-reproducible v2..v3 exports that project guards. The shared plumbing
+# (postprocess / tensor map / weight-free checks) is reused through a path
+# dependency instead of copied.
+#
+#   uv sync
+#   uv run export_tabpfn35 --task classification --config fixture35 --out ./out
+#   uv run pytest
+[project]
+name = "export-tabpfn35"
+version = "0.1.0"
+description = "anofox-tabfm TabPFN-3.5 exporter: weight-free ONNX graph + tensor-name map"
+requires-python = ">=3.11"
+dependencies = [
+    "tabpfn==9.2.0",
+    "export-tabpfn",
+    "torch>=2.6",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "onnxscript>=0.2",
+    "numpy",
+    "safetensors",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[project.scripts]
+export_tabpfn35 = "export_tabpfn35.cli:main"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+export-tabpfn = { path = "../export_tabpfn", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/export_tabpfn35"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

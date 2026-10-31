@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "id": "tabpfn-v3-5-fixture",
+  "display_name": "TabPFN 3.5 (random-init CI fixture)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "apache-2.0",
+    "commercial": true,
+    "redistributable": true,
+    "attribution": "Random-init fixture; no Prior Labs weights.",
+    "gate_setting": null
+  },
+  "preprocessing_profile": "tabpfn_v3_5_raw",
+  "weights": {
+    "classification": {
+      "files": [
+        {
+          "path": "model.safetensors",
+          "bytes": 184984
+        }
+      ]
+    },
+    "regression": {
+      "files": [
+        {
+          "path": "model.safetensors",
+          "bytes": 184984
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_tabpfn35_classification.onnx",
+    "regression": "graph_tabpfn35_regression.onnx",
+    "tensor_map": {
+      "classification": "tensor_map_tabpfn35_classification.json",
+      "regression": "tensor_map_tabpfn35_regression.json"
+    }
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "N"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 4
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init TabPFN-3.5 (embed_dim=16, 2 ICL layers, ECDF buckets=6 so the interpolating ruler runs). ONE safetensors serves both tasks. train_size is len(y). See tools/export_tabpfn35."
+}
