@@ -176,7 +176,26 @@ set(_tabfm_inputs
     "graph_tabpfn3_classification.onnx"
     "graph_tabpfn3_regression.onnx"
     "tensor_map_tabpfn3_classification.json"
-    "tensor_map_tabpfn3_regression.json")
+    "tensor_map_tabpfn3_regression.json"
+    # TabPFN-3.5 and 3.5-Fast (Prior Labs, non-commercial; tools/export_tabpfn35). Same depth-only
+    # difference between the two (24 vs 8 ICL layers), so separate stems. Every kind is bundled: the
+    # plain CPU graph, the external-data graph (CUDA + CPU low-memory) and the masked MIGraphX graph.
+    "graph_tabpfn35_classification.onnx"
+    "graph_tabpfn35_regression.onnx"
+    "tensor_map_tabpfn35_classification.json"
+    "tensor_map_tabpfn35_regression.json"
+    "graph_ext_tabpfn35_classification.onnx"
+    "graph_ext_tabpfn35_regression.onnx"
+    "graph_migraphx_tabpfn35_classification.onnx"
+    "graph_migraphx_tabpfn35_regression.onnx"
+    "graph_tabpfn35fast_classification.onnx"
+    "graph_tabpfn35fast_regression.onnx"
+    "tensor_map_tabpfn35fast_classification.json"
+    "tensor_map_tabpfn35fast_regression.json"
+    "graph_ext_tabpfn35fast_classification.onnx"
+    "graph_ext_tabpfn35fast_regression.onnx"
+    "graph_migraphx_tabpfn35fast_classification.onnx"
+    "graph_migraphx_tabpfn35fast_regression.onnx")
 
 # Re-run configure when a resource changes so the generated source stays fresh.
 foreach(_f ${_tabfm_inputs})

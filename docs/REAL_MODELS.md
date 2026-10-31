@@ -32,6 +32,8 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Google TabFM 1.1** (`tabfm-v1-1`) | TabFM Non-Commercial License v1.0 (**non-commercial**, same text as v1) | ✅ shipped | **yes — classify + regress, CPU + ROCm** | 410 M / 0.82 GB per task (BF16), 4x fewer params than v1; no conversion; end-to-end parity with upstream 9.4e-06 clf / 4.9e-06 reg; ROCm agrees with CPU 64/64 |
 | **Mitra-v2** (`mitra-v2`) | Apache-2.0 (commercial, ungated) | ✅ shipped | **yes — classify + regress** | 75.7 M clf / 76.7 M reg; **classifier reuses mitra's graphs (byte-identical header) — zero new clf bytes**; new graph for the 1,000-bin regressor; 32,768 rows / 256 features; CPU + ROCm |
 | **TabDPT v1.3** (`tabdpt-v1-3`) | Apache-2.0 (commercial, ungated) | ✅ shipped | **yes — classify + regress** | 63.0 M; re-export for the per-task y-encoders; one 252 MB file, both tasks, under `tabdpt1_3/`; parity vs upstream 1.3.1 2.3e-05 clf / 2.3e-06 reg; CPU + ROCm |
+| **TabPFN-3.5** (`tabpfn-v3-5`) | tabpfn-3-5-license-v1.0 (**non-commercial**, no hosted service) | ✅ shipped | **yes — classify + regress** | 219.0 M / 876 MB; ONE safetensors serves both tasks, **no conversion**; parity vs upstream 1.7e-05 clf / 3.8e-06 reg; ROCm served (0 label diffs; cold compile ~1 h per task) |
+| **TabPFN-3.5-Fast** (`tabpfn-v3-5-fast`) | tabpfn-3-5-license-v1.0 (**non-commercial**, no hosted service) | ✅ shipped | **yes — classify + regress** | 83.5 M / 334 MB; 3.5 at 8 ICL layers instead of 24; parity 1.5e-04 clf (logit floor) / 6.2e-06 reg; ROCm served (0 label diffs; cold compile ~17 min per task) |
 
 ### TabPFN-3 — done
 
@@ -55,6 +57,163 @@ uv run python make_fixture.py --arch=v3           # regenerate the CI fixture
 ```
 
 Offline fixture: `test/sql/tabfm_tabpfn3.test`.
+
+### TabPFN-3.5 and TabPFN-3.5-Fast — done
+
+Released 2026-09-09 (HF `Prior-Labs/tabpfn_3_5`; tech report arXiv 2609.17895,
+which gives TabArena Elo 1866 for 3.5 and 1780 for Fast on the full 51-dataset
+board — figures of 1898 / 1805 circulating elsewhere do not appear in it, and were
+not verified). Prior Labs' default ensembles are 8 estimators (3.5) and 4 (Fast);
+tabfm runs its own ensemble over a single forward. Two built-ins:
+
+| id | checkpoint | params | file | ICL layers |
+|---|---|---|---|---|
+| `tabpfn-v3-5` | `tabpfn-v3.5-20260909.safetensors` | 219.0 M | 876,027,932 B | 24 |
+| `tabpfn-v3-5-fast` | `tabpfn-v3.5-fast-20260909.safetensors` | 83.5 M | 334,181,708 B | 8 |
+
+The ids follow `tabpfn-v2-5` / `tabpfn-v2-5-real`: the version with its dot as a
+dash, and the variant as a suffix. Every existing TabPFN id is unchanged.
+
+**Licence.** `tabpfn-3-5-license-v1.0` is `tabpfn-3-license-v1.0` word for word;
+only the model name and the revision date differ (diffed). It allows testing,
+evaluation and research ("Non-Commercial Purpose"), and forbids commercial or
+production use of the weights, derivatives and outputs, and offering the model as
+a hosted, managed, API or SaaS service (§3d). So both entries are
+`commercial: false` + `gate_setting: accept_hf_license`, exactly like `tabpfn-v3`.
+Nothing tabfm does goes past what it already does for v3: it ships no weight bytes
+(the user downloads them from Prior Labs' repo), and the graphs are derived from
+the Apache-2.0 inference code in the `tabpfn` 9.2.0 wheel. The licence preamble
+leaves elements published under a separate licence unrestricted. The repo carries
+`extra_gated_fields` while the API reports `gated: false`; `resolve` serves
+anonymously today, and if that changes the download fails with the actionable 401
+described under "Gated HuggingFace repositories".
+
+**Not shipped:** the experimental `tabpfn-v3.5-20260909_multiclass.safetensors`
+(Prior Labs: "slightly different architecture", experimental). It would be a third
+graph set for a checkpoint its authors do not recommend by default. "TabPFN-3.5
+Thinking" is API-only.
+
+**What changed against v3** (from the checkpoint's own `config` block and
+`tabpfn/architectures/tabpfn_v3_5.py`):
+
+- every cell carries a third channel next to its scaled value and NaN indicator:
+  its midrank ECDF against the train rows of its column, lifted to sin/cos
+  features. Above 8192 train rows (with more than 8192 distinct values) upstream
+  ranks against 8192 bucket edges and interpolates;
+- a Fourier cell embedding (learned frequencies) replaces v3's linear embedder;
+- q/k RMSNorm in every attention (after RoPE in the column aggregator);
+- 8 CLS tokens (v3: 4), so the ICL width is 1024 (v3: 512), with 16 heads;
+- ONE checkpoint per variant holds both heads (a 160-class many-class decoder and
+  a 5000-bucket regression head, each behind its own pre-head MLP), and the task
+  is a forward argument.
+
+**Why a new exporter.** `TabPFNV3p5.forward` cannot be traced the way v3's is.
+The ECDF uses `torch.searchsorted`, which has no ONNX operator. The decoder's
+one-hot width comes from `y.max().item()`. Stage 0-2 chunking and the
+attention-backend dispatch are Python loops keyed on runtime shapes. So
+`tools/export_tabpfn35` re-drives the blocks from their own weights, the way the
+v3 masked graph does. The ECDF becomes a binary search of 24 fixed steps (Gather +
+compare, no integer division, nothing data-dependent). It reproduces upstream's
+algorithm with both rulers, so the graph agrees with upstream past 8192 train
+rows too, not only below. The CI fixture uses 6 ECDF buckets, so the
+interpolating ruler runs in the offline tests. One forward serves both contracts:
+train rows are masked rather than sliced, so the same code is the positional
+CPU/CUDA graph and the masked MIGraphX graph.
+
+It is a separate uv project (pinned `tabpfn==9.2.0`), not a new arch in
+`tools/export_tabpfn`. Moving that project off its locked 8.1.0 would change the
+v3 config surface (9.x drops `inference_row_chunk_size`) and the byte-reproducible
+v2..v3 exports with it. The shared plumbing is reused through a path dependency.
+
+**Engine change (one).** One weights file now holds more tensors than one task's
+graph declares. The engine injected every file tensor, unmapped ones under the
+`m.` fallback name, and ORT rejected the other head's tensors ("Failed to find
+existing initializer"). TabDPT never hit this because both its graphs use the
+same tensor set. A tensor map may now declare `"complete": true`. Then the engine
+injects exactly the tensors the map names (`TensorMapDeclaresComplete`,
+`src/tabfm_engine.cpp`). Maps without the flag keep the fallback: TabICL's
+fixture map omits 23 initializers and relies on it. The 3.5 maps carry the flag;
+the exporter refuses to set it unless every initializer is mapped. Covered by
+`test/sql/tabfm_tabpfn35.test`, whose fixture serves both tasks from one file
+(it failed with exactly that ORT error before the change).
+
+**Cache layout.** Both variants live in one HF repo, and `CacheSlug` keys on the
+repo, so each gets its own directory (`v3.5/`, `v3.5-fast/`). Within a variant
+both tasks read the same file, like TabDPT. There is no conversion step: the keys
+are already the model's `state_dict` names.
+
+**Fitted values.** Re-measured on the released weights rather than assumed from
+v3. Classification decodes the train rows' own embeddings (fitted accuracy 1.00 on
+separable data, same as the duplicate route). Regression presents the rows again
+as queries: the embedding route correlates only 0.65 (Fast) / 0.86 (3.5) with the
+target, the duplicate route 0.99997 / 0.99998.
+
+**Text and dates.** Upstream 3.5 ships with `TRANSFORM_TEXT` / `TRANSFORM_DATES`
+on: it embeds string columns and expands dates inside its sklearn front end,
+before the network. That is preprocessing, not part of the graph, and tabfm does
+not reproduce it. tabfm does what it does for every model: VARCHAR / ENUM /
+BOOLEAN columns are ordinal-encoded categoricals, DATE / TIMESTAMP columns become
+the engine's numeric datetime features (`tabfm_preprocess.cpp`), and numbers pass
+through raw (the graph scales them). Free-text columns therefore get no semantic
+embedding, and results on text-heavy tables can be below Prior Labs' own numbers.
+
+**Verified.**
+
+- Re-driven forward vs upstream `TabPFNV3p5.forward`, every row, released
+  weights: 3.5 ≤ 1.7e-05 classification logits / ≤ 3.8e-06 regression; Fast
+  ≤ 1.5e-04 / ≤ 6.2e-06. Fast's largest delta is a logit at upstream's
+  `log(clamp(p, 1e-5) + 3e-5)` floor; all argmaxes agree. Random-init fixture dims,
+  both contracts (masked padded to a larger bucket in rows AND columns): ≤ 1.1e-05,
+  with negative controls (wrong `d`, one train row too many) caught.
+- Exported ONNX under ORT with the released weights vs PyTorch: 3.5
+  3.2e-05 / 2.0e-05, Fast 5.1e-05 / 1.9e-05. At real dims with random weights
+  (export gate): ≤ 3.6e-07 classification, ≤ 1.1e-05 regression.
+- ECDF vs upstream: 73 cases exact to 1e-6 (both rulers, ties, constant columns,
+  padded rows).
+- Engine, CPU, the standard split of `tabfm_real_models.test`: 3.5 accuracy
+  **0.969**, R² **0.99997**; Fast **0.953**, **0.99993** (v3 on the same split:
+  0.969 / 0.99999). Fitted and query accuracy on `sep_t` 1.0, fitted regression
+  correlation 0.999998.
+- MIGraphX structural guards on the masked graphs (no runtime integer `Div`, no
+  `Reshape` to `[]`, no K=1 `MatMul`), exported in a fresh process.
+
+**ROCm (gfx1201, released weights, `tools/gpu_test/scenarios/tabpfn35_rocm.sql`).**
+Served by `rocm:0` (read from `tabfm_models().device`, not inferred from agreement)
+through the bundled masked graphs and the freshly built plugin. 100 rows × 8
+features (70 context, 30 query; the 128×16 bucket), compared with the CPU on every
+row:
+
+| model | task | agreement with CPU | cold compile (one bucket) |
+|---|---|---|---|
+| 3.5-Fast | cls | 0/30 query, 0/70 context labels; max prob diff 2.4e-06 | 1005 s |
+| 3.5-Fast | reg | max abs 1.6e-04 (targets span ~±8), corr 1.000000, 100 distinct | 1081 s |
+| 3.5 | cls | 0/30 query, 0/70 context labels; max prob diff 1.1e-06 | 3724 s |
+| 3.5 | reg | max abs 1.3e-04, corr 1.000000, 100 distinct | ~3060 s (inferred from the .mxr timestamp: the timed run was interrupted) |
+
+The compiles are the longest in the catalog (v3: ~16 min). 3.5's ICL stack is
+1024 wide and 24 deep, and MIGraphX compiles per (rows, features) bucket.
+`tabfm_gpu_precompile` moves that off the query path. Nothing has been tried yet
+to reduce it. Warm, the same call takes 0.10 s (classify) / 0.11 s (regress) on the GPU
+against 0.29 s / 0.49 s on the CPU for 3.5 (one shape only, not extrapolated).
+Plugin and graphs ship together: an older plugin refuses these
+graphs over `n_rows`, like every masked TabPFN graph.
+
+
+```bash
+cd tools/export_tabpfn35
+uv run pytest                                   # ECDF, forward parity, guards, configs
+uv run python make_fixture.py                   # test/fixtures/tabpfn35
+for c in real35 real35fast; do for t in classification regression; do
+  uv run export_tabpfn35 --task $t --config $c --out ../../resources
+  uv run export_tabpfn35 --task $t --config $c --contract mask --out /tmp/mask35
+done; done
+uv run python parity_real.py ~/.cache/anofox-tabfm/Prior-Labs__tabpfn_3_5@main/v3.5/model.safetensors --onnx ../../resources
+# then tools/make_external_graph.py (ext) and tools/make_migraphx_graph.py --dynamic (masked)
+# against the downloaded safetensors; header shas 8a237b22... (3.5), 733da85d... (Fast)
+```
+
+Offline fixture: `test/sql/tabfm_tabpfn35.test`. ROCm scenario:
+`tools/gpu_test/scenarios/tabpfn35_rocm.sql`.
 
 ### RealTabPFN-2.5 — done
 
@@ -393,6 +552,8 @@ regress capabilities above — there is no separate per-model work.
 | `tabdpt-v1-3` | ✅ | ✅ | ✅ | ✅ all columns |
 | `orion-msp` | ✅ | ✗ | ✅ | categorical columns only |
 | `tabpfn-v3` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabpfn-v3-5` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabpfn-v3-5-fast` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabicl-v2` | ✅ | ✅ | ✅ | ✅ all columns |
 | `orion-bix` | ✅ | ✗ | ✅ | categorical columns only |
 

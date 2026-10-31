@@ -130,6 +130,79 @@ static const char *const BUILTIN_TABPFN3 = R"json({
   "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
 })json";
 
+// TabPFN-3.5 and TabPFN-3.5-Fast (Prior Labs, released 2026-09-09; HF
+// Prior-Labs/tabpfn_3_5). A new architecture, not v3 retrained: every cell gets
+// a midrank-ECDF channel against the train rows of its column, a Fourier cell
+// embedding, q/k RMSNorm in every attention, and multi-task heads. Upstream's
+// ECDF uses torch.searchsorted (no ONNX operator), so the graphs come from a
+// re-driven forward with a fixed-step binary search in its place
+// (tools/export_tabpfn35, tabpfn 9.2.0); parity with upstream's own forward on
+// the released weights 1.7e-05 clf / 3.8e-06 reg (3.5), 1.5e-04 / 6.2e-06 (Fast).
+//
+// Licensing: tabpfn-3-5-license-v1.0 is word for word tabpfn-3-license-v1.0
+// (only the model name and revision date differ) -- testing / evaluation /
+// research only, no commercial or production use, no hosted/API/SaaS service.
+// Hence commercial:false + accept_hf_license, exactly like tabpfn-v3.
+//
+// Weights: ONE published safetensors per variant holds BOTH heads (a 160-class
+// many-class decoder and a 5000-bucket regression head) under the model's own
+// state_dict names, so -- like tabdpt -- both tasks read the same downloaded file
+// and there is no conversion step. The two variants live in the SAME repo, and
+// CacheSlug keys on the repo, so each gets its own directory (v3.5/, v3.5-fast/):
+// identical paths would download over each other and serve the wrong weights.
+//
+// The two variants differ only in depth (24 vs 8 ICL layers), which is still a
+// different graph, so they get separate stems (tabpfn35 / tabpfn35fast).
+// Not shipped: the experimental `_multiclass` checkpoint (a third, different
+// architecture variant) and the API-only "Thinking" model.
+static const char *const BUILTIN_TABPFN35 = R"json({
+  "schema_version": 2, "id": "tabpfn-v3-5", "display_name": "TabPFN 3.5 (Prior Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "tabpfn-3-5-license-v1.0", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "TabPFN-3.5 by Prior Labs GmbH. Weights are testing/evaluation/research only — NO commercial or production use, and no hosted/API/SaaS service. Contact sales@priorlabs.ai for a commercial license."},
+  "preprocessing_profile": "tabpfn_v3_5_raw",
+  "weights": {
+    "classification": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+      "files": [{"path": "v3.5/model.safetensors", "bytes": 876027932,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-20260909.safetensors"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+      "files": [{"path": "v3.5/model.safetensors", "bytes": 876027932,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-20260909.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabpfn35_classification", "regression": "graph_tabpfn35_regression",
+    "tensor_map": {"classification": "tensor_map_tabpfn35_classification.json",
+                   "regression": "tensor_map_tabpfn35_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+})json";
+
+static const char *const BUILTIN_TABPFN35_FAST = R"json({
+  "schema_version": 2, "id": "tabpfn-v3-5-fast", "display_name": "TabPFN 3.5 Fast (Prior Labs)",
+  "family": "icl-transformer",
+  "license": {"id": "tabpfn-3-5-license-v1.0", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "TabPFN-3.5-Fast by Prior Labs GmbH. Weights are testing/evaluation/research only — NO commercial or production use, and no hosted/API/SaaS service. Contact sales@priorlabs.ai for a commercial license."},
+  "preprocessing_profile": "tabpfn_v3_5_raw",
+  "weights": {
+    "classification": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+      "files": [{"path": "v3.5-fast/model.safetensors", "bytes": 334181708,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-fast-20260909.safetensors"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+      "files": [{"path": "v3.5-fast/model.safetensors", "bytes": 334181708,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-fast-20260909.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabpfn35fast_classification", "regression": "graph_tabpfn35fast_regression",
+    "tensor_map": {"classification": "tensor_map_tabpfn35fast_classification.json",
+                   "regression": "tensor_map_tabpfn35fast_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 10000, "max_features": 500, "max_classes": 10}
+})json";
+
 // RealTabPFN-2.5: the SAME 2.5 architecture, continued pre-training on real
 // tabular data (TabArena v0.1.4 ranks it above TabICLv2). It ships as its own
 // catalog entry rather than a flag on `tabpfn-v2-5` because the two score
@@ -601,6 +674,8 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_TABFM_V1_1, "(built-in tabfm-v1-1)"));
 	specs.push_back(ParseModelSpec(BUILTIN_MITRA2, "(built-in mitra-v2)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABDPT13, "(built-in tabdpt-v1-3)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABPFN35, "(built-in tabpfn-v3-5)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABPFN35_FAST, "(built-in tabpfn-v3-5-fast)"));
 	return specs;
 }
 

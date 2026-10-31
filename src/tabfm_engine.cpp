@@ -127,6 +127,10 @@ struct ResolvedModel {
 	//! list). Skipped at injection: ORT rejects an injected initializer its graph lacks. Empty for
 	//! every model whose graphs use the whole file.
 	unordered_set<string> unused_weights;
+	//! The map declared `"complete": true`: it names EVERY initializer its graph declares, so a
+	//! weights-file tensor it does not name is not this graph's and must not be injected (see
+	//! TensorMapDeclaresComplete). False keeps the "m." fallback for unmapped tensors.
+	bool tensor_map_complete = false;
 	string cache_key;
 	// Manifest-declared tensor contract (P4): graph input/output names to verify
 	// against the actual graph at load. Empty = no declared contract.
@@ -191,11 +195,33 @@ unordered_set<string> ParseUnusedByGraph(const string &json) {
 	return result;
 }
 
+// Whether a tensor-map document carries `"complete": true`.
+//
+// One weights file can hold MORE tensors than one task's graph declares: TabPFN-3.5
+// publishes a single checkpoint per variant with BOTH heads, and each task's graph
+// uses only its own. Every tensor in the file is injected, unmapped ones under the
+// "m." wrapper fallback, and ORT rejects an injected name the graph lacks ("Failed
+// to find existing initializer"). A map cannot be assumed complete in general --
+// TabICL's fixture map omits 23 initializers and relies on that fallback -- so the
+// map has to say so. Only then are unmapped file tensors skipped.
+bool TensorMapDeclaresComplete(const string &json) {
+	using namespace duckdb_yyjson; // NOLINT
+	auto doc = yyjson_read(json.c_str(), json.size(), 0);
+	if (!doc) {
+		return false;
+	}
+	auto flag = yyjson_obj_get(yyjson_doc_get_root(doc), "complete");
+	const bool complete = flag && yyjson_is_bool(flag) && yyjson_get_bool(flag);
+	yyjson_doc_free(doc);
+	return complete;
+}
+
 // Load {onnx -> safetensors} from the manifest: inline map, or the
 // "initializers" object of the tensor-map JSON file, else identity.
 // `unused_weights` (optional) receives the document's "unused_by_graph" list.
 unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest &manifest, const string &dir,
-                                            bool use_bundle, unordered_set<string> *unused_weights = nullptr) {
+                                            bool use_bundle, unordered_set<string> *unused_weights = nullptr,
+                                            bool *complete = nullptr) {
 	if (!manifest.tensor_map.empty()) {
 		return manifest.tensor_map;
 	}
@@ -216,11 +242,13 @@ unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest 
 		source = JoinPath(fs, dir, manifest.tensor_map_path);
 		json = ReadWholeFile(fs, source);
 	}
-	auto result_map = ParseTensorMapJson(json, source);
 	if (unused_weights) {
 		*unused_weights = ParseUnusedByGraph(json);
 	}
-	return result_map;
+	if (complete) {
+		*complete = TensorMapDeclaresComplete(json);
+	}
+	return ParseTensorMapJson(json, source);
 }
 
 string ResolveGraphPath(FileSystem &fs, const ModelManifest &manifest, const string &dir) {
@@ -402,7 +430,8 @@ void ResolveModelArtifacts(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	resolved.ext_graph_path = resolve_gpu_graph(resolved.manifest.ext_graph, "ext_graph");
 	resolved.migraphx_graph_path = resolve_gpu_graph(resolved.manifest.migraphx_graph, "migraphx_graph");
 	resolved.tensor_map =
-	    LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin, &resolved.unused_weights);
+	    LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin, &resolved.unused_weights,
+	                  &resolved.tensor_map_complete);
 	resolved.cache_key = TabFMModelCacheKey(resolved.manifest.model, task_name, resolved.manifest.revision);
 }
 
@@ -1562,8 +1591,11 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 				continue; // in the file, not in this task's graph (tensor map "unused_by_graph")
 			}
 			const CkptTensor &t = entry.second;
-			TabFMTensorRef ref;
 			auto it = st_to_onnx.find(entry.first);
+			if (it == st_to_onnx.end() && resolved.tensor_map_complete) {
+				continue; // see TensorMapDeclaresComplete
+			}
+			TabFMTensorRef ref;
 			ref.name = it != st_to_onnx.end() ? it->second : ("m." + entry.first);
 			if (t.dtype == "f32") {
 				ref.dtype = TabFMTensorDtype::F32;
@@ -1594,9 +1626,12 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 			if (resolved.unused_weights.count(st_key)) {
 				continue; // in the file, not in this task's graph (tensor map "unused_by_graph")
 			}
+			auto it = st_to_onnx.find(st_key);
+			if (it == st_to_onnx.end() && resolved.tensor_map_complete) {
+				continue; // another task's tensor (the map names all of this graph's)
+			}
 			auto &m = arena.Get(st_key);
 			TabFMTensorRef ref;
-			auto it = st_to_onnx.find(st_key);
 			ref.name = it != st_to_onnx.end() ? it->second : ("m." + st_key);
 			ref.dtype = ToEngineDtype(m.dtype);
 			ref.shape = m.shape;

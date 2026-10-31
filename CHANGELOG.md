@@ -6,6 +6,25 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Google TabFM 1.1 (`tabfm-v1-1`)**, classification and regression: the v1 architecture at embed_dim 128
+  (410 M parameters, 0.82 GB BF16 per task, against 6.56 GB for v1), non-commercial like v1. Serves on CPU and on
+  ROCm (MIGraphX), whose graphs now Cast BF16-stored weights in-graph. `tabfm-v1` is unchanged.
+- **`mitra-v2`: Mitra-v2 (AWS AutoGluon, Apache-2.0, ungated) as a new catalog entry beside `mitra`.** The
+  classifier is a drop-in (byte-identical safetensors header), so it runs mitra's bundled graphs on the v2
+  weights; the regressor's new 1,000-bin distributional head gets its own graph that min-max scales and
+  bins the target in-graph and returns the mean of the bin distribution. Wider size regime (32,768 rows,
+  256 features). CPU and ROCm. In-context only: the card's numbers use 50-step fine-tuning with bagging.
+- **`tabdpt-v1-3`: TabDPT v1.3 (Layer 6 AI, Apache-2.0, ungated) as a new catalog entry beside `tabdpt`.**
+  Re-exported for v1.3's per-task y-encoders (`tools/export_tabdpt --config real13`); one 252 MB file serves
+  both tasks and lives under `tabdpt1_3/` so it cannot overwrite v1.2's. CPU and ROCm. A tensor map may now
+  list `unused_by_graph` checkpoint tensors, which the engine skips at injection (needed when one weights
+  file serves two graphs that read different subsets of it).
+- **TabPFN-3.5 and TabPFN-3.5-Fast** (`tabpfn-v3-5`, `tabpfn-v3-5-fast`; Prior Labs, non-commercial
+  `tabpfn-3-5-license-v1.0`, gated like `tabpfn-v3`). Classify and regress on CPU, CUDA (ext graph) and ROCm
+  (bundled MIGraphX graphs), read straight from Prior Labs' safetensors with no conversion step; one file per
+  variant serves both tasks. A tensor map can now declare `"complete": true`, so a weights file may carry tensors
+  a task's graph does not use. See docs/REAL_MODELS.md.
+
 ### Changed
 - **Documentation restructured**: a short README in the anofox-forecast / anofox-decide layout, with guides
   under `docs/guides/` and API pages under `docs/api/`, `docs/BUILDING.md` and a labelled index in
@@ -23,6 +42,9 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   session is built on the first predict.
 - The `anofox_tabfm_accept_hf_license` help text names every gated model (tabfm-v1, the tabpfn-* models, causilo,
   limix-2m), not only Google's weights.
+- The MLX plugin (Apple silicon) builds against mlx-c 0.7 as well as earlier versions: CMake probes the new
+  `mlx_cumsum_axis` signature and picks the matching `cumsum` and `scaled_dot_product_attention` calls
+  (Homebrew ships mlx-c 0.7.0). Verified on an M3: the full suite is green, and mitra on `mlx:0` matches CPU.
 
 
 ## [v2026.10.26] - 2026-10-26

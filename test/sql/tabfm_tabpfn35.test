@@ -1,0 +1,156 @@
+# name: test/sql/tabfm_tabpfn35.test
+# description: TabPFN-3.5 and TabPFN-3.5-Fast (Prior Labs, released 2026-09-09).
+#              A new architecture again, not v3 retrained: every cell carries a
+#              third channel next to its value and NaN indicator -- its midrank
+#              ECDF against the TRAIN rows of its column -- plus a Fourier cell
+#              embedding, q/k RMSNorm in every attention, and ONE checkpoint per
+#              variant that holds both heads (a 160-class decoder and a
+#              5000-bucket regression head). Upstream's ECDF uses
+#              torch.searchsorted, which has no ONNX operator, so the graphs are
+#              exported from a re-driven forward (tools/export_tabpfn35) with a
+#              fixed-step binary search in its place; parity with upstream's own
+#              forward is checked on every row there.
+#
+#              No engine change: the contract is still (x, y) -> logits.
+#
+#              Uses the committed random-init fixture (offline, zero Prior Labs
+#              weight bytes). Its ECDF bucket count (6) is BELOW its train-row
+#              count, so these queries also run upstream's interpolating ECDF
+#              ruler, which the released model only reaches past 8192 train rows.
+#
+#              Licensed like TabPFN-3, word for word: tabpfn-3-5-license-v1.0
+#              permits testing / evaluation / research only -- no commercial or
+#              production use, no hosted service -- so both entries are
+#              commercial:false + gated.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# --- the built-in catalog entries ----------------------------------------------
+
+query TTT
+SELECT model, family, capabilities FROM tabfm_list_models()
+WHERE model IN ('tabpfn-v3-5', 'tabpfn-v3-5-fast') ORDER BY model
+----
+tabpfn-v3-5	icl-transformer	classify, regress
+tabpfn-v3-5-fast	icl-transformer	classify, regress
+
+# the whole Prior Labs line, licences included: adding 3.5 changes none of the others
+query TTT
+SELECT model, license, commercial FROM tabfm_list_models()
+WHERE model LIKE 'tabpfn-%' ORDER BY model
+----
+tabpfn-v2	apache-2.0	true
+tabpfn-v2-5	tabpfn-2.5-license-v1.1	false
+tabpfn-v2-5-real	tabpfn-2.5-license-v1.1	false
+tabpfn-v2-6	tabpfn-2.6-license-v1.0	false
+tabpfn-v3	tabpfn-3-license-v1.0	false
+tabpfn-v3-5	tabpfn-3-5-license-v1.0	false
+tabpfn-v3-5-fast	tabpfn-3-5-license-v1.0	false
+
+query III
+SELECT max_rows, max_features, max_classes FROM tabfm_list_models()
+WHERE model IN ('tabpfn-v3-5', 'tabpfn-v3-5-fast') ORDER BY model
+----
+10000	500	10
+10000	500	10
+
+# gated: nothing is fetched before the licence is accepted
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/tabpfn35_cache'
+
+statement error
+CALL tabfm_download('classification', model := 'tabpfn-v3-5')
+----
+licensed 'tabpfn-3-5-license-v1.0' (non-commercial, no redistribution). Run: SET anofox_tabfm_accept_hf_license = true;
+
+statement error
+CALL tabfm_download('regression', model := 'tabpfn-v3-5-fast')
+----
+licensed 'tabpfn-3-5-license-v1.0' (non-commercial, no redistribution). Run: SET anofox_tabfm_accept_hf_license = true;
+
+query I
+SELECT count(*) FROM glob('__TEST_DIR__/tabpfn35_cache/*')
+----
+0
+
+# --- the fixture model (real forward pass, offline) ----------------------------
+# ONE weights file serves both tasks, exactly as the released checkpoints do.
+
+statement ok
+CALL tabfm_register_model(
+  id := 'tabpfn-v3-5-fixture', base_dir := 'test/fixtures/tabpfn35',
+  classification_graph := 'graph_tabpfn35_classification.onnx',
+  regression_graph := 'graph_tabpfn35_regression.onnx',
+  classification_weights := 'model.safetensors',
+  regression_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_tabpfn35_classification.json',
+  regression_tensor_map := 'tensor_map_tabpfn35_regression.json',
+  license := 'tabpfn-3-5-license-v1.0', commercial := false,
+  preprocessing_profile := 'tabpfn_v3_5_raw',
+  max_rows := 4096, max_features := 64, max_classes := 4)
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,0.1,'c0'),(1.5,0.2,0.3,'c1'),(2.5,-1.0,0.5,'c2'),
+  (0.2,0.8,0.7,'c0'),(1.1,0.4,0.2,'c1'),(3.0,-0.5,0.9,'c2'),
+  (0.9,1.2,0.6,'c0'),(2.1,0.1,NULL,'c1'),
+  (1.3,0.3,0.35,NULL),(2.4,-0.2,0.55,NULL))
+  v(f1,f2,f3,label);
+
+# a real forward pass through the 3.5 graph (ECDF ranks, inducing points, RoPE)
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2'))
+FROM tabfm_classify('t', 'label', model := 'tabpfn-v3-5-fixture')
+----
+10	0
+
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabpfn-v3-5-fixture')
+WHERE abs(list_sum(map_values(proba)) - 1.0) > 1e-5
+----
+0
+
+# the probabilities are not a constant fill (a dead ECDF or attention path would
+# still sum to 1, so check that rows actually differ)
+query I
+SELECT count(DISTINCT round(proba['c0'], 6)) > 1
+FROM tabfm_classify('t', 'label', model := 'tabpfn-v3-5-fixture')
+----
+true
+
+statement ok
+CREATE TABLE r AS SELECT * FROM (VALUES
+  (0.5,1.0,0.1,1.2),(1.5,0.2,0.3,2.4),(2.5,-1.0,0.5,3.1),
+  (0.2,0.8,0.7,0.9),(1.1,0.4,0.2,1.8),(3.0,-0.5,0.9,3.6),
+  (0.9,1.2,0.6,1.1),(2.1,0.1,0.4,2.7),
+  (1.3,0.3,0.35,NULL),(2.4,-0.2,0.55,NULL))
+  v(f1,f2,f3,target);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat IS NULL OR isnan(yhat))
+FROM tabfm_regress('r', 'target', model := 'tabpfn-v3-5-fixture')
+----
+10	0
+
+# every row carries its own estimate (a dead head would decode to one constant);
+# the raw-space scale is asserted on the real weights (tabfm_real_models.test),
+# which a random-init head cannot be held to
+query I
+SELECT count(DISTINCT round(yhat, 6)) > 1
+FROM tabfm_regress('r', 'target', model := 'tabpfn-v3-5-fixture')
+----
+true
+
+# --- generation sits above the engine seam, so 3.5 gets it for free ------------
+
+query II
+SELECT count(*), count(*) FILTER (WHERE f1 IS NULL OR label IS NULL)
+FROM tabfm_generate('t', 8, model := 'tabpfn-v3-5-fixture', opts := MAP{'seed':'42'})
+----
+8	0

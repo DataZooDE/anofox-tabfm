@@ -389,6 +389,12 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 		stem = "tabpfn26";
 	} else if (model == "tabpfn-v3") {
 		stem = "tabpfn3";
+	} else if (model == "tabpfn-v3-5") {
+		stem = "tabpfn35";
+	} else if (model == "tabpfn-v3-5-fast") {
+		// Its own stem: 3.5-Fast is the 3.5 architecture at 8 ICL layers instead of 24, so it cannot share
+		// 3.5's graphs.
+		stem = "tabpfn35fast";
 	} else if (model == "tabicl-v2") {
 		stem = "tabicl";
 	} else if (model == "orion-bix") {
@@ -534,6 +540,15 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 		if (task_name == "classification" || task_name == "regression") {
 			return "0c6a868493ea16aaa88bd604b7f769b34018e82941eae90abd9d16072cf283eb";
 		}
+	}
+	// TabPFN-3.5 / 3.5-Fast: ONE published safetensors per variant holds both heads, so both tasks pin the
+	// same header -- that of the file Prior Labs publish, read with no conversion step (the keys are already
+	// the model's state_dict names, `__metadata__` config block included in the hashed header).
+	if (model == "tabpfn-v3-5" && (task_name == "classification" || task_name == "regression")) {
+		return "8a237b22e16aeb1e2b0d15a280d17fdd030054643b53dae86c8552f640ba9302";
+	}
+	if (model == "tabpfn-v3-5-fast" && (task_name == "classification" || task_name == "regression")) {
+		return "733da85d68f73d3a18eabbc01ded64b19da6cabeecf0549f1980a3773d11508f";
 	}
 	if (model == "tabpfn-v3") {
 		if (task_name == "classification") {
