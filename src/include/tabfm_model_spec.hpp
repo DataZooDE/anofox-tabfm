@@ -287,6 +287,8 @@ struct GpuServabilityInputs {
 	//! Ops the graph that would be served uses and this backend cannot execute. Only MLX interprets
 	//! graphs op by op (tabfm_mlx_ops.hpp); the other backends hand the whole graph to a runtime.
 	vector<string> unsupported_ops;
+	//! Non-empty when the backend executes this graph but is known to get it wrong (MlxKnownWrong).
+	string known_wrong;
 };
 
 struct GpuServabilityResult {
@@ -341,6 +343,11 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		out.reason = "the '" + in.backend + "' backend does not implement (" +
 		             StringUtil::Join(in.unsupported_ops, ", ") + "), which the graph of model '" + in.model +
 		             "' uses for task '" + in.task_name + "'";
+		return out;
+	}
+	if (out.source != GpuGraphSource::NONE && !in.known_wrong.empty()) {
+		out.reason = "model '" + in.model + "' is refused on the '" + in.backend + "' backend for task '" +
+		             in.task_name + "': " + in.known_wrong;
 		return out;
 	}
 	switch (out.source) {

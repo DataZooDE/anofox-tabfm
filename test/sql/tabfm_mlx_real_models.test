@@ -10,7 +10,7 @@
 #
 #              Needs Apple silicon and the weights downloaded (see tabfm_real_models.test for the CALL
 #              tabfm_download lines; mitra-v2, tabdpt, tabdpt-v1-3, tabfm-v1-1, tabpfn-v3-5,
-#              tabpfn-v3-5-fast):
+#              tabpfn-v3-5-fast, kumo-tabular-small/-medium/-large, orion-msp):
 #
 #                TABFM_REAL_WEIGHTS=1 TABFM_MLX=1 ./build/release/test/unittest test/sql/tabfm_mlx_real_models.test
 # group: [anofox_tabfm]
@@ -117,11 +117,175 @@ SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM 
 true
 
 # ---------------------------------------------------------------------------
-# TabDPT (v1.2 and v1.3) is REFUSED on mlx, by name. Its ext graphs need ConstantOfShape (and v1.3's
-# regression graph ReduceProd). With those two ops added the graph does run on mlx:0 -- and then 63-66 of
-# 100 labels disagree with the CPU (row 0 matches to 6 digits, later rows drift), so some op the TabDPT
-# graphs use is interpreted wrongly. An honest refusal beats a wrong answer: the ops stay out until that is
-# found, and this asserts the refusal names what is missing and the way out.
+# Kumo-Tabular (all three sizes) and TabDPT regression need ConstantOfShape (v1.3's regression graph also
+# ReduceProd); with both implemented they run on mlx:0 and agree with the CPU.
+
+# ---------------------------------------------------------------------------
+# kumo-tabular-small
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE kumo_tabular_small_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-small') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE kumo_tabular_small_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-small') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE kumo_tabular_small_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-small') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE kumo_tabular_small_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-small') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'kumo-tabular-small' AND task IN ('classification', 'regression') GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM kumo_tabular_small_cc c JOIN kumo_tabular_small_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM kumo_tabular_small_cr c JOIN kumo_tabular_small_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# kumo-tabular-medium
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE kumo_tabular_medium_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-medium') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE kumo_tabular_medium_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-medium') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE kumo_tabular_medium_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-medium') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE kumo_tabular_medium_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-medium') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'kumo-tabular-medium' AND task IN ('classification', 'regression') GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM kumo_tabular_medium_cc c JOIN kumo_tabular_medium_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM kumo_tabular_medium_cr c JOIN kumo_tabular_medium_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# kumo-tabular-large
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE kumo_tabular_large_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-large') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE kumo_tabular_large_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-large') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE kumo_tabular_large_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-large') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE kumo_tabular_large_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'kumo-tabular-large') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'kumo-tabular-large' AND task IN ('classification', 'regression') GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM kumo_tabular_large_cc c JOIN kumo_tabular_large_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM kumo_tabular_large_cr c JOIN kumo_tabular_large_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# tabdpt
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabdpt_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabdpt_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabdpt' AND task IN ('regression') GROUP BY task ORDER BY task
+----
+regression	true
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabdpt_cr c JOIN tabdpt_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# tabdpt-v1-3
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabdpt_v1_3_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt-v1-3') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabdpt_v1_3_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt-v1-3') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabdpt-v1-3' AND task IN ('regression') GROUP BY task ORDER BY task
+----
+regression	true
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabdpt_v1_3_cr c JOIN tabdpt_v1_3_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# Executable is not the same as right: TabDPT classification (v1.2 and v1.3) runs on mlx and disagrees with
+# the CPU (63-66 of 100 labels; context rows scored near-uniform where the CPU is near-certain), and so does
+# orion-msp (9 of 100). They are refused by name (MlxKnownWrong) until the misinterpreted op is found, and
+# the refusal says why and names the way out.
 
 statement ok
 SET anofox_tabfm_device = 'mlx';
@@ -129,26 +293,33 @@ SET anofox_tabfm_device = 'mlx';
 statement error
 SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt-v1-3')
 ----
-<REGEX>:.*does not implement \(ConstantOfShape\).*anofox_tabfm_device='cpu'.*
+<REGEX>:.*disagrees with the CPU.*anofox_tabfm_device='cpu'.*
 
 statement error
 SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt')
 ----
-<REGEX>:.*does not implement \(ConstantOfShape\).*anofox_tabfm_device='cpu'.*
+<REGEX>:.*disagrees with the CPU.*anofox_tabfm_device='cpu'.*
 
-# ...and the capability relation says so up front, instead of listing tabdpt as runnable on mlx and
-# leaving the refusal to the load. Kumo's and orion-msp's ext graphs need ConstantOfShape too.
-query TTTT
-SELECT model, task, supported, reason LIKE '%does not implement (ConstantOfShape%' FROM tabfm_backends()
-WHERE backend = 'mlx' AND model IN ('tabdpt', 'tabdpt-v1-3') ORDER BY model, task
+statement error
+SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'orion-msp')
 ----
-tabdpt	classification	false	true
-tabdpt	regression	false	true
-tabdpt-v1-3	classification	false	true
-tabdpt-v1-3	regression	false	true
+<REGEX>:.*disagrees with the CPU.*anofox_tabfm_device='cpu'.*
 
-# Under 'auto' an Apple-silicon machine must not pick mlx for a graph mlx cannot run: tabdpt is served,
-# on the CPU, without a word -- while a model mlx CAN run still gets mlx.
+# ...and the capability relation says so up front, per task.
+query TTTT
+SELECT model, task, supported, coalesce(reason LIKE '%disagrees with the CPU%', false) FROM tabfm_backends()
+WHERE backend = 'mlx' AND model IN ('tabdpt', 'tabdpt-v1-3', 'orion-msp', 'kumo-tabular-small') ORDER BY model, task
+----
+kumo-tabular-small	classification	true	false
+kumo-tabular-small	regression	true	false
+orion-msp	classification	false	true
+tabdpt	classification	false	true
+tabdpt	regression	true	false
+tabdpt-v1-3	classification	false	true
+tabdpt-v1-3	regression	true	false
+
+# Under 'auto' an Apple-silicon machine must not pick mlx for a graph mlx gets wrong: tabdpt classification
+# is served, on the CPU, without a word.
 statement ok
 SET anofox_tabfm_device = 'auto';
 
@@ -161,7 +332,7 @@ SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3'
 100
 
 query T
-SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND model = 'tabdpt'
+SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND model = 'tabdpt' AND task = 'classification'
 ----
 cpu
 
