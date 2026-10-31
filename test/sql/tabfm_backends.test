@@ -96,7 +96,7 @@ true
 # The models that CAN be served on ROCm must never be refused with the
 # structural "positional context split" reason — that reason means "no fixed
 # shape can be bucketed for this architecture", which is false for every one of
-# these: tabfm-v1, tabfm-v1-1 and mitra (train_size-scalar family), and tabdpt, tabpfn-v2,
+# these: tabfm-v1, tabfm-v1-1, mitra and mitra-v2 (train_size-scalar family), and tabdpt, tabdpt-v1-3, tabpfn-v2,
 # tabpfn-v2-5, tabpfn-v2-6 and tabpfn-v3, whose split was converted to a value (see
 # docs/ROCM_TABDPT_SPIKE.md and docs/ROCM_TABPFN_PLAN.md). They may still be
 # unsupported for a situational cause (weights not downloaded), so this asserts
@@ -109,7 +109,8 @@ true
 query I
 SELECT count(*) FROM tabfm_backends()
 WHERE backend = 'rocm'
-  AND model IN ('tabfm-v1', 'tabfm-v1-1', 'mitra', 'tabdpt', 'tabpfn-v2', 'tabpfn-v2-5', 'tabpfn-v2-6', 'tabpfn-v3')
+  AND model IN ('tabfm-v1', 'tabfm-v1-1', 'mitra', 'tabdpt', 'tabpfn-v2', 'tabpfn-v2-5', 'tabpfn-v2-6', 'tabpfn-v3',
+                'mitra-v2', 'tabdpt-v1-3')
   AND reason IS NOT NULL AND reason LIKE '%ROCM_SINGLE_EVAL_POS%';
 ----
 0

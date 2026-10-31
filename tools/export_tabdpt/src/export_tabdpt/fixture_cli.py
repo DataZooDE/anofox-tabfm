@@ -19,8 +19,10 @@ from export_tabdpt import fixture
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="make_tabdpt_fixture")
     ap.add_argument("out")
+    ap.add_argument("--config", default="fixture", choices=["fixture", "fixture13"],
+                    help="fixture: v1.2 (test/fixtures/tabdpt); fixture13: v1.3 (test/fixtures/tabdpt13)")
     args = ap.parse_args(argv)
-    hashes = fixture.build(pathlib.Path(args.out))
+    hashes = fixture.build(pathlib.Path(args.out), args.config)
     print(json.dumps(hashes, indent=2))
     return 0
 

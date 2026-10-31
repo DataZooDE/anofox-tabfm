@@ -1,0 +1,66 @@
+{
+  "model": "mitra-v2-tab2d",
+  "task": "regression",
+  "config": "real2",
+  "opset": 18,
+  "n_params": 76684776,
+  "model_kwargs": {
+    "dim": 512,
+    "dim_output": 1000,
+    "n_layers": 12,
+    "n_heads": 4
+  },
+  "input_signature": {
+    "x": "[1,T,H] f32",
+    "y": "[1,T] f32",
+    "train_size": "[1] i64",
+    "d": "[1] i64"
+  },
+  "output": {
+    "logits": "[1,T,1] f32 raw-space point prediction (mean of the bin distribution)"
+  },
+  "cat_mask": "omitted (Mitra has no categorical embedding)",
+  "graph_bytes": 609747,
+  "initializers_mapped": 392,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 1.52587890625e-05,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 32,
+        "H": 6,
+        "d": 6,
+        "train": 20,
+        "max_abs_delta_test_rows": 1.1444091796875e-05,
+        "ort_ms": 1566.2851333618164
+      },
+      {
+        "T": 50,
+        "H": 10,
+        "d": 7,
+        "train": 30,
+        "max_abs_delta_test_rows": 1.52587890625e-05,
+        "ort_ms": 2740.6210899353027
+      },
+      {
+        "T": 24,
+        "H": 4,
+        "d": 4,
+        "train": 12,
+        "max_abs_delta_test_rows": 1.52587890625e-05,
+        "ort_ms": 578.1140327453613
+      }
+    ]
+  },
+  "versions": {
+    "python": "3.14.0",
+    "numpy": "2.5.1",
+    "torch": "2.12.1+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0"
+  },
+  "cmd": "export_mitra --task regression --config real2 --weights /home/jr/.cache/anofox-tabfm/autogluon__mitra-regressor-2@main/model.safetensors --out /tmp/claude-1000/-home-jr-Projects-datazoo-anofox-decide/7e409e93-cc2c-4f92-8eed-43d9e96cd3da/scratchpad/mu/m2real",
+  "weight_free": true
+}

@@ -30,6 +30,8 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; ROCm refused by name |
 | **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
 | **Google TabFM 1.1** (`tabfm-v1-1`) | TabFM Non-Commercial License v1.0 (**non-commercial**, same text as v1) | ✅ shipped | **yes — classify + regress, CPU + ROCm** | 410 M / 0.82 GB per task (BF16), 4x fewer params than v1; no conversion; end-to-end parity with upstream 9.4e-06 clf / 4.9e-06 reg; ROCm agrees with CPU 64/64 |
+| **Mitra-v2** (`mitra-v2`) | Apache-2.0 (commercial, ungated) | ✅ shipped | **yes — classify + regress** | 75.7 M clf / 76.7 M reg; **classifier reuses mitra's graphs (byte-identical header) — zero new clf bytes**; new graph for the 1,000-bin regressor; 32,768 rows / 256 features; CPU + ROCm |
+| **TabDPT v1.3** (`tabdpt-v1-3`) | Apache-2.0 (commercial, ungated) | ✅ shipped | **yes — classify + regress** | 63.0 M; re-export for the per-task y-encoders; one 252 MB file, both tasks, under `tabdpt1_3/`; parity vs upstream 1.3.1 2.3e-05 clf / 2.3e-06 reg; CPU + ROCm |
 
 ### TabPFN-3 — done
 
@@ -183,6 +185,77 @@ uv run make_tabdpt_fixture ../../test/fixtures/tabdpt
 
 Offline fixture: `test/sql/tabfm_tabdpt.test`.
 
+### TabDPT v1.3 — done (`tabdpt-v1-3`, beside `tabdpt`)
+
+Layer 6 updated `Layer6/TabDPT` on 2026-09-08 with `tabdpt1_3.safetensors` (252 MB, Apache-2.0,
+ungated; PyPI `tabdpt` 1.3.x). TabArena: **1545** Elo for the v1.3 default against **1457** for
+v1.2. It ships as a **new entry**; `tabdpt` keeps v1.2 unchanged.
+
+**Not a drop-in for the v1.2 graphs.** The checkpoint's `cfg` carries v1.2's exact dims
+(emsize 512, 32 layers, 16 classes, 2048 bins, ...), so a dims check passes — but the tensor
+signature does not: 647 → 679 tensors. v1.2's per-layer target MLP `y_encoders.{l}`
+(Linear(1,256) → GELU → Linear(256,128)) is replaced by a per-**task** pair:
+
+| | v1.2 | v1.3 |
+|---|---|---|
+| classification | `y_encoders.{l}` MLP over the float label | `cls_y_encoders.{l}` = `Embedding(16, 128)` over `y.long().clamp(0, 15)` |
+| regression | the same MLP | `reg_y_encoders.{l}` = Linear(1,128) → GELU → Linear(128,128) → LayerNorm |
+
+`forward(x, y, num_features)` became `forward(x, y, is_cls)`. Everything else — encoder, the 32
+layers, the attention-temperature buffers, the head (16 logits + 2048 regression bins) — is
+unchanged. The "full probabilistic regression outputs" of the v1.3 README are an estimator API
+(`predict(output_type="full")` returns the same logits plus bin borders); the network's regression
+head is the one v1.2 had, and the engine returns its point estimate (the bar-distribution mean),
+as for v1.2.
+
+**How it was exported.** `tools/export_tabdpt` keeps its `tabdpt==1.2.0` pin (the pin is what
+re-exports the shipped v1.2 graphs, and 1.3 cannot load `tabdpt1_2.safetensors`).
+`tabdpt_patches.upgrade_to_v13` performs the y-encoder swap on the pinned model; every existing
+patch (traceable attention scale, head over every data row) and the masked ROCm conversion apply
+unchanged. `configs.assert_state_dict_matches_checkpoint` compares names and shapes against the
+file's header — the check a dims comparison cannot make. The v1.2 artifacts regenerate
+byte-identically with the changed exporter.
+
+**Both tasks, one file, two subsets.** Each task's graph reads only its own encoder (551
+classification / 647 regression of the 679 tensors). The engine injects the whole file, and ORT
+refuses an initializer its graph does not declare, so the tensor maps list the other task's
+tensors under `unused_by_graph` and the engine skips exactly those (opt-in; a map without the list
+behaves as before; every other catalog map was checked to cover its checkpoint fully). This is
+the one engine change, covered by `test/sql/tabfm_tabdpt13.test`.
+
+**Cache path.** Same repo ⇒ same cache slug (`Layer6__TabDPT@main`) as v1.2, so the file lives
+at `tabdpt1_3/model.safetensors` — the `tabpfn-v2-5-real` rule. The bundled GPU graphs are
+staged beside it (stem `tabdpt13`), so v1.2's staged graphs are untouched too.
+
+**Verified on the real weights.**
+
+| check | result |
+|---|---|
+| strict `load_state_dict` of `tabdpt1_3.safetensors` into the patched model | 679/679 |
+| exported ONNX (ORT) vs upstream `tabdpt` 1.3.1 `TabDPTModel`, same weights and inputs, T=96/300 | classification logits **2.3e-05** max abs (argmax 100 %), regression point **2.3e-06** |
+| export parity (graph vs PyTorch wrapper, random weights) | 3.7e-07 clf / 2.9e-06 reg |
+| masked (ROCm) vs positional, incl. the three negative controls | rel 8.9e-07 clf / 1.5e-07 reg |
+| `tabfm_real_models.test` split, CPU | accuracy **0.969** (v1.2: 0.938), R² **0.99990** (v1.2: 0.99995) |
+| CPU latency, that split (168 context / 72 query rows) | ~0.9 s per task (v1.2: ~1.0 s) |
+
+ROCm: served on `rocm:0`; numbers in the ROCm table of the Mitra-v2 section.
+
+```bash
+cd tools/export_tabdpt
+W=~/.cache/anofox-tabfm/Layer6__TabDPT@main/tabdpt1_3/model.safetensors
+for t in classification regression; do
+  uv run export_tabdpt --task $t --config real13 --weights $W --out ../../resources
+  uv run export_tabdpt --task $t --config real13 --contract mask --weights $W --out /tmp/mask13
+done
+uv run make_tabdpt_fixture --config fixture13 ../../test/fixtures/tabdpt13
+# then tools/make_external_graph.py and tools/make_migraphx_graph.py --dynamic exactly as for v1.2
+# (docs/ROCM_TABDPT_SPIKE.md), with the tabdpt13 names and --inline-ok bin_centres for regression
+```
+
+Offline fixture: `test/sql/tabfm_tabdpt13.test` (`test/fixtures/tabdpt13`; its seeding keeps the
+attention-temperature buffers `n0`/`max_len_f`/`kappa` at their constructed values — random ones
+can make `log(min(n, max_len_f) / n0)` NaN, which the v1.2 fixture escapes only by luck).
+
 ### Orion-MSP — done, with one deliberate deviation
 
 The sibling of `orion-bix` (same vendor, same MIT licence, same
@@ -269,7 +342,8 @@ TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
 ```
 
 Measured on that split (accuracy): `tabpfn-v2-5-real` 0.984, `tabpfn-v2-6`
-0.984, `tabpfn-v2-5` 0.969, `tabdpt` 0.953, `mitra` 0.938, `tabicl-v2` 0.922 —
+0.984, `tabpfn-v2-5` 0.969, `tabdpt-v1-3` 0.969, `mitra-v2` 0.953, `tabdpt` 0.953 (0.938 on the
+2026-10-31 build), `mitra` 0.938, `tabicl-v2` 0.922 —
 the newly onboarded models lead, matching their TabArena order. Regression R² is
 0.9999 for all three new entries, which is the assertion that actually exercises
 each one's point-estimate decode (bar-distribution mean plus the target
@@ -310,11 +384,13 @@ regress capabilities above — there is no separate per-model work.
 | `tabfm-v1` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabfm-v1-1` | ✅ | ✅ | ✅ | ✅ all columns |
 | `mitra` | ✅ | ✅ | ✅ | ✅ all columns |
+| `mitra-v2` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2-5` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2-5-real` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2-6` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabdpt` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabdpt-v1-3` | ✅ | ✅ | ✅ | ✅ all columns |
 | `orion-msp` | ✅ | ✗ | ✅ | categorical columns only |
 | `tabpfn-v3` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabicl-v2` | ✅ | ✅ | ✅ | ✅ all columns |
@@ -341,6 +417,106 @@ Registered via `examples/mitra.json`; offline fixture `test/sql/tabfm_mitra.test
 head-to-head in `examples/compare_models.sql`. Downloadable from HF
 (`autogluon/mitra-{classifier,regressor}`, per-file URLs in the manifest),
 Apache-2.0, ungated.
+
+## Mitra-v2 — done (`mitra-v2`, beside `mitra`)
+
+AWS AutoGluon's second-generation Mitra (arXiv 2609.04540; `autogluon/mitra-classifier-2`
+2026-09-07, `autogluon/mitra-regressor-2` 2026-09-08; Apache-2.0, ungated). A **new entry**;
+`mitra` keeps v1 unchanged.
+
+**The classifier is a drop-in; the regressor is not.** `config.json` of classifier-2 is
+byte-identical to classifier-1's, and so is the safetensors JSON header (sha `cb1a261b…`, 392
+tensors — same names, shapes, dtypes and offsets; only the values differ). The entry therefore
+reuses mitra's classification graph, tensor map, ext graph and MIGraphX graph verbatim and embeds
+no new classification bytes; `ExpectedWeightsHeaderShaFor("mitra-v2", "classification")` is
+mitra's sha, pinned in `test_tabfm_model_spec.cpp`. The regressor-2 file is 306,776,952 bytes
+(v1: 302,683,140), `dim_output` 1 → **1000**: regression is cast as classification over 1,000
+target bins, `final_layer` is `[1000, 512]` and every support target is embedded by its **bin**
+(`y_embedding` becomes an `Embedding [1000, 512]`, no bias; 393 → 392 tensors). That needs its own
+graph, `graph_mitra2_regression` (`tools/export_mitra --config real2`), which does upstream's
+target pipeline in-graph:
+
+1. min-max scale over the context rows (AutoGluon `Preprocessor.normalize_y`);
+2. `bucketize(y_norm, linspace(-0.5, 1.5, 1001)) - 1`, clamped to [0, 999]
+   (`trainer_finetune`; written as a compare-and-count so it exports and MIGraphX parses it);
+3. the network predicts a distribution over the bins;
+4. the point prediction is its **mean** over the bin centres (the card; installed upstream by
+   `mitra_finetune.patches._mean_decode_source` — stock AutoGluon's argmax decode is for v1's
+   head), then the min-max scaling is undone.
+
+The graph is raw-in / raw-out, so the entry's profile is `mitra_v2_raw`. Features are passed raw
+too, which is what upstream feeds: Mitra's quantile embedding is rank-based, so the engine's
+monotone feature scaling is irrelevant either way. A consequence worth knowing: because the target
+scaling lives in the graph, v2 regression does **not** depend on the engine's target scaling —
+the v1 regressor's shrinkage on a z-scored target (R² 0.75, slope 1.78 on a noise-free linear
+target, measured here; being fixed separately for `mitra`) does not occur (R² 0.9998, slope 0.998).
+Predictions always lie in `[y_min - range/2, y_max + range/2]` and are affine-equivariant in the
+target, for any weights; `test/sql/tabfm_mitra_v2.test` asserts both on the random-init fixture.
+
+**Size regime.** v2 was pre-trained on 1–50 features and 160–5,120 support rows ("10x longer
+context, 3x features" than v1's 1–16), and its documented operating range is up to **32,768**
+support rows at prediction time and a **256**-feature budget (Technical Report §3.1, §3.5;
+`mitra-finetune` README). The entry declares 32,768 / 256 (v1: 10,000 / 100). The v1 graph the
+classifier reuses was traced with H ≤ 100, but its ONNX axis is symbolic: a 160-feature table runs
+(real-weights test; accuracy 0.938, v1 0.922 on the same table, ~60 s CPU at 168 context rows).
+tabfm has no feature reduction, so wider than 256 is beyond the documented range (the global
+`anofox_tabfm_max_features` still applies).
+
+**In-context only — read the card's numbers with that in mind.** The card's benchmark results
+(TabArena Elo 1774.6) use the `mitra-finetune` recipe: 50-step fine-tuning with 8-fold bagging,
+class-balanced support sampling and "heldout in support". tabfm runs one in-context forward pass,
+so those numbers do not transfer. Measured in-context here instead.
+
+**Verified on the real weights.**
+
+| check | result |
+|---|---|
+| classifier-2 header == classifier-1 header | byte-identical (sha `cb1a261b…`) |
+| shipped mitra classification graph + v2 weights (ORT) vs AutoGluon's own `Tab2D` (CPU branch), S=60/250 | logits **1.6e-04** max abs at max \|logit\| ≈ 25 (argmax 100 %; the same harness gives 1.6e-05 at \|logit\| ≈ 7 for v1) |
+| `graph_mitra2_regression` + v2 weights vs `Tab2D` + upstream min-max/bucketize/mean decode | **1.6e-03** max abs on targets spanning ~100–130 (≈1e-05 of the range) |
+| export parity (graph vs PyTorch wrapper, random weights) | 1.5e-05 (raw target units) |
+| `tabfm_real_models.test` split, CPU | accuracy **0.953** (v1: 0.938); R² **0.99983** (v1: 0.693 with the current z-scored target) |
+| noise-free linear target, original scale and ×1000 + 7000 | R² > 0.999, slope 0.998 |
+| CPU latency, that split | ~2.3 s per task, as v1 |
+
+```bash
+cd tools/export_mitra
+W=~/.cache/anofox-tabfm/autogluon__mitra-regressor-2@main/model.safetensors
+uv run export_mitra --task regression --config real2 --weights $W --out ../../resources
+uv run export_mitra --task regression --config fixture2 --out ../../test/fixtures/mitra2 \
+    --emit-weights ../../test/fixtures/mitra2/model_regression.safetensors \
+    --emit-golden ../../test/fixtures/mitra2/golden_regression.json
+cd ../.. && python tools/make_external_graph.py regression --weights $W \
+    --graph resources/graph_mitra2_regression.onnx --tensor-map resources/tensor_map_mitra2_regression.json \
+    --out resources/graph_ext_mitra2_regression.onnx
+python tools/make_migraphx_graph.py regression --weights $W --dynamic --inline-ok bin_edges,bin_centres \
+    --graph resources/graph_mitra2_regression.onnx --tensor-map resources/tensor_map_mitra2_regression.json \
+    --out resources/graph_migraphx_mitra2_regression.onnx
+```
+
+Offline fixture: `test/sql/tabfm_mitra_v2.test` (classification shares `test/fixtures/mitra`;
+regression uses `test/fixtures/mitra2`). MLX: not run (Linux box). The MLX plugin's hand-ported
+fast path keys on the id `mitra`, so `mitra-v2` goes through the general graph interpreter there.
+
+### ROCm (Radeon RX 9070 XT, gfx1201) — mitra-v2 and tabdpt-v1-3
+
+Both serve on `rocm:0` with the real weights (`SELECT device FROM tabfm_models()` reads `rocm:0`
+for all four model/task pairs, `SET anofox_tabfm_device = 'rocm'`, release MIGraphX plugin), on
+the `tabfm_real_models.test` split (168 context / 72 query rows → bucket T512 × H16):
+
+| model / task | GPU vs CPU | GPU quality | cold MIGraphX compile |
+|---|---|---|---|
+| `mitra-v2` classification | 64/64 labels agree | accuracy 0.953 (= CPU) | 580 s |
+| `mitra-v2` regression | max abs 3.8e-05, corr 1 − 6e-12 | R² 0.99983 (= CPU) | 619 s |
+| `tabdpt-v1-3` classification | 64/64 labels agree | accuracy 0.969 (= CPU) | 551 s |
+| `tabdpt-v1-3` regression | max abs 8.8e-06, corr 1 − 2e-13 | R² 0.99990 (= CPU) | 819 s |
+
+Compile times are cold, per shape bucket, on a shared machine; the `.mxr` is cached afterwards.
+`mitra-v2` classification compiles mitra's graph against v2's weights: the program cache keys on
+a weights fingerprint as well as the graph (`tabfm_mxr_cache_key.hpp`), so it gets its own
+`…_w52cd48ae_…` entry and never reuses v1's program.
+`tools/gpu_test/scenarios/model_upgrades_rocm.sql` reproduces this table and checks that
+mitra and mitra-v2 answer differently on the GPU.
 
 ## TabPFN v2 — shipped (classification)
 

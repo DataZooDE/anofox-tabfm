@@ -550,3 +550,157 @@ SELECT corr(yhat, target) > 0.9
 FROM tabfm_regress('reg_t', 'target', model := 'tabfm-v1-1') WHERE is_training;
 ----
 true
+
+# --- Mitra-v2 (AWS AutoGluon) and TabDPT v1.3 (Layer 6) -------------------------------------------
+#
+# Both are NEW entries beside the versions they supersede (`mitra`, `tabdpt` are unchanged), and both
+# are Apache-2.0 and ungated. Weights:
+#
+#   CALL tabfm_download('classification', model := 'mitra-v2');
+#   CALL tabfm_download('regression', model := 'mitra-v2');
+#   CALL tabfm_download('classification', model := 'tabdpt-v1-3');   -- one file, both tasks
+#
+# mitra-v2 classification runs mitra's own graph on the v2 weights (byte-identical safetensors
+# header); its regression is a new graph for the 1,000-bin head. tabdpt-v1-3 is a re-export for v1.3's
+# per-task y-encoders. Same split and floors as every entry above.
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE c_m2 AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'mitra-v2');
+
+query I
+SELECT count(*) FROM c_m2 WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_m2 c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_m2 AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'mitra-v2');
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.80
+FROM r_m2 r JOIN truth t USING (row_id)
+----
+true
+
+# mitra and mitra-v2 classification share a graph and a tensor map, so only DIFFERENT weights make
+# their answers differ. A cache or URL mix-up would leave both serving the same bytes and every floor
+# above would still pass; the class probabilities of two different checkpoints never coincide.
+query I
+SELECT max(abs(a.proba['a'] - b.proba['a'])) > 1e-4
+FROM (SELECT row_id, proba FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'mitra')) a
+JOIN (SELECT row_id, proba FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'mitra-v2')) b
+  USING (row_id)
+----
+true
+
+# The 1,000-bin decode on a noise-free linear target: no shrinkage toward the mean (slope of truth on
+# prediction ~1), at the original scale AND at x1000 + 7000. The graph min-max scales the target over
+# the context itself, so -- unlike v1's scalar head on a z-scored target -- the engine's target
+# scaling cannot shrink it. Features are unique per row (hashes); predictions join back on them.
+statement ok
+CREATE TABLE m2_all AS
+SELECT i, (hash(i * 3) % 1000) / 100.0 AS x1, (hash(i * 7) % 1000) / 100.0 AS x2, (hash(i * 11) % 1000) / 100.0 AS x3
+FROM range(450) t(i);
+
+statement ok
+CREATE TABLE m2_ctx AS SELECT x1, x2, x3, 3 * x1 + 2 * x2 - x3 AS y FROM m2_all WHERE i < 300;
+
+statement ok
+CREATE TABLE m2_ctx_s AS SELECT x1, x2, x3, 1000 * (3 * x1 + 2 * x2 - x3) + 7000 AS y FROM m2_all WHERE i < 300;
+
+statement ok
+CREATE TABLE m2_qry AS SELECT x1, x2, x3 FROM m2_all WHERE i >= 300;
+
+statement ok
+CREATE TABLE m2_truth AS SELECT x1, x2, x3, 3 * x1 + 2 * x2 - x3 AS y FROM m2_all WHERE i >= 300;
+
+query I
+SELECT (1 - sum((t.y - p.yhat) ^ 2) / sum((t.y - (SELECT avg(y) FROM m2_truth)) ^ 2)) > 0.99
+       AND abs(regr_slope(t.y, p.yhat) - 1.0) < 0.05
+FROM tabfm_regress('m2_ctx', 'y', test := 'm2_qry', model := 'mitra-v2') p JOIN m2_truth t USING (x1, x2, x3)
+----
+true
+
+query I
+SELECT (1 - sum((1000 * t.y + 7000 - p.yhat) ^ 2) / sum((1000 * t.y + 7000 - (SELECT avg(1000 * y + 7000) FROM m2_truth)) ^ 2)) > 0.99
+       AND abs(regr_slope(1000 * t.y + 7000, p.yhat) - 1.0) < 0.05
+FROM tabfm_regress('m2_ctx_s', 'y', test := 'm2_qry', model := 'mitra-v2') p JOIN m2_truth t USING (x1, x2, x3)
+----
+true
+
+# The wider size regime (256 features, v1: 100): 160 columns, four of them informative, the rest
+# deterministic noise. v1's graph (which v2 classification reuses) was traced with H <= 100; the ONNX
+# axis is symbolic, so this is what proves a 160-wide table really runs through it.
+statement ok
+CREATE TABLE m2_wide AS SELECT row_id, f1, f2, f3, f4, sin(row_id * 0.370 + 0) AS n0, sin(row_id * 0.381 + 1) AS n1, sin(row_id * 0.392 + 2) AS n2, sin(row_id * 0.403 + 3) AS n3, sin(row_id * 0.414 + 4) AS n4, sin(row_id * 0.425 + 5) AS n5, sin(row_id * 0.436 + 6) AS n6, sin(row_id * 0.447 + 7) AS n7, sin(row_id * 0.458 + 8) AS n8, sin(row_id * 0.469 + 9) AS n9, sin(row_id * 0.480 + 10) AS n10, sin(row_id * 0.491 + 11) AS n11, sin(row_id * 0.502 + 12) AS n12, sin(row_id * 0.513 + 13) AS n13, sin(row_id * 0.524 + 14) AS n14, sin(row_id * 0.535 + 15) AS n15, sin(row_id * 0.546 + 16) AS n16, sin(row_id * 0.557 + 17) AS n17, sin(row_id * 0.568 + 18) AS n18, sin(row_id * 0.579 + 19) AS n19, sin(row_id * 0.590 + 20) AS n20, sin(row_id * 0.601 + 21) AS n21, sin(row_id * 0.612 + 22) AS n22, sin(row_id * 0.623 + 23) AS n23, sin(row_id * 0.634 + 24) AS n24, sin(row_id * 0.645 + 25) AS n25, sin(row_id * 0.656 + 26) AS n26, sin(row_id * 0.667 + 27) AS n27, sin(row_id * 0.678 + 28) AS n28, sin(row_id * 0.689 + 29) AS n29, sin(row_id * 0.700 + 30) AS n30, sin(row_id * 0.711 + 31) AS n31, sin(row_id * 0.722 + 32) AS n32, sin(row_id * 0.733 + 33) AS n33, sin(row_id * 0.744 + 34) AS n34, sin(row_id * 0.755 + 35) AS n35, sin(row_id * 0.766 + 36) AS n36, sin(row_id * 0.777 + 37) AS n37, sin(row_id * 0.788 + 38) AS n38, sin(row_id * 0.799 + 39) AS n39, sin(row_id * 0.810 + 40) AS n40, sin(row_id * 0.821 + 41) AS n41, sin(row_id * 0.832 + 42) AS n42, sin(row_id * 0.843 + 43) AS n43, sin(row_id * 0.854 + 44) AS n44, sin(row_id * 0.865 + 45) AS n45, sin(row_id * 0.876 + 46) AS n46, sin(row_id * 0.887 + 47) AS n47, sin(row_id * 0.898 + 48) AS n48, sin(row_id * 0.909 + 49) AS n49, sin(row_id * 0.920 + 50) AS n50, sin(row_id * 0.931 + 51) AS n51, sin(row_id * 0.942 + 52) AS n52, sin(row_id * 0.953 + 53) AS n53, sin(row_id * 0.964 + 54) AS n54, sin(row_id * 0.975 + 55) AS n55, sin(row_id * 0.986 + 56) AS n56, sin(row_id * 0.997 + 57) AS n57, sin(row_id * 1.008 + 58) AS n58, sin(row_id * 1.019 + 59) AS n59, sin(row_id * 1.030 + 60) AS n60, sin(row_id * 1.041 + 61) AS n61, sin(row_id * 1.052 + 62) AS n62, sin(row_id * 1.063 + 63) AS n63, sin(row_id * 1.074 + 64) AS n64, sin(row_id * 1.085 + 65) AS n65, sin(row_id * 1.096 + 66) AS n66, sin(row_id * 1.107 + 67) AS n67, sin(row_id * 1.118 + 68) AS n68, sin(row_id * 1.129 + 69) AS n69, sin(row_id * 1.140 + 70) AS n70, sin(row_id * 1.151 + 71) AS n71, sin(row_id * 1.162 + 72) AS n72, sin(row_id * 1.173 + 73) AS n73, sin(row_id * 1.184 + 74) AS n74, sin(row_id * 1.195 + 75) AS n75, sin(row_id * 1.206 + 76) AS n76, sin(row_id * 1.217 + 77) AS n77, sin(row_id * 1.228 + 78) AS n78, sin(row_id * 1.239 + 79) AS n79, sin(row_id * 1.250 + 80) AS n80, sin(row_id * 1.261 + 81) AS n81, sin(row_id * 1.272 + 82) AS n82, sin(row_id * 1.283 + 83) AS n83, sin(row_id * 1.294 + 84) AS n84, sin(row_id * 1.305 + 85) AS n85, sin(row_id * 1.316 + 86) AS n86, sin(row_id * 1.327 + 87) AS n87, sin(row_id * 1.338 + 88) AS n88, sin(row_id * 1.349 + 89) AS n89, sin(row_id * 1.360 + 90) AS n90, sin(row_id * 1.371 + 91) AS n91, sin(row_id * 1.382 + 92) AS n92, sin(row_id * 1.393 + 93) AS n93, sin(row_id * 1.404 + 94) AS n94, sin(row_id * 1.415 + 95) AS n95, sin(row_id * 1.426 + 96) AS n96, sin(row_id * 1.437 + 97) AS n97, sin(row_id * 1.448 + 98) AS n98, sin(row_id * 1.459 + 99) AS n99, sin(row_id * 1.470 + 100) AS n100, sin(row_id * 1.481 + 101) AS n101, sin(row_id * 1.492 + 102) AS n102, sin(row_id * 1.503 + 103) AS n103, sin(row_id * 1.514 + 104) AS n104, sin(row_id * 1.525 + 105) AS n105, sin(row_id * 1.536 + 106) AS n106, sin(row_id * 1.547 + 107) AS n107, sin(row_id * 1.558 + 108) AS n108, sin(row_id * 1.569 + 109) AS n109, sin(row_id * 1.580 + 110) AS n110, sin(row_id * 1.591 + 111) AS n111, sin(row_id * 1.602 + 112) AS n112, sin(row_id * 1.613 + 113) AS n113, sin(row_id * 1.624 + 114) AS n114, sin(row_id * 1.635 + 115) AS n115, sin(row_id * 1.646 + 116) AS n116, sin(row_id * 1.657 + 117) AS n117, sin(row_id * 1.668 + 118) AS n118, sin(row_id * 1.679 + 119) AS n119, sin(row_id * 1.690 + 120) AS n120, sin(row_id * 1.701 + 121) AS n121, sin(row_id * 1.712 + 122) AS n122, sin(row_id * 1.723 + 123) AS n123, sin(row_id * 1.734 + 124) AS n124, sin(row_id * 1.745 + 125) AS n125, sin(row_id * 1.756 + 126) AS n126, sin(row_id * 1.767 + 127) AS n127, sin(row_id * 1.778 + 128) AS n128, sin(row_id * 1.789 + 129) AS n129, sin(row_id * 1.800 + 130) AS n130, sin(row_id * 1.811 + 131) AS n131, sin(row_id * 1.822 + 132) AS n132, sin(row_id * 1.833 + 133) AS n133, sin(row_id * 1.844 + 134) AS n134, sin(row_id * 1.855 + 135) AS n135, sin(row_id * 1.866 + 136) AS n136, sin(row_id * 1.877 + 137) AS n137, sin(row_id * 1.888 + 138) AS n138, sin(row_id * 1.899 + 139) AS n139, sin(row_id * 1.910 + 140) AS n140, sin(row_id * 1.921 + 141) AS n141, sin(row_id * 1.932 + 142) AS n142, sin(row_id * 1.943 + 143) AS n143, sin(row_id * 1.954 + 144) AS n144, sin(row_id * 1.965 + 145) AS n145, sin(row_id * 1.976 + 146) AS n146, sin(row_id * 1.987 + 147) AS n147, sin(row_id * 1.998 + 148) AS n148, sin(row_id * 2.009 + 149) AS n149, sin(row_id * 2.020 + 150) AS n150, sin(row_id * 2.031 + 151) AS n151, sin(row_id * 2.042 + 152) AS n152, sin(row_id * 2.053 + 153) AS n153, sin(row_id * 2.064 + 154) AS n154, sin(row_id * 2.075 + 155) AS n155, y FROM base;
+
+statement ok
+CREATE TABLE m2_wide_ctx AS SELECT * FROM m2_wide WHERE hash(row_id) % 100 < 70;
+
+statement ok
+CREATE TABLE m2_wide_qry AS SELECT * EXCLUDE (y) FROM m2_wide WHERE hash(row_id) % 100 >= 70;
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y)
+        FROM tabfm_classify('m2_wide_ctx', 'y', test := 'm2_wide_qry', model := 'mitra-v2') c
+        JOIN truth t USING (row_id)) * 1.0 / (SELECT count(*) FROM truth) >= 0.80
+----
+true
+
+# --- TabDPT v1.3 ------------------------------------------------------------------------------------
+
+statement ok
+CREATE TABLE c_dpt13 AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'tabdpt-v1-3');
+
+query I
+SELECT count(*) FROM c_dpt13 WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_dpt13 c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_dpt13 AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'tabdpt-v1-3');
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.80
+FROM r_dpt13 r JOIN truth t USING (row_id)
+----
+true
+
+# v1.2 and v1.3 live in the SAME repo slug (Layer6__TabDPT@main): v1.3's file is tabdpt1_3/ so the
+# two can never overwrite each other. If they did, one entry would serve the other's weights.
+query I
+SELECT max(abs(a.yhat - b.yhat)) > 1e-6
+FROM r_dpt a JOIN r_dpt13 b USING (row_id)
+----
+true
+
+# The in-context fitted values are real for v1.3 too (the head runs over every data row).
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.7
+FROM tabfm_classify('sep_t', 'label', model := 'tabdpt-v1-3') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'tabdpt-v1-3') WHERE is_training;
+----
+true

@@ -1,0 +1,10 @@
+{
+  "model": "tabdpt-v1-3",
+  "task": "classification",
+  "config": "real13",
+  "torch": "2.12.1+cpu",
+  "n_params": 63040528,
+  "n_mapped": 551,
+  "graph_bytes": 628312,
+  "command": "/home/jr/Projects/datazoo/anofox-tabfm-model-upgrades/tools/export_tabdpt/.venv/bin/export_tabdpt --task classification --config real13 --weights /home/jr/.cache/anofox-tabfm/Layer6__TabDPT@main/tabdpt1_3/model.safetensors --out /tmp/claude-1000/-home-jr-Projects-datazoo-anofox-decide/7e409e93-cc2c-4f92-8eed-43d9e96cd3da/scratchpad/mu/dpt13"
+}

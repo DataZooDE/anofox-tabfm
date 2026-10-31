@@ -24,21 +24,31 @@ from export_tabdpt import configs, export
 from export_tabdpt.tabdpt_patches import build_wrapper
 
 SLUG = "tabdpt"
+#: Resource stem per architecture: `tabdpt` (v1.2) keeps its plain stem,
+#: `tabdpt-v1-3` gets `tabdpt13` (the `tabpfn25` convention).
+SLUGS = {"v1.2": "tabdpt", "v1.3": "tabdpt13"}
 
 
 def build_model(cfg: configs.ExportConfig, seed: int = 0):
     """Random-init TabDPTModel at the config's dims. No checkpoint bytes."""
     from tabdpt.model import TabDPTModel
 
+    from export_tabdpt.tabdpt_patches import upgrade_to_v13
+
     torch.manual_seed(seed)
-    return TabDPTModel(**cfg.model_kwargs).eval()
+    model = TabDPTModel(**cfg.model_kwargs)
+    if cfg.arch == "v1.3":
+        upgrade_to_v13(model)
+    return model.eval()
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="export_tabdpt")
     ap.add_argument("--task", required=True,
                     choices=["classification", "regression"])
-    ap.add_argument("--config", required=True, choices=["real", "fixture"])
+    ap.add_argument("--config", required=True,
+                    choices=["real", "fixture", "real13", "fixture13"],
+                    help="real/fixture: TabDPT v1.2 (`tabdpt`); real13/fixture13: v1.3 (`tabdpt-v1-3`)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
@@ -53,21 +63,27 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     cfg = configs.get(args.config)
-    if args.config == "real" and args.weights:
+    if args.config in ("real", "real13") and args.weights:
         configs.assert_matches_checkpoint(args.weights)
         print(f"[export_tabdpt] config matches {args.weights}", flush=True)
+    slug = SLUGS[cfg.arch]
 
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     masked = args.contract == "mask"
-    stem = f"graph_mask_{SLUG}" if masked else f"graph_{SLUG}"
+    stem = f"graph_mask_{slug}" if masked else f"graph_{slug}"
     graph_path = out / f"{stem}_{args.task}.onnx"
-    map_path = out / f"tensor_map_{SLUG}_{args.task}.json"
+    map_path = out / f"tensor_map_{slug}_{args.task}.json"
 
     print(f"[export_tabdpt] building random-weight TabDPT "
           f"({args.config}, {args.task}) ...", flush=True)
     t0 = time.time()
     model = build_model(cfg, seed=args.seed)
+    if args.config in ("real", "real13") and args.weights:
+        # Structure, not just dims: v1.3 kept every cfg value and still changed
+        # 160 tensors, which only a name/shape comparison sees.
+        configs.assert_state_dict_matches_checkpoint(model, args.weights)
+        print(f"[export_tabdpt] state_dict signature matches {args.weights}", flush=True)
     if masked:
         from export_tabdpt.tabdpt_mask_patches import apply_migraphx_friendly, build_mask_wrapper
         # chunk -> slices: MIGraphX's parser implements neither SplitToSequence
@@ -127,9 +143,10 @@ def main(argv=None) -> int:
     print(f"[export_tabdpt] graph: {graph_path} ({size_mb:.2f} MB, weight-free)",
           flush=True)
 
-    report = out / f"export_report_{SLUG}_{args.task}.json"
+    report = out / f"export_report_{slug}_{args.task}.json"
     report.write_text(json.dumps({
-        "model": "tabdpt", "task": args.task, "config": cfg.name,
+        "model": {"v1.2": "tabdpt", "v1.3": "tabdpt-v1-3"}[cfg.arch],
+        "task": args.task, "config": cfg.name,
         "torch": torch.__version__,
         "n_params": n_params, "n_mapped": len(tensor_map["initializers"]),
         "graph_bytes": graph_path.stat().st_size,

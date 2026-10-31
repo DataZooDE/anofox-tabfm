@@ -379,6 +379,12 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 		// RealTabPFN-2.5 is the same architecture as 2.5 (identical config and
 		// state_dict signature), so it reuses 2.5's bundled graphs outright.
 		stem = "tabpfn25";
+	} else if (model == "mitra-v2") {
+		// The v2 classifier is v1's architecture with a byte-identical safetensors header, so it
+		// reuses mitra's graphs; only the 1000-bin regressor has its own.
+		stem = task_name == "classification" ? "mitra" : "mitra2";
+	} else if (model == "tabdpt-v1-3") {
+		stem = "tabdpt13";
 	} else if (model == "tabpfn-v2-6") {
 		stem = "tabpfn26";
 	} else if (model == "tabpfn-v3") {
@@ -431,6 +437,22 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 		}
 		if (task_name == "regression") {
 			return "44f9293fa2d81ccf56dffab09600ec4f775c5c30bbc2af551cf4f6b2cf889f01";
+		}
+	}
+	// Mitra-v2: classifier-2's header is byte-identical to classifier-1's (verified against both HF
+	// files), so it shares mitra's sha and graphs; regressor-2 (1000-bin head) has its own.
+	if (model == "mitra-v2") {
+		if (task_name == "classification") {
+			return "cb1a261bb3d9ca505e0db66e21df85bec6777f7e104247d4a71a8eb8d8b3b96a";
+		}
+		if (task_name == "regression") {
+			return "ff7288fd5eda3910b21863813683614eaddcceb60ef9e60be4eb79bf9c69c7cb";
+		}
+	}
+	// TabDPT v1.3: one checkpoint (tabdpt1_3.safetensors) for both tasks, like v1.2.
+	if (model == "tabdpt-v1-3") {
+		if (task_name == "classification" || task_name == "regression") {
+			return "8ab85c0bf4ce2fc87a81f040b4170ae7c10b50d75bad937d2f8009558767b5a3";
 		}
 	}
 	// The single_eval_pos family (x, y inputs only): ext graphs bundle for the

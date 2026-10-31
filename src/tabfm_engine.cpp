@@ -34,6 +34,7 @@
 #include "tabfm_state.hpp"
 
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/common/unordered_set.hpp"
 #include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/common/types/data_chunk.hpp"
 #include "duckdb/main/database.hpp"
@@ -122,6 +123,10 @@ struct ResolvedModel {
 	string migraphx_graph_path;
 	string weights_path;
 	unordered_map<string, string> tensor_map; // onnx initializer name -> st key
+	//! Checkpoint keys this task's graph does not read (the tensor map's optional "unused_by_graph"
+	//! list). Skipped at injection: ORT rejects an injected initializer its graph lacks. Empty for
+	//! every model whose graphs use the whole file.
+	unordered_set<string> unused_weights;
 	string cache_key;
 	// Manifest-declared tensor contract (P4): graph input/output names to verify
 	// against the actual graph at load. Empty = no declared contract.
@@ -160,10 +165,37 @@ unordered_map<string, string> ParseTensorMapJson(const string &json, const strin
 	return result;
 }
 
+// The optional "unused_by_graph" array of a tensor-map document: checkpoint keys present in the weights
+// file that this task's graph does not use. Needed when ONE file serves several tasks whose graphs read
+// different subsets of it (tabdpt-v1-3: cls_y_encoders.* for classification, reg_y_encoders.* for
+// regression). The whole file is otherwise injected, and ORT refuses an initializer the graph does not
+// declare -- so the list is explicit and opt-in; a map without it behaves exactly as before.
+unordered_set<string> ParseUnusedByGraph(const string &json) {
+	unordered_set<string> result;
+	using namespace duckdb_yyjson; // NOLINT
+	auto doc = yyjson_read(json.c_str(), json.size(), 0);
+	if (!doc) {
+		return result; // ParseTensorMapJson already reported the unparseable document
+	}
+	auto arr = yyjson_obj_get(yyjson_doc_get_root(doc), "unused_by_graph");
+	if (arr && yyjson_is_arr(arr)) {
+		size_t idx, max;
+		yyjson_val *val;
+		yyjson_arr_foreach(arr, idx, max, val) {
+			if (yyjson_is_str(val)) {
+				result.insert(yyjson_get_str(val));
+			}
+		}
+	}
+	yyjson_doc_free(doc);
+	return result;
+}
+
 // Load {onnx -> safetensors} from the manifest: inline map, or the
 // "initializers" object of the tensor-map JSON file, else identity.
+// `unused_weights` (optional) receives the document's "unused_by_graph" list.
 unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest &manifest, const string &dir,
-                                            bool use_bundle) {
+                                            bool use_bundle, unordered_set<string> *unused_weights = nullptr) {
 	if (!manifest.tensor_map.empty()) {
 		return manifest.tensor_map;
 	}
@@ -184,7 +216,11 @@ unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest 
 		source = JoinPath(fs, dir, manifest.tensor_map_path);
 		json = ReadWholeFile(fs, source);
 	}
-	return ParseTensorMapJson(json, source);
+	auto result_map = ParseTensorMapJson(json, source);
+	if (unused_weights) {
+		*unused_weights = ParseUnusedByGraph(json);
+	}
+	return result_map;
 }
 
 string ResolveGraphPath(FileSystem &fs, const ModelManifest &manifest, const string &dir) {
@@ -365,7 +401,8 @@ void ResolveModelArtifacts(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	};
 	resolved.ext_graph_path = resolve_gpu_graph(resolved.manifest.ext_graph, "ext_graph");
 	resolved.migraphx_graph_path = resolve_gpu_graph(resolved.manifest.migraphx_graph, "migraphx_graph");
-	resolved.tensor_map = LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin);
+	resolved.tensor_map =
+	    LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin, &resolved.unused_weights);
 	resolved.cache_key = TabFMModelCacheKey(resolved.manifest.model, task_name, resolved.manifest.revision);
 }
 
@@ -1521,6 +1558,9 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		}
 		initializers.reserve(sd.size());
 		for (auto &entry : sd) {
+			if (resolved.unused_weights.count(entry.first)) {
+				continue; // in the file, not in this task's graph (tensor map "unused_by_graph")
+			}
 			const CkptTensor &t = entry.second;
 			TabFMTensorRef ref;
 			auto it = st_to_onnx.find(entry.first);
@@ -1551,6 +1591,9 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		initializers.reserve(view.tensors.size());
 		for (auto &entry : view.tensors) {
 			const string &st_key = entry.first;
+			if (resolved.unused_weights.count(st_key)) {
+				continue; // in the file, not in this task's graph (tensor map "unused_by_graph")
+			}
 			auto &m = arena.Get(st_key);
 			TabFMTensorRef ref;
 			auto it = st_to_onnx.find(st_key);

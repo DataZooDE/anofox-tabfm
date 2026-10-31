@@ -67,6 +67,79 @@ class ExportWrapper(torch.nn.Module):
                       padding_obs_support, padding_obs_query)
 
 
+class BinnedRegressionWrapper(ExportWrapper):
+    """Mitra-v2 regression: raw target in, raw point prediction out.
+
+    The v2 regressor (autogluon/mitra-regressor-2) casts regression as
+    classification over ``n_bins = dim_output`` (1,000) target bins. Upstream
+    does the target work OUTSIDE the network, so it is baked in here — the
+    graph is then self-contained and the engine feeds raw targets (a "*_raw"
+    profile), exactly as for TabDPT / TabPFN:
+
+      1. min-max scale over the CONTEXT rows (autogluon mitra Preprocessor:
+         normalize_y = (y - y_min) / (y_max - y_min); upstream asserts
+         y_min != y_max, here a zero range is guarded to 1 so a constant target
+         predicts that constant);
+      2. bin it: ``bucketize(y_norm, bins) - 1`` clamped to [0, n_bins - 1] with
+         ``bins = linspace(-0.5, 1.5, n_bins + 1)`` (trainer_finetune: the grid
+         the head was trained on). bucketize(right=False) is count(bins < v),
+         written as a compare + sum so it exports (and MIGraphX parses it);
+      3. the network embeds the bin id (Tab2DEmbeddingYClasses) and predicts a
+         distribution over the bins;
+      4. decode: the softmax-weighted MEAN of the bin centres
+         ``bins[:-1] + bin_width / 2`` — the model card's "the point prediction
+         is the mean of that distribution", installed upstream by
+         mitra_finetune.patches._mean_decode_source (stock AutoGluon's argmax
+         decode is for the MSE-head v1) — then the min-max scaling undone.
+
+    Every prediction therefore lies in [y_min - range/2, y_max + range/2], and
+    the output is affine-equivariant in the target, for ANY weights.
+    """
+
+    def __init__(self, model: Tab2D):
+        super().__init__(model)
+        n_bins = int(model.dim_output)
+        bins = torch.linspace(-0.5, 1.5, n_bins + 1)
+        width = bins[1] - bins[0]
+        # Code-generated from two literals and n_bins: inline constants, never
+        # tensor-map entries (INLINE_CONSTANTS below).
+        self.register_buffer("bin_edges", bins.float())
+        self.register_buffer("bin_centres", (bins[:-1] + width / 2).float())
+
+    def forward(self, x, y, train_size, d):
+        b, t, h = x.shape
+        ar_t = torch.arange(t, device=x.device)
+        ctx = ar_t[None, :] < train_size[:, None]                    # (1, T)
+        # Query rows carry whatever the engine pads with (possibly NaN); keep
+        # them out of every statistic and every cast.
+        y_ctx = torch.where(ctx, y, torch.zeros_like(y))
+        big = torch.full_like(y, 3.0e38)
+        y_min = torch.where(ctx, y_ctx, big).min(dim=1, keepdim=True).values
+        y_max = torch.where(ctx, y_ctx, -big).max(dim=1, keepdim=True).values
+        rng = y_max - y_min
+        rng = torch.where(rng > 0, rng, torch.ones_like(rng))
+        y_norm = (y_ctx - y_min) / rng                               # (1, T)
+        edges = self.get_buffer("bin_edges")
+        n_bins = edges.shape[0] - 1
+        below = (edges[None, None, :] < y_norm[:, :, None]).to(torch.float32)
+        ids = torch.clamp(below.sum(dim=-1) - 1.0, 0.0, float(n_bins - 1))
+        ids = torch.where(ctx, ids, torch.zeros_like(ids))
+        logits = super().forward(x, ids, train_size, d)              # (1, T, n_bins)
+        probs = torch.softmax(logits.float(), dim=-1)
+        point = (probs * self.get_buffer("bin_centres")).sum(dim=-1, keepdim=True)
+        return point * rng[:, :, None] + y_min[:, :, None]          # (1, T, 1)
+
+
+def wrapper_for(model: Tab2D, arch: str) -> ExportWrapper:
+    if arch == "v2" and model.task == "REGRESSION" and model.dim_output > 1:
+        return BinnedRegressionWrapper(model).eval()
+    return ExportWrapper(model).eval()
+
+
+#: Code-generated buffers of BinnedRegressionWrapper: inline, never mapped.
+INLINE_CONSTANTS = {"bin_edges", "bin_centres"}
+
+
 def build_model(task: str, model_kwargs: dict, seed: int = 0,
                 state_dict: dict | None = None) -> Tab2D:
     if task not in ("classification", "regression"):
@@ -91,8 +164,8 @@ def export_graph(model: Tab2D, graph_path: pathlib.Path, *,
                  dim_rows=("rows", 4, 100_000),
                  dim_features=("features", 2, 100),
                  example=(40, 8, 8, 24),
-                 opset: int = OPSET) -> ExportWrapper:
-    wrapper = ExportWrapper(model).eval()
+                 opset: int = OPSET, arch: str = "v1") -> ExportWrapper:
+    wrapper = wrapper_for(model, arch)
     T = torch.export.Dim(dim_rows[0], min=dim_rows[1], max=dim_rows[2])
     H = torch.export.Dim(dim_features[0], min=dim_features[1], max=dim_features[2])
     dyn = (
@@ -104,6 +177,8 @@ def export_graph(model: Tab2D, graph_path: pathlib.Path, *,
     t, h, d_active, train = example
     n_classes = model.dim_output if model.task == "CLASSIFICATION" else 10
     ex = example_inputs(t, h, d_active, train, n_classes=n_classes)
+    if isinstance(wrapper, BinnedRegressionWrapper):
+        ex = (ex[0], ex[1] * 3.7 - 2.0, ex[2], ex[3])  # a real-valued target
     graph_path.parent.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
         torch.onnx.export(
@@ -135,6 +210,8 @@ def build_tensor_map(model_proto: onnx.ModelProto, state_dict: dict) -> dict:
 
     mapping, transforms, unmatched_small, unmatched_large = {}, {}, [], []
     for init in model_proto.graph.initializer:
+        if _norm_name(init.name) in INLINE_CONSTANTS:
+            continue  # code-generated constant stays inline, never mapped
         key = sd_by_name.get(_norm_name(init.name))
         if key is None:
             arr = onnx.numpy_helper.to_array(init)
@@ -221,9 +298,12 @@ def check_parity(graph_path: pathlib.Path, model: Tab2D, wrapper: ExportWrapper,
     import onnxruntime as ort
     sess = ort.InferenceSession(str(graph_path), providers=["CPUExecutionProvider"])
     n_classes = model.dim_output if model.task == "CLASSIFICATION" else 10
+    binned = isinstance(wrapper, BinnedRegressionWrapper)
     results, worst = [], 0.0
     for t, h, d, train in shapes:
         feed = make_feed(t, h, d, train, n_classes=n_classes)
+        if binned:  # a continuous target on an arbitrary scale + offset
+            feed["y"] = (feed["y"] * 13.0 - 40.0).astype(np.float32)
         t0 = time.time()
         (ort_out,) = sess.run(["logits"], feed)
         ort_ms = (time.time() - t0) * 1e3

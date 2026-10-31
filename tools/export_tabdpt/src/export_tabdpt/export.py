@@ -189,6 +189,28 @@ def build_tensor_map(model_proto: onnx.ModelProto, state_dict: dict,
             "unmatched_small": unmatched_small}
 
 
+def _record_unused_checkpoint_tensors(state_dict: dict, tensor_map: dict) -> None:
+    """List the checkpoint tensors this task's graph does NOT use.
+
+    The engine injects the WHOLE weights file into the ORT session (each tensor
+    named via the tensor map, else ``m.<key>``), and ORT rejects an injected
+    initializer the graph does not declare ("Failed to find existing initializer
+    with name ..."). That never mattered before: every catalog checkpoint so far
+    is used in full by each task's graph. TabDPT v1.3 is the first that is not --
+    ONE file carries cls_y_encoders.* (only the classification graph reads them)
+    and reg_y_encoders.* (only regression does), and dynamo drops the unused half
+    from each export. (Keeping them as dead stub initializers does not work: ORT
+    prunes unconsumed initializers before the injection is matched.)
+
+    So the tensor map records them under ``unused_by_graph`` and the engine skips
+    exactly those keys. Empty -- and therefore not written -- for v1.2, whose
+    graphs use all 647 tensors, so its maps stay byte-identical.
+    """
+    mapped_keys = set(tensor_map["initializers"].values())
+    tensor_map["unused_by_graph"] = sorted(CKPT_KEY_PREFIX + k for k in state_dict
+                                           if CKPT_KEY_PREFIX + k not in mapped_keys)
+
+
 def postprocess(graph_path: pathlib.Path, state_dict: dict) -> dict:
     """Steps 2-4: strip metadata, externalize checkpoint initializers, build map."""
     model_proto = onnx.load(str(graph_path), load_external_data=True)
@@ -218,6 +240,7 @@ def postprocess(graph_path: pathlib.Path, state_dict: dict) -> dict:
         del fn.metadata_props[:]
 
     tensor_map = build_tensor_map(model_proto, state_dict)
+    _record_unused_checkpoint_tensors(state_dict, tensor_map)
 
     data_name = graph_path.name + ".data"
     data_path = graph_path.with_name(data_name)
@@ -238,6 +261,10 @@ def write_tensor_map(map_path: pathlib.Path, tensor_map: dict, *, task: str,
         "initializers": tensor_map["initializers"],
         "transforms": tensor_map["transforms"],
     }
+    if tensor_map.get("unused_by_graph"):
+        # checkpoint tensors this graph does not read; the engine skips them at
+        # injection (see _record_unused_checkpoint_tensors)
+        payload["unused_by_graph"] = tensor_map["unused_by_graph"]
     map_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 

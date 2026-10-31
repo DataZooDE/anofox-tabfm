@@ -631,3 +631,33 @@ TEST_CASE("model_spec: the served artifact is the converted sibling, tried first
 	REQUIRE(ServedArtifactPath(reg, exists_in({reg, "/c/m/model.safetensors"})) == reg);
 	REQUIRE(ServedArtifactPath(reg, exists_in({"/c/m/model.safetensors"})).empty());
 }
+
+TEST_CASE("model_spec: Mitra-v2 shares v1's classification GPU graphs, not its regression ones",
+          "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// The classifier-2 safetensors header is byte-identical to classifier-1's (verified against both
+	// HF files: sha below), so the baked ext/migraphx offsets index v2 weights correctly.
+	REQUIRE(BundledGpuGraphId("mitra-v2", "ext", "classification") == "graph_ext_mitra_classification");
+	REQUIRE(BundledGpuGraphId("mitra-v2", "migraphx", "classification") == "graph_migraphx_mitra_classification");
+	REQUIRE(ExpectedWeightsHeaderShaFor("mitra-v2", "classification") ==
+	        ExpectedWeightsHeaderShaFor("mitra", "classification"));
+	// The regressor-2 header differs (1000-bin head), so it has its own graphs and its own sha.
+	REQUIRE(BundledGpuGraphId("mitra-v2", "ext", "regression") == "graph_ext_mitra2_regression");
+	REQUIRE(BundledGpuGraphId("mitra-v2", "migraphx", "regression") == "graph_migraphx_mitra2_regression");
+	REQUIRE(ExpectedWeightsHeaderShaFor("mitra-v2", "regression") ==
+	        "ff7288fd5eda3910b21863813683614eaddcceb60ef9e60be4eb79bf9c69c7cb");
+}
+
+TEST_CASE("model_spec: TabDPT v1.3 has its own stem and one header sha for both tasks", "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	REQUIRE(BundledGpuGraphId("tabdpt-v1-3", "ext", "classification") == "graph_ext_tabdpt13_classification");
+	REQUIRE(BundledGpuGraphId("tabdpt-v1-3", "migraphx", "regression") == "graph_migraphx_tabdpt13_regression");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt-v1-3", "classification") ==
+	        "8ab85c0bf4ce2fc87a81f040b4170ae7c10b50d75bad937d2f8009558767b5a3");
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt-v1-3", "regression") ==
+	        ExpectedWeightsHeaderShaFor("tabdpt-v1-3", "classification"));
+	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt-v1-3", "classification") !=
+	        ExpectedWeightsHeaderShaFor("tabdpt", "classification"));
+}
