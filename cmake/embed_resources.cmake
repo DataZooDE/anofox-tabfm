@@ -149,7 +149,36 @@ set(_tabfm_inputs
     "graph_tabpfn3_classification.onnx"
     "graph_tabpfn3_regression.onnx"
     "tensor_map_tabpfn3_classification.json"
-    "tensor_map_tabpfn3_regression.json")
+    "tensor_map_tabpfn3_regression.json"
+    # Kumo-Tabular (NVIDIA; code Apache-2.0, weights OpenMDW-1.1), one stem per SIZE (the three are
+    # different module trees). The graph takes the tabfm-v1 five-input contract (the split and the
+    # real width are VALUES), so the plain, ext and migraphx graphs are one family: plain for the CPU
+    # injection path (the published .pt is read natively), ext + migraphx for the converted
+    # model.safetensors (tools/export_kumo convert_kumo_weights), gated by ExpectedWeightsHeaderShaFor.
+    "graph_kumo_small_classification.onnx"
+    "graph_kumo_small_regression.onnx"
+    "graph_ext_kumo_small_classification.onnx"
+    "graph_ext_kumo_small_regression.onnx"
+    "graph_migraphx_kumo_small_classification.onnx"
+    "graph_migraphx_kumo_small_regression.onnx"
+    "tensor_map_kumo_small_classification.json"
+    "tensor_map_kumo_small_regression.json"
+    "graph_kumo_medium_classification.onnx"
+    "graph_kumo_medium_regression.onnx"
+    "graph_ext_kumo_medium_classification.onnx"
+    "graph_ext_kumo_medium_regression.onnx"
+    "graph_migraphx_kumo_medium_classification.onnx"
+    "graph_migraphx_kumo_medium_regression.onnx"
+    "tensor_map_kumo_medium_classification.json"
+    "tensor_map_kumo_medium_regression.json"
+    "graph_kumo_large_classification.onnx"
+    "graph_kumo_large_regression.onnx"
+    "graph_ext_kumo_large_classification.onnx"
+    "graph_ext_kumo_large_regression.onnx"
+    "graph_migraphx_kumo_large_classification.onnx"
+    "graph_migraphx_kumo_large_regression.onnx"
+    "tensor_map_kumo_large_classification.json"
+    "tensor_map_kumo_large_regression.json")
 
 # Re-run configure when a resource changes so the generated source stays fresh.
 foreach(_f ${_tabfm_inputs})

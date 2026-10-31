@@ -446,6 +446,111 @@ static const char *const BUILTIN_LIMIX2M = R"json({
   "size_regime": {"max_rows": 5000, "max_features": 100, "max_classes": 10}
 })json";
 
+// NVIDIA Kumo-Tabular (TabArena Elo, as published by NVIDIA with num_estimators=8: large 2017, medium
+// 1936, small 1820), three sizes of one TabFM/TabICL-lineage architecture: Fourier cell embeddings,
+// induced column attention, RoPE row attention over 4 readout tokens, then an ICL transformer with
+// test-time GQA. Code Apache-2.0 (NVIDIA/structured-data-models); WEIGHTS OpenMDW-1.1, which grants use
+// "without restriction" (commercial included) and asks one thing of a distributor: keep a copy of the
+// agreement and NVIDIA's copyright notices. The HF repo is not gated, so there is no licence gate here.
+// Whether shipping weight-free graphs of the architecture is "distributing a portion of the Model
+// Materials" is not settled; the attribution carries the notice either way (docs/REAL_MODELS.md).
+//
+// Graph contract: the tabfm-v1 five inputs (x, y[1,T], train_size, cat_mask, d) -- upstream's own
+// padded-context / padded-column path (_KumoTabular.forward_train), so the split and the real width
+// are VALUES and one graph family serves CPU, CUDA (ext) and bucket-padded ROCm (migraphx). The engine
+// standardises features and target: Kumo's single-estimator recipe is the engine's profile step for
+// step (tools/export_kumo/src/export_kumo/engine_ref.py), hence *_minimal, not *_raw.
+//
+// Weights are the published .pt (a plain float32 state_dict), declared as model.ckpt so the engine's
+// native reader injects it on the CPU with no conversion; convert_kumo_weights writes the sibling
+// model.safetensors the ext/migraphx graphs need (ExpectedWeightsHeaderShaFor pins its header).
+// Pinned to tag v1.0.1, the revision upstream's loader requests; the LFS hashes are identical on main.
+//
+// What this does NOT reproduce: the engine runs ONE estimator (the Elo figures above are an 8-member
+// ensemble of random sign flips, column shuffles, class shifts and four numeric transforms); more than
+// 10 classes (upstream: error-correcting output codes) is refused by the head width; category codes
+// are the engine's first-appearance ordinals, not upstream's sort-by-value codes, and the
+// category-count columns upstream adds for >= 50 categories are not added; NULLs are mean-imputed
+// before the graph, so Kumo's missing-value projection is unused.
+//
+// size_regime is an engine cap from MEASUREMENT (upstream states none; 500 features is its own
+// SelectColumns(500)). CPU, 8 threads, 80% context (rows x features -> wall, peak RSS): small 2000x20
+// 5.4 s / 1.8 GB, 5000x20 19 s / 5.0 GB, 10000x50 73 s / 30 GB; large 2000x20 26 s / 4.5 GB, 5000x20
+// 123 s / 14.7 GB. The masked graph attends over all T rows, so memory grows faster than linearly in
+// rows; 10000 rows would already need ~30 GB on the SMALL model, hence 5000 for all three.
+
+static const char *const BUILTIN_KUMO_SMALL = R"json({
+  "schema_version": 2, "id": "kumo-tabular-small", "display_name": "Kumo-Tabular small (NVIDIA)",
+  "family": "icl-transformer",
+  "license": {"id": "openmdw-1.1", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "NVIDIA Kumo-Tabular (small; 27.5 M / 28.5 M parameters classifier / regressor). Code Apache-2.0 (NVIDIA/structured-data-models); weights OpenMDW-1.1, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Commercial use is permitted. If you distribute any portion of the Model Materials, retain a copy of the OpenMDW-1.1 agreement and NVIDIA's copyright and origin notices: https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE. Checkpoints: HF nvidia/Kumo-Tabular v1.0.1 (small/)."},
+  "preprocessing_profile": "kumo_tabular_v1_minimal",
+  "weights": {
+    "classification": {"repo": "nvidia/Kumo-Tabular", "revision": "b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f",
+      "files": [{"path": "small/classification/model.ckpt", "bytes": 109936978,
+                 "url": "https://huggingface.co/nvidia/Kumo-Tabular/resolve/b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f/small/classifier.pt"}]},
+    "regression": {"repo": "nvidia/Kumo-Tabular", "revision": "b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f",
+      "files": [{"path": "small/regression/model.ckpt", "bytes": 113968523,
+                 "url": "https://huggingface.co/nvidia/Kumo-Tabular/resolve/b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f/small/regressor.pt"}]}
+  },
+  "graph": {"classification": "graph_kumo_small_classification", "regression": "graph_kumo_small_regression",
+    "tensor_map": {"classification": "tensor_map_kumo_small_classification.json",
+                   "regression": "tensor_map_kumo_small_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
+                                 "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 5000, "max_features": 500, "max_classes": 10}
+})json";
+
+static const char *const BUILTIN_KUMO_MEDIUM = R"json({
+  "schema_version": 2, "id": "kumo-tabular-medium", "display_name": "Kumo-Tabular medium (NVIDIA)",
+  "family": "icl-transformer",
+  "license": {"id": "openmdw-1.1", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "NVIDIA Kumo-Tabular (medium; 61.5 M / 62.5 M parameters classifier / regressor). Code Apache-2.0 (NVIDIA/structured-data-models); weights OpenMDW-1.1, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Commercial use is permitted. If you distribute any portion of the Model Materials, retain a copy of the OpenMDW-1.1 agreement and NVIDIA's copyright and origin notices: https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE. Checkpoints: HF nvidia/Kumo-Tabular v1.0.1 (medium/)."},
+  "preprocessing_profile": "kumo_tabular_v1_minimal",
+  "weights": {
+    "classification": {"repo": "nvidia/Kumo-Tabular", "revision": "b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f",
+      "files": [{"path": "medium/classification/model.ckpt", "bytes": 246117940,
+                 "url": "https://huggingface.co/nvidia/Kumo-Tabular/resolve/b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f/medium/classifier.pt"}]},
+    "regression": {"repo": "nvidia/Kumo-Tabular", "revision": "b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f",
+      "files": [{"path": "medium/regression/model.ckpt", "bytes": 250144651,
+                 "url": "https://huggingface.co/nvidia/Kumo-Tabular/resolve/b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f/medium/regressor.pt"}]}
+  },
+  "graph": {"classification": "graph_kumo_medium_classification", "regression": "graph_kumo_medium_regression",
+    "tensor_map": {"classification": "tensor_map_kumo_medium_classification.json",
+                   "regression": "tensor_map_kumo_medium_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
+                                 "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 5000, "max_features": 500, "max_classes": 10}
+})json";
+
+static const char *const BUILTIN_KUMO_LARGE = R"json({
+  "schema_version": 2, "id": "kumo-tabular-large", "display_name": "Kumo-Tabular large (NVIDIA)",
+  "family": "icl-transformer",
+  "license": {"id": "openmdw-1.1", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "NVIDIA Kumo-Tabular (large; 213.7 M / 215.7 M parameters classifier / regressor). Code Apache-2.0 (NVIDIA/structured-data-models); weights OpenMDW-1.1, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Commercial use is permitted. If you distribute any portion of the Model Materials, retain a copy of the OpenMDW-1.1 agreement and NVIDIA's copyright and origin notices: https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE. Checkpoints: HF nvidia/Kumo-Tabular v1.0.1 (large/)."},
+  "preprocessing_profile": "kumo_tabular_v1_minimal",
+  "weights": {
+    "classification": {"repo": "nvidia/Kumo-Tabular", "revision": "b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f",
+      "files": [{"path": "large/classification/model.ckpt", "bytes": 854850034,
+                 "url": "https://huggingface.co/nvidia/Kumo-Tabular/resolve/b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f/large/classifier.pt"}]},
+    "regression": {"repo": "nvidia/Kumo-Tabular", "revision": "b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f",
+      "files": [{"path": "large/regression/model.ckpt", "bytes": 862909259,
+                 "url": "https://huggingface.co/nvidia/Kumo-Tabular/resolve/b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f/large/regressor.pt"}]}
+  },
+  "graph": {"classification": "graph_kumo_large_classification", "regression": "graph_kumo_large_regression",
+    "tensor_map": {"classification": "tensor_map_kumo_large_classification.json",
+                   "regression": "tensor_map_kumo_large_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
+                                 "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 5000, "max_features": 500, "max_classes": 10}
+})json";
+
 vector<ModelSpec> BuiltinModelSpecs() {
 	// Merge the two per-task built-in TabFM v1 manifests into one multi-task
 	// model spec (id "tabfm-v1"). Each task keeps its own graph/tensor-map/repo.
@@ -477,6 +582,9 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_ORION_MSP, "(built-in orion-msp)"));
 	specs.push_back(ParseModelSpec(BUILTIN_CAUSILO, "(built-in causilo)"));
 	specs.push_back(ParseModelSpec(BUILTIN_LIMIX2M, "(built-in limix-2m)"));
+	specs.push_back(ParseModelSpec(BUILTIN_KUMO_SMALL, "(built-in kumo-tabular-small)"));
+	specs.push_back(ParseModelSpec(BUILTIN_KUMO_MEDIUM, "(built-in kumo-tabular-medium)"));
+	specs.push_back(ParseModelSpec(BUILTIN_KUMO_LARGE, "(built-in kumo-tabular-large)"));
 	return specs;
 }
 

@@ -631,3 +631,32 @@ TEST_CASE("model_spec: the served artifact is the converted sibling, tried first
 	REQUIRE(ServedArtifactPath(reg, exists_in({reg, "/c/m/model.safetensors"})) == reg);
 	REQUIRE(ServedArtifactPath(reg, exists_in({"/c/m/model.safetensors"})).empty());
 }
+
+TEST_CASE("model_spec: Kumo-Tabular sizes map to their own stems and pin their converted-weights headers",
+          "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// One stem per SIZE: the three are different module trees (layer counts, widths, heads), so a
+	// shared graph would mis-index every one but the size it was exported from.
+	REQUIRE(BundledGpuGraphId("kumo-tabular-small", "ext", "classification") == "graph_ext_kumo_small_classification");
+	REQUIRE(BundledGpuGraphId("kumo-tabular-small", "migraphx", "regression") ==
+	        "graph_migraphx_kumo_small_regression");
+	REQUIRE(BundledGpuGraphId("kumo-tabular-medium", "ext", "regression") == "graph_ext_kumo_medium_regression");
+	REQUIRE(BundledGpuGraphId("kumo-tabular-large", "migraphx", "classification") ==
+	        "graph_migraphx_kumo_large_classification");
+	// The header of the model.safetensors that tools/export_kumo's convert_kumo_weights writes from the
+	// published .pt (every key, sorted, float32, no metadata: deterministic). The ext/migraphx graphs bake
+	// offsets into THAT file; without it the engine injects the .pt natively on the CPU.
+	REQUIRE(ExpectedWeightsHeaderShaFor("kumo-tabular-small", "classification") ==
+	        "b65ef653ebec907449922c7df6059c929fef788d7cbb871271180b94ff665ec0");
+	REQUIRE(ExpectedWeightsHeaderShaFor("kumo-tabular-small", "regression") ==
+	        "55016e60b3a08982c2f20ec611098bbf9f07d7c4c4290606e7fd69e78211425e");
+	REQUIRE(ExpectedWeightsHeaderShaFor("kumo-tabular-medium", "classification") ==
+	        "8ca6b9607575cfbccff3c529f7cfdce37bf487530ba316c2ccd60e7cd6493d2f");
+	REQUIRE(ExpectedWeightsHeaderShaFor("kumo-tabular-medium", "regression") ==
+	        "c3401b726224126e0ccd65f35d99310e1699ff8f47bfbdaed6089098da68b9d1");
+	REQUIRE(ExpectedWeightsHeaderShaFor("kumo-tabular-large", "classification") ==
+	        "56bad846285cf9246381597a73eb8b41752bb6ce149bc32a7754513d05aaf7f1");
+	REQUIRE(ExpectedWeightsHeaderShaFor("kumo-tabular-large", "regression") ==
+	        "e17d5f4a2b1d00740f6a82f0821fa5b6ecee9c06ae273d5b81417242070b464d");
+}

@@ -1,0 +1,168 @@
+# name: test/sql/tabfm_kumo_tabular.test
+# description: NVIDIA Kumo-Tabular (code Apache-2.0, weights OpenMDW-1.1) onboarded as three built-in
+#              models, kumo-tabular-small / -medium / -large. Its graph takes the tabfm-v1 five-input
+#              contract (x, y[1,T], train_size, cat_mask, d): the context split and the real feature
+#              width are VALUES, so one graph family serves CPU, CUDA and bucket-padded ROCm. The
+#              engine standardises the features and the regression target (profile
+#              kumo_tabular_v1_minimal), which is Kumo's own single-estimator recipe step for step.
+#
+#              The fixture half uses the committed random-init model (test/fixtures/kumo; zero NVIDIA
+#              weight bytes) and PINS A VALUE FOR EVERY ROW, context and query: the golden values come
+#              from PyTorch on a float64 replica of the engine's preprocessing
+#              (tools/export_kumo/src/export_kumo/engine_ref.py), so this also checks that replica.
+#              Real-weight quality: test/sql/tabfm_real_models.test.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# --- the built-in catalog rows ------------------------------------------------------------------
+#
+# OpenMDW-1.1 is permissive (commercial use, no field-of-use restriction) and the HF repo is not
+# gated, so all three are commercial and need no licence acknowledgement (see tabfm_license.test).
+# The head is 10 classes wide; upstream reaches more classes with error-correcting output codes,
+# which the engine does not reproduce, so 10 is the ceiling. 500 features is upstream's own
+# SelectColumns(500) cap.
+query TTTTIII
+SELECT model, family, capabilities, license, commercial::VARCHAR, max_features, max_classes
+FROM tabfm_list_models() WHERE model LIKE 'kumo-tabular-%' ORDER BY model
+----
+kumo-tabular-large	icl-transformer	classify, regress	openmdw-1.1	true	500	10
+kumo-tabular-medium	icl-transformer	classify, regress	openmdw-1.1	true	500	10
+kumo-tabular-small	icl-transformer	classify, regress	openmdw-1.1	true	500	10
+
+# --- the fixture ----------------------------------------------------------------------------------
+
+statement ok
+CALL tabfm_register_model(
+  id := 'kumo-fixture', base_dir := 'test/fixtures/kumo',
+  classification_graph := 'graph_kumo_fixture_classification.onnx',
+  regression_graph := 'graph_kumo_fixture_regression.onnx',
+  classification_weights := 'model_classification.safetensors',
+  regression_weights := 'model_regression.safetensors',
+  classification_tensor_map := 'tensor_map_kumo_fixture_classification.json',
+  regression_tensor_map := 'tensor_map_kumo_fixture_regression.json',
+  license := 'apache-2.0', commercial := true,
+  weights_repo := 'local:test/fixtures/kumo', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'kumo_tabular_v1_minimal',
+  max_rows := 4096, max_features := 64, max_classes := 3)
+
+# The table is built from the same formulas the fixture builder used (fixture.sql_inputs):
+#   x[i][j] = ((i*7 + j*3 + (i*j) % 5) % 11) * 0.25 - 1.0      exact in float32
+#   label   = 'c' || ((i*5 + i//3) % 3)   for the first 12 rows (context); NULL after (query)
+statement ok
+CREATE TABLE t AS SELECT i AS id,
+  ((i*7 + 0*3 + (i*0) % 5) % 11) * 0.25 - 1.0 AS f1,
+  ((i*7 + 1*3 + (i*1) % 5) % 11) * 0.25 - 1.0 AS f2,
+  ((i*7 + 2*3 + (i*2) % 5) % 11) * 0.25 - 1.0 AS f3,
+  ((i*7 + 3*3 + (i*3) % 5) % 11) * 0.25 - 1.0 AS f4,
+  ((i*7 + 4*3 + (i*4) % 5) % 11) * 0.25 - 1.0 AS f5,
+  CASE WHEN i < 12 THEN 'c' || ((i*5 + i // 3) % 3) END AS label
+FROM range(20) r(i);
+
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture')
+----
+20	12	0
+
+statement ok
+CREATE TABLE exp_cls AS SELECT t.f1, t.f2, t.f3, t.f4, t.f5, e.expected FROM t JOIN
+  (VALUES (0,'c1'),(1,'c2'),(2,'c2'),(3,'c2'),(4,'c1'),(5,'c2'),(6,'c2'),(7,'c2'),(8,'c1'),(9,'c1'),(10,'c2'),(11,'c2'),(12,'c0'),(13,'c0'),(14,'c0'),(15,'c0'),(16,'c0'),(17,'c0'),(18,'c0'),(19,'c0'))
+  e(id, expected) USING (id);
+
+query II
+SELECT count(*), count(DISTINCT (f1, f2, f3, f4, f5)) FROM exp_cls
+----
+20	20
+
+# the exact predicted label for ALL 20 rows, context and query alike
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat <> e.expected)
+FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture') a
+JOIN exp_cls e ON a.f1 = e.f1 AND a.f2 = e.f2 AND a.f3 = e.f3 AND a.f4 = e.f4 AND a.f5 = e.f5
+----
+20	0
+
+# the fixture predicts all three classes, so a model collapsed onto one label fails here
+query I
+SELECT count(DISTINCT yhat) FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture')
+----
+3
+
+# regression: the graph emits the quantile mean in the engine's standardised target space and the
+# engine inverts its own z-score, so these are values in the units of `target`
+statement ok
+CREATE TABLE r AS SELECT i AS id,
+  ((i*7 + 0*3 + (i*0) % 5) % 11) * 0.25 - 1.0 AS f1,
+  ((i*7 + 1*3 + (i*1) % 5) % 11) * 0.25 - 1.0 AS f2,
+  ((i*7 + 2*3 + (i*2) % 5) % 11) * 0.25 - 1.0 AS f3,
+  ((i*7 + 3*3 + (i*3) % 5) % 11) * 0.25 - 1.0 AS f4,
+  ((i*7 + 4*3 + (i*4) % 5) % 11) * 0.25 - 1.0 AS f5,
+  CASE WHEN i < 12 THEN ((i*37) % 17) * 0.25 - 2.0 END AS target
+FROM range(20) r(i);
+
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_regress('r', 'target', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture')
+----
+20	12	0
+
+statement ok
+CREATE TABLE exp_reg AS SELECT r.f1, r.f2, r.f3, r.f4, r.f5, e.expected FROM r JOIN
+  (VALUES (0,-0.045943),(1,0.300836),(2,0.467525),(3,0.628311),(4,0.779199),(5,0.529732),(6,0.128421),(7,0.360576),(8,0.392957),(9,0.649008),(10,0.642208),(11,0.685995),(12,0.535656),(13,0.587631),(14,0.437622),(15,0.372258),(16,0.327857),(17,0.416635),(18,0.601063),(19,0.301036))
+  e(id, expected) USING (id);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE abs(a.yhat - e.expected) > 1e-3)
+FROM tabfm_regress('r', 'target', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture') a
+JOIN exp_reg e ON a.f1 = e.f1 AND a.f2 = e.f2 AND a.f3 = e.f3 AND a.f4 = e.f4 AND a.f5 = e.f5
+----
+20	0
+
+# the fitted (context) values vary: a zero-padded context would decode to a single number
+query I
+SELECT count(DISTINCT round(yhat, 4)) FROM tabfm_regress('r', 'target', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture') WHERE is_training
+----
+12
+
+# A missing feature cell is mean-imputed by the engine before the graph, so it is answered.
+# (Kumo's own missing-value projection is therefore unused; docs/REAL_MODELS.md says so.)
+statement ok
+CREATE TABLE tn AS SELECT id, CASE WHEN id = 14 THEN NULL ELSE f1 END AS f1, f2, f3, f4, f5, label FROM t;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat IS NULL) FROM tabfm_classify('tn', 'label', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture')
+----
+20	0
+
+# A categorical feature reaches the graph's cat_mask input and is embedded with Kumo's categorical
+# frequencies. f5 below is a category whose engine code (first appearance over the context rows:
+# k0=0, k3=1, k2=2, k1=3) is ALSO given as a plain number in rn: identical standardised values, so
+# the only difference the graph sees is cat_mask -- and the answer must change.
+statement ok
+CREATE TABLE rc AS SELECT id, f1, f2, f3, f4, 'k' || ((id * 3) % 4) AS f5, target FROM r;
+
+statement ok
+CREATE TABLE rn AS SELECT id, f1, f2, f3, f4,
+  CASE (id * 3) % 4 WHEN 0 THEN 0 WHEN 3 THEN 1 WHEN 2 THEN 2 ELSE 3 END::DOUBLE AS f5, target FROM r;
+
+query I
+SELECT count(*) FILTER (WHERE abs(c.yhat - n.yhat) > 1e-4) > 0
+FROM (SELECT f1, f2, f3, f4, yhat FROM tabfm_regress('rc', 'target', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture')) c
+JOIN (SELECT f1, f2, f3, f4, yhat FROM tabfm_regress('rn', 'target', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture')) n USING (f1, f2, f3, f4)
+----
+true
+
+# error path: more classes than the head is a property of the model, and the message says so
+statement ok
+CREATE TABLE t4 AS SELECT id, f1, f2, f3, f4, f5, CASE WHEN id < 12 THEN 'k' || (id % 4) END AS label FROM t;
+
+statement error
+SELECT count(*) FROM tabfm_classify('t4', 'label', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture')
+----
+supports at most 3 classes

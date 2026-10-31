@@ -1,0 +1,91 @@
+{
+  "command": [
+    "export_kumo",
+    "--task",
+    "regression",
+    "--size",
+    "medium",
+    "--out",
+    "../../resources"
+  ],
+  "task": "regression",
+  "size": "medium",
+  "model": {
+    "cell_channels": 256,
+    "num_embedding_layers": 6,
+    "num_embedding_heads": 4,
+    "num_inducing_points": 256,
+    "group_size": 3,
+    "num_frequencies": 32,
+    "num_readout_tokens": 4,
+    "icl_channels": 512,
+    "num_icl_layers": 24,
+    "num_icl_heads": 8,
+    "num_icl_key_value_heads_for_query": 2
+  },
+  "outputs": 999,
+  "n_params": 62492439,
+  "seed": 0,
+  "opset": 18,
+  "upstream": "NVIDIA/structured-data-models @ 084aa7c7d69403d453c0073b785f1d32915669a8, sdm.models.kumo.tabular._KumoTabular.forward_train",
+  "input_signature": {
+    "x": "[1,T,H] f32: engine-standardised features (kumo_tabular_v1_minimal)",
+    "y": "[1,T] f32: context labels in rows < train_size (class ids, or the engine-standardised regression target); the -100 sentinel elsewhere, masked in-graph",
+    "train_size": "[1] i64: context rows (a value, not a shape)",
+    "cat_mask": "[1,H] bool: categorical columns",
+    "d": "[1] i64: real feature columns (<= H; the rest is bucket padding)"
+  },
+  "output": {
+    "logits": "[1,T,1] mean of the 999 quantiles in the standardised target space; the engine inverts its own target z-score"
+  },
+  "split": "masked: arange(T) < train_size; padded columns masked by d",
+  "graph_bytes": 1956532,
+  "n_initializers_mapped": 558,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 1.9441358745098114e-08,
+    "tol": 0.0001,
+    "shapes": [
+      {
+        "T": 40,
+        "H": 9,
+        "train": 25,
+        "d": 9,
+        "cats": [],
+        "max_abs_delta_context_rows": 1.280568540096283e-08,
+        "max_abs_delta_query_rows": 1.30385160446167e-08,
+        "ort_ms": 337.44311332702637
+      },
+      {
+        "T": 33,
+        "H": 12,
+        "train": 20,
+        "d": 10,
+        "cats": [
+          0,
+          4
+        ],
+        "max_abs_delta_context_rows": 1.9441358745098114e-08,
+        "max_abs_delta_query_rows": 1.5832483768463135e-08,
+        "ort_ms": 723.9868640899658
+      },
+      {
+        "T": 17,
+        "H": 3,
+        "train": 9,
+        "d": 2,
+        "cats": [],
+        "max_abs_delta_context_rows": 1.0011717677116394e-08,
+        "max_abs_delta_query_rows": 1.7695128917694092e-08,
+        "ort_ms": 315.8409595489502
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.23.2",
+    "onnxruntime": "1.31.1",
+    "onnxscript": "0.7.2"
+  }
+}

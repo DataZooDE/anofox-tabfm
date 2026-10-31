@@ -389,6 +389,9 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 		stem = "orion_bix";
 	} else if (model == "orion-msp") {
 		stem = "orion_msp";
+	} else if (model == "kumo-tabular-small" || model == "kumo-tabular-medium" || model == "kumo-tabular-large") {
+		// one stem per size ("kumo_small", ...): different module trees, never interchangeable
+		stem = "kumo_" + model.substr(string("kumo-tabular-").size());
 	} else if (model == "limix-2m") {
 		// "limix2m", not "limix": LimiX-2 (400M) is a different model, and a bare stem would hand its graphs
 		// to the wrong one
@@ -497,6 +500,34 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	if (model == "limix-2m") {
 		if (task_name == "classification" || task_name == "regression") {
 			return "0c6a868493ea16aaa88bd604b7f769b34018e82941eae90abd9d16072cf283eb";
+		}
+	}
+	// Kumo-Tabular: the header of the model.safetensors that tools/export_kumo's convert_kumo_weights
+	// writes from the published .pt at the pinned revision (every key sorted, float32, no metadata, so it
+	// is deterministic). The ext and migraphx graphs bake offsets into THAT file; without it the engine
+	// injects the .pt natively on the CPU and ROCm/CUDA report the weights as not matching.
+	if (model == "kumo-tabular-small") {
+		if (task_name == "classification") {
+			return "b65ef653ebec907449922c7df6059c929fef788d7cbb871271180b94ff665ec0";
+		}
+		if (task_name == "regression") {
+			return "55016e60b3a08982c2f20ec611098bbf9f07d7c4c4290606e7fd69e78211425e";
+		}
+	}
+	if (model == "kumo-tabular-medium") {
+		if (task_name == "classification") {
+			return "8ca6b9607575cfbccff3c529f7cfdce37bf487530ba316c2ccd60e7cd6493d2f";
+		}
+		if (task_name == "regression") {
+			return "c3401b726224126e0ccd65f35d99310e1699ff8f47bfbdaed6089098da68b9d1";
+		}
+	}
+	if (model == "kumo-tabular-large") {
+		if (task_name == "classification") {
+			return "56bad846285cf9246381597a73eb8b41752bb6ce149bc32a7754513d05aaf7f1";
+		}
+		if (task_name == "regression") {
+			return "e17d5f4a2b1d00740f6a82f0821fa5b6ecee9c06ae273d5b81417242070b464d";
 		}
 	}
 	if (model == "tabpfn-v3") {
