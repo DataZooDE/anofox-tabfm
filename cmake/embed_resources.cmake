@@ -52,6 +52,22 @@ set(_tabfm_inputs
     # out of the tensor map, which make_migraphx_graph.py refuses outright.
     "graph_migraphx_tabdpt_classification.onnx"
     "graph_migraphx_tabdpt_regression.onnx"
+    # TabDPT v1.3 (`tabdpt-v1-3`): the same masked conversion, re-exported for v1.3's per-task
+    # y-encoders (tools/export_tabdpt --config real13 --contract mask).
+    "graph_migraphx_tabdpt13_classification.onnx"
+    "graph_migraphx_tabdpt13_regression.onnx"
+    # Mitra-v2 (`mitra-v2`): the 1000-bin regressor only -- the v2 classifier reuses mitra's graphs
+    # (byte-identical safetensors header). bin_edges/bin_centres stay inline (code-generated).
+    "graph_mitra2_regression.onnx"
+    "graph_ext_mitra2_regression.onnx"
+    "graph_migraphx_mitra2_regression.onnx"
+    "tensor_map_mitra2_regression.json"
+    "graph_tabdpt13_classification.onnx"
+    "graph_tabdpt13_regression.onnx"
+    "graph_ext_tabdpt13_classification.onnx"
+    "graph_ext_tabdpt13_regression.onnx"
+    "tensor_map_tabdpt13_classification.json"
+    "tensor_map_tabdpt13_regression.json"
     # TabPFN v2 / v2.5 / v2.6 MIGraphX graphs, both tasks (tools/export_tabpfn
     # --contract mask; docs/ROCM_TABPFN_PLAN.md). Unlike tabdpt's they take a
     # FIFTH input, `n_rows`, the real row count before bucket padding: TabPFN's

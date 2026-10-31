@@ -28,6 +28,10 @@ class ExportConfig:
     parity_shapes: tuple
     max_classes: int
     parity_tol: float = 1e-3
+    # "v1.2" (tabdpt1_2.safetensors, the `tabdpt` entry) or "v1.3"
+    # (tabdpt1_3.safetensors, the `tabdpt-v1-3` entry). Same dims; v1.3 swaps
+    # the per-layer y-encoder MLP for a per-task pair (see tabdpt_patches.upgrade_to_v13).
+    arch: str = "v1.2"
 
 
 # Published dims, from `Layer6/TabDPT :: tabdpt1_2.safetensors` metadata["cfg"].
@@ -68,8 +72,27 @@ def fixture() -> ExportConfig:
     )
 
 
+# TabDPT v1.3 (`Layer6/TabDPT :: tabdpt1_3.safetensors`, 2026-09-08). Its
+# metadata["cfg"]["model"] carries the SAME dims as v1.2 (plus clip_n_sigma=8,
+# which v1.2 hard-coded); what changed is the y-encoder STRUCTURE, which the cfg
+# does not describe -- 647 -> 679 tensors: y_encoders.{l}.{0,2} (Linear(1, 256),
+# Linear(256, 128)) are gone, cls_y_encoders.{l} (Embedding(16, 128)) and
+# reg_y_encoders.{l}.{0,2} (Linear(1, 128), Linear(128, 128)) are new. Checked
+# against the checkpoint's header by assert_state_dict_matches_checkpoint.
+def real13() -> ExportConfig:
+    cfg = real()
+    cfg.name, cfg.arch = "real13", "v1.3"
+    return cfg
+
+
+def fixture13() -> ExportConfig:
+    cfg = fixture()
+    cfg.name, cfg.arch = "fixture13", "v1.3"
+    return cfg
+
+
 def get(name: str) -> ExportConfig:
-    return {"real": real, "fixture": fixture}[name]()
+    return {"real": real, "fixture": fixture, "real13": real13, "fixture13": fixture13}[name]()
 
 
 # Maps our TabDPTModel kwarg -> the key under cfg["model"] in the checkpoint
@@ -100,6 +123,10 @@ def assert_matches_checkpoint(weights_path: str) -> None:
 
     with safe_open(weights_path, framework="pt", device="cpu") as f:
         cfg = json.loads(f.metadata()["cfg"])
+    clip = cfg["model"].get("clip_n_sigma")  # v1.3 records it; v1.2 hard-coded 8
+    if clip is not None and float(clip) != _REAL_KWARGS["clip_sigma"]:
+        raise SystemExit(f"export_tabdpt: checkpoint clip_n_sigma={clip!r}, config "
+                         f"clip_sigma={_REAL_KWARGS['clip_sigma']!r}")
 
     mismatches = []
     for kwarg, cfg_key in _CFG_KEYS.items():
@@ -116,3 +143,27 @@ def assert_matches_checkpoint(weights_path: str) -> None:
         raise SystemExit(
             "export_tabdpt: configs.real() no longer matches the published "
             "checkpoint:\n  " + "\n  ".join(mismatches))
+
+
+def assert_state_dict_matches_checkpoint(model, weights_path: str) -> None:
+    """Fail loudly unless the model's state_dict IS the checkpoint's signature.
+
+    The dims check above cannot see a STRUCTURAL change -- v1.3 kept every cfg
+    value and still renamed/reshaped 160 tensors. Comparing names and shapes
+    against the safetensors header is what catches that, before an export
+    produces a graph whose initializers the real file cannot populate.
+    """
+    from safetensors import safe_open
+
+    sd = {k: tuple(v.shape) for k, v in model.state_dict().items()}
+    with safe_open(weights_path, framework="pt", device="cpu") as f:
+        ck = {k: tuple(f.get_slice(k).get_shape()) for k in f.keys()}
+    only_model = sorted(set(sd) - set(ck))
+    only_ckpt = sorted(set(ck) - set(sd))
+    shape = sorted(k for k in set(sd) & set(ck) if sd[k] != ck[k])
+    if only_model or only_ckpt or shape:
+        raise SystemExit(
+            "export_tabdpt: model state_dict does not match the checkpoint:\n"
+            f"  only in model ({len(only_model)}): {only_model[:6]}\n"
+            f"  only in checkpoint ({len(only_ckpt)}): {only_ckpt[:6]}\n"
+            f"  shape mismatch ({len(shape)}): {shape[:6]}")

@@ -5,6 +5,18 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`mitra-v2`: Mitra-v2 (AWS AutoGluon, Apache-2.0, ungated) as a new catalog entry beside `mitra`.** The
+  classifier is a drop-in (byte-identical safetensors header), so it runs mitra's bundled graphs on the v2
+  weights; the regressor's new 1,000-bin distributional head gets its own graph that min-max scales and
+  bins the target in-graph and returns the mean of the bin distribution. Wider size regime (32,768 rows,
+  256 features). CPU and ROCm. In-context only: the card's numbers use 50-step fine-tuning with bagging.
+- **`tabdpt-v1-3`: TabDPT v1.3 (Layer 6 AI, Apache-2.0, ungated) as a new catalog entry beside `tabdpt`.**
+  Re-exported for v1.3's per-task y-encoders (`tools/export_tabdpt --config real13`); one 252 MB file serves
+  both tasks and lives under `tabdpt1_3/` so it cannot overwrite v1.2's. CPU and ROCm. A tensor map may now
+  list `unused_by_graph` checkpoint tensors, which the engine skips at injection (needed when one weights
+  file serves two graphs that read different subsets of it).
+
 ## [v2026.10.26] - 2026-10-26
 
 ### Added

@@ -446,6 +446,86 @@ static const char *const BUILTIN_LIMIX2M = R"json({
   "size_regime": {"max_rows": 5000, "max_features": 100, "max_classes": 10}
 })json";
 
+// Mitra-v2 (AWS AutoGluon, Apache-2.0, ungated; arXiv 2609.04540). A NEW entry: `mitra` (v1) is
+// unchanged. The two tasks are not equally new:
+//
+//  * autogluon/mitra-classifier-2 is a drop-in. config.json is byte-identical to v1's and the
+//    safetensors JSON header is byte-identical too (sha cb1a261b..., 392 tensors -- same names,
+//    shapes, dtypes and offsets; only the values differ), so classification reuses mitra's graph,
+//    tensor map and GPU graphs verbatim (see BundledGpuGraphId) and embeds no new bytes.
+//  * autogluon/mitra-regressor-2 is NOT: dim_output 1 -> 1000. Regression is cast as classification
+//    over 1,000 target bins: final_layer is [1000, 512], and each support target is embedded by its
+//    BIN (y_embedding becomes an Embedding [1000, 512] with no bias; 393 -> 392 tensors). Its graph
+//    (tools/export_mitra --config real2) min-max scales the raw target over the context rows, bins it
+//    on linspace(-0.5, 1.5, 1001), and decodes the mean of the bin distribution back to raw units --
+//    raw in, raw out, hence the "_raw" profile. Features are passed raw too: Mitra's quantile
+//    embedding is rank-based, i.e. invariant to the engine's monotone scaling either way, and raw is
+//    what upstream feeds it.
+//
+// The size regime is v2's documented operating range rather than v1's: prediction draws up to 32,768
+// support rows and the deployment feature budget is 256 (Mitra-v2 Technical Report sec. 3.1, 3.5;
+// pre-trained on 1-50 features, 160-5,120 support rows -- "10x longer context, 3x features"). The
+// card's headline numbers use 50-step fine-tuning with 8-fold bagging; this entry is in-context only.
+static const char *const BUILTIN_MITRA2 = R"json({
+  "schema_version": 2, "id": "mitra-v2", "display_name": "Mitra-v2 (AWS AutoGluon)",
+  "family": "icl-transformer",
+  "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "Mitra-v2 by AWS AutoGluon, Apache-2.0. Checkpoints: HF autogluon/mitra-classifier-2, autogluon/mitra-regressor-2."},
+  "preprocessing_profile": "mitra_v2_raw",
+  "weights": {
+    "classification": {"repo": "autogluon/mitra-classifier-2", "revision": "main",
+      "files": [{"path": "model.safetensors", "bytes": 302717904,
+                 "url": "https://huggingface.co/autogluon/mitra-classifier-2/resolve/main/model.safetensors"}]},
+    "regression": {"repo": "autogluon/mitra-regressor-2", "revision": "main",
+      "files": [{"path": "model.safetensors", "bytes": 306776952,
+                 "url": "https://huggingface.co/autogluon/mitra-regressor-2/resolve/main/model.safetensors"}]}
+  },
+  "graph": {"classification": "graph_mitra_classification", "regression": "graph_mitra2_regression",
+    "tensor_map": {"classification": "tensor_map_mitra_classification.json",
+                   "regression": "tensor_map_mitra2_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
+                                 "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 32768, "max_features": 256, "max_classes": 10}
+})json";
+
+// TabDPT v1.3 (Layer 6 AI, Apache-2.0, ungated). A NEW entry: `tabdpt` stays on v1.2. Same HF repo
+// (Layer6/TabDPT), new file tabdpt1_3.safetensors; TabArena 1545 Elo (v1.3 default) vs 1457 (v1.2).
+//
+// The checkpoint cfg carries v1.2's exact dims, but the y-encoders changed: v1.2's per-layer MLP
+// (y_encoders.*) became a per-TASK pair -- cls_y_encoders.* (Embedding(16, 128) over the class id) and
+// reg_y_encoders.* (Linear(1,128) -> GELU -> Linear(128,128)); 647 -> 679 tensors, every other tensor
+// unchanged, head (16 logits + 2048 regression bins) unchanged. So it has its own graphs
+// (tools/export_tabdpt --config real13) under the stem "tabdpt13". v1.3's "full probabilistic
+// regression outputs" are an estimator API over the same bins; the engine returns the point estimate
+// (the bar-distribution mean), as for v1.2.
+//
+// The cache slug is keyed by repo and is SHARED with `tabdpt`, so the file lives under tabdpt1_3/ --
+// a shared files[].path would make the two entries overwrite each other (the tabpfn-v2-5-real rule).
+static const char *const BUILTIN_TABDPT13 = R"json({
+  "schema_version": 2, "id": "tabdpt-v1-3", "display_name": "TabDPT v1.3 (Layer 6 AI)",
+  "family": "icl-transformer",
+  "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "TabDPT by Layer 6 AI, Apache-2.0. Checkpoint: HF Layer6/TabDPT (tabdpt1_3.safetensors)."},
+  "preprocessing_profile": "tabdpt_v1_raw",
+  "weights": {
+    "classification": {"repo": "Layer6/TabDPT", "revision": "main",
+      "files": [{"path": "tabdpt1_3/model.safetensors", "bytes": 252233296,
+                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/main/tabdpt1_3.safetensors"}]},
+    "regression": {"repo": "Layer6/TabDPT", "revision": "main",
+      "files": [{"path": "tabdpt1_3/model.safetensors", "bytes": 252233296,
+                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/main/tabdpt1_3.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabdpt13_classification", "regression": "graph_tabdpt13_regression",
+    "tensor_map": {"classification": "tensor_map_tabdpt13_classification.json",
+                   "regression": "tensor_map_tabdpt13_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 100000, "max_features": 128, "max_classes": 16}
+})json";
+
 vector<ModelSpec> BuiltinModelSpecs() {
 	// Merge the two per-task built-in TabFM v1 manifests into one multi-task
 	// model spec (id "tabfm-v1"). Each task keeps its own graph/tensor-map/repo.
@@ -477,6 +557,8 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_ORION_MSP, "(built-in orion-msp)"));
 	specs.push_back(ParseModelSpec(BUILTIN_CAUSILO, "(built-in causilo)"));
 	specs.push_back(ParseModelSpec(BUILTIN_LIMIX2M, "(built-in limix-2m)"));
+	specs.push_back(ParseModelSpec(BUILTIN_MITRA2, "(built-in mitra-v2)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABDPT13, "(built-in tabdpt-v1-3)"));
 	return specs;
 }
 

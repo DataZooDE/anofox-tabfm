@@ -1,0 +1,117 @@
+# name: test/sql/tabfm_mitra_v2.test
+# description: Mitra-v2 (AWS AutoGluon, Apache-2.0, arXiv 2609.04540) — the second generation of
+#              the Mitra Tab2D model, as a NEW catalog entry beside `mitra` (which is unchanged).
+#
+#              The two tasks are not equally new:
+#              * classifier-2 is a drop-in: its safetensors header is byte-identical to
+#                classifier-1's (same 392 names, shapes, dtypes and offsets), so the entry reuses
+#                mitra's classification graph, tensor map and GPU graphs verbatim. The fixture
+#                below is therefore mitra's own classification fixture — sharing it is the point.
+#              * regressor-2 is NOT: it replaces v1's scalar MSE head with a 1,000-bin
+#                distributional head (final_layer [1000, 512]) and embeds each support target by its
+#                BIN (y_embedding is an Embedding [1000, 512], no bias). Its graph therefore takes the
+#                raw target, min-max scales it over the context rows, bins it on
+#                linspace(-0.5, 1.5, 1001), and decodes the bin distribution's mean back to raw units.
+#                That makes every prediction lie inside [y_min - range/2, y_max + range/2] — a property
+#                of the decode, true even for random weights, and asserted below.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# --- the built-in catalog entry ------------------------------------------------
+
+query TTTT
+SELECT model, family, license, commercial FROM tabfm_list_models() WHERE model IN ('mitra', 'mitra-v2') ORDER BY model
+----
+mitra	icl-transformer	apache-2.0	true
+mitra-v2	icl-transformer	apache-2.0	true
+
+query T
+SELECT capabilities FROM tabfm_list_models() WHERE model = 'mitra-v2'
+----
+classify, regress
+
+# v2 was pre-trained with a 10x longer context and 3x the features, and predicts with up to 32,768
+# support rows and a 256-feature budget (Technical Report sec. 3.1 / 3.5); v1 keeps its 10k / 100.
+query TIII
+SELECT model, max_rows, max_features, max_classes FROM tabfm_list_models() WHERE model IN ('mitra', 'mitra-v2') ORDER BY model
+----
+mitra	10000	100	10
+mitra-v2	32768	256	10
+
+# --- the fixture model (offline forward passes) --------------------------------
+
+# classification: mitra's fixture graph + weights (the v2 classifier IS that architecture);
+# regression: the binned-head fixture.
+statement ok
+CALL tabfm_register_model(
+  id := 'mitra-v2-fixture', base_dir := 'test/fixtures',
+  classification_graph := 'mitra/graph_mitra_classification.onnx',
+  regression_graph := 'mitra2/graph_mitra2_regression.onnx',
+  classification_weights := 'mitra/model_classification.safetensors',
+  regression_weights := 'mitra2/model_regression.safetensors',
+  classification_tensor_map := 'mitra/tensor_map_mitra_classification.json',
+  regression_tensor_map := 'mitra2/tensor_map_mitra2_regression.json',
+  license := 'apache-2.0', commercial := true,
+  preprocessing_profile := 'mitra_v2_raw',
+  max_rows := 5000, max_features := 32, max_classes := 4)
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,'a',0.1,'c0'),(1.5,0.2,'b',0.3,'c1'),(2.5,-1.0,'a',0.5,'c2'),
+  (0.2,0.8,'b',0.7,'c0'),(1.1,0.4,'a',0.2,'c1'),(3.0,-0.5,'b',0.9,'c2'),
+  (0.9,1.2,'a',0.6,'c0'),(2.1,0.1,'b',0.4,'c1'),
+  (1.3,0.3,'a',0.35,NULL),(2.4,-0.2,'b',0.55,NULL))
+  v(f1,f2,f3,f4,label);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2'))
+FROM tabfm_classify('t', 'label', model := 'mitra-v2-fixture')
+----
+10	0
+
+statement ok
+CREATE TABLE r AS SELECT * FROM (VALUES
+  (0.5,1.0,'a',0.1,1.2),(1.5,0.2,'b',0.3,2.4),(2.5,-1.0,'a',0.5,3.1),
+  (0.2,0.8,'b',0.7,0.9),(1.1,0.4,'a',0.2,1.8),(3.0,-0.5,'b',0.9,3.6),
+  (0.9,1.2,'a',0.6,1.1),(2.1,0.1,'b',0.4,2.7),
+  (1.3,0.3,'a',0.35,NULL),(2.4,-0.2,'b',0.55,NULL))
+  v(f1,f2,f3,f4,target);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat IS NULL OR NOT isfinite(yhat))
+FROM tabfm_regress('r', 'target', model := 'mitra-v2-fixture')
+----
+10	0
+
+# The decode is a softmax-weighted mean of bin centres in [-0.5, 1.5], undone by the context
+# min/max (0.9 / 3.6, range 2.7): every prediction must land in [0.9 - 1.35, 3.6 + 1.35]. A scalar
+# head, a z-scored target or a missing inverse would all leave this window on some table; it is
+# also scale-equivariant, which the second query checks with the target times 1000 plus 5000.
+query I
+SELECT bool_and(yhat BETWEEN 0.9 - 1.35 AND 3.6 + 1.35)
+FROM tabfm_regress('r', 'target', model := 'mitra-v2-fixture')
+----
+true
+
+statement ok
+CREATE TABLE r_big AS SELECT f1, f2, f3, f4, target * 1000 + 5000 AS target FROM r
+
+query I
+SELECT bool_and(yhat BETWEEN 5900 - 1350 AND 8600 + 1350) AND min(yhat) > 1000
+FROM tabfm_regress('r_big', 'target', model := 'mitra-v2-fixture')
+----
+true
+
+# Min-max scaling is affine, so the prediction must be affine-equivariant in the target.
+query I
+SELECT max(abs((b.yhat - 5000) / 1000 - s.yhat)) < 1e-3
+FROM (SELECT f1, yhat FROM tabfm_regress('r', 'target', model := 'mitra-v2-fixture')) s
+JOIN (SELECT f1, yhat FROM tabfm_regress('r_big', 'target', model := 'mitra-v2-fixture')) b USING (f1)
+----
+true
