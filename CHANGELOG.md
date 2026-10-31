@@ -5,6 +5,16 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Documentation restructured**: a short README in the anofox-forecast / anofox-decide layout, with guides
+  under `docs/guides/` and API pages under `docs/api/`, `docs/BUILDING.md` and a labelled index in
+  `docs/README.md`. Old README anchors still resolve. Factual fixes made while moving: every introductory
+  snippet names `model := 'mitra'` (downloading a model does not select it); the gated models are the eight
+  the registry gates, and the License section names every non-commercial model and both attribution duties;
+  `auto` device routing and the `anofox_tabfm_max_sessions` scope follow the settings' own descriptions;
+  `tabfm_load` is described as a presence check; one ROCm compile time per model; `n_estimators` (only 1)
+  and `context_rows` (accepted, no effect) described as they behave.
+
 ## [v2026.10.26] - 2026-10-26
 
 ### Added

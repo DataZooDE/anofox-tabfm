@@ -2,9 +2,10 @@
 
 Six table macros turn scored rows into the long tables
 [anofox-visualization](https://github.com/DataZooDE/anofox-visualization) plots
-with `anofox_plot(t)`, one group per model (the anofox integration contract,
-[`docs/ANOFOX_CONTRACT_PLAN.md`](../ANOFOX_CONTRACT_PLAN.md)). `data` is a
-table name or a `'(SELECT …)'` string; the other arguments are column names.
+with `anofox_plot(t)`, one group per model (the anofox integration contract; its design history is
+[ANOFOX_CONTRACT_PLAN.md](../ANOFOX_CONTRACT_PLAN.md)). `data` is a
+table name or a `'(SELECT …)'` string; the other arguments are column names. A worked example that
+compares two models: [Evaluate and compare](../guides/03-evaluate-and-compare.md#compare-models-and-plot-with-anofox-visualization).
 
 | Macro | Gives | `anofox_plot` draws |
 |---|---|---|

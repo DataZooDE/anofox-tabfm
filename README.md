@@ -173,6 +173,9 @@ The full index, including design notes and the history of plans and reviews, is
 | [docs/REAL_MODELS.md](docs/REAL_MODELS.md) | Reference: each real model, how it was ported and verified, licences, gated repositories |
 | [docs/GENERATE.md](docs/GENERATE.md) | Reference: how generation and imputation work, and what binning costs |
 | [docs/BUILDING.md](docs/BUILDING.md) | Reference: building and testing from source |
+| [docs/DYNAMIC_BACKENDS.md](docs/DYNAMIC_BACKENDS.md), [docs/KV_CACHE_DESIGN.md](docs/KV_CACHE_DESIGN.md) | Design: GPU backends as runtime plugins; the context cache |
+| [docs/ROCM_SINGLE_EVAL_POS.md](docs/ROCM_SINGLE_EVAL_POS.md), [docs/MLX_SPIKE_RESULTS.md](docs/MLX_SPIKE_RESULTS.md) | Report: why some models cannot use ROCm; the MLX spike |
+| [docs/README.md](docs/README.md#history-plans-and-reviews) | History: the plans and reviews behind each feature |
 | [CHANGELOG.md](CHANGELOG.md) | Every release |
 
 <a id="quickstart"></a><a id="1-install--load"></a><a id="2-pick-a-model-and-download-its-weights-once"></a><a id="3-predict"></a>
