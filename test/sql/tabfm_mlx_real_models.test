@@ -136,6 +136,35 @@ SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3'
 ----
 <REGEX>:.*does not implement \(ConstantOfShape\).*anofox_tabfm_device='cpu'.*
 
+# ...and the capability relation says so up front, instead of listing tabdpt as runnable on mlx and
+# leaving the refusal to the load. Kumo's and orion-msp's ext graphs need ConstantOfShape too.
+query TTTT
+SELECT model, task, supported, reason LIKE '%does not implement (ConstantOfShape%' FROM tabfm_backends()
+WHERE backend = 'mlx' AND model IN ('tabdpt', 'tabdpt-v1-3') ORDER BY model, task
+----
+tabdpt	classification	false	true
+tabdpt	regression	false	true
+tabdpt-v1-3	classification	false	true
+tabdpt-v1-3	regression	false	true
+
+# Under 'auto' an Apple-silicon machine must not pick mlx for a graph mlx cannot run: tabdpt is served,
+# on the CPU, without a word -- while a model mlx CAN run still gets mlx.
+statement ok
+SET anofox_tabfm_device = 'auto';
+
+statement ok
+CALL tabfm_unload();
+
+query I
+SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt')
+----
+100
+
+query T
+SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND model = 'tabdpt'
+----
+cpu
+
 # ---------------------------------------------------------------------------
 # tabpfn-v3-5-fast
 # tabpfn-v3-5-fast needs Round, which the interpreter did not implement until this file was added.

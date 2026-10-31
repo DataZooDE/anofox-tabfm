@@ -21,6 +21,7 @@
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/vector.hpp"
 
@@ -280,6 +281,9 @@ struct GpuServabilityInputs {
 	bool weights_dir_stageable = true;
 	//! anofox_tabfm_gpu_precision as it would be applied here.
 	string precision;
+	//! Ops the graph that would be served uses and this backend cannot execute. Only MLX interprets
+	//! graphs op by op (tabfm_mlx_ops.hpp); the other backends hand the whole graph to a runtime.
+	vector<string> unsupported_ops;
 };
 
 struct GpuServabilityResult {
@@ -330,6 +334,12 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		return out;
 	}
 	out.source = SelectGpuGraph(in.model_provides_graph, in.bundled_graph_exists, in.bundled_header_matches);
+	if (out.source != GpuGraphSource::NONE && !in.unsupported_ops.empty()) {
+		out.reason = "the '" + in.backend + "' backend does not implement (" +
+		             StringUtil::Join(in.unsupported_ops, ", ") + "), which the graph of model '" + in.model +
+		             "' uses for task '" + in.task_name + "'";
+		return out;
+	}
 	switch (out.source) {
 	case GpuGraphSource::MODEL_PROVIDED:
 		out.supported = true;

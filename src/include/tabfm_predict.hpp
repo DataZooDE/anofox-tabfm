@@ -150,6 +150,11 @@ inline string ResolveEpPath(const string &setting_value, const string &cache_dir
 //! must ask the identical question dispatch asks, not a lookalike.
 bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task);
 
+//! The ops of a GPU graph that the 'mlx' backend cannot execute (sorted; empty = runnable): the bundled
+//! graph when `bundled_graph` is non-null, else the file at `graph_path`. Memoized per graph. Defined in
+//! tabfm_engine.cpp, for the same reason as WeightsHeaderMatches.
+vector<string> MlxUnsupportedOps(const char *bundled_graph, idx_t bundled_size, const string &graph_path);
+
 //! Lowercase hex SHA-256. Defined in tabfm_engine.cpp.
 string Sha256Hex(const_data_ptr_t data, idx_t len);
 

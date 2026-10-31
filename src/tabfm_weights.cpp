@@ -1641,6 +1641,15 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 						}
 					}
 				}
+				// MLX executes the graph op by op: the same question 'auto' asks, about the graph that
+				// would be served -- the model's own, else the bundled one once it matches the weights.
+				if (row.backend == "mlx") {
+					if (!model_graph.empty()) {
+						in.unsupported_ops = MlxUnsupportedOps(nullptr, 0, model_graph);
+					} else if (in.bundled_header_matches) {
+						in.unsupported_ops = MlxUnsupportedOps(bundled.data, bundled.size, string());
+					}
+				}
 				auto verdict = EvaluateGpuServability(in);
 				row.supported = verdict.supported;
 				row.reason = verdict.reason;

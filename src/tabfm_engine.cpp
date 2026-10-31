@@ -31,6 +31,8 @@
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_plugin_artifacts.hpp"
 #include "tabfm_mxr_cache_key.hpp"
+#include "tabfm_mlx_ops.hpp"
+#include "tabfm_onnx_reader.hpp"
 #include "tabfm_state.hpp"
 
 #include "duckdb/common/file_system.hpp"
@@ -983,7 +985,8 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 //! "no graph" would send the user to register one, which would not help.
 GpuServabilityResult GpuServabilityFor(FileSystem &fs, const ResolvedModel &resolved, const string &backend,
                                        const string &task_name, bool model_provides_graph, bool bundled_graph_exists,
-                                       bool bundled_header_matches, const string &precision) {
+                                       bool bundled_header_matches, const string &precision,
+                                       vector<string> unsupported_ops = {}) {
 	GpuServabilityInputs in;
 	in.backend = backend;
 	in.model = resolved.manifest.model;
@@ -992,6 +995,7 @@ GpuServabilityResult GpuServabilityFor(FileSystem &fs, const ResolvedModel &reso
 	in.bundled_graph_exists = bundled_graph_exists;
 	in.bundled_header_matches = bundled_header_matches;
 	in.precision = precision;
+	in.unsupported_ops = std::move(unsupported_ops);
 	// Only a bundled graph needs staging; a model-provided one runs where it
 	// already is, so do not fail it on someone else's directory.
 	in.weights_dir_stageable = true;
@@ -1246,6 +1250,20 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 	// while 'auto' never resolved to mlx and is not any more: servability is
 	// checked before auto commits, but staging can still fail afterwards on a
 	// weights directory that is not writable.
+	// The plugin would refuse such a graph too, but only after being loaded; say it here, with the way out.
+	if (!graph_path.empty()) {
+		auto missing = MlxUnsupportedOps(nullptr, 0, graph_path);
+		if (!missing.empty()) {
+			GpuServabilityInputs in;
+			in.backend = "mlx";
+			in.model = resolved.manifest.model;
+			in.task_name = task_name;
+			in.precision = ctx.gpu_precision;
+			in.model_provides_graph = true; // a graph exists; the ops are what block it
+			in.unsupported_ops = std::move(missing);
+			throw InvalidInputException(GpuRefusalMessage(device.device_id, EvaluateGpuServability(in).reason));
+		}
+	}
 	if (graph_path.empty() && resolved.manifest.model != "mitra") {
 		throw InvalidInputException(GpuPostCommitFailure(
 		    device.device_id, ctx.device, resolved.manifest.model,
@@ -1377,12 +1395,20 @@ string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, cons
 		const string kind = is_rocm ? "migraphx" : "ext";
 		const string &model_graph = is_rocm ? resolved.migraphx_graph_path : resolved.ext_graph_path;
 		auto bundled = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, kind, task_name));
+		const bool header_matches = bundled.data && WeightsHeaderMatches(fs, resolved.weights_path,
+		                                                                 resolved.manifest.model,
+		                                                                 resolved.manifest.task);
+		// MLX interprets the graph op by op; one it cannot execute must not win the lane here and then
+		// refuse at load, when the CPU could have served it.
+		vector<string> unsupported_ops;
+		if (backend == "mlx") {
+			unsupported_ops = !model_graph.empty() ? MlxUnsupportedOps(nullptr, 0, model_graph)
+			                  : header_matches     ? MlxUnsupportedOps(bundled.data, bundled.size, string())
+			                                       : vector<string>();
+		}
 		auto verdict = GpuServabilityFor(fs, resolved, backend, task_name, !model_graph.empty(),
-		                                 bundled.data != nullptr,
-		                                 bundled.data && WeightsHeaderMatches(fs, resolved.weights_path,
-		                                                                      resolved.manifest.model,
-		                                                                      resolved.manifest.task),
-		                                 ctx.gpu_precision);
+		                                 bundled.data != nullptr, header_matches, ctx.gpu_precision,
+		                                 std::move(unsupported_ops));
 		if (verdict.supported) {
 			return device.device_id;
 		}
@@ -2062,6 +2088,44 @@ bool PluginAvailableCached(const string &ep_path, const string &backend) {
 	}
 	lock_guard<mutex> guard(memo_lock);
 	return memo.emplace(key, available).first->second;
+}
+
+vector<string> MlxUnsupportedOps(const char *bundled_graph, idx_t bundled_size, const string &graph_path) {
+	static mutex memo_lock;
+	static map<string, vector<string>> memo;
+	// A bundled graph is immutable for the life of the process; a file is keyed by path and size.
+	string key;
+	if (bundled_graph) {
+		key = "b:" + std::to_string(reinterpret_cast<uintptr_t>(bundled_graph));
+	} else {
+		struct stat st;
+		key = "f:" + graph_path + ":" + std::to_string(stat(graph_path.c_str(), &st) == 0 ? st.st_size : -1);
+	}
+	{
+		lock_guard<mutex> guard(memo_lock);
+		auto entry = memo.find(key);
+		if (entry != memo.end()) {
+			return entry->second;
+		}
+	}
+	vector<string> missing;
+	try {
+		auto graph = bundled_graph ? ::anofox::onnxread::ParseModelBytes(
+		                                 reinterpret_cast<const uint8_t *>(bundled_graph), bundled_size, "bundled graph")
+		                           : ::anofox::onnxread::ParseModelFile(graph_path);
+		std::vector<std::string> ops;
+		ops.reserve(graph.nodes.size());
+		for (auto &node : graph.nodes) {
+			ops.push_back(node.op_type);
+		}
+		for (auto &op : MlxMissingOps(ops)) {
+			missing.push_back(op);
+		}
+	} catch (const std::exception &) {
+		// Unreadable here means unreadable for the plugin too, which reports it with more context.
+	}
+	lock_guard<mutex> guard(memo_lock);
+	return memo.emplace(key, std::move(missing)).first->second;
 }
 
 bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task) {
