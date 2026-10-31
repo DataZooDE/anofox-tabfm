@@ -83,3 +83,27 @@ def test_the_graph_on_the_real_weights_matches_upstream(tmp_path, models):
             assert np.abs(got[:, 0] - ref[:, 0].numpy()).max() < 1e-2
             r2 = 1 - ((got[:, 0] - yte) ** 2).sum() / ((yte - yte.mean()) ** 2).sum()
             assert r2 > 0.3, r2
+
+
+@pytest.mark.parametrize("task", ["classification", "regression"])
+def test_the_masked_rocm_contract_on_the_real_weights(models, task):
+    """Padded + masked == positional on the real weights, and every negative control is caught."""
+    from export_exaone.mask_parity import gate
+
+    res = gate(models[task], task)
+    assert res["ok"], res
+
+
+def test_the_released_headers_are_the_ones_the_rocm_graphs_were_built_for():
+    """ExpectedWeightsHeaderShaFor pins these; a re-uploaded checkpoint would change them."""
+    import hashlib
+    import struct
+
+    from huggingface_hub import hf_hub_download
+
+    expected = {"classification": "d211d3dc9c8a8af8b2cfc74e58435640424725a802af5995d5cbd3e719246285",
+                "regression": "8888839dd2aef01b1f9e01603edfdb77ab2b99eb789b110613074d3cac9da1e1"}
+    for task, name in FILES.items():
+        with open(hf_hub_download("LG-AI-Research/EXAONE-Tabular", name, revision=REVISION), "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            assert hashlib.sha256(f.read(n)).hexdigest() == expected[task]

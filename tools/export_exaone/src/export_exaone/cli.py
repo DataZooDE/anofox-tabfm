@@ -34,13 +34,17 @@ def main(argv=None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
+    ap.add_argument("--contract", choices=["positional", "mask"], default="positional",
+                    help="positional: (x, y) with the split = len(y) (the CPU graph). mask: x, y (full length), "
+                         "train_size, d, n_rows -- the ROCm/MIGraphX contract (exaone_mask.py).")
     args = ap.parse_args(argv)
+    masked = args.contract == "mask"
 
     cfg = configs.get(args.config, args.task)
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    graph_path = out / f"graph_exaone_{args.task}.onnx"
-    map_path = out / f"tensor_map_exaone_{args.task}.json"
+    graph_path = out / (f"graph_mask_exaone_{args.task}.onnx" if masked else f"graph_exaone_{args.task}.onnx")
+    map_path = out / (f"tensor_map_mask_exaone_{args.task}.json" if masked else f"tensor_map_exaone_{args.task}.json")
 
     print(f"[export_exaone] building random-weight EXAONE Tabular ({args.config}, {args.task}) ...", flush=True)
     t0 = time.time()
@@ -49,8 +53,12 @@ def main(argv=None) -> int:
     print(f"[export_exaone] {n_params:,} params ({time.time()-t0:.1f}s)", flush=True)
 
     t0 = time.time()
-    wrapper = export.export_graph(model, graph_path, dim_rows=cfg.dim_rows, dim_train=cfg.dim_train,
-                                  dim_features=cfg.dim_features, example=cfg.example, task=args.task)
+    if masked:
+        wrapper = export.export_mask_graph(model, graph_path, task=args.task, dim_rows=cfg.dim_rows,
+                                           dim_features=cfg.dim_features, example=cfg.example)
+    else:
+        wrapper = export.export_graph(model, graph_path, dim_rows=cfg.dim_rows, dim_train=cfg.dim_train,
+                                      dim_features=cfg.dim_features, example=cfg.example, task=args.task)
     print(f"[export_exaone] dynamo export done ({time.time()-t0:.1f}s)", flush=True)
 
     t0 = time.time()
@@ -62,7 +70,16 @@ def main(argv=None) -> int:
                             safetensors_rel=f"{args.task}/model.safetensors")
 
     parity = None
-    if not args.skip_parity:
+    if masked and not args.skip_parity:
+        from export_exaone.mask_parity import check_onnx
+        t0 = time.time()
+        parity = check_onnx(graph_path, model, args.task)
+        print(f"[export_exaone] masked ORT-vs-positional parity ({time.time()-t0:.1f}s): worst "
+              f"{parity['worst']:.2e} -> {'OK' if parity['ok'] else 'FAIL'}", flush=True)
+        if not parity["ok"]:
+            print("[export_exaone] PARITY FAILED", file=sys.stderr)
+            return 1
+    elif not args.skip_parity:
         t0 = time.time()
         parity = export.check_parity(graph_path, wrapper, cfg.parity_shapes, task=args.task)
         print(f"[export_exaone] parity ({time.time()-t0:.1f}s): worst {parity['worst']:.2e} "
@@ -103,7 +120,10 @@ def main(argv=None) -> int:
         "versions": {"torch": _torch.__version__, "onnx": _onnx.__version__,
                      "onnxruntime": _ort.__version__, "onnxscript": _onnxscript.__version__},
     }
-    (out / f"export_report_exaone_{args.task}.json").write_text(json.dumps(report, indent=2) + "\n")
+    if masked:
+        report["input_signature"] = {"x": "[1,T,H] f32", "y": "[1,T] f32 FULL length (-100 off-context)",
+                                     "train_size": "[1] i64", "d": "[1] i64", "n_rows": "[1] i64"}
+    (out / f"export_report_{'mask_' if masked else ''}exaone_{args.task}.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"[export_exaone] graph: {graph_path} ({graph_path.stat().st_size/1e6:.2f} MB, weight-free)")
     print(f"[export_exaone] map:   {map_path}")
     return 0

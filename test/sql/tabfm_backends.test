@@ -97,8 +97,8 @@ true
 # structural "positional context split" reason — that reason means "no fixed
 # shape can be bucketed for this architecture", which is false for every one of
 # these: tabfm-v1 and mitra (train_size-scalar family), and tabdpt, tabpfn-v2,
-# tabpfn-v2-5, tabpfn-v2-6 and tabpfn-v3, whose split was converted to a value (see
-# docs/ROCM_TABDPT_SPIKE.md and docs/ROCM_TABPFN_PLAN.md). They may still be
+# tabpfn-v2-5, tabpfn-v2-6, tabpfn-v3, exaone-tabular and nori-30m, whose split was converted to a value (see
+# docs/ROCM_TABDPT_SPIKE.md, docs/ROCM_TABPFN_PLAN.md, tools/export_exaone and tools/export_nori: *_mask.py). They may still be
 # unsupported for a situational cause (weights not downloaded), so this asserts
 # the REASON rather than the verdict.
 #
@@ -109,7 +109,8 @@ true
 query I
 SELECT count(*) FROM tabfm_backends()
 WHERE backend = 'rocm'
-  AND model IN ('tabfm-v1', 'mitra', 'tabdpt', 'tabpfn-v2', 'tabpfn-v2-5', 'tabpfn-v2-6', 'tabpfn-v3')
+  AND model IN ('tabfm-v1', 'mitra', 'tabdpt', 'tabpfn-v2', 'tabpfn-v2-5', 'tabpfn-v2-6', 'tabpfn-v3',
+                'exaone-tabular', 'nori-30m')
   AND reason IS NOT NULL AND reason LIKE '%ROCM_SINGLE_EVAL_POS%';
 ----
 0
@@ -125,8 +126,7 @@ WHERE backend = 'rocm'
 query I
 SELECT count(*) = 0 OR bool_and(reason LIKE '%ROCM_SINGLE_EVAL_POS%')
 FROM tabfm_backends()
-WHERE backend = 'rocm' AND model IN ('tabicl-v2', 'orion-bix', 'orion-msp', 'causilo', 'limix-2m', 'nori-30m',
-                                         'exaone-tabular')
+WHERE backend = 'rocm' AND model IN ('tabicl-v2', 'orion-bix', 'orion-msp', 'causilo', 'limix-2m')
   AND NOT supported;
 ----
 true

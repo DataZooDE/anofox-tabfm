@@ -29,8 +29,8 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
 | **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; ROCm refused by name |
 | **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
-| **Nori-30M** (`nori-30m`) | Apache-2.0, code and weights (commercial, ungated) | ✅ shipped | **yes — regress only** | 29.2 M; a LimiX fork; **no conversion — the engine reads `nori.pt` natively**; 999-quantile head reduced in-graph to its mean; parity with upstream's single forward 1.0e-4 (california); ROCm refused by name |
-| **EXAONE Tabular** (`exaone-tabular`) | EXAONE AI Model License 1.2 - NC (**non-commercial**, gated) | ✅ shipped | **yes — classify + regress** | 20.8 M clf / 21.1 M reg; **no conversion — LG ship safetensors**; iris 45/45 and wine 54/54 labels identical to upstream's single forward; plain attention instead of upstream's pinned FlashAttention; ROCm refused by name |
+| **Nori-30M** (`nori-30m`) | Apache-2.0, code and weights (commercial, ungated) | ✅ shipped | **yes — regress only** | 29.2 M; a LimiX fork; **no conversion — the engine reads `nori.pt` natively**; 999-quantile head reduced in-graph to its mean; parity with upstream's single forward 1.0e-4 (california); **ROCm served** (masked graph, after a one-time convert; 3.8e-6 vs CPU) |
+| **EXAONE Tabular** (`exaone-tabular`) | EXAONE AI Model License 1.2 - NC (**non-commercial**, gated) | ✅ shipped | **yes — classify + regress** | 20.8 M clf / 21.1 M reg; **no conversion — LG ship safetensors**; iris 45/45 and wine 54/54 labels identical to upstream's single forward; plain attention instead of upstream's pinned FlashAttention; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
 
 ### TabPFN-3 — done
 
@@ -662,11 +662,23 @@ features, independent limits):
 
 **Platforms.**
 - **CPU:** verified on Linux x86-64 (the numbers above).
-- **ROCm:** refused by name, like `limix-2m`, its ancestor: the split is positional (`len(y)`), which a
-  fixed-shape MIGraphX compile cannot bucket (`docs/ROCM_SINGLE_EVAL_POS.md`). Converting it means a masked
-  export (`x, y_full, train_size, n_rows, d`) of every split-dependent site: the NaN-imputation and
-  normalisation statistics, the feature-validity count, the target-aware embedding, the isolated sample
-  attention and the QASSMax length; that is the TabPFN conversion's size, and it is not done.
+- **ROCm: served on `rocm:0`, verified on a real gfx1201 with the real weights**, after the one-time
+  `convert_nori_weights` (MIGraphX reads the weights itself, as external data in a `model.safetensors` beside
+  `nori.pt`; without it `tabfm_backends()` reports the bundled ROCm graph as not matching the weights and the
+  CPU serves). The CPU graph's split is positional, so a second, MASKED graph is bundled
+  (`graph_migraphx_nori30m_regression.onnx`, `tools/export_nori --contract mask`, `nori_mask.py`): `x, y_full,
+  train_size, d, n_rows`, with every statistic over the context, padded feature groups masked out of the feature
+  attention (`2 * g < d`, division-free), non-context keys masked in the sample attention and QASSMax reading
+  `log(S)` from the value. The gate compares it, padded to a larger bucket, with the positional forward (worst
+  6.9e-6 on the real weights) and only passes when each of four negative controls is caught. Getting MIGraphX
+  to compile it took four rewrites, each bisected on the GPU with small extracted graphs and each the same
+  function (`tools/export_nori/README.md`): the tokenizer without integer floor-division/modulo and `split`,
+  GEMMs instead of einsums, LayerNorm written out, the target statistics masked before transposing, and the
+  QASSMax base MLP written out (its `Linear` on a `[1, 1]` input made `simplify_reshapes` throw). Through the
+  engine, 100 rows x 8 features (the 128 x 16 bucket), fp32, against the CPU: **max |diff| 3.8e-6** on a
+  scale of 8, corr 1.0000000, in-context corr 0.99998. First call on a bucket compiles for about **37
+  minutes** (2229 s); warm calls take **0.18 s on ROCm against 2.6 s on the CPU** (about 15x). The CPU path
+  gives byte-identical answers from `nori.pt` and from the converted file.
 - **CUDA / MLX:** no external-data graph is bundled and nothing was run on either.
 
 ```bash
@@ -791,9 +803,19 @@ chunked CUDA runtime serves.
 ### Platforms
 
 - **CPU:** verified on Linux x86-64.
-- **ROCm:** refused by name: the split is positional (`docs/ROCM_SINGLE_EVAL_POS.md`). A masked export would
-  have to mask the feature-encoder statistics and constant-column test, the label ranks, the feature
-  attention over padded columns, the support self-attention and its SSMax length; not done.
+- **ROCm: served on `rocm:0`, verified on a real gfx1201 with the real weights.** The CPU graph's split is
+  positional, so a second, MASKED graph per task is bundled (`graph_migraphx_exaone_tabular_<task>.onnx`,
+  `tools/export_exaone --contract mask`, `exaone_mask.py`): `x, y_full, train_size, d, n_rows`, with the
+  feature-encoder statistics and the label encoder over the context, padded columns masked out of the feature
+  attention, the support self-attention and the queries' cross-attention masking non-context keys, and both
+  SSMax lengths (`3 + d + 1`, `32 + S`) taken from the values. The gate (`mask_parity.gate`) compares it,
+  padded to a larger bucket, with the positional forward on the unpadded table (worst 3.8e-6 classification,
+  1.6e-5 regression on the real weights) and only passes when each of four negative controls (one mask
+  broken) is caught. Through the engine, 100 rows x 8 features (the 128 x 16 bucket), fp32, against the CPU:
+  **0 / 100 label disagreements** (context and query), regression **max |diff| 1.4e-5**, corr 1.0000000; the
+  GPU's in-context accuracy 1.000. First call on a bucket compiles for about **19 minutes per task** (1155 s
+  classification, 1132 s regression); warm calls take **0.10 s on ROCm against 3.6 s on the CPU** (about
+  35x). `tabfm_gpu_precompile` moves the compile off the query path.
 - **CUDA / MLX:** no external-data graph is bundled and nothing was run on either. Upstream's own CUDA path
   runs in fp16; this export is float32.
 

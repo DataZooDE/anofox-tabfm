@@ -393,6 +393,10 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 		// "limix2m", not "limix": LimiX-2 (400M) is a different model, and a bare stem would hand its graphs
 		// to the wrong one
 		stem = "limix2m";
+	} else if (model == "exaone-tabular") {
+		stem = "exaone_tabular";
+	} else if (model == "nori-30m") {
+		stem = "nori30m";
 	}
 	return "graph_" + kind + "_" + stem + "_" + task_name;
 }
@@ -497,6 +501,23 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	if (model == "limix-2m") {
 		if (task_name == "classification" || task_name == "regression") {
 			return "0c6a868493ea16aaa88bd604b7f769b34018e82941eae90abd9d16072cf283eb";
+		}
+	}
+	// Nori-30M: the masked ROCm graph (tools/export_nori --contract mask) bakes offsets into the safetensors
+	// convert_nori_weights writes from nori.pt (773 tensors, sorted keys, float32: byte-deterministic). Without it
+	// the bundled graph does not match and ROCm says so; the CPU path reads the .ckpt natively either way.
+	if (model == "nori-30m" && task_name == "regression") {
+		return "49797138da9ce6d7bb76895cb00514bc6967732051811c217548f32c75a02363";
+	}
+	// EXAONE Tabular: the masked ROCm graphs (tools/export_exaone, --contract mask) bake offsets into LG's
+	// released safetensors at the revision the registry pins (093ad1c2). The classifier and the regressor are
+	// different checkpoints, hence two headers.
+	if (model == "exaone-tabular") {
+		if (task_name == "classification") {
+			return "d211d3dc9c8a8af8b2cfc74e58435640424725a802af5995d5cbd3e719246285";
+		}
+		if (task_name == "regression") {
+			return "8888839dd2aef01b1f9e01603edfdb77ab2b99eb789b110613074d3cac9da1e1";
 		}
 	}
 	if (model == "tabpfn-v3") {

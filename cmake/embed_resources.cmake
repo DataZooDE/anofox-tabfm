@@ -122,18 +122,22 @@ set(_tabfm_inputs
     "graph_ext_limix2m_regression.onnx"
     "tensor_map_limix2m_classification.json"
     "tensor_map_limix2m_regression.json"
-    # Nori-30M (Synthefy, Apache-2.0) -- regression ONLY, (x, y)-only like its LimiX ancestor: one plain
-    # graph and one tensor map. The engine reads nori.pt natively ({model_config, ema_state_dict}), so
-    # there is no converter and no ext graph. NO migraphx graph: its split is positional, so ROCm refuses
-    # it by name (docs/ROCM_SINGLE_EVAL_POS.md).
+    # Nori-30M (Synthefy, Apache-2.0) -- regression ONLY, (x, y)-only on the CPU like its LimiX ancestor: one
+    # plain graph and one tensor map. The engine reads nori.pt natively ({model_config, ema_state_dict}). The
+    # migraphx graph is the MASKED contract (tools/export_nori --contract mask) and reads the safetensors that
+    # convert_nori_weights writes beside the checkpoint (header sha in ExpectedWeightsHeaderShaFor).
     "graph_nori30m_regression.onnx"
+    "graph_migraphx_nori30m_regression.onnx"
     "tensor_map_nori30m_regression.json"
-    # EXAONE Tabular v1 (LG AI Research; non-commercial EXAONE NC 1.2 weights) -- (x, y)-only, one plain
-    # graph and one tensor map per task. The released files are safetensors keyed by the module namespace,
-    # so there is no converter. NO migraphx graph: its split is positional, so ROCm refuses it by name
-    # (docs/ROCM_SINGLE_EVAL_POS.md).
+    # EXAONE Tabular v1 (LG AI Research; non-commercial EXAONE NC 1.2 weights) -- (x, y)-only on the CPU, one
+    # plain graph and one tensor map per task. The released files are safetensors keyed by the module
+    # namespace, so there is no converter. The migraphx graphs are the MASKED contract (x, y_full, train_size,
+    # d, n_rows; tools/export_exaone --contract mask), so ROCm can bucket them; they bake offsets into LG's
+    # released files, checked by the header sha in ExpectedWeightsHeaderShaFor.
     "graph_exaone_tabular_classification.onnx"
     "graph_exaone_tabular_regression.onnx"
+    "graph_migraphx_exaone_tabular_classification.onnx"
+    "graph_migraphx_exaone_tabular_regression.onnx"
     "tensor_map_exaone_tabular_classification.json"
     "tensor_map_exaone_tabular_regression.json"
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.

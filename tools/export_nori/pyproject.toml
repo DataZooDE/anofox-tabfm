@@ -32,6 +32,7 @@ dev = ["pytest>=8"]
 [project.scripts]
 export_nori = "export_nori.cli:main"
 make_nori_fixture = "export_nori.fixture_cli:main"
+convert_nori_weights = "export_nori.convert:main"
 
 [[tool.uv.index]]
 name = "pytorch-cpu"

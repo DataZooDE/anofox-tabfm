@@ -458,7 +458,9 @@ static const char *const BUILTIN_LIMIX2M = R"json({
 // (which names the models that do classify).
 //
 // Its graph is (x, y)-only like LimiX-2M's: the split is the length of y, so the engine needs no
-// model-specific code (tools/export_nori) and ROCm refuses it by name (docs/ROCM_SINGLE_EVAL_POS.md). The
+// model-specific code (tools/export_nori). For ROCm a second, MASKED graph (x, y_full, train_size, d, n_rows;
+// tools/export_nori --contract mask) is bundled; it reads the safetensors convert_nori_weights writes beside
+// nori.pt, and without that file ROCm reports the bundled graph as not matching the weights. The
 // model standardises its own features and the export wrapper standardises the target in-graph and inverts
 // it, hence a *_raw profile. The 999-quantile pinball head is reduced IN-GRAPH to the mean of the implied
 // quantile function, upstream's default point estimate (NoriRegressor quantile_collapse="mean"); on the
@@ -508,7 +510,8 @@ static const char *const BUILTIN_NORI30M = R"json({
 // Hugging Face repo, which is ungated). docs/REAL_MODELS.md quotes the clauses and the reasoning.
 //
 // Its graph is (x, y)-only like TabICL's: the split is the length of y, so the engine needs no model-specific
-// code (tools/export_exaone) and ROCm refuses it by name (docs/ROCM_SINGLE_EVAL_POS.md). The model standardises
+// code (tools/export_exaone). For ROCm a second, MASKED graph per task (x, y_full, train_size, d, n_rows;
+// tools/export_exaone --contract mask) is bundled, keyed to LG's released files by header sha. The model standardises
 // its own features and the wrapper standardises the regression target in-graph, hence a *_raw profile. The
 // 999-quantile regression head is reduced in-graph to the MEAN of the bank, the released regressor's own
 // point_estimate="mean". Upstream pins part of the attention to FlashAttention on CUDA (fp16/bf16 only);

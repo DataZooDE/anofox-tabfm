@@ -108,3 +108,28 @@ def test_the_point_estimate_is_the_mean_not_the_median(model):
     median = q.sort(-1).values[:, q.shape[-1] // 2].numpy() * sd + mu
     assert np.abs(ours - mean).max() < 0.05 * np.abs(mean).max()
     assert np.abs(ours - median).mean() > np.abs(ours - mean).mean()
+
+
+def test_the_masked_rocm_contract_on_the_real_weights(model):
+    """Padded + masked == positional on the real weights, and every negative control is caught."""
+    from export_nori.mask_parity import gate
+
+    res = gate(model)
+    assert res["ok"], res
+
+
+def test_the_converter_is_deterministic_and_matches_the_rocm_graph(tmp_path, ckpt):
+    """convert_nori_weights' header is the one ExpectedWeightsHeaderShaFor pins for the bundled ROCm graph."""
+    import hashlib
+    import struct
+
+    from export_nori.convert import convert
+
+    shas = []
+    for name in ("a.safetensors", "b.safetensors"):
+        convert(ckpt, tmp_path / name)
+        with open(tmp_path / name, "rb") as f:
+            n = struct.unpack("<Q", f.read(8))[0]
+            shas.append(hashlib.sha256(f.read(n)).hexdigest())
+    assert (tmp_path / "a.safetensors").read_bytes() == (tmp_path / "b.safetensors").read_bytes()
+    assert shas[0] == "49797138da9ce6d7bb76895cb00514bc6967732051811c217548f32c75a02363"
