@@ -741,3 +741,25 @@ TEST_CASE("model_spec: Kumo-Tabular sizes map to their own stems and pin their c
 	REQUIRE(ExpectedWeightsHeaderShaFor("kumo-tabular-large", "regression") ==
 	        "e17d5f4a2b1d00740f6a82f0821fa5b6ecee9c06ae273d5b81417242070b464d");
 }
+
+// The MLX plugin executes the graph with its own ONNX interpreter, which refuses a graph using an op it
+// does not implement. Servability has to say so BEFORE a device is chosen: tabfm_backends() used to list
+// tabdpt as runnable on 'mlx', and under 'auto' an Apple-silicon machine would pick mlx for it and then
+// fail to load, where it should have served the CPU.
+TEST_CASE("servability: a graph using ops the backend does not implement is not servable there",
+          "[tabfm][model_spec][servability]") {
+	auto in = ServableBase("mlx");
+	in.bundled_graph_exists = true;
+	in.bundled_header_matches = true;
+	REQUIRE(EvaluateGpuServability(in).supported);
+
+	in.unsupported_ops = {"ConstantOfShape", "ReduceProd"};
+	auto out = EvaluateGpuServability(in);
+	REQUIRE(!out.supported);
+	REQUIRE_THAT(out.reason, Contains("does not implement (ConstantOfShape, ReduceProd)"));
+	REQUIRE_THAT(out.reason, Contains("'mlx'"));
+
+	// a graph the model registered itself is held to the same ops
+	in.model_provides_graph = true;
+	REQUIRE(!EvaluateGpuServability(in).supported);
+}

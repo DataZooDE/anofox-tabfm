@@ -1,9 +1,9 @@
 -- prepend: SET anofox_tabfm_ep_path='<dir holding the backend plugin>'; SET VARIABLE m = 'kumo-tabular-small';
 --
 -- Kumo-Tabular on ROCm against the CPU, real weights, both tasks, EVERY row (context and query).
--- Needs the weights downloaded AND converted (tools/export_kumo: convert_kumo_weights --size <size>):
--- the bundled migraphx graph references model.safetensors by offset and is only used when its header
--- matches ExpectedWeightsHeaderShaFor. As always, the *_SERVED_BY lines are the assertion: "cpu and gpu
+-- Needs the weights downloaded with CALL tabfm_download (which also writes the model.safetensors the
+-- bundled migraphx graph references by offset; it is only used when its header matches
+-- ExpectedWeightsHeaderShaFor). As always, the *_SERVED_BY lines are the assertion: "cpu and gpu
 -- agree" is also what a silent CPU fallback prints.
 LOAD anofox_tabfm;
 CREATE TABLE base AS SELECT i AS row_id, sin(i * 0.11) f1, cos(i * 0.07) f2, (i % 13) / 13.0 f3, ln(1 + (i % 31)) f4,

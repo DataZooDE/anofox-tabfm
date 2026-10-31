@@ -1,0 +1,79 @@
+# name: test/sql/tabfm_fresh_download.test
+# description: The checkpoint-shipped models answer correctly from a FRESH download, the path every new user
+#              takes. tabfm_real_models.test runs on a developer's cache, which may also hold the
+#              Python-converted model.safetensors the engine prefers -- and that hid two bugs: Kumo's
+#              classifier .pt stores two tensors as transposed views (28-34% accuracy from the .pt alone),
+#              and Orion-MSP's .ckpt carries tensors its graph does not use, which made injection fail.
+#              This downloads into an empty cache dir (~900 MB), reads only what tabfm_download wrote, and
+#              runs on the CPU.
+#
+#                TABFM_REAL_WEIGHTS=1 ./build/release/test/unittest test/sql/tabfm_fresh_download.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_REAL_WEIGHTS
+
+# downloads need httpfs; the unittest binary does not link it, so load the installed one
+statement ok
+INSTALL httpfs;
+
+statement ok
+LOAD httpfs;
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/fresh_cache';
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+# A 3-class probe, 150 context rows and 50 queries; chance is 0.33. Each threshold sits just under the
+# model's accuracy from the converted file (orion-msp 0.64, orion-bix 0.80, kumo-tabular-small 0.94), where a
+# misread checkpoint lands at chance (Kumo's transposed views gave 0.28-0.34).
+statement ok
+CREATE TABLE t AS SELECT i AS row_id, (i % 3)::VARCHAR AS y, sin(i * 0.37) + (i % 3) AS a, cos(i * 0.11) * (i % 3) AS b,
+  (i * 7 % 11)::DOUBLE AS c FROM range(200) r(i);
+
+statement ok
+CREATE TABLE ctx AS SELECT * FROM t WHERE row_id < 150;
+
+statement ok
+CREATE TABLE qry AS SELECT * EXCLUDE (y) FROM t WHERE row_id >= 150;
+
+# --- Orion-MSP: the .ckpt holds tensors the graph does not use (its tensor map is "complete") ---
+
+# Its GPU file is the tensor map's keys only (what tools/export_orion_msp/convert_weights.py writes, and what
+# the bundled ext graph's header pin was taken from), so the download writes exactly that subset.
+query TT
+SELECT parse_filename(file), status FROM tabfm_download('classification', model := 'orion-msp') ORDER BY 1
+----
+model.ckpt	downloaded
+model.safetensors	converted
+
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.6
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'orion-msp') p JOIN t USING (row_id)
+----
+true
+
+# --- Orion-BiX: lists beside the state_dict (pickle APPENDS) ----------------------------------
+
+statement ok
+CALL tabfm_download('classification', model := 'orion-bix');
+
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.75
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'orion-bix') p JOIN t USING (row_id)
+----
+true
+
+# --- Kumo-Tabular small: transposed views in the classifier .pt -------------------------------
+
+statement ok
+CALL tabfm_download('classification', model := 'kumo-tabular-small');
+
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.9
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'kumo-tabular-small') p JOIN t USING (row_id)
+----
+true

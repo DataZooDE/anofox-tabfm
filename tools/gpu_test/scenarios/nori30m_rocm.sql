@@ -1,8 +1,7 @@
 -- Nori-30M (regression only) on ROCm, real weights: served by rocm:0, and the GPU agrees with the CPU on every row.
 --
--- Run with the weights downloaded, the one-time conversion done (the masked graph reads a
--- model.safetensors beside nori.pt: `uv run --directory tools/export_nori convert_nori_weights`), and the
--- freshly built MIGraphX plugin:
+-- Run with the weights downloaded by CALL tabfm_download (which also writes the model.safetensors beside
+-- nori.pt that the masked graph reads), and the freshly built MIGraphX plugin:
 --
 --   SET anofox_tabfm_ep_path = 'build/release/extension/anofox_tabfm';  -- harness
 --

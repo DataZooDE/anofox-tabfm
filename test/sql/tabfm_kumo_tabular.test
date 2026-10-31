@@ -35,6 +35,20 @@ kumo-tabular-large	icl-transformer	classify, regress	openmdw-1.1	true	500	10
 kumo-tabular-medium	icl-transformer	classify, regress	openmdw-1.1	true	500	10
 kumo-tabular-small	icl-transformer	classify, regress	openmdw-1.1	true	500	10
 
+# OpenMDW-1.1's one duty: whoever distributes "any portion of the Model Materials" retains a copy of the
+# agreement and NVIDIA's notices. The agreement counts the architecture as Model Materials, so the
+# weight-free graphs bundled into this binary may be such a portion; the extension carries both either
+# way, verbatim (resources/license_openmdw_1_1_nvidia.txt), and shows them in tabfm_list_models().
+query TTT
+SELECT model,
+       attribution LIKE '%Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.%',
+       attribution LIKE '%OpenMDW License Agreement, version 1.1 (OpenMDW-1.1)%IN NO EVENT SHALL THE PROVIDERS%'
+FROM tabfm_list_models() WHERE model LIKE 'kumo-tabular-%' ORDER BY model
+----
+kumo-tabular-large	true	true
+kumo-tabular-medium	true	true
+kumo-tabular-small	true	true
+
 # --- the fixture ----------------------------------------------------------------------------------
 
 statement ok
@@ -84,6 +98,27 @@ SELECT count(*), count(DISTINCT (f1, f2, f3, f4, f5)) FROM exp_cls
 query II
 SELECT count(*), count(*) FILTER (WHERE a.yhat <> e.expected)
 FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture') a
+JOIN exp_cls e ON a.f1 = e.f1 AND a.f2 = e.f2 AND a.f3 = e.f3 AND a.f4 = e.f4 AND a.f5 = e.f5
+----
+20	0
+
+# The same weights as a torch checkpoint whose two y_emb.weight tensors are saved as transposed VIEWS
+# (stride (1, n)) -- the layout of NVIDIA's published .pt. A reader that hands out raw storage feeds them
+# in the wrong element order; on the real small model that is 28-34% accuracy instead of 94%.
+statement ok
+CALL tabfm_register_model(
+  id := 'kumo-fixture-strided', base_dir := 'test/fixtures/kumo',
+  classification_graph := 'graph_kumo_fixture_classification.onnx',
+  classification_weights := 'model_classification_strided.ckpt',
+  classification_tensor_map := 'tensor_map_kumo_fixture_classification.json',
+  license := 'apache-2.0', commercial := true,
+  weights_repo := 'local:test/fixtures/kumo', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'kumo_tabular_v1_minimal',
+  max_rows := 4096, max_features := 64, max_classes := 3)
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat <> e.expected)
+FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture-strided') a
 JOIN exp_cls e ON a.f1 = e.f1 AND a.f2 = e.f2 AND a.f3 = e.f3 AND a.f4 = e.f4 AND a.f5 = e.f5
 ----
 20	0

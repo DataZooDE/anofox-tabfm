@@ -109,7 +109,8 @@ jobs:
   mlx-plugin:
     name: MLX plugin (Apple Silicon; links libmlx/libmlxc, no ORT)
     timeout-minutes: 15
-    runs-on: macos-14
+    # macos-14 images are retired on 2026-11-02 (scheduled brownouts already fail jobs); macos-15 is arm64 too.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -122,8 +123,26 @@ jobs:
         # Three sources, and no libonnx/libprotobuf: the plugin parses the ONNX
         # wire format itself (src/tabfm_onnx_reader.cpp) so a separately
         # distributed .dylib is not coupled to protobuf's ABI.
+        # mlx-c 0.7 changed two calls the plugin makes and has no version macro, so probe for the new
+        # API exactly as CMakeLists.txt does and pass the same TABFM_MLX_C_07 switch (Homebrew moved to
+        # 0.7, which broke this job while the CMake build kept working).
         run: |
-          clang++ -O2 -std=c++17 -shared -fPIC -fvisibility=hidden \
+          cat > mlxc_probe.cpp <<'PROBE'
+          #include "mlx/c/ops.h"
+          int main() {
+              mlx_array r = mlx_array_new();
+              mlx_optional_dtype none;
+              none.has_value = false;
+              return mlx_cumsum_axis(&r, r, 0, false, true, none, mlx_default_cpu_stream_new());
+          }
+          PROBE
+          MLXC_FLAGS=""
+          if clang++ -std=c++17 mlxc_probe.cpp -o mlxc_probe -I"$(brew --prefix)/include" \
+               -L"$(brew --prefix)/lib" -lmlxc -lmlx 2>/dev/null; then
+            MLXC_FLAGS="-DTABFM_MLX_C_07=1"
+          fi
+          echo "mlx-c $(brew list --versions mlx-c): ${MLXC_FLAGS:-pre-0.7 API}"
+          clang++ -O2 -std=c++17 -shared -fPIC -fvisibility=hidden $MLXC_FLAGS \
             -o libanofox_tabfm_mlx_plugin.dylib \
             src/tabfm_mlx_plugin.cpp src/tabfm_mlx_graph.cpp src/tabfm_onnx_reader.cpp \
             -Isrc/include -I"$(brew --prefix)/include" \

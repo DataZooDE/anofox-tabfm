@@ -152,7 +152,7 @@ set(_tabfm_inputs
     # Nori-30M (Synthefy, Apache-2.0) -- regression ONLY, (x, y)-only on the CPU like its LimiX ancestor: one
     # plain graph and one tensor map. The engine reads nori.pt natively ({model_config, ema_state_dict}). The
     # migraphx graph is the MASKED contract (tools/export_nori --contract mask) and reads the safetensors that
-    # convert_nori_weights writes beside the checkpoint (header sha in ExpectedWeightsHeaderShaFor).
+    # tabfm_download writes beside the checkpoint (header sha in ExpectedWeightsHeaderShaFor).
     "graph_nori30m_regression.onnx"
     "graph_migraphx_nori30m_regression.onnx"
     "tensor_map_nori30m_regression.json"
@@ -218,7 +218,7 @@ set(_tabfm_inputs
     # different module trees). The graph takes the tabfm-v1 five-input contract (the split and the
     # real width are VALUES), so the plain, ext and migraphx graphs are one family: plain for the CPU
     # injection path (the published .pt is read natively), ext + migraphx for the converted
-    # model.safetensors (tools/export_kumo convert_kumo_weights), gated by ExpectedWeightsHeaderShaFor.
+    # model.safetensors tabfm_download writes beside the .pt, gated by ExpectedWeightsHeaderShaFor.
     "graph_kumo_small_classification.onnx"
     "graph_kumo_small_regression.onnx"
     "graph_ext_kumo_small_classification.onnx"
@@ -242,7 +242,11 @@ set(_tabfm_inputs
     "graph_migraphx_kumo_large_classification.onnx"
     "graph_migraphx_kumo_large_regression.onnx"
     "tensor_map_kumo_large_classification.json"
-    "tensor_map_kumo_large_regression.json")
+    "tensor_map_kumo_large_regression.json"
+    # OpenMDW-1.1, verbatim from nvidia/Kumo-Tabular@b2f5a9d6 (LICENSE): the agreement whoever distributes
+    # a portion of the Kumo Model Materials must retain. The graphs above may be such a portion, so the
+    # binary carries it; tabfm_list_models() shows it (the registry's license.text_resource).
+    "license_openmdw_1_1_nvidia.txt")
 
 # Re-run configure when a resource changes so the generated source stays fresh.
 foreach(_f ${_tabfm_inputs})

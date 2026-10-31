@@ -9,7 +9,9 @@
 
 The canonical licence, commercial and gate table is the [Models table in the README](../../README.md#models);
 this page repeats it with sizes and notes so it stands on its own. The registry builds every model below in; `SELECT * FROM tabfm_list_models();` returns the same facts
-(`model, family, capabilities, license, commercial, max_rows, max_features, max_classes, downloaded`).
+(`model, family, capabilities, license, commercial, max_rows, max_features, max_classes, downloaded,
+attribution`; `attribution` is the notice the model's licence asks you to keep, and for Kumo-Tabular the
+OpenMDW-1.1 agreement the binary carries).
 *Gated* means the download needs `SET anofox_tabfm_accept_hf_license = true` first
 ([licence acknowledgement](../guides/01-getting-started.md#licence-acknowledgement-and-gated-repositories)).
 Sizes are the registry's per-task weight files. The `max_rows` / `max_features` that `tabfm_list_models()`
@@ -55,7 +57,7 @@ Every lifecycle function takes the task first and `model :=` (or falls back to
 
 | Call | What it does |
 |---|---|
-| `CALL tabfm_download(task [, revision], model := '<id>')` | fetch the weights into the cache; one row per file (`file, url, bytes, status`) |
+| `CALL tabfm_download(task [, revision], model := '<id>')` | fetch the weights into the cache; one row per file (`file, url, bytes, status`). For `nori-30m` and the Kumo models a second row (`url` NULL) is the `model.safetensors` it writes from the checkpoint for the GPU graphs: `converted`, or `cached` when already there |
 | `CALL tabfm_load(task, model := '<id>')` | check that the weights are downloaded and fail with the fix if not; the session itself is built on the first predict |
 | `CALL tabfm_unload([task], model := '<id>')` | free a loaded session (all of them without a task); memory returns to baseline |
 | `CALL tabfm_remove(task [, revision], model := '<id>')` | delete the weights from the cache |

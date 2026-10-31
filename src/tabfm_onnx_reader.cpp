@@ -321,17 +321,11 @@ Graph ParseGraph(Reader r) {
 
 } // namespace
 
-Graph ParseModelFile(const std::string &path) {
-	std::ifstream f(path, std::ios::binary);
-	if (!f) {
-		Fail("cannot open '" + path + "'");
+Graph ParseModelBytes(const uint8_t *data, size_t size, const std::string &what) {
+	if (size == 0) {
+		Fail("'" + what + "' is empty");
 	}
-	std::string blob((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-	if (blob.empty()) {
-		Fail("'" + path + "' is empty");
-	}
-	const auto *begin = reinterpret_cast<const uint8_t *>(blob.data());
-	Reader r(begin, begin + blob.size());
+	Reader r(data, data + size);
 	while (!r.Done()) {
 		const uint64_t tag = r.Varint();
 		const uint32_t field = static_cast<uint32_t>(tag >> 3);
@@ -341,7 +335,16 @@ Graph ParseModelFile(const std::string &path) {
 		}
 		r.Skip(wire);
 	}
-	Fail("'" + path + "' contains no graph");
+	Fail("'" + what + "' contains no graph");
+}
+
+Graph ParseModelFile(const std::string &path) {
+	std::ifstream f(path, std::ios::binary);
+	if (!f) {
+		Fail("cannot open '" + path + "'");
+	}
+	std::string blob((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	return ParseModelBytes(reinterpret_cast<const uint8_t *>(blob.data()), blob.size(), path);
 }
 
 } // namespace onnxread

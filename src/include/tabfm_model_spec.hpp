@@ -21,6 +21,7 @@
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/map.hpp"
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "duckdb/common/unordered_map.hpp"
 #include "duckdb/common/vector.hpp"
 
@@ -39,6 +40,9 @@ struct ModelLicense {
 	bool redistributable = false;
 	//! e.g. "Built with PriorLabs-TabPFN"; empty = none.
 	string attribution;
+	//! Bundled resource holding a licence text the distribution must retain verbatim (OpenMDW-1.1 for
+	//! Kumo); tabfm_list_models() appends it to the attribution. Empty = none.
+	string text_resource;
 	//! When non-empty (e.g. "accept_hf_license") the license gate fires for this
 	//! model. Empty = no gate (commercial-clean).
 	string gate_setting;
@@ -280,6 +284,9 @@ struct GpuServabilityInputs {
 	bool weights_dir_stageable = true;
 	//! anofox_tabfm_gpu_precision as it would be applied here.
 	string precision;
+	//! Ops the graph that would be served uses and this backend cannot execute. Only MLX interprets
+	//! graphs op by op (tabfm_mlx_ops.hpp); the other backends hand the whole graph to a runtime.
+	vector<string> unsupported_ops;
 };
 
 struct GpuServabilityResult {
@@ -330,6 +337,12 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		return out;
 	}
 	out.source = SelectGpuGraph(in.model_provides_graph, in.bundled_graph_exists, in.bundled_header_matches);
+	if (out.source != GpuGraphSource::NONE && !in.unsupported_ops.empty()) {
+		out.reason = "the '" + in.backend + "' backend does not implement (" +
+		             StringUtil::Join(in.unsupported_ops, ", ") + "), which the graph of model '" + in.model +
+		             "' uses for task '" + in.task_name + "'";
+		return out;
+	}
 	switch (out.source) {
 	case GpuGraphSource::MODEL_PROVIDED:
 		out.supported = true;
@@ -558,8 +571,9 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 		return "733da85d68f73d3a18eabbc01ded64b19da6cabeecf0549f1980a3773d11508f";
 	}
 	// Nori-30M: the masked ROCm graph (tools/export_nori --contract mask) bakes offsets into the safetensors
-	// convert_nori_weights writes from nori.pt (773 tensors, sorted keys, float32: byte-deterministic). Without it
-	// the bundled graph does not match and ROCm says so; the CPU path reads the .ckpt natively either way.
+	// tabfm_download writes from nori.pt (773 tensors, sorted keys, float32: byte-deterministic; the same bytes as
+	// tools/export_nori's convert_nori_weights). Without it the bundled graph does not match and ROCm says so; the
+	// CPU path reads the .ckpt natively either way.
 	if (model == "nori-30m" && task_name == "regression") {
 		return "49797138da9ce6d7bb76895cb00514bc6967732051811c217548f32c75a02363";
 	}
@@ -574,8 +588,8 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 			return "8888839dd2aef01b1f9e01603edfdb77ab2b99eb789b110613074d3cac9da1e1";
 		}
 	}
-	// Kumo-Tabular: the header of the model.safetensors that tools/export_kumo's convert_kumo_weights
-	// writes from the published .pt at the pinned revision (every key sorted, float32, no metadata, so it
+	// Kumo-Tabular: the header of the model.safetensors that tabfm_download (and tools/export_kumo's
+	// convert_kumo_weights, byte for byte) writes from the published .pt at the pinned revision (every key sorted, float32, no metadata, so it
 	// is deterministic). The ext and migraphx graphs bake offsets into THAT file; without it the engine
 	// injects the .pt natively on the CPU and ROCm/CUDA report the weights as not matching.
 	if (model == "kumo-tabular-small") {

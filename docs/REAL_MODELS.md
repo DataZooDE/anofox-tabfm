@@ -20,11 +20,11 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
 | **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert |
 | **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert |
-| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; needs the ckpt→safetensors convert (native reader rejects opcode 0x65); upstream ships no regressor |
+| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; the `.ckpt` is read natively (no conversion step); upstream ships no regressor |
 | **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
 | **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; ckpt→safetensors convert required |
 | **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes** |
-| **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); ckpt→safetensors convert required |
+| **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); the `.ckpt` is read natively |
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
 | **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
 | **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; ROCm refused by name |
@@ -1005,10 +1005,11 @@ features, independent limits):
 
 **Platforms.**
 - **CPU:** verified on Linux x86-64 (the numbers above).
-- **ROCm: served on `rocm:0`, verified on a real gfx1201 with the real weights**, after the one-time
-  `convert_nori_weights` (MIGraphX reads the weights itself, as external data in a `model.safetensors` beside
-  `nori.pt`; without it `tabfm_backends()` reports the bundled ROCm graph as not matching the weights and the
-  CPU serves). The CPU graph's split is positional, so a second, MASKED graph is bundled
+- **ROCm: served on `rocm:0`, verified on a real gfx1201 with the real weights.** MIGraphX reads the weights
+  itself, as external data in a `model.safetensors` beside `nori.pt`. `tabfm_download` writes that file from the
+  checkpoint (status `converted`), byte for byte what `tools/export_nori`'s `convert_nori_weights` writes, and
+  only when its header matches the one the bundled graph pins; without it `tabfm_backends()` reports the bundled
+  ROCm graph as not matching the weights and the CPU serves. The CPU graph's split is positional, so a second, MASKED graph is bundled
   (`graph_migraphx_nori30m_regression.onnx`, `tools/export_nori --contract mask`, `nori_mask.py`): `x, y_full,
   train_size, d, n_rows`, with every statistic over the context, padded feature groups masked out of the feature
   attention (`2 * g < d`, division-free), non-context keys masked in the sample attention and QASSMax reading
@@ -1197,10 +1198,12 @@ use included, with no field-of-use clause and no claim on outputs. The repo is n
 entries are `commercial: true`, `redistributable: true` and have **no licence gate**
 (`tabfm_download` works without `anofox_tabfm_accept_hf_license`). The agreement's one duty applies to
 distribution: whoever distributes any portion of the Model Materials must retain a copy of the agreement
-and NVIDIA's copyright and origin notices. The registry's `attribution` carries the notice and the
-licence link. "Model Materials" is defined to include the architecture, so whether a weight-free graph of
-it counts as "a portion" is an open question we have not put to NVIDIA or counsel; the notice is shown
-either way. There is also a patent-retaliation clause (rights end for anyone who sues claiming the
+and NVIDIA's copyright and origin notices. "Model Materials" is defined to include the architecture, so the weight-free graphs
+bundled into the binary may count as "a portion". We take that reading, because complying costs nothing and
+makes the question moot: the binary carries the agreement verbatim (`resources/license_openmdw_1_1_nvidia.txt`,
+the HF `LICENSE` at the pinned revision, NVIDIA's copyright line included) and `tabfm_list_models()` shows it,
+after the registry's notice, in the `attribution` column of each Kumo row. `THIRD_PARTY_NOTICES.md` says the
+same for the source tree. There is also a patent-retaliation clause (rights end for anyone who sues claiming the
 materials infringe). This is our reading, not legal advice.
 
 ### How it runs
@@ -1227,14 +1230,18 @@ engine's target z-score and its inverse. Both sides compute it in float64. So th
 **Weights.** The published `<size>/{classifier,regressor}.pt` is a plain float32 state_dict, declared as
 `<size>/<task>/model.ckpt`. On the CPU the engine's native reader injects it directly, with no conversion.
 The GPU graphs (ext for CUDA and the CPU low-memory path, migraphx for ROCm) reference a safetensors file by
-offset, so they need the one-time converter:
+offset. `tabfm_download` writes it beside each `.pt` (a second row, status `converted`): every key in sorted
+order as contiguous float32 with no metadata, so the header is deterministic and `ExpectedWeightsHeaderShaFor`
+pins it per size and task. The bytes are identical to what `tools/export_kumo`'s `convert_kumo_weights` writes,
+which stays as the reference.
 
-```bash
-cd tools/export_kumo && uv run convert_kumo_weights --size small   # writes <size>/<task>/model.safetensors
-```
-
-It writes every key in sorted order as float32 with no metadata, so the header is deterministic and
-`ExpectedWeightsHeaderShaFor` pins it per size and task. Pinned to HF tag `v1.0.1` (`b2f5a9d6…`), the
+**The classifier checkpoints store two tensors transposed.** `row_embedding.y_emb.weight` and
+`icl_block.y_emb.weight` are saved as views with stride `(1, n)`. The native reader used to hand out raw
+storage, so on a cache holding only the `.pt` (every fresh download, before this release wrote the
+safetensors) the CPU fed those embeddings in the wrong order: kumo-tabular-small classified a 3-class probe at
+28-34% instead of 94%. The parity numbers above were measured with the converted file present, which the
+engine prefers, so they did not see it. The reader now gathers every strided view in index order;
+`test/sql/tabfm_kumo_tabular.test` pins it on a fixture checkpoint saved with transposed views. Pinned to HF tag `v1.0.1` (`b2f5a9d6…`), the
 revision upstream's loader asks for; the LFS hashes are identical on `main`.
 
 Four things the export had to change, each found by a failure: integer `index % num_columns` in the group
@@ -1335,10 +1342,10 @@ faster than linearly in rows. The engine caps all three at **5,000 rows**, 500 f
 - **CUDA and MLX were not run.** The ext graphs and header hashes are bundled, but no CUDA device or Mac was
   available. A static check of the graphs against the MLX interpreter's op table finds one missing op,
   `ConstantOfShape` (one use, from upstream's `new_empty` in the cell embedding), the same op that keeps
-  tabdpt off MLX, so MLX should refuse Kumo by name rather than serve it.
-- **GPU paths need the converter.** Without `convert_kumo_weights` the weights are the raw `.pt`, whose
-  header no GPU graph is pinned to, so ROCm and CUDA should report the weights as not matching and `auto`
-  should run on the CPU (from the servability rule in `tabfm_model_spec.hpp`; not exercised here).
+  tabdpt off MLX. `tabfm_backends()` says so for `mlx`, and `auto` serves Kumo on the CPU there.
+- **The GPU paths need the converted file**, which `tabfm_download` now writes. Without it the weights are
+  the raw `.pt`, whose header no GPU graph is pinned to, so ROCm and CUDA report the weights as not matching
+  and `auto` runs on the CPU.
 
 ## TabICL v2 — shipped (classification)
 
@@ -1391,16 +1398,13 @@ uses `CustomStandardScaler` / `RTDLQuantileTransformer` externally), so it
 declares `orion_bix_v1_minimal` — a normal engine-standardizes profile, not
 `_raw`. Export parity **2.24e-07**.
 
-**Conversion IS required** (verified 2026-08-11 against the current upstream
-file). This section previously claimed the ~315 MB `.ckpt` is read natively and
-needs no conversion step; that is no longer true for `Orion-BiX-v1.1.ckpt`, which
-the native reader rejects with `unsupported pickle opcode 0x65` (`APPENDS`).
-Until `src/tabfm_ckpt.cpp` learns that opcode, run the one-time conversion — the
-engine then prefers the `model.safetensors` it writes next to the checkpoint:
-
-```bash
-cd tools/export_orion_bix && uv run python convert_weights.py   # 277/277 tensors
-```
+**No conversion step.** `Orion-BiX-v1.1.ckpt` carries its `config` and optimizer state as lists beside
+the state_dict, which a protocol-2 pickle builds with `APPEND` / `APPENDS`. The native reader used to reject
+opcode 0x65 (`APPENDS`), so this section required `tools/export_orion_bix/convert_weights.py`; it now reads
+past lists, and the CPU serves the `.ckpt` alone with predictions identical to the converted file.
+`tabfm_download` also writes the `model.safetensors` the CUDA ext graph reads, byte for byte what
+`convert_weights.py` writes (277/277 tensors), which stays as the dev-side check that the tensor map covers
+the checkpoint.
 
 ## TabPFN-2.5 — shipped (classify + regress)
 

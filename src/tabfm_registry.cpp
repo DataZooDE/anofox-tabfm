@@ -653,7 +653,7 @@ static const char *const BUILTIN_TABDPT13 = R"json({
 //
 // Its graph is (x, y)-only like LimiX-2M's: the split is the length of y, so the engine needs no
 // model-specific code (tools/export_nori). For ROCm a second, MASKED graph (x, y_full, train_size, d, n_rows;
-// tools/export_nori --contract mask) is bundled; it reads the safetensors convert_nori_weights writes beside
+// tools/export_nori --contract mask) is bundled; it reads the safetensors tabfm_download writes beside
 // nori.pt, and without that file ROCm reports the bundled graph as not matching the weights. The
 // model standardises its own features and the export wrapper standardises the target in-graph and inverts
 // it, hence a *_raw profile. The 999-quantile pinball head is reduced IN-GRAPH to the mean of the implied
@@ -661,7 +661,7 @@ static const char *const BUILTIN_TABDPT13 = R"json({
 // uniform tau grid that is a closed form without a sort (tools/export_nori nori_patches.quantile_mean).
 //
 // The engine reads nori.pt natively (a torch.save archive {model_config, ema_state_dict}; the reader
-// prefers ema_state_dict, as upstream's load_model does), so there is no converter. Pinned to the commit
+// prefers ema_state_dict, as upstream's load_model does), so the CPU needs no converter. Pinned to the commit
 // the graph was exported from.
 //
 // What this does NOT reproduce, so the docs do not over-claim: upstream's default NoriRegressor runs an
@@ -765,8 +765,9 @@ static const char *const BUILTIN_EXAONE_TABULAR = R"json({
 // step (tools/export_kumo/src/export_kumo/engine_ref.py), hence *_minimal, not *_raw.
 //
 // Weights are the published .pt (a plain float32 state_dict), declared as model.ckpt so the engine's
-// native reader injects it on the CPU with no conversion; convert_kumo_weights writes the sibling
-// model.safetensors the ext/migraphx graphs need (ExpectedWeightsHeaderShaFor pins its header).
+// native reader injects it on the CPU with no conversion; tabfm_download writes the sibling
+// model.safetensors the ext/migraphx graphs need (ExpectedWeightsHeaderShaFor pins its header). The
+// classifier .pt stores both y_emb.weight tensors as transposed views, which the reader gathers in order.
 // Pinned to tag v1.0.1, the revision upstream's loader requests; the LFS hashes are identical on main.
 //
 // What this does NOT reproduce: the engine runs ONE estimator (the Elo figures above are an 8-member
@@ -786,7 +787,8 @@ static const char *const BUILTIN_KUMO_SMALL = R"json({
   "schema_version": 2, "id": "kumo-tabular-small", "display_name": "Kumo-Tabular small (NVIDIA)",
   "family": "icl-transformer",
   "license": {"id": "openmdw-1.1", "commercial": true, "redistributable": true, "gate_setting": null,
-              "attribution": "NVIDIA Kumo-Tabular (small; 27.5 M / 28.5 M parameters classifier / regressor). Code Apache-2.0 (NVIDIA/structured-data-models); weights OpenMDW-1.1, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Commercial use is permitted. If you distribute any portion of the Model Materials, retain a copy of the OpenMDW-1.1 agreement and NVIDIA's copyright and origin notices: https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE. Checkpoints: HF nvidia/Kumo-Tabular v1.0.1 (small/)."},
+              "text_resource": "license_openmdw_1_1_nvidia.txt",
+              "attribution": "NVIDIA Kumo-Tabular (small; 27.5 M / 28.5 M parameters classifier / regressor). Code Apache-2.0 (NVIDIA/structured-data-models); weights OpenMDW-1.1, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Commercial use is permitted. If you distribute any portion of the Model Materials, retain a copy of the OpenMDW-1.1 agreement and NVIDIA's copyright and origin notices (both follow, as this extension carries them): https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE. Checkpoints: HF nvidia/Kumo-Tabular v1.0.1 (small/)."},
   "preprocessing_profile": "kumo_tabular_v1_minimal",
   "weights": {
     "classification": {"repo": "nvidia/Kumo-Tabular", "revision": "b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f",
@@ -810,7 +812,8 @@ static const char *const BUILTIN_KUMO_MEDIUM = R"json({
   "schema_version": 2, "id": "kumo-tabular-medium", "display_name": "Kumo-Tabular medium (NVIDIA)",
   "family": "icl-transformer",
   "license": {"id": "openmdw-1.1", "commercial": true, "redistributable": true, "gate_setting": null,
-              "attribution": "NVIDIA Kumo-Tabular (medium; 61.5 M / 62.5 M parameters classifier / regressor). Code Apache-2.0 (NVIDIA/structured-data-models); weights OpenMDW-1.1, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Commercial use is permitted. If you distribute any portion of the Model Materials, retain a copy of the OpenMDW-1.1 agreement and NVIDIA's copyright and origin notices: https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE. Checkpoints: HF nvidia/Kumo-Tabular v1.0.1 (medium/)."},
+              "text_resource": "license_openmdw_1_1_nvidia.txt",
+              "attribution": "NVIDIA Kumo-Tabular (medium; 61.5 M / 62.5 M parameters classifier / regressor). Code Apache-2.0 (NVIDIA/structured-data-models); weights OpenMDW-1.1, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Commercial use is permitted. If you distribute any portion of the Model Materials, retain a copy of the OpenMDW-1.1 agreement and NVIDIA's copyright and origin notices (both follow, as this extension carries them): https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE. Checkpoints: HF nvidia/Kumo-Tabular v1.0.1 (medium/)."},
   "preprocessing_profile": "kumo_tabular_v1_minimal",
   "weights": {
     "classification": {"repo": "nvidia/Kumo-Tabular", "revision": "b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f",
@@ -834,7 +837,8 @@ static const char *const BUILTIN_KUMO_LARGE = R"json({
   "schema_version": 2, "id": "kumo-tabular-large", "display_name": "Kumo-Tabular large (NVIDIA)",
   "family": "icl-transformer",
   "license": {"id": "openmdw-1.1", "commercial": true, "redistributable": true, "gate_setting": null,
-              "attribution": "NVIDIA Kumo-Tabular (large; 213.7 M / 215.7 M parameters classifier / regressor). Code Apache-2.0 (NVIDIA/structured-data-models); weights OpenMDW-1.1, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Commercial use is permitted. If you distribute any portion of the Model Materials, retain a copy of the OpenMDW-1.1 agreement and NVIDIA's copyright and origin notices: https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE. Checkpoints: HF nvidia/Kumo-Tabular v1.0.1 (large/)."},
+              "text_resource": "license_openmdw_1_1_nvidia.txt",
+              "attribution": "NVIDIA Kumo-Tabular (large; 213.7 M / 215.7 M parameters classifier / regressor). Code Apache-2.0 (NVIDIA/structured-data-models); weights OpenMDW-1.1, Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. Commercial use is permitted. If you distribute any portion of the Model Materials, retain a copy of the OpenMDW-1.1 agreement and NVIDIA's copyright and origin notices (both follow, as this extension carries them): https://huggingface.co/nvidia/Kumo-Tabular/blob/main/LICENSE. Checkpoints: HF nvidia/Kumo-Tabular v1.0.1 (large/)."},
   "preprocessing_profile": "kumo_tabular_v1_minimal",
   "weights": {
     "classification": {"repo": "nvidia/Kumo-Tabular", "revision": "b2f5a9d6404e3574df6c30cc6ae66a30b8e4f06f",

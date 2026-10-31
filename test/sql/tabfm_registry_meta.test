@@ -91,3 +91,16 @@ query T
 SELECT downloaded FROM tabfm_list_models() WHERE model = 'tabfm-test'
 ----
 false
+
+# Every model's attribution is visible -- the notices some licences require users to keep (LimiX's
+# "Built with" line, Causilo's hosted-use clause) were in the registry but shown nowhere.
+query TT
+SELECT model, attribution LIKE '%Built with StableAI LimiX%' FROM tabfm_list_models() WHERE model = 'limix-2m'
+----
+limix-2m	true
+
+# a model whose licence asks for no notice reports NULL, not an empty string
+query T
+SELECT attribution IS NULL FROM tabfm_list_models() WHERE model = 'mitra'
+----
+true

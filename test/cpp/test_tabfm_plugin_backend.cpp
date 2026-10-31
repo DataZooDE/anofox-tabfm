@@ -149,6 +149,35 @@ TEST_CASE("plugin_backend: a library that is not a plugin is refused", "[tabfm][
 #endif
 }
 
+// A graph declaring an input the plugin does not bind must be refused by the HOST, before the plugin runs
+// anything. A plugin that predates an input skips it, and then the runtime fails inside its own run call:
+// MIGraphX's C API reports "Parameter not found: n_rows" by writing to std::cerr from the DuckDB worker
+// thread, which crashed unittest outright (SIGSEGV in ostream::sentry under migraphx_program_run) when a
+// September plugin left in the runtime cache met the TabPFN graphs that gained n_rows.
+TEST_CASE("plugin_backend: a graph input the plugin does not bind is refused before create", "[tabfm][plugin]") {
+	const string path = TABFM_FAKE_PLUGIN_PATH;
+	if (!FileExists(path)) {
+		SUCCEED("fixture plugin not built, skipping");
+		return;
+	}
+	// the fake binds x, y, cat_mask, train_size and d -- every input of the classic contract
+	auto params = FakeParams();
+	params.graph_path = "test/fixtures/graph_migraphx_fixture.onnx";
+	REQUIRE(LoadPluginBackend(path, params) != nullptr);
+
+	// a masked TabPFN graph also declares n_rows
+	params.graph_path = "resources/graph_migraphx_tabpfn_classification.onnx";
+	try {
+		LoadPluginBackend(path, params);
+		FAIL("expected an exception");
+	} catch (std::exception &error) {
+		const string message = error.what();
+		REQUIRE(message.find("'n_rows'") != string::npos);
+		REQUIRE(message.find("tabfm_accelerate") != string::npos);
+		REQUIRE(message.find("graph_migraphx_tabpfn_classification.onnx") != string::npos);
+	}
+}
+
 #endif // TABFM_FAKE_PLUGIN_PATH
 
 #ifdef TABFM_FAKE_PLUGIN_BAD_ABI_PATH

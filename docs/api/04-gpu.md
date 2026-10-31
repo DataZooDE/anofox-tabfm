@@ -27,7 +27,10 @@ No vendor runtime is linked — CUDA/cuDNN or ROCm resolve from your system, and
 `tabfm_download_runtime` fetches the plugin itself, and for CUDA the ONNX
 Runtime GPU libraries it loads alongside it. The plugins are published as
 release assets and are verified against the extension's plugin ABI version on
-load, so a mismatched pair refuses rather than misbehaves. They land in the `runtime` subdirectory of
+load, so a mismatched pair refuses rather than misbehaves. A plugin also lists the graph inputs it binds,
+and the extension refuses a graph that declares one it does not (plugin ABI 2: a plugin left over from
+an older release is refused by `device := 'auto'`, which then uses the CPU, and `tabfm_backends()` names
+the file and `CALL tabfm_accelerate()` as the fix). They land in the `runtime` subdirectory of
 `anofox_tabfm_cache_dir`, unless `anofox_tabfm_ep_path` points elsewhere. Building a plugin from source:
 [BUILDING.md](../BUILDING.md#gpu-plugins-from-source).
 

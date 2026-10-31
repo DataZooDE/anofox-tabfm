@@ -9,6 +9,8 @@
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_ort_engine.hpp"
+#include "tabfm_ckpt.hpp"
+#include "tabfm_model_spec.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -120,6 +122,9 @@ struct WeightsManifest {
 	//! "non-commercial".
 	bool commercial = false;
 	vector<WeightsFileEntry> files;
+	//! The task's tensor map (a bundled resource id or a path); tabfm_download reads it to write the GPU
+	//! weights of a checkpoint whose graph uses a subset of its tensors.
+	string tensor_map_path;
 	bool builtin = false;
 	//! Registered/user models resolve their files here instead of the cache
 	//! ("" for built-ins). Without it tabfm_models() cannot see them at all.
@@ -167,6 +172,7 @@ WeightsManifest WeightsFromSpec(const ModelSpec &spec, TabFMTask task) {
 	result.commercial = spec.license.commercial;
 	result.builtin = spec.source_dir.empty(); // built-ins carry no source dir
 	result.source_dir = spec.source_dir;
+	result.tensor_map_path = art.tensor_map_path;
 	for (auto &f : art.files) {
 		WeightsFileEntry entry;
 		entry.path = f.path;
@@ -444,13 +450,133 @@ idx_t FetchFile(ClientContext &context, const DownloadItem &item) {
 	return total;
 }
 
+// The GPU file of a checkpoint-shipped model. The bundled ext/migraphx graphs of Nori and Kumo read
+// their weights as ONNX external data at offsets baked against one file -- the model.safetensors that
+// tools/export_*/convert_*_weights writes beside the .ckpt (ExpectedWeightsHeaderShaFor pins its
+// header). That used to be a manual Python step; the engine reads checkpoints natively, so it writes the
+// same file here. Only when the result matches the pinned header: a model whose graphs want RENAMED keys
+// (TabPFN's convert_weights.py) produces a different header, and writing that would only shadow the
+// checkpoint with a file no graph can use. Returns false when nothing applies to this file.
+struct ConvertedWeights {
+	string path;
+	int64_t bytes = 0;
+	string status;
+};
+
+//! The state_dict entries a bundled tensor map that declares itself complete names (its initializer
+//! values); empty when the map is not bundled, not complete, or names a key the checkpoint lacks.
+unordered_map<string, CkptTensor> TensorMapSubset(const string &tensor_map_id,
+                                                  const unordered_map<string, CkptTensor> &state_dict) {
+	unordered_map<string, CkptTensor> subset;
+	auto res = GetBundledResource(tensor_map_id);
+	if (!res.data) {
+		return subset;
+	}
+	using namespace duckdb_yyjson; // NOLINT
+	auto doc = yyjson_read(res.data, res.size, 0);
+	if (!doc) {
+		return subset;
+	}
+	auto root = yyjson_doc_get_root(doc);
+	auto complete = yyjson_obj_get(root, "complete");
+	auto inits = yyjson_obj_get(root, "initializers");
+	if (complete && yyjson_is_true(complete) && inits && yyjson_is_obj(inits)) {
+		size_t idx, max;
+		yyjson_val *key, *val;
+		yyjson_obj_foreach(inits, idx, max, key, val) {
+			if (!yyjson_is_str(val)) {
+				continue;
+			}
+			auto it = state_dict.find(yyjson_get_str(val));
+			if (it == state_dict.end()) {
+				subset.clear();
+				break;
+			}
+			subset.emplace(it->first, it->second);
+		}
+	}
+	yyjson_doc_free(doc);
+	return subset;
+}
+
+bool WriteGpuWeights(FileSystem &fs, const WeightsManifest &manifest, const string &ckpt_path,
+                     ConvertedWeights &result) {
+	if (!StringUtil::EndsWith(StringUtil::Lower(ckpt_path), ".ckpt")) {
+		return false;
+	}
+	TabFMTask task;
+	if (manifest.task == "classification") {
+		task = TabFMTask::CLASSIFICATION;
+	} else if (manifest.task == "regression") {
+		task = TabFMTask::REGRESSION;
+	} else {
+		return false;
+	}
+	const auto expected = ExpectedWeightsHeaderShaFor(manifest.model, manifest.task);
+	if (expected.empty()) {
+		return false; // no bundled GPU graph to serve
+	}
+	result.path = ParentDirectory(ckpt_path) + "/model.safetensors";
+	if (WeightsHeaderMatches(fs, result.path, manifest.model, task)) {
+		auto handle = fs.OpenFile(result.path, FileFlags::FILE_FLAGS_READ);
+		result.bytes = fs.GetFileSize(*handle);
+		result.status = "cached";
+		return true;
+	}
+	string buffer;
+	{
+		auto handle = fs.OpenFile(ckpt_path, FileFlags::FILE_FLAGS_READ);
+		buffer.resize(NumericCast<idx_t>(fs.GetFileSize(*handle)));
+		fs.Read(*handle, (void *)buffer.data(), NumericCast<int64_t>(buffer.size()), 0);
+	}
+	const auto *bytes = reinterpret_cast<const uint8_t *>(buffer.data());
+	if (!IsTorchCkpt(bytes, buffer.size())) {
+		return false;
+	}
+	unordered_map<string, CkptTensor> state_dict;
+	string header;
+	try {
+		state_dict = ReadTorchCkpt(bytes, buffer.size());
+		header = CkptSafetensorsHeader(state_dict);
+	} catch (std::exception &ex) {
+		result.status = string("not converted: ") + ex.what();
+		return true;
+	}
+	if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected) {
+		// A checkpoint can also carry tensors its graph never reads (Orion-MSP); its tensor map then says
+		// "complete", and the file the graphs were pinned against holds exactly the map's tensors.
+		auto subset = TensorMapSubset(manifest.tensor_map_path, state_dict);
+		if (subset.empty()) {
+			return false; // these graphs were built from a renamed or retyped file; see above
+		}
+		header = CkptSafetensorsHeader(subset);
+		if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected) {
+			return false;
+		}
+		state_dict = std::move(subset);
+	}
+	const auto part = result.path + ".part";
+	{
+		auto dst = fs.OpenFile(part, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		WriteCkptAsSafetensors(state_dict, [&](const void *data, idx_t n) {
+			dst->Write(const_cast<void *>(data), n);
+			result.bytes += NumericCast<int64_t>(n);
+		});
+		dst->Sync();
+	}
+	fs.MoveFile(part, result.path);
+	result.status = "converted";
+	return true;
+}
+
 void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &bind = data.bind_data->Cast<DownloadBindData>();
 	auto &state = data.global_state->Cast<DownloadGlobalState>();
 	auto &fs = FileSystem::GetFileSystem(context);
 
 	idx_t out = 0;
-	while (state.next < bind.items.size() && out < STANDARD_VECTOR_SIZE) {
+	// Each declared file can add a second row (its converted GPU weights), so leave room for both.
+	while (state.next < bind.items.size() && out + 2 <= STANDARD_VECTOR_SIZE) {
 		auto &item = bind.items[state.next++];
 		string status;
 		int64_t bytes = 0;
@@ -477,6 +603,15 @@ void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk
 		output.SetValue(2, out, Value::BIGINT(bytes));
 		output.SetValue(3, out, Value(status));
 		out++;
+
+		ConvertedWeights converted;
+		if (WriteGpuWeights(fs, bind.manifest, item.cache_path, converted)) {
+			output.SetValue(0, out, Value(converted.path));
+			output.SetValue(1, out, Value()); // written here, from the file above; nothing was fetched
+			output.SetValue(2, out, Value::BIGINT(converted.bytes));
+			output.SetValue(3, out, Value(converted.status));
+			out++;
+		}
 	}
 	duckdb_compat::SetChildCardinality(output, out);
 }
@@ -1275,7 +1410,7 @@ void ModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 //===--------------------------------------------------------------------===//
 
 struct ListModelsRow {
-	string model, family, capabilities, license;
+	string model, family, capabilities, license, attribution;
 	bool commercial = false;
 	int64_t max_rows = -1, max_features = -1, max_classes = -1;
 	bool downloaded = false;
@@ -1315,11 +1450,11 @@ bool TaskWeightsComplete(FileSystem &fs, const string &base_dir, const vector<We
 unique_ptr<FunctionData> ListModelsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
                                         duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_list_models");
-	names = {"model",    "family",       "capabilities", "license",   "commercial",
-	         "max_rows", "max_features", "max_classes",  "downloaded"};
-	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
-	                LogicalType::VARCHAR, LogicalType::BOOLEAN, LogicalType::BIGINT,
-	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BOOLEAN};
+	names = {"model",    "family",       "capabilities", "license",    "commercial",
+	         "max_rows", "max_features", "max_classes",  "downloaded", "attribution"};
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                LogicalType::BOOLEAN, LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,
+	                LogicalType::BOOLEAN, LogicalType::VARCHAR};
 	return make_uniq<ModelsBindData>();
 }
 
@@ -1335,6 +1470,15 @@ unique_ptr<GlobalTableFunctionState> ListModelsInit(ClientContext &context, Tabl
 		row.family = spec.family;
 		row.capabilities = StringUtil::Join(spec.capabilities, ", ");
 		row.license = spec.license.id;
+		// The notice a licence asks users to keep, plus any agreement it asks the distribution to retain
+		// verbatim -- the binary carries it, so this is where a user can read it.
+		row.attribution = spec.license.attribution;
+		if (!spec.license.text_resource.empty()) {
+			auto text = GetBundledResource(spec.license.text_resource);
+			if (text.data) {
+				row.attribution += (row.attribution.empty() ? "" : "\n\n") + string(text.data, text.size);
+			}
+		}
 		row.commercial = spec.license.commercial;
 		row.max_rows = spec.size_regime.max_rows;
 		row.max_features = spec.size_regime.max_features;
@@ -1368,6 +1512,7 @@ void ListModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 		output.SetValue(6, out, nbig(r.max_features));
 		output.SetValue(7, out, nbig(r.max_classes));
 		output.SetValue(8, out, Value::BOOLEAN(r.downloaded));
+		output.SetValue(9, out, r.attribution.empty() ? Value(LogicalType::VARCHAR) : Value(r.attribution));
 		out++;
 	}
 	duckdb_compat::SetChildCardinality(output, out);
@@ -1556,6 +1701,15 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 						}
 					}
 				}
+				// MLX executes the graph op by op: the same question 'auto' asks, about the graph that
+				// would be served -- the model's own, else the bundled one once it matches the weights.
+				if (row.backend == "mlx") {
+					if (!model_graph.empty()) {
+						in.unsupported_ops = MlxUnsupportedOps(nullptr, 0, model_graph);
+					} else if (in.bundled_header_matches) {
+						in.unsupported_ops = MlxUnsupportedOps(bundled.data, bundled.size, string());
+					}
+				}
 				auto verdict = EvaluateGpuServability(in);
 				row.supported = verdict.supported;
 				row.reason = verdict.reason;
@@ -1569,8 +1723,19 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				if (row.supported && (row.backend == "cuda" || row.backend == "rocm" || row.backend == "mlx") &&
 				    !PluginAvailableCached(ep_path, row.backend)) {
 					row.supported = false;
-					row.reason = "this model can run on '" + row.backend + "', but its backend plugin is not "
-					             "installed at " + ep_path + " — CALL tabfm_accelerate() to fetch and verify it";
+					// A file that is there but will not load (most often a plugin left over from an older
+					// release) is a different problem from no file, and "not installed" sends the user
+					// looking in the wrong place.
+					const auto plugin_path = ep_path + "/" + PluginFileName(row.backend);
+					string load_error;
+					if (FileSystem::CreateLocal()->FileExists(plugin_path) && !PluginLoadable(plugin_path, &load_error)) {
+						row.reason = "this model can run on '" + row.backend + "', but the backend plugin at " +
+						             plugin_path + " cannot be used: " + load_error +
+						             " — CALL tabfm_accelerate() to replace it";
+					} else {
+						row.reason = "this model can run on '" + row.backend + "', but its backend plugin is not "
+						             "installed at " + ep_path + " — CALL tabfm_accelerate() to fetch and verify it";
+					}
 				}
 				// ...but only when the missing weights are what is actually
 				// blocking it. A precision the backend cannot run is a knowable,
@@ -2180,7 +2345,8 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	RegisterSet(loader, "anofox_tabfm_list_models", "tabfm_list_models", {{}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ListModelsBind), ListModelsInit,
 	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ListModelsExecute),
 	            "List every model in the registry (built-ins + user manifests), downloaded or not: model, family, "
-	            "capabilities, license, commercial, size regime (max_rows/features/classes), downloaded.",
+	            "capabilities, license, commercial, size regime (max_rows/features/classes), downloaded, and the "
+	            "attribution its licence asks users to keep (with any agreement text the binary must carry).",
 	            "SELECT * FROM tabfm_list_models();");
 	// CALL tabfm_gpu_precompile(task [, rows, features]);
 	RegisterSet(loader, "anofox_tabfm_gpu_precompile", "tabfm_gpu_precompile",

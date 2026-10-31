@@ -57,11 +57,13 @@ bit), and the attention projections are GEMMs instead of einsums. `mask_parity.g
 four negative controls is caught.
 
 MIGraphX reads the weights itself, as external data in a file named `model.safetensors`, so ROCm needs the
-checkpoint converted once (the CPU path keeps reading `nori.pt`; its answers are byte-identical either way):
+checkpoint converted once. `CALL tabfm_download('regression', model := 'nori-30m')` does that natively; the
+converter below writes the same bytes and stays as the reference for building the graph (the CPU path keeps
+reading `nori.pt`; its answers are identical either way):
 
 ```bash
 C=~/.cache/anofox-tabfm/Synthefy__Nori-30M@63c9f7facf9fb32c37ce3fc2fba331d524696318
-uv run convert_nori_weights $C/model.ckpt $C/model.safetensors        # deterministic: header sha 49797138...
+uv run convert_nori_weights $C/model.ckpt $C/model.safetensors        # header sha 49797138...; tabfm_download writes the same file
 uv run export_nori --config real --contract mask --out ./mask
 uv run python ../make_migraphx_graph.py regression --weights $C/model.safetensors \
     --graph ./mask/graph_mask_nori_regression.onnx --tensor-map ./mask/tensor_map_mask_nori_regression.json \

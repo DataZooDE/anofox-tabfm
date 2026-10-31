@@ -76,6 +76,7 @@ set(EXTENSION_SOURCES
         src/tabfm_metrics_regression.cpp
         src/tabfm_crossval.cpp
         src/tabfm_scoring.cpp
+        src/tabfm_onnx_reader.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
 )
 
@@ -295,6 +296,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_migraphx_plugin.cpp
     test/cpp/test_tabfm_cuda_plugin.cpp
     test/cpp/test_tabfm_mlx_plugin.cpp
+    test/cpp/test_tabfm_mlx_ops.cpp
     test/cpp/test_tabfm_cpu_budget.cpp
     test/cpp/test_tabfm_metrics.cpp
     test/cpp/test_tabfm_metrics_regression.cpp

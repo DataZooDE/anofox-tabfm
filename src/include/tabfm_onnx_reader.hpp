@@ -93,5 +93,8 @@ struct Graph {
 //! Parse an ONNX model file. Throws std::runtime_error naming the file.
 Graph ParseModelFile(const std::string &path);
 
+//! Parse an ONNX model held in memory (a graph bundled into the binary). `what` names it in errors.
+Graph ParseModelBytes(const uint8_t *data, size_t size, const std::string &what);
+
 } // namespace onnxread
 } // namespace anofox
