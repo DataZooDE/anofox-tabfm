@@ -15,6 +15,14 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   `tabfm_load` is described as a presence check; one ROCm compile time per model; `n_estimators` (only 1)
   and `context_rows` (accepted, no effect) described as they behave.
 
+### Fixed
+- `tabfm_load` on missing weights names the model and the exact fix: `model 'mitra' has no classification weights
+  downloaded. Run: CALL tabfm_download('classification', model := 'mitra');` (it used to print the task as the model
+  and leave out `model :=`). Its catalog description now says what it does: it checks the weights are present; the
+  session is built on the first predict.
+- The `anofox_tabfm_accept_hf_license` help text names every gated model (tabfm-v1, the tabpfn-* models, causilo,
+  limix-2m), not only Google's weights.
+
 ## [v2026.10.26] - 2026-10-26
 
 ### Added

@@ -95,8 +95,9 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 
 	config.AddExtensionOption("anofox_tabfm_accept_hf_license",
-	                          "Accept the upstream model license (tabfm-non-commercial-v1.0: non-commercial use, "
-	                          "no redistribution). Downloads of Google-licensed weights fail without this.",
+	                          "Accept the upstream licence of the gated models (tabfm-v1, the tabpfn-* models, causilo, "
+	                          "limix-2m; several are non-commercial, see the license column of tabfm_list_models()). "
+	                          "Downloads of those weights fail without this; the other models need no acknowledgement.",
 	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
 
 	config.AddExtensionOption("anofox_tabfm_cache_dir",
