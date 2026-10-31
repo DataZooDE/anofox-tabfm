@@ -9,6 +9,8 @@
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_ort_engine.hpp"
+#include "tabfm_ckpt.hpp"
+#include "tabfm_model_spec.hpp"
 #include "telemetry.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -444,13 +446,87 @@ idx_t FetchFile(ClientContext &context, const DownloadItem &item) {
 	return total;
 }
 
+// The GPU file of a checkpoint-shipped model. The bundled ext/migraphx graphs of Nori and Kumo read
+// their weights as ONNX external data at offsets baked against one file -- the model.safetensors that
+// tools/export_*/convert_*_weights writes beside the .ckpt (ExpectedWeightsHeaderShaFor pins its
+// header). That used to be a manual Python step; the engine reads checkpoints natively, so it writes the
+// same file here. Only when the result matches the pinned header: a model whose graphs want RENAMED keys
+// (TabPFN's convert_weights.py) produces a different header, and writing that would only shadow the
+// checkpoint with a file no graph can use. Returns false when nothing applies to this file.
+struct ConvertedWeights {
+	string path;
+	int64_t bytes = 0;
+	string status;
+};
+
+bool WriteGpuWeights(FileSystem &fs, const WeightsManifest &manifest, const string &ckpt_path,
+                     ConvertedWeights &result) {
+	if (!StringUtil::EndsWith(StringUtil::Lower(ckpt_path), ".ckpt")) {
+		return false;
+	}
+	TabFMTask task;
+	if (manifest.task == "classification") {
+		task = TabFMTask::CLASSIFICATION;
+	} else if (manifest.task == "regression") {
+		task = TabFMTask::REGRESSION;
+	} else {
+		return false;
+	}
+	const auto expected = ExpectedWeightsHeaderShaFor(manifest.model, manifest.task);
+	if (expected.empty()) {
+		return false; // no bundled GPU graph to serve
+	}
+	result.path = ParentDirectory(ckpt_path) + "/model.safetensors";
+	if (WeightsHeaderMatches(fs, result.path, manifest.model, task)) {
+		auto handle = fs.OpenFile(result.path, FileFlags::FILE_FLAGS_READ);
+		result.bytes = fs.GetFileSize(*handle);
+		result.status = "cached";
+		return true;
+	}
+	string buffer;
+	{
+		auto handle = fs.OpenFile(ckpt_path, FileFlags::FILE_FLAGS_READ);
+		buffer.resize(NumericCast<idx_t>(fs.GetFileSize(*handle)));
+		fs.Read(*handle, (void *)buffer.data(), NumericCast<int64_t>(buffer.size()), 0);
+	}
+	const auto *bytes = reinterpret_cast<const uint8_t *>(buffer.data());
+	if (!IsTorchCkpt(bytes, buffer.size())) {
+		return false;
+	}
+	unordered_map<string, CkptTensor> state_dict;
+	string header;
+	try {
+		state_dict = ReadTorchCkpt(bytes, buffer.size());
+		header = CkptSafetensorsHeader(state_dict);
+	} catch (std::exception &ex) {
+		result.status = string("not converted: ") + ex.what();
+		return true;
+	}
+	if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected) {
+		return false; // these graphs were built from a renamed or retyped file; see above
+	}
+	const auto part = result.path + ".part";
+	{
+		auto dst = fs.OpenFile(part, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+		WriteCkptAsSafetensors(state_dict, [&](const void *data, idx_t n) {
+			dst->Write(const_cast<void *>(data), n);
+			result.bytes += NumericCast<int64_t>(n);
+		});
+		dst->Sync();
+	}
+	fs.MoveFile(part, result.path);
+	result.status = "converted";
+	return true;
+}
+
 void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
 	auto &bind = data.bind_data->Cast<DownloadBindData>();
 	auto &state = data.global_state->Cast<DownloadGlobalState>();
 	auto &fs = FileSystem::GetFileSystem(context);
 
 	idx_t out = 0;
-	while (state.next < bind.items.size() && out < STANDARD_VECTOR_SIZE) {
+	// Each declared file can add a second row (its converted GPU weights), so leave room for both.
+	while (state.next < bind.items.size() && out + 2 <= STANDARD_VECTOR_SIZE) {
 		auto &item = bind.items[state.next++];
 		string status;
 		int64_t bytes = 0;
@@ -477,6 +553,15 @@ void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk
 		output.SetValue(2, out, Value::BIGINT(bytes));
 		output.SetValue(3, out, Value(status));
 		out++;
+
+		ConvertedWeights converted;
+		if (WriteGpuWeights(fs, bind.manifest, item.cache_path, converted)) {
+			output.SetValue(0, out, Value(converted.path));
+			output.SetValue(1, out, Value()); // written here, from the file above; nothing was fetched
+			output.SetValue(2, out, Value::BIGINT(converted.bytes));
+			output.SetValue(3, out, Value(converted.status));
+			out++;
+		}
 	}
 	duckdb_compat::SetChildCardinality(output, out);
 }

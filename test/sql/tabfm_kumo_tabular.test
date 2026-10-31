@@ -88,6 +88,27 @@ JOIN exp_cls e ON a.f1 = e.f1 AND a.f2 = e.f2 AND a.f3 = e.f3 AND a.f4 = e.f4 AN
 ----
 20	0
 
+# The same weights as a torch checkpoint whose two y_emb.weight tensors are saved as transposed VIEWS
+# (stride (1, n)) -- the layout of NVIDIA's published .pt. A reader that hands out raw storage feeds them
+# in the wrong element order; on the real small model that is 28-34% accuracy instead of 94%.
+statement ok
+CALL tabfm_register_model(
+  id := 'kumo-fixture-strided', base_dir := 'test/fixtures/kumo',
+  classification_graph := 'graph_kumo_fixture_classification.onnx',
+  classification_weights := 'model_classification_strided.ckpt',
+  classification_tensor_map := 'tensor_map_kumo_fixture_classification.json',
+  license := 'apache-2.0', commercial := true,
+  weights_repo := 'local:test/fixtures/kumo', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'kumo_tabular_v1_minimal',
+  max_rows := 4096, max_features := 64, max_classes := 3)
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat <> e.expected)
+FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture-strided') a
+JOIN exp_cls e ON a.f1 = e.f1 AND a.f2 = e.f2 AND a.f3 = e.f3 AND a.f4 = e.f4 AND a.f5 = e.f5
+----
+20	0
+
 # the fixture predicts all three classes, so a model collapsed onto one label fails here
 query I
 SELECT count(DISTINCT yhat) FROM tabfm_classify('t', 'label', features := ['f1','f2','f3','f4','f5'], model := 'kumo-fixture')

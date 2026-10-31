@@ -6,6 +6,8 @@
 
 #include "duckdb/common/exception.hpp"
 
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
 
 namespace duckdb {
@@ -102,7 +104,8 @@ struct PVal {
 	string s;              // STR text; GLOBAL "module.name"; PERSID storage-type name
 	string skey;           // PERSID / TENSOR: storage key (the data/<skey> blob)
 	vector<PVal> items;    // TUPLE items; DICT: flat [k0,v0,k1,v1,...]
-	vector<int64_t> shape; // TENSOR shape
+	vector<int64_t> shape;  // TENSOR shape
+	vector<int64_t> stride; // TENSOR strides (elements)
 };
 
 string StorageDtype(const string &storage_type) {
@@ -436,6 +439,11 @@ private:
 			for (auto &d : args.items[2].items) {
 				t.shape.push_back(d.i);
 			}
+			if (args.items.size() > 3 && args.items[3].k == PVal::TUPLE) {
+				for (auto &d : args.items[3].items) {
+					t.stride.push_back(d.i);
+				}
+			}
 			Push(std::move(t));
 			return;
 		}
@@ -527,6 +535,7 @@ unordered_map<string, CkptTensor> ReadTorchCkpt(const uint8_t *buf, idx_t size) 
 		CkptTensor t;
 		t.dtype = StorageDtype(val.s);
 		t.shape = val.shape;
+		t.stride = val.stride;
 		idx_t elt = DtypeSize(t.dtype);
 		idx_t numel = 1;
 		for (auto d : t.shape) {
@@ -534,13 +543,241 @@ unordered_map<string, CkptTensor> ReadTorchCkpt(const uint8_t *buf, idx_t size) 
 		}
 		idx_t byte_off = (idx_t)val.i * elt;
 		t.nbytes = numel * elt;
-		if (byte_off + t.nbytes > blob->second.size) {
-			throw InvalidInputException("tabfm: checkpoint tensor '%s' exceeds its storage blob", key.s);
+		if (t.IsContiguous()) {
+			if (byte_off + t.nbytes > blob->second.size) {
+				throw InvalidInputException("tabfm: checkpoint tensor '%s' exceeds its storage blob", key.s);
+			}
+			t.data = blob->second.data + byte_off;
+		} else {
+			// A view: gather its elements in index order, as torch does when it reads one.
+			if (t.stride.size() != t.shape.size()) {
+				throw InvalidInputException("tabfm: checkpoint tensor '%s' has %llu strides for %llu dimensions",
+				                            key.s, (unsigned long long)t.stride.size(),
+				                            (unsigned long long)t.shape.size());
+			}
+			idx_t last = 0; // furthest element the view reaches, relative to its offset
+			for (idx_t d = 0; d < t.shape.size(); d++) {
+				if (t.stride[d] < 0) {
+					throw InvalidInputException("tabfm: checkpoint tensor '%s' has a negative stride", key.s);
+				}
+				if (t.shape[d] > 0) {
+					last += (idx_t)(t.shape[d] - 1) * (idx_t)t.stride[d];
+				}
+			}
+			if (numel > 0 && byte_off + (last + 1) * elt > blob->second.size) {
+				throw InvalidInputException("tabfm: checkpoint tensor '%s' exceeds its storage blob", key.s);
+			}
+			t.owned = make_shared_ptr<vector<uint8_t>>(t.nbytes);
+			vector<int64_t> index(t.shape.size(), 0);
+			for (idx_t i = 0; i < numel; i++) {
+				idx_t src = 0;
+				for (idx_t d = 0; d < index.size(); d++) {
+					src += (idx_t)index[d] * (idx_t)t.stride[d];
+				}
+				std::memcpy(t.owned->data() + i * elt, blob->second.data + byte_off + src * elt, elt);
+				for (idx_t d = index.size(); d-- > 0;) { // odometer, last dimension fastest
+					if (++index[d] < t.shape[d]) {
+						break;
+					}
+					index[d] = 0;
+				}
+			}
+			t.data = t.owned->data();
+			t.stride.clear();
 		}
-		t.data = blob->second.data + byte_off;
 		out.emplace(key.s, std::move(t));
 	}
 	return out;
+}
+
+bool CkptTensor::IsContiguous() const {
+	if (stride.empty()) {
+		return true;
+	}
+	if (stride.size() != shape.size()) {
+		return false;
+	}
+	int64_t expected = 1;
+	for (idx_t i = shape.size(); i-- > 0;) {
+		// a dimension of extent 1 has no neighbour to step to, so torch records any stride for it
+		if (shape[i] != 1 && stride[i] != expected) {
+			return false;
+		}
+		expected *= shape[i];
+	}
+	return true;
+}
+
+namespace {
+
+idx_t ElementCount(const CkptTensor &t) {
+	idx_t n = 1;
+	for (auto d : t.shape) {
+		n *= (idx_t)(d < 0 ? 0 : d);
+	}
+	return n;
+}
+
+float Bf16BitsToF32(uint16_t bits) {
+	uint32_t u = static_cast<uint32_t>(bits) << 16;
+	float f;
+	std::memcpy(&f, &u, sizeof(f));
+	return f;
+}
+
+float F16BitsToF32(uint16_t h) {
+	const uint32_t sign = static_cast<uint32_t>(h & 0x8000) << 16;
+	uint32_t exp = (h >> 10) & 0x1f;
+	uint32_t mant = h & 0x3ff;
+	uint32_t u;
+	if (exp == 0) {
+		if (mant == 0) {
+			u = sign;
+		} else { // subnormal: renormalise
+			exp = 127 - 15 + 1;
+			while (!(mant & 0x400)) {
+				mant <<= 1;
+				exp--;
+			}
+			u = sign | (exp << 23) | ((mant & 0x3ff) << 13);
+		}
+	} else if (exp == 0x1f) {
+		u = sign | 0x7f800000 | (mant << 13);
+	} else {
+		u = sign | ((exp + 127 - 15) << 23) | (mant << 13);
+	}
+	float f;
+	std::memcpy(&f, &u, sizeof(f));
+	return f;
+}
+
+template <class T>
+T Load(const uint8_t *p, idx_t i) {
+	T v;
+	std::memcpy(&v, p + i * sizeof(T), sizeof(T));
+	return v;
+}
+
+//! One element as float32, the way torch's .to(torch.float32) casts it.
+float ElementAsF32(const CkptTensor &t, idx_t i) {
+	const auto &dt = t.dtype;
+	if (dt == "f32") {
+		return Load<float>(t.data, i);
+	}
+	if (dt == "f64") {
+		return static_cast<float>(Load<double>(t.data, i));
+	}
+	if (dt == "bf16") {
+		return Bf16BitsToF32(Load<uint16_t>(t.data, i));
+	}
+	if (dt == "f16") {
+		return F16BitsToF32(Load<uint16_t>(t.data, i));
+	}
+	if (dt == "i64") {
+		return static_cast<float>(Load<int64_t>(t.data, i));
+	}
+	if (dt == "i32") {
+		return static_cast<float>(Load<int32_t>(t.data, i));
+	}
+	if (dt == "i16") {
+		return static_cast<float>(Load<int16_t>(t.data, i));
+	}
+	if (dt == "i8") {
+		return static_cast<float>(Load<int8_t>(t.data, i));
+	}
+	return static_cast<float>(t.data[i]); // u8 / bool
+}
+
+using CkptEntry = std::pair<const string, CkptTensor>;
+
+vector<const CkptEntry *> SortedTensors(const unordered_map<string, CkptTensor> &sd) {
+	vector<const CkptEntry *> order;
+	order.reserve(sd.size());
+	for (auto &e : sd) {
+		order.push_back(&e);
+	}
+	// byte order, as Python's sorted() and safetensors' own ordering are for these ASCII names
+	std::sort(order.begin(), order.end(), [](const CkptEntry *a,
+	                                         const CkptEntry *b) { return a->first < b->first; });
+	return order;
+}
+
+string JsonEscape(const string &s) {
+	string out;
+	for (unsigned char c : s) {
+		if (c == '"' || c == '\\') {
+			out += '\\';
+			out += static_cast<char>(c);
+		} else if (c < 0x20) {
+			char buf[8];
+			snprintf(buf, sizeof(buf), "\\u%04x", c);
+			out += buf;
+		} else {
+			out += static_cast<char>(c);
+		}
+	}
+	return out;
+}
+
+} // namespace
+
+string CkptSafetensorsHeader(const unordered_map<string, CkptTensor> &state_dict) {
+	string header = "{";
+	idx_t offset = 0;
+	bool first = true;
+	for (auto *entry : SortedTensors(state_dict)) {
+		const auto &t = entry->second;
+		if (!t.IsContiguous()) {
+			throw InvalidInputException("tabfm: checkpoint tensor '%s' is not contiguous (a view saved with its "
+			                            "parent's strides), so it cannot be converted to safetensors as stored",
+			                            entry->first);
+		}
+		const idx_t nbytes = ElementCount(t) * sizeof(float);
+		if (!first) {
+			header += ",";
+		}
+		first = false;
+		header += "\"" + JsonEscape(entry->first) + "\":{\"dtype\":\"F32\",\"shape\":[";
+		for (idx_t i = 0; i < t.shape.size(); i++) {
+			header += (i ? "," : "") + std::to_string(t.shape[i]);
+		}
+		header += "],\"data_offsets\":[" + std::to_string(offset) + "," + std::to_string(offset + nbytes) + "]}";
+		offset += nbytes;
+	}
+	header += "}";
+	// safetensors pads the header with spaces so the data section starts 8-byte aligned
+	header.append((8 - header.size() % 8) % 8, ' ');
+	return header;
+}
+
+void WriteCkptAsSafetensors(const unordered_map<string, CkptTensor> &state_dict,
+                            const std::function<void(const void *, idx_t)> &write) {
+	const auto header = CkptSafetensorsHeader(state_dict);
+	uint8_t prefix[8];
+	uint64_t len = header.size();
+	for (int i = 0; i < 8; i++) {
+		prefix[i] = static_cast<uint8_t>(len >> (8 * i));
+	}
+	write(prefix, 8);
+	write(header.data(), header.size());
+	vector<float> chunk;
+	for (auto *entry : SortedTensors(state_dict)) {
+		const auto &t = entry->second;
+		const idx_t n = ElementCount(t);
+		if (t.dtype == "f32") {
+			write(t.data, n * sizeof(float));
+			continue;
+		}
+		static constexpr idx_t kChunk = 1 << 20;
+		for (idx_t start = 0; start < n; start += kChunk) {
+			const idx_t count = MinValue<idx_t>(kChunk, n - start);
+			chunk.resize(count);
+			for (idx_t i = 0; i < count; i++) {
+				chunk[i] = ElementAsF32(t, start + i);
+			}
+			write(chunk.data(), count * sizeof(float));
+		}
+	}
 }
 
 } // namespace anofox

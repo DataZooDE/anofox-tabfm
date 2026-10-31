@@ -1544,6 +1544,9 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		st_to_onnx[kv.second] = kv.first;
 	}
 	F32Arena arena; // owns bf16->f32 upcasts (safetensors path); empty for ckpt
+	// The checkpoint's state_dict, held to the same lifetime as `arena`: a strided view's elements are
+	// gathered into a copy the state_dict owns, and the injected initializers point into it.
+	unordered_map<string, CkptTensor> sd;
 	vector<TabFMTensorRef> initializers;
 	// The checkpoint key each entry of `initializers` came from, same order. The
 	// split halves are injected from their OWN tensor maps (each names only the
@@ -1553,7 +1556,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		// Native PyTorch checkpoint (.ckpt): recover the state_dict and inject each
 		// tensor by graph name. The bytes alias the mmap/read buffer (kept alive by
 		// the backend below), so no arena copy is needed for f32/i64.
-		auto sd = ReadTorchCkpt(bytes, nbytes);
+		sd = ReadTorchCkpt(bytes, nbytes);
 		// Does this checkpoint's namespace actually match the committed tensor
 		// map? For some models it does not: the map is keyed to the names the
 		// weights carry only after a `convert_weights.py` pass, and injecting the
