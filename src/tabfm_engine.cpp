@@ -165,8 +165,6 @@ unordered_map<string, string> ParseTensorMapJson(const string &json, const strin
 	return result;
 }
 
-// Load {onnx -> safetensors} from the manifest: inline map, or the
-// "initializers" object of the tensor-map JSON file, else identity.
 // The optional "unused_by_graph" array of a tensor-map document: checkpoint keys present in the weights
 // file that this task's graph does not use. Needed when ONE file serves several tasks whose graphs read
 // different subsets of it (tabdpt-v1-3: cls_y_encoders.* for classification, reg_y_encoders.* for
@@ -193,6 +191,9 @@ unordered_set<string> ParseUnusedByGraph(const string &json) {
 	return result;
 }
 
+// Load {onnx -> safetensors} from the manifest: inline map, or the
+// "initializers" object of the tensor-map JSON file, else identity.
+// `unused_weights` (optional) receives the document's "unused_by_graph" list.
 unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest &manifest, const string &dir,
                                             bool use_bundle, unordered_set<string> *unused_weights = nullptr) {
 	if (!manifest.tensor_map.empty()) {
