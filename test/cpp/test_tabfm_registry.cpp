@@ -303,3 +303,82 @@ TEST_CASE("registry: Causilo ships built in, non-commercial and gated, pinned to
 	REQUIRE(m.tasks.at(TabFMTask::CLASSIFICATION).files[0].bytes == 144385448);
 	REQUIRE(m.tasks.at(TabFMTask::REGRESSION).files[0].bytes == 148417316);
 }
+
+TEST_CASE("registry: Nori-30M ships built in, Apache-2.0 and ungated, REGRESSION ONLY, read natively from nori.pt",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("nori-30m"));
+	auto &m = reg.Get("nori-30m");
+
+	// Code and weights are Apache-2.0 (model card front matter and body agree) and the HF repo is
+	// ungated, so there is no licence gate at all, as for tabdpt.
+	REQUIRE(m.license.id == "apache-2.0");
+	REQUIRE(m.license.commercial == true);
+	REQUIRE(m.license.redistributable == true);
+	REQUIRE(m.license.gate_setting.empty());
+	REQUIRE_THAT(m.license.attribution, Contains("Synthefy"));
+
+	// Regression only: upstream's build_model refuses any task_type but "reg"
+	REQUIRE(m.HasCapability("regress"));
+	REQUIRE_FALSE(m.HasCapability("classify"));
+	REQUIRE(m.HasTask(TabFMTask::REGRESSION));
+	REQUIRE_FALSE(m.HasTask(TabFMTask::CLASSIFICATION));
+	REQUIRE(m.preprocessing_profile == "nori_v1_raw");
+	// measured caps (registry comment + docs/REAL_MODELS.md): 5000x20 peaks at 15.4 GB on the CPU
+	REQUIRE(m.size_regime.max_rows == 5000);
+	REQUIRE(m.size_regime.max_features == 100);
+
+	// the released nori.pt itself, pinned to the commit the graph was exported from; no converter
+	auto &t = m.tasks.at(TabFMTask::REGRESSION);
+	REQUIRE(t.repo == "Synthefy/Nori-30M");
+	REQUIRE(t.revision == "63c9f7facf9fb32c37ce3fc2fba331d524696318");
+	REQUIRE(t.files.size() == 1);
+	REQUIRE_THAT(t.files[0].url, Contains("/resolve/63c9f7facf9fb32c37ce3fc2fba331d524696318/nori.pt"));
+	REQUIRE(t.files[0].bytes == 117093952);
+	REQUIRE_THAT(t.files[0].path, Catch::Matchers::EndsWith(".ckpt"));
+
+	// the unsupported-task error names the models that CAN classify, and nori-30m is not among them
+	auto classify = reg.IdsWithTask(TabFMTask::CLASSIFICATION);
+	REQUIRE_THAT(classify, Contains("mitra"));
+	REQUIRE(classify.find("nori-30m") == string::npos);
+	REQUIRE_THAT(reg.IdsWithTask(TabFMTask::REGRESSION), Contains("nori-30m"));
+}
+
+TEST_CASE("registry: EXAONE Tabular ships built in, non-commercial (EXAONE NC 1.2) and gated, one checkpoint per task",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("exaone-tabular"));
+	auto &m = reg.Get("exaone-tabular");
+
+	// EXAONE AI Model License Agreement 1.2 - NC: research/educational use only, no commercial use of the
+	// Model, Derivatives or Output. Gated like the other non-commercial entries, and the attribution says so.
+	REQUIRE(m.license.id == "exaone-nc-1.2");
+	REQUIRE(m.license.commercial == false);
+	REQUIRE(m.license.redistributable == false);
+	REQUIRE(m.license.gate_setting == "accept_hf_license");
+	REQUIRE_THAT(m.license.attribution, Contains("LG AI Research"));
+	REQUIRE_THAT(m.license.attribution, Contains("NO commercial use"));
+	REQUIRE_THAT(m.license.attribution, Contains("LG-AI-Research/EXAONE-Tabular/blob/main/LICENSE"));
+
+	REQUIRE(m.HasCapability("classify"));
+	REQUIRE(m.HasCapability("regress"));
+	REQUIRE(m.preprocessing_profile == "exaone_v1_raw");
+	REQUIRE(m.size_regime.max_classes == 10);
+	// measured caps, not upstream's 100000-row support limit (its chunked CUDA runtime): the engine runs the
+	// dense forward, and 3000x20 already peaks at 13.1 GB on the CPU
+	REQUIRE(m.size_regime.max_rows == 3000);
+	REQUIRE(m.size_regime.max_features == 100);
+
+	for (auto task : {TabFMTask::CLASSIFICATION, TabFMTask::REGRESSION}) {
+		auto &t = m.tasks.at(task);
+		REQUIRE(t.repo == "LG-AI-Research/EXAONE-Tabular");
+		REQUIRE(t.revision == "093ad1c2613e1e95d26df8610451d2e02ed53cbe");
+		REQUIRE(t.files.size() == 1);
+		REQUIRE_THAT(t.files[0].url, Contains("/resolve/093ad1c2613e1e95d26df8610451d2e02ed53cbe/"));
+	}
+	// the classifier and the regressor are DIFFERENT checkpoints in one repo: their cache paths must differ
+	REQUIRE_THAT(m.tasks.at(TabFMTask::CLASSIFICATION).files[0].url, Contains("classifier-v1_default"));
+	REQUIRE_THAT(m.tasks.at(TabFMTask::REGRESSION).files[0].url, Contains("regressor-v1_default"));
+	REQUIRE(m.tasks.at(TabFMTask::CLASSIFICATION).files[0].path !=
+	        m.tasks.at(TabFMTask::REGRESSION).files[0].path);
+}

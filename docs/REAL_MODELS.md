@@ -29,6 +29,8 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
 | **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; ROCm refused by name |
 | **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
+| **Nori-30M** (`nori-30m`) | Apache-2.0, code and weights (commercial, ungated) | ✅ shipped | **yes — regress only** | 29.2 M; a LimiX fork; **no conversion — the engine reads `nori.pt` natively**; 999-quantile head reduced in-graph to its mean; parity with upstream's single forward 1.0e-4 (california); ROCm refused by name |
+| **EXAONE Tabular** (`exaone-tabular`) | EXAONE AI Model License 1.2 - NC (**non-commercial**, gated) | ✅ shipped | **yes — classify + regress** | 20.8 M clf / 21.1 M reg; **no conversion — LG ship safetensors**; iris 45/45 and wine 54/54 labels identical to upstream's single forward; plain attention instead of upstream's pinned FlashAttention; ROCm refused by name |
 
 ### TabPFN-3 — done
 
@@ -317,12 +319,19 @@ regress capabilities above — there is no separate per-model work.
 | `tabpfn-v3` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabicl-v2` | ✅ | ✅ | ✅ | ✅ all columns |
 | `orion-bix` | ✅ | ✗ | ✅ | categorical columns only |
+| `nori-30m` | ✗ | ✅ | ✗ (needs classification) | numeric columns only |
+| `exaone-tabular` | ✅ | ✅ | ✅ | ✅ all columns |
 
 `tabfm_generate` needs **only** classification, because every chain-rule step is
 a classification problem — continuous columns go through quantile bins. That is
 why Orion-BiX, which ships no regressor, can still generate numeric columns.
 `tabfm_impute` deliberately does *not* bin (it wants full precision), so filling
 a numeric column requires the model's regression weights.
+
+`nori-30m` is the mirror image of Orion: regression only. `tabfm_generate` refuses it (every chain-rule
+step is a classification), and `tabfm_impute` fills numeric columns but refuses a categorical one, both
+naming the missing task (`test/sql/tabfm_nori.test`). A refused `tabfm_classify` names the models that do
+classify ("Models that support it: ...").
 
 ## Mitra — done
 
@@ -571,6 +580,230 @@ check the table above against your machine. (The first cap, 10,000 x 500, was a 
   export removes `Unique` and `Relu`, which it lacked). That predicts servable, not correct. **Not run on a
   Mac**; `tools/gpu_test/scenarios/mlx_all_models.sql` has LimiX blocks that print the serving device beside the
   agreement.
+
+## Nori-30M (Synthefy) — shipped (regression only)
+
+Nori-30M is the 29.2 M-parameter Nori from Synthefy: an in-context regression model trained only on
+synthetic data. Upstream's NOTICE says the code "originated as a fork of LimiX", and it shows: the same
+`smf` layer (sample attention, MLP, feature attention), the same decimal (sign, exponent, mantissa) RBF
+tokenizer, features in pairs. Nori grows it to 28 pre-norm layers with RMSNorm, SwiGLU, DeepNorm residual
+scaling (0.189), a query-adaptive softmax temperature in the sample attention (QASSMax), a target-aware
+embedding of the context labels, and a 999-quantile pinball regression head.
+
+**Licence.** Apache-2.0 for code and weights: the model card front matter and body agree, and the upstream
+repo carries LICENSE + NOTICE. The Hugging Face repo is ungated. It is therefore registered like `tabdpt`:
+`commercial: true`, no licence gate. Verified on Hugging Face, `Synthefy/Nori-30M` @ `63c9f7fa`.
+
+**Regression only.** The checkpoint config still carries a 10-class head, but upstream's `build_model`
+refuses every `task_type` except `"reg"`, and the model card calls it a regression model. `capabilities` is
+`["regress"]`: `tabfm_classify` and `tabfm_download('classification', ...)` are refused before any download,
+and the error names the models that do classify.
+
+**How it runs.** The graph is `(x, y)`-only, so the engine needs no model-specific code
+(`tools/export_nori`, which pins `synthefy-nori==0.22.0` from PyPI and patches it at run time). There is no
+converter: `nori.pt` is a `torch.save` archive `{model_config, ema_state_dict}`, and the engine's native
+checkpoint reader now prefers `ema_state_dict` the way upstream's `load_model` does (the one engine change,
+covered by `test/cpp/test_tabfm_ckpt.cpp` with a 2.5 KB random checkpoint in that layout). The committed
+fixture is a checkpoint in the same layout, so the offline test exercises the native reader on it. Four
+upstream constructs needed patching, each proved identical to upstream by `tools/export_nori/tests`:
+
+| upstream | rewrite | why |
+|---|---|---|
+| the feature-pair pad `if (-H) % 2 > 0: cat zeros` | always pad, then slice | a Python branch on the symbolic width freezes at the trace's parity |
+| the label pad `nan * zeros(B, T - S, 1)` | the tail of a `T`-long NaN tensor | torch.export concretises the pad length |
+| QASSMax's `math.log(float(key_len))` | `log(ones(S).sum())` | a Python float of the symbolic context length specialises the graph |
+| `int(eval_pos)` and module-attribute writes in two encoders | removed | same specialisation; the arithmetic is unchanged |
+
+One more was found by the export rather than by reading: the label embedding's `.squeeze(2)` is a torch
+no-op on the 3-D regression encoder output, but exports as an unconditional `Squeeze` that ORT rejects.
+
+**The point estimate is the mean.** The head predicts 999 quantiles on the grid `tau_k = (k + 1) / 1000`.
+Upstream's default (`NoriRegressor(quantile_collapse="mean")`) sorts them and integrates the
+piecewise-linear quantile function; on that uniform grid the integral is `(sum(q) + min(q)/2 + max(q)/2) /
+1000`, so the graph needs no sort (`nori_patches.quantile_mean`, equal to upstream's to 1e-12 including on
+crossed quantiles). The mean rather than the median because it is upstream's default and what its benchmark
+R² comes from, and because the engine scores regression by squared error, for which the mean is optimal.
+The wrapper z-scores the raw target with the population std (as `NoriRegressor` does) and inverts it.
+
+**What is verified, on the real weights.** Built-in path, CPU, against upstream's own eager forward on the
+same split (`model.forward` + `quantile_dist_mean_simple`):
+
+- california_housing (1000-row sample, 700 / 300): worst absolute difference **1.0e-4**, query R² 0.79172
+  (engine) vs 0.79172 (upstream).
+- diabetes (309 / 133): worst difference 9.4e-2 on a target std of 71, query R² 0.3804 vs 0.3804. The graph
+  run standalone in ORT gives the identical 9.4e-2, so it is not the engine; and 1e-7 relative noise on the
+  inputs moves upstream's own eager output by 7.7e-2 there. It is float32 rounding amplified by the decimal
+  tokenizer, as for LimiX-2M (`tools/export_nori/tests/test_real_weights.py` pins both numbers).
+- `test/sql/tabfm_real_models.test`: shared split query R² **0.99982**; reg_t context corr 0.99997 and query
+  corr 0.9955 with predictions reaching 74.2 against a truth of 72.3 (it extrapolates, unlike LimiX-2M);
+  reg_in query corr 0.99996, worst error 0.44.
+
+**What it does not claim.**
+- **One forward.** TabArena (leaderboard space @ `68988c6e`, 2026-10-31: regression Elo **1791**; the EXAONE
+  model card quotes 1753 from an earlier snapshot) evaluates upstream's default `NoriRegressor`: an
+  8-member ensemble of preprocessing pipelines (quantile and adaptive feature transforms, polynomial
+  interaction features, fingerprint features, feature shuffles, SVD for wide tables). The engine runs one
+  forward on the raw table. On diabetes the single forward scored R² 0.348 against the ensemble's 0.328 on
+  one split; that is one noisy dataset, not a claim that the ensemble is worse.
+- The engine mean-imputes missing cells before the graph, so Nori's missing-value embedding is unused.
+- No classification, `tabfm_generate`, or categorical `tabfm_impute`.
+
+**Size and speed** (CPU, default threads, 200 query rows; the engine caps the model at 5,000 rows and 100
+features, independent limits):
+
+| rows x features | wall | peak RSS |
+|---|---|---|
+| 500 x 20 | 5.6 s | 0.85 GB |
+| 1000 x 20 | 10.8 s | 1.5 GB |
+| 2000 x 20 | 28 s | 3.3 GB |
+| 3000 x 20 | 53 s | 6.1 GB |
+| 5000 x 20 | 127 s | 15.4 GB |
+| 1000 x 100 | 40 s | 5.0 GB |
+
+**Platforms.**
+- **CPU:** verified on Linux x86-64 (the numbers above).
+- **ROCm:** refused by name, like `limix-2m`, its ancestor: the split is positional (`len(y)`), which a
+  fixed-shape MIGraphX compile cannot bucket (`docs/ROCM_SINGLE_EVAL_POS.md`). Converting it means a masked
+  export (`x, y_full, train_size, n_rows, d`) of every split-dependent site: the NaN-imputation and
+  normalisation statistics, the feature-validity count, the target-aware embedding, the isolated sample
+  attention and the QASSMax length; that is the TabPFN conversion's size, and it is not done.
+- **CUDA / MLX:** no external-data graph is bundled and nothing was run on either.
+
+```bash
+cd tools/export_nori && uv sync
+uv run export_nori --config real --out ./out        # resources/graph_nori30m_regression.onnx + map
+uv run make_nori_fixture ../../test/fixtures/nori   # the committed CI fixture
+TABFM_REAL_WEIGHTS=1 uv run pytest                  # real-weight parity
+```
+
+## EXAONE Tabular (LG AI Research) — shipped (classify + regress)
+
+EXAONE Tabular v1 is LG AI Research's Cross-Axis Summary Transformer (CAST; arXiv 2608.25774): width 192, 6
+heads, 12 blocks, one column per feature token, 3 item-summary tokens per row and 32 feature-summary tokens
+per column, and an SSMax attention temperature (keys scaled by the log of the context length). The
+classifier (20.8 M parameters, a 10-class head) and the regressor (21.1 M, a 999-quantile head) are separate
+checkpoints in one repo, `LG-AI-Research/EXAONE-Tabular` @ `093ad1c2` (ungated).
+
+### Licence
+
+Code: BSD-3-Clause-LG AI Research License (the BSD 3-clause text plus a reservation of patents and
+trademarks). Weights: the **EXAONE AI Model License Agreement 1.2 - NC**, read in full. The clauses that
+decide what tabfm may do:
+
+- 2.1(a): a licence to "access, download, install, and use the Model solely for research and educational
+  purposes. This includes evaluation, testing, academic research, experimentation, learning, teaching ...".
+- 3.1: "The Licensee is expressly prohibited from using the Model, Derivatives, or Output for any commercial
+  purposes, including but not limited to, developing or deploying products, services, or applications that
+  generate revenue, whether directly or indirectly."
+- 2.1(d) and 2.2: distribution of the Model or Derivatives only "with a copy of this Agreement", and "any
+  commercial application or external distribution, is strictly prohibited unless explicitly agreed upon in
+  writing".
+- 2.1(c): a modified Model "must include "EXAONE" at the beginning of its name".
+- 3.2: no decompiling, reverse engineering, or attempting "to derive the source code, underlying ideas,
+  algorithms, or structure of the Model".
+- 4.3: publications must attribute the Model's name and version.
+
+Our reading, which is not legal advice: what tabfm does is what the licence permits for research and
+evaluation, so it may offer EXAONE as a **non-commercial built-in gated by `accept_hf_license`**, exactly
+like TabPFN-2.5 and Causilo:
+
+- tabfm never distributes the weights. The user downloads them from LG's own repo, after `SET
+  anofox_tabfm_accept_hf_license = true`, and the gate message calls them non-commercial. The registry's
+  `attribution` carries the restriction and the licence link (`commercial: false`, `redistributable:
+  false`).
+- The architecture in the shipped graphs comes from LG's published BSD-licensed code, not from the weights,
+  so 3.2 is not engaged; the graphs are weight-free.
+- The id starts with "EXAONE" (`exaone-tabular`), which satisfies 2.1(c) even if a single-forward export is
+  read as a modification.
+- What the user then does with the Output is governed by 3.1: commercial use needs a separate agreement
+  with LG.
+
+TabArena itself lists the entry as `Commercial: False`, `EXAONE AI Model License 1.2 - NC`.
+
+### How it runs
+
+The graph is `(x, y)`-only like TabICL's, so the engine needs no model-specific code. LG publish safetensors
+keyed by the module namespace, so there is **no converter**: `CALL tabfm_download('classification', model :=
+'exaone-tabular')` and the same for `'regression'`; the two checkpoints are cached under `classification/`
+and `regression/` because they share a repo.
+
+Upstream's forward is written for a CUDA runtime and could not be traced as it stands: every module
+validates `isinstance(support_size, int)`, which a symbolic size is not; the attention packs its weights
+into buffers keyed by `data_ptr()` and caches the support keys/values in module state between the two halves
+of a layer; part of it is pinned to FlashAttention (fp16/bf16 only, hence "float32 is a CPU-only path"); the
+SSMax scale is `math.log` of a symbolic length; and the classification label encoder uses `torch.unique`.
+`tools/export_exaone` (which pins `exaonetabular` to commit `d149d0f0`) therefore **re-expresses the
+inference forward** over upstream's own parameters (`exaone_patches.py`): the plain `softmax(q k^T / sqrt(d))
+v` attention, the queries' multi-query cross-attention onto the first context head, a first-occurrence rank
+table instead of `Unique`, and branchless label imputation. It is proved against upstream's forward:
+2.9e-6 on random inputs with the real weights, and `tests/test_export.py` checks it at odd shapes, one
+feature, S = 2 and a constant column. Upstream's final layer skips the support rows' update (nothing reads
+it); the export computes it, which changes nothing a query sees.
+
+The wrapper standardises the regression target as `EXAONETabularRegressor.fit` does (float32, population
+variance, a variance at rounding level counts as constant) and inverts it. The **point estimate is the mean
+of the 999 quantiles**: that is the released regressor's own readout (`RegressionConfig.point_estimate =
+"mean"`), which LG describe as targeting "the conditional mean, which is what RMSE scores and what the
+median misses on skewed targets"; for one member upstream's across-member trimming is a no-op.
+
+### What is verified, on the real weights
+
+Built-in path, CPU, against upstream's own eager single forward (`model.forward`, float32 CPU):
+
+- iris **45/45** and wine **54/54** query labels identical to upstream (accuracy 0.978 and 1.000 both).
+- diabetes (309 / 133): worst difference **1.7e-4** on a target std of 71, query R² 0.39104 both;
+  california_housing (1000-row sample): worst difference **2.6e-5**, R² 0.80731 both.
+- `test/sql/tabfm_real_models.test`: shared split accuracy **0.953** and query R² **0.99998**; sep_t context
+  and query 1.000; reg_t context corr 0.999997, query corr 0.9993 (predictions 59.1..67.6 against a truth
+  reaching 72.3); reg_in query corr 0.999997, worst error 0.09.
+
+### What it does not claim
+
+- **One forward.** The TabArena figures (leaderboard space @ `68988c6e`, 2026-10-31: overall Elo **1774**,
+  classification 1760, regression 1913; the model card quotes 1755 / 1759 / 1883) come from upstream's
+  8-member ensemble: four numeric transforms (identity, power, robust, rank), random sign flips and feature
+  permutations, member trimming, and error-correcting output codes for more than 10 classes. The engine runs
+  one forward on the raw table.
+- More than 10 classes is not supported (upstream uses ECOC); the head width is the engine's class ceiling.
+- The engine mean-imputes missing cells before the graph, so the model's non-finite code channel never sees
+  a NaN.
+- The engine's default `softmax_temperature` is 0.9; upstream's is 1, so default probabilities are slightly
+  sharper. Labels are unaffected.
+- `fitted_t` in the real-weights test is not asserted for this model: its label (`i % 3`) is not learnable
+  from its features by EXAONE, and upstream's own eager forward also answers one class for every row
+  (probabilities 0.34 / 0.33 / 0.33).
+
+### Size and speed (CPU, default threads, 200 query rows)
+
+| rows x features | wall | peak RSS |
+|---|---|---|
+| 500 x 20 | 4.3 s | 1.2 GB |
+| 1000 x 20 | 9.7 s | 2.5 GB |
+| 2000 x 20 | 26 s | 6.7 GB |
+| 3000 x 20 | 49 s | 13.1 GB |
+| 1000 x 100 | 37 s | 10.5 GB |
+
+Memory grows roughly with rows^1.7 and linearly in features, about twice Nori's at the same shape (the 32
+feature-summary tokens join every column's sample attention). The engine caps it at **3,000 rows and 100
+features**, independent limits measured here, not upstream's 100,000-row support limit, which its cached,
+chunked CUDA runtime serves.
+
+### Platforms
+
+- **CPU:** verified on Linux x86-64.
+- **ROCm:** refused by name: the split is positional (`docs/ROCM_SINGLE_EVAL_POS.md`). A masked export would
+  have to mask the feature-encoder statistics and constant-column test, the label ranks, the feature
+  attention over padded columns, the support self-attention and its SSMax length; not done.
+- **CUDA / MLX:** no external-data graph is bundled and nothing was run on either. Upstream's own CUDA path
+  runs in fp16; this export is float32.
+
+```bash
+cd tools/export_exaone && uv sync
+uv run export_exaone --task classification --config real --out ./out
+uv run export_exaone --task regression     --config real --out ./out
+uv run make_exaone_fixture ../../test/fixtures/exaone
+TABFM_REAL_WEIGHTS=1 uv run pytest
+```
 
 ## TabICL v2 — shipped (classification)
 

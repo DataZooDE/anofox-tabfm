@@ -1,0 +1,87 @@
+{
+  "command": [
+    "export_exaone",
+    "--task",
+    "classification",
+    "--config",
+    "real",
+    "--out",
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-decide/7e409e93-cc2c-4f92-8eed-43d9e96cd3da/scratchpad/ex_real"
+  ],
+  "task": "classification",
+  "config": "real",
+  "model_config": {
+    "class_capacity": 10
+  },
+  "regression_config": null,
+  "n_params": 20807434,
+  "seed": 0,
+  "opset": 18,
+  "upstream": {
+    "package": "exaonetabular @ git+https://github.com/LGAI-Research/EXAONE-Tabular.git@d149d0f0441053f0cf6b2b45f4b2067a81619cf9",
+    "code_license": "BSD-3-Clause-LG AI Research License",
+    "weights_license": "EXAONE AI Model License Agreement 1.2 - NC (non-commercial)",
+    "checkpoint": "LG-AI-Research/EXAONE-Tabular :: exaone-tabular-classifier-v1_default.safetensors"
+  },
+  "input_signature": {
+    "x": "[1,T,H] f32",
+    "y": "[1,S] f32 (S=len(y), train labels / RAW targets only)"
+  },
+  "output": {
+    "logits": "[1,T,C] class logits, C=class_capacity"
+  },
+  "H_dynamic": true,
+  "train_size": "runtime (implicit = len(y))",
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_train": [
+    "train",
+    2,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    1,
+    500
+  ],
+  "example_THS": [
+    20,
+    8,
+    12
+  ],
+  "graph_bytes": 1002602,
+  "n_initializers_mapped": 437,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 2.0638108253479004e-06,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 16,
+        "H": 3,
+        "train": 10,
+        "max_abs_delta_context_rows": 2.0638108253479004e-06,
+        "max_abs_delta_query_rows": 1.8961727619171143e-06,
+        "ort_ms": 193.742036819458
+      },
+      {
+        "T": 60,
+        "H": 20,
+        "train": 40,
+        "max_abs_delta_context_rows": 9.834766387939453e-07,
+        "max_abs_delta_query_rows": 1.1473894119262695e-06,
+        "ort_ms": 1479.4037342071533
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.23.2",
+    "onnxruntime": "1.31.1",
+    "onnxscript": "0.7.2"
+  }
+}

@@ -5,6 +5,16 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`nori-30m`** (Synthefy Nori-30M, Apache-2.0, ungated): the first REGRESSION-ONLY built-in. The engine
+  reads the released `nori.pt` natively (the checkpoint reader now prefers `ema_state_dict`); the 999-quantile
+  head is reduced in-graph to its mean. `tabfm_classify` is refused and the error now names the models that do
+  classify. ROCm is refused by name (positional split).
+- **`exaone-tabular`** (LG AI Research EXAONE Tabular v1, classify + regress): non-commercial weights (EXAONE
+  AI Model License 1.2 - NC), gated by `anofox_tabfm_accept_hf_license`. Plain attention in place of
+  upstream's pinned FlashAttention; labels identical to upstream's single forward on iris and wine. ROCm is
+  refused by name (positional split).
+
 ## [v2026.10.26] - 2026-10-26
 
 ### Added

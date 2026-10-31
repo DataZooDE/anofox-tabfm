@@ -1,0 +1,174 @@
+# name: test/sql/tabfm_nori.test
+# description: Nori-30M (Synthefy, Apache-2.0) onboarded as a real model: the catalog's first
+#              REGRESSION-ONLY entry. Like its LimiX ancestor its ONNX graph is (x, y)-only, so the
+#              engine's y-as-train-prefix inference drives it with no model-specific code, and the model
+#              standardises its own features (profile nori_v1_raw). The engine reads the released
+#              nori.pt natively ({model_config, ema_state_dict}), so the fixture's weights file is a
+#              torch.save checkpoint in that same layout, not a safetensors stand-in.
+#
+#              Uses the committed random-init fixture: offline, zero Synthefy weight bytes. It PINS A
+#              VALUE FOR EVERY ROW, context and query; the expected values come from
+#              test/fixtures/nori/golden_regression.json, computed by PyTorch from inputs that are exact in
+#              binary floating point (tools/export_nori/src/export_nori/fixture.py, which also rejects a
+#              feature value that standardises to or near zero: Nori keeps LimiX's decimal tokenizer).
+#              Real-weight quality is exercised out-of-band (test/sql/tabfm_real_models.test).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+# --- the built-in catalog entry ------------------------------------------------
+
+query TTT
+SELECT model, family, capabilities FROM tabfm_list_models() WHERE model = 'nori-30m'
+----
+nori-30m	icl-transformer	regress
+
+# Apache-2.0 code AND weights, ungated: no licence gate, like tabdpt.
+query TT
+SELECT license, commercial FROM tabfm_list_models() WHERE model = 'nori-30m'
+----
+apache-2.0	true
+
+statement ok
+CREATE TABLE c AS SELECT * FROM (VALUES
+  (0.5,1.0,'c0'),(1.5,0.2,'c1'),(2.5,-1.0,'c0'),(0.2,0.8,'c1'),(1.1,0.4,'c0'),(3.0,-0.5,'c1'),
+  (1.3,0.3,NULL),(2.4,-0.2,NULL)) v(f1,f2,label);
+
+# Regression only: classification is refused before any download, and the error names models that
+# CAN classify, so the user knows what to switch to.
+statement error
+SELECT * FROM tabfm_classify('c', 'label', model := 'nori-30m')
+----
+<REGEX>:.*model 'nori-30m' does not support task 'classification'.*Models that support it:.*mitra.*
+
+# The download surface refuses the task the same way.
+statement error
+CALL tabfm_download('classification', model := 'nori-30m')
+----
+does not support task
+
+# tabfm_generate is a chain of CLASSIFICATION steps (continuous columns go through quantile bins), so a
+# regression-only model cannot generate, and says why.
+statement error
+SELECT * FROM tabfm_generate('c', 4, model := 'nori-30m')
+----
+<REGEX>:.*nori-30m.*classification.*
+
+# --- the fixture model (real forward pass, offline) ----------------------------
+
+statement ok
+CALL tabfm_register_model(
+  id := 'nori-fixture', base_dir := 'test/fixtures/nori',
+  regression_graph := 'graph_nori_regression.onnx',
+  regression_weights := 'model.ckpt',
+  regression_tensor_map := 'tensor_map_nori_regression.json',
+  license := 'apache-2.0', commercial := true,
+  weights_repo := 'local:test/fixtures/nori', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'nori_v1_raw',
+  max_rows := 4096, max_features := 64)
+
+query TTT
+SELECT model, family, capabilities FROM tabfm_list_models() WHERE model = 'nori-fixture'
+----
+nori-fixture	icl-transformer	regress
+
+# The table is built from the same formulas the fixture builder used (fixture.sql_inputs):
+#   x[i][j] = ((i*7 + j*3 + (i*j) % 5) % 11) * 0.25 - 1.0 + ((i*13 + j*5 + (i*j) % 3) % 7) * 0.0625
+#   target  = ((i*37) % 17) * 0.25 - 2.0   for the first 12 rows (context); NULL after (query)
+statement ok
+CREATE TABLE r AS SELECT i AS id,
+  ((i*7 + 0*3 + (i*0) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 0*5 + (i*0) % 3) % 7) * 0.0625 AS f1,
+  ((i*7 + 1*3 + (i*1) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 1*5 + (i*1) % 3) % 7) * 0.0625 AS f2,
+  ((i*7 + 2*3 + (i*2) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 2*5 + (i*2) % 3) % 7) * 0.0625 AS f3,
+  ((i*7 + 3*3 + (i*3) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 3*5 + (i*3) % 3) % 7) * 0.0625 AS f4,
+  ((i*7 + 4*3 + (i*4) % 5) % 11) * 0.25 - 1.0 + ((i*13 + 4*5 + (i*4) % 3) % 7) * 0.0625 AS f5,
+  CASE WHEN i < 12 THEN ((i*37) % 17) * 0.25 - 2.0 END AS target
+FROM range(20) r(i);
+
+# every row is answered: 12 context rows flagged is_training, 8 query rows
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_regress('r', 'target', features := ['f1','f2','f3','f4','f5'], model := 'nori-fixture')
+----
+20	12	0
+
+# the RAW-space point estimate for ALL 20 rows (the wrapper standardises the targets, reduces the quantile
+# head to its mean and inverts the scaler in-graph, so the engine feeds raw targets and reads the output
+# directly). Rows are matched on their five feature values (exact binary fractions, unique per row; the
+# first query asserts that, so a duplicate cannot hide).
+statement ok
+CREATE TABLE exp_reg AS SELECT r.f1, r.f2, r.f3, r.f4, r.f5, e.expected FROM r JOIN
+  (VALUES (0,-31.567924),(1,-30.926758),(2,-31.902813),(3,-31.27177),(4,-33.178577),(5,-31.275377)
+             ,(6,-32.58683),(7,-32.247017),(8,-30.900557),(9,-32.675625),(10,-32.424828),(11,-31.913181)
+             ,(12,-32.087086),(13,-32.269279),(14,-33.181297),(15,-32.871857),(16,-33.012661)
+             ,(17,-31.934669),(18,-33.178101),(19,-32.16317))
+  e(id, expected) USING (id);
+
+query II
+SELECT count(*), count(DISTINCT (f1, f2, f3, f4, f5)) FROM exp_reg
+----
+20	20
+
+query II
+SELECT count(*), count(*) FILTER (WHERE abs(a.yhat - e.expected) > 2e-3)
+FROM tabfm_regress('r', 'target', features := ['f1','f2','f3','f4','f5'], model := 'nori-fixture') a
+JOIN exp_reg e ON a.f1 = e.f1 AND a.f2 = e.f2 AND a.f3 = e.f3 AND a.f4 = e.f4 AND a.f5 = e.f5
+----
+20	0
+
+# the fitted (context) values vary: a zero-padded context would decode to a single number
+query I
+SELECT count(DISTINCT round(yhat, 4))
+FROM tabfm_regress('r', 'target', features := ['f1','f2','f3','f4','f5'], model := 'nori-fixture')
+WHERE is_training
+----
+12
+
+# an ODD feature count: Nori groups features in pairs, and the exporter pads unconditionally (upstream's
+# pad is a Python branch on the width, which a trace would freeze at the example's even width)
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat IS NULL OR isnan(yhat))
+FROM tabfm_regress('r', 'target', features := ['f1','f2','f3'], model := 'nori-fixture')
+----
+20	0
+
+# A missing feature cell is mean-imputed by the engine before the graph, so it is answered.
+# (Nori's own missing-value embedding is therefore unused; docs/REAL_MODELS.md says so.)
+statement ok
+CREATE TABLE rn AS SELECT id, CASE WHEN id = 14 THEN NULL ELSE f1 END AS f1, f2, f3, f4, f5, target FROM r;
+
+query II
+SELECT count(*), count(*) FILTER (WHERE yhat IS NULL)
+FROM tabfm_regress('rn', 'target', features := ['f1','f2','f3','f4','f5'], model := 'nori-fixture')
+----
+20	0
+
+# the registered fixture refuses classification exactly like the built-in
+statement error
+SELECT * FROM tabfm_classify('c', 'label', model := 'nori-fixture')
+----
+does not support task 'classification'
+
+# tabfm_impute: a numeric column is a regression fill, so the regression-only model fills it...
+statement ok
+CREATE TABLE gaps AS SELECT * FROM (VALUES
+  (0.5,10.0,'a'),(1.5,20.0,'b'),(2.5,30.0,'a'),(0.2,40.0,'b'),(1.1,15.0,'a'),
+  (3.0,25.0,'b'),(0.9,35.0,'a'),(2.1,45.0,'b'),(1.3,NULL,'a'),(2.4,NULL,NULL))
+  v(f1,f2,grp);
+
+query I
+SELECT count(*) FROM tabfm_impute('gaps', columns := ['f2'], model := 'nori-fixture')
+WHERE f2 IS NULL
+----
+0
+
+# ...but a categorical fill is a classification problem, and that is refused by name
+statement error
+SELECT * FROM tabfm_impute('gaps', columns := ['grp'], model := 'nori-fixture')
+----
+<REGEX>:.*classification.*

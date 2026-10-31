@@ -122,6 +122,20 @@ set(_tabfm_inputs
     "graph_ext_limix2m_regression.onnx"
     "tensor_map_limix2m_classification.json"
     "tensor_map_limix2m_regression.json"
+    # Nori-30M (Synthefy, Apache-2.0) -- regression ONLY, (x, y)-only like its LimiX ancestor: one plain
+    # graph and one tensor map. The engine reads nori.pt natively ({model_config, ema_state_dict}), so
+    # there is no converter and no ext graph. NO migraphx graph: its split is positional, so ROCm refuses
+    # it by name (docs/ROCM_SINGLE_EVAL_POS.md).
+    "graph_nori30m_regression.onnx"
+    "tensor_map_nori30m_regression.json"
+    # EXAONE Tabular v1 (LG AI Research; non-commercial EXAONE NC 1.2 weights) -- (x, y)-only, one plain
+    # graph and one tensor map per task. The released files are safetensors keyed by the module namespace,
+    # so there is no converter. NO migraphx graph: its split is positional, so ROCm refuses it by name
+    # (docs/ROCM_SINGLE_EVAL_POS.md).
+    "graph_exaone_tabular_classification.onnx"
+    "graph_exaone_tabular_regression.onnx"
+    "tensor_map_exaone_tabular_classification.json"
+    "tensor_map_exaone_tabular_regression.json"
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
     "graph_tabpfn25_classification.onnx"
     "graph_tabpfn25_regression.onnx"

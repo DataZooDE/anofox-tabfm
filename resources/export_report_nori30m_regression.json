@@ -1,0 +1,147 @@
+{
+  "command": [
+    "export_nori",
+    "--config",
+    "real",
+    "--out",
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-decide/7e409e93-cc2c-4f92-8eed-43d9e96cd3da/scratchpad/nori_real_out"
+  ],
+  "task": "regression",
+  "config": "real",
+  "model_config": {
+    "preprocess_config_x": {
+      "num_features": 2,
+      "nan_handling_enabled": true,
+      "normalize_on_train_only": true,
+      "normalize_x": true,
+      "remove_outliers": false,
+      "normalize_by_used_features": true
+    },
+    "encoder_config_x": {
+      "num_features": 2,
+      "embedding_size": 224,
+      "mask_embedding_size": 224,
+      "encoder_use_bias": true,
+      "numeric_embed_type": "RBF",
+      "RBF_config": {
+        "token_embed_dim": 16,
+        "n_kernels": 64,
+        "sigma": 0.5,
+        "use_learn_sigma": false,
+        "use_learn_embeddings": false,
+        "use_random_kernels": false,
+        "use_original_features": false
+      }
+    },
+    "encoder_config_y": {
+      "num_inputs": 1,
+      "embedding_size": 224,
+      "nan_handling_y_encoder": true,
+      "max_num_classes": 10
+    },
+    "decoder_config": {
+      "num_classes": 10,
+      "num_reg_quantiles": 999
+    },
+    "feature_positional_embedding_type": "none",
+    "nlayers": 28,
+    "nhead": 4,
+    "embed_dim": 224,
+    "hid_dim": 768,
+    "features_per_group": 2,
+    "dropout": 0,
+    "pre_norm": true,
+    "activation": "swiglu",
+    "recompute_attn": false,
+    "layer_arch": "smf",
+    "self_share_all_kv_heads": false,
+    "cross_share_all_kv_heads": false,
+    "seq_attn_isolated": true,
+    "seq_attn_serial": false,
+    "mask_prediction": false,
+    "use_qassmax": true,
+    "qass_mode": "full",
+    "qass_sdpa_scale": false,
+    "use_target_aware_embedding": true,
+    "use_column_specific_y_aware": true,
+    "sequence_attention_mode": "full",
+    "sequence_attention_inducing_points": 128,
+    "flat_attention_params": false,
+    "norm_type": "rmsnorm",
+    "deepnorm_alpha": 0.18898223650461363
+  },
+  "n_params": 29206804,
+  "seed": 0,
+  "opset": 18,
+  "upstream": {
+    "package": "synthefy-nori==0.22.0",
+    "repo": "https://github.com/Synthefy/synthefy-nori",
+    "code_license": "Apache-2.0",
+    "weights_license": "Apache-2.0",
+    "checkpoint": "Synthefy/Nori-30M@63c9f7facf9fb32c37ce3fc2fba331d524696318 :: nori.pt"
+  },
+  "input_signature": {
+    "x": "[1,T,H] f32",
+    "y": "[1,S] f32 (S=eval_pos, RAW training targets only)"
+  },
+  "output": {
+    "logits": "[1,T,1] RAW-space point estimate per row: the mean of the 999-quantile head (upstream's default quantile_collapse='mean')"
+  },
+  "H_dynamic": true,
+  "train_size": "runtime (implicit = len(y))",
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_train": [
+    "train",
+    2,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    1,
+    512
+  ],
+  "example_THS": [
+    20,
+    8,
+    12
+  ],
+  "graph_bytes": 1538639,
+  "n_initializers_mapped": 773,
+  "unmatched_small_inline": [
+    "m.encoder_x.0.numeric_mlp.centers",
+    "m.lifted_tensor_0"
+  ],
+  "parity": {
+    "ok": true,
+    "worst": 4.76837158203125e-07,
+    "tol": 0.001,
+    "shapes": [
+      {
+        "T": 16,
+        "H": 3,
+        "train": 10,
+        "max_abs_delta_context_rows": 4.76837158203125e-07,
+        "max_abs_delta_query_rows": 0.0,
+        "ort_ms": 179.79955673217773
+      },
+      {
+        "T": 60,
+        "H": 20,
+        "train": 40,
+        "max_abs_delta_context_rows": 0.0,
+        "max_abs_delta_query_rows": 0.0,
+        "ort_ms": 1344.398021697998
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.23.2",
+    "onnxruntime": "1.31.1",
+    "onnxscript": "0.7.2"
+  }
+}
