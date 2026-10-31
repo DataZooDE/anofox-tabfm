@@ -65,3 +65,35 @@ TEST_CASE("tabfm_ckpt: non-zip buffer is rejected", "[tabfm][ckpt]") {
 	const char *garbage = "not a zip file at all";
 	REQUIRE_FALSE(IsTorchCkpt(reinterpret_cast<const uint8_t *>(garbage), strlen(garbage)));
 }
+
+// Synthefy Nori (nori.pt) is a training-style checkpoint: {"model_config": {...nested config...},
+// "ema_state_dict": {...}}. Upstream's load_model reads the EMA weights (falling back to
+// "model_state_dict"), so the reader must descend into "ema_state_dict" rather than treat the top-level
+// dict -- which holds no tensors at all -- as the state_dict. The fixture also carries 0-dim tensors (the
+// checkpoint's `column_y_aware_alpha` / `deepnorm_alpha` scalars) and a config with nested dicts,
+// floats, bools and None (the released file has no lists). Built with torch.save from tiny random values (no Synthefy bytes).
+TEST_CASE("tabfm_ckpt: an ema_state_dict checkpoint (Nori) yields the EMA weights", "[tabfm][ckpt]") {
+	auto buf = ReadFile("test/fixtures/ckpt/tiny_ema.ckpt");
+	REQUIRE(IsTorchCkpt(buf.data(), buf.size()));
+
+	auto sd = ReadTorchCkpt(buf.data(), buf.size());
+	REQUIRE(sd.size() == 3);
+	REQUIRE(sd.count("layer.weight"));
+	REQUIRE(sd.count("alpha"));
+	REQUIRE(sd.count("layers.0.deepnorm_alpha"));
+
+	auto &w = sd.at("layer.weight");
+	REQUIRE(w.dtype == "f32");
+	REQUIRE(w.shape == vector<int64_t> {2, 3});
+	const float *wf = reinterpret_cast<const float *>(w.data);
+	for (int i = 0; i < 6; i++) {
+		REQUIRE(wf[i] == Approx((float)i));
+	}
+
+	auto &a = sd.at("alpha");
+	REQUIRE(a.dtype == "f32");
+	REQUIRE(a.shape.empty());
+	REQUIRE(a.nbytes == sizeof(float));
+	REQUIRE(*reinterpret_cast<const float *>(a.data) == Approx(1.25f));
+	REQUIRE(*reinterpret_cast<const float *>(sd.at("layers.0.deepnorm_alpha").data) == Approx(0.5f));
+}
