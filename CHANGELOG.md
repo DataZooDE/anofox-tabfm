@@ -5,6 +5,13 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **TabPFN-3.5 and TabPFN-3.5-Fast** (`tabpfn-v3-5`, `tabpfn-v3-5-fast`; Prior Labs, non-commercial
+  `tabpfn-3-5-license-v1.0`, gated like `tabpfn-v3`). Classify and regress on CPU, CUDA (ext graph) and ROCm
+  (bundled MIGraphX graphs), read straight from Prior Labs' safetensors with no conversion step; one file per
+  variant serves both tasks. A tensor map can now declare `"complete": true`, so a weights file may carry tensors
+  a task's graph does not use. See docs/REAL_MODELS.md.
+
 ## [v2026.10.26] - 2026-10-26
 
 ### Added
