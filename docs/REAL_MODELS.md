@@ -741,8 +741,8 @@ faster than linearly in rows. The engine caps all three at **5,000 rows**, 500 f
   `ConstantOfShape` (one use, from upstream's `new_empty` in the cell embedding), the same op that keeps
   tabdpt off MLX, so MLX should refuse Kumo by name rather than serve it.
 - **GPU paths need the converter.** Without `convert_kumo_weights` the weights are the raw `.pt`, whose
-  header no GPU graph is pinned to, so ROCm and CUDA report the weights as not matching and `auto` runs
-  on the CPU.
+  header no GPU graph is pinned to, so ROCm and CUDA should report the weights as not matching and `auto`
+  should run on the CPU (from the servability rule in `tabfm_model_spec.hpp`; not exercised here).
 
 ## TabICL v2 — shipped (classification)
 
