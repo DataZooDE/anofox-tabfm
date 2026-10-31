@@ -325,10 +325,17 @@ public:
 	}
 	Arr Sdpa(const Arr &q, const Arr &k, const Arr &v, const Arr &mask, float scale) const {
 		Arr r;
+#ifdef TABFM_MLX_C_07 // mlx-c >= 0.7: force_fused before the stream
+		Ok(mlx_fast_scaled_dot_product_attention(r.out(), q.get(), k.get(), v.get(), scale,
+		                                         /*mask_mode=*/"array", mask.get(),
+		                                         /*sinks=*/mlx_array_new(), /*force_fused=*/false, s_),
+		   "fast_scaled_dot_product_attention");
+#else
 		Ok(mlx_fast_scaled_dot_product_attention(r.out(), q.get(), k.get(), v.get(), scale,
 		                                         /*mask_mode=*/"array", mask.get(),
 		                                         /*sinks=*/mlx_array_new(), s_),
 		   "fast_scaled_dot_product_attention");
+#endif
 		return r;
 	}
 	//! torch.nn.Linear: weight is (out, in), so the op is x @ W.T + b.
