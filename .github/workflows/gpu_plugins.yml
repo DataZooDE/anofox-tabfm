@@ -109,7 +109,8 @@ jobs:
   mlx-plugin:
     name: MLX plugin (Apple Silicon; links libmlx/libmlxc, no ORT)
     timeout-minutes: 15
-    runs-on: macos-14
+    # macos-14 images are retired on 2026-11-02 (scheduled brownouts already fail jobs); macos-15 is arm64 too.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
