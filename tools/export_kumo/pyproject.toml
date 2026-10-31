@@ -1,0 +1,60 @@
+# Export: NVIDIA Kumo-Tabular (code Apache-2.0, weights OpenMDW-1.1)
+# -> weight-free ONNX graph + tensor-name map + random-init CI fixture.
+#
+#   uv sync
+#   uv run export_kumo --task classification --size small --out ../../resources
+#   uv run export_kumo --task regression     --size small --out ../../resources
+#   uv run make_kumo_fixture ../../test/fixtures/kumo          # builds the CI fixture
+#   uv run convert_kumo_weights --size small                   # .pt -> model.safetensors (GPU graphs)
+#   uv run pytest
+#
+# structured-data-models is pinned (git rev, below) to the code whose `_KumoTabular` the graphs
+# were exported from. No checkpoint weights are downloaded by the export itself;
+# real-weight parity (tests/test_real_weights.py) reads the engine's own cache.
+[project]
+name = "export-kumo"
+version = "0.1.0"
+description = "anofox-tabfm export: NVIDIA Kumo-Tabular -> weight-free ONNX graph + tensor-name map"
+requires-python = ">=3.11"
+dependencies = [
+    "torch==2.12.1",
+    "structured-data-models",
+    "onnx>=1.17",
+    "onnxruntime>=1.20",
+    "onnxscript>=0.2",
+    "numpy",
+    "pandas",
+    "safetensors",
+    "scikit-learn",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[project.scripts]
+export_kumo = "export_kumo.cli:main"
+make_kumo_fixture = "export_kumo.fixture_cli:main"
+convert_kumo_weights = "export_kumo.convert_weights:main"
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+# Pinned to the upstream commit the graphs were exported from: it is the first with the
+# padded-context / padded-column path (`_KumoTabular.forward_train(num_columns=, train_size=)`,
+# NVIDIA/structured-data-models #1204 + #1297) that the masked graph contract reuses. The
+# 0.2.1 release on PyPI predates both.
+structured-data-models = { git = "https://github.com/NVIDIA/structured-data-models.git", rev = "084aa7c7d69403d453c0073b785f1d32915669a8" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/export_kumo"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

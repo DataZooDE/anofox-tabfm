@@ -1,0 +1,98 @@
+{
+  "schema_version": 2,
+  "id": "kumo-fixture",
+  "display_name": "Kumo-Tabular CI fixture (random init, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "apache-2.0",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "kumo_tabular_v1_minimal",
+  "weights": {
+    "classification": {
+      "repo": "local:test/fixtures/kumo",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model_classification.safetensors",
+          "bytes": 126268,
+          "sha256": "27d6db3a252f788a6d1e4d46375fe02fd06bd49ff752968038bd26076de96d55"
+        }
+      ]
+    },
+    "regression": {
+      "repo": "local:test/fixtures/kumo",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model_regression.safetensors",
+          "bytes": 128504,
+          "sha256": "eddebea05c00ede4babd3e764ce109fb8a5d81d650b247305be90a090d9d631a"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "classification": "graph_kumo_fixture_classification.onnx",
+    "regression": "graph_kumo_fixture_regression.onnx",
+    "tensor_map": {
+      "classification": "tensor_map_kumo_fixture_classification.json",
+      "regression": "tensor_map_kumo_fixture_regression.json"
+    }
+  },
+  "capabilities": [
+    "classify",
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T"
+        ]
+      },
+      "train_size": {
+        "name": "train_size",
+        "dtype": "i64"
+      },
+      "n_features": {
+        "name": "d",
+        "dtype": "i64"
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "C"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 3
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init Kumo-Tabular fixture (Apache-2.0 architecture, our weights). T and H are DYNAMIC; the tabfm-v1 five-input contract (x, y[1,T], train_size, cat_mask, d); the engine standardises features and the regression target (kumo_tabular_v1_minimal). Classification outputs are class logits (C = 3); regression outputs the mean of 16 quantiles (C = 1)."
+}

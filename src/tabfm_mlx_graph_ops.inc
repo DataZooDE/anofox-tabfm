@@ -90,6 +90,13 @@ const std::unordered_map<std::string, Handler> &Handlers() {
 	    BINARY("GreaterOrEqual", mlx_greater_equal),
 	    BINARY("LessOrEqual", mlx_less_equal),
 
+	    {"Round",
+	     [](const Node &, const Args &in, const Ctx &c) {
+		     // ONNX Round is round-half-to-even, as MLX's (numpy semantics) is.
+		     Arr r;
+		     Ok(mlx_round(r.out(), in[0]->get(), 0, c.s), "round");
+		     return Wrap(std::move(r));
+	     }},
 	    {"Where",
 	     [](const Node &, const Args &in, const Ctx &c) {
 		     Arr r;

@@ -36,6 +36,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **TabPFN-3.5-Fast** (`tabpfn-v3-5-fast`) | tabpfn-3-5-license-v1.0 (**non-commercial**, no hosted service) | ✅ shipped | **yes — classify + regress** | 83.5 M / 334 MB; 3.5 at 8 ICL layers instead of 24; parity 1.5e-04 clf (logit floor) / 6.2e-06 reg; ROCm served (0 label diffs; cold compile ~17 min per task) |
 | **Nori-30M** (`nori-30m`) | Apache-2.0, code and weights (commercial, ungated) | ✅ shipped | **yes — regress only** | 29.2 M; a LimiX fork; **no conversion — the engine reads `nori.pt` natively**; 999-quantile head reduced in-graph to its mean; parity with upstream's single forward 1.0e-4 (california); **ROCm served** (masked graph, after a one-time convert; 3.8e-6 vs CPU) |
 | **EXAONE Tabular** (`exaone-tabular`) | EXAONE AI Model License 1.2 - NC (**non-commercial**, gated) | ✅ shipped | **yes — classify + regress** | 20.8 M clf / 21.1 M reg; **no conversion — LG ship safetensors**; iris 45/45 and wine 54/54 labels identical to upstream's single forward; plain attention instead of upstream's pinned FlashAttention; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
+| **Kumo-Tabular** (`kumo-tabular-small` / `-medium` / `-large`) | OpenMDW-1.1 (**commercial**, ungated; keep the agreement + NVIDIA notice when distributing) | ✅ shipped | **yes — classify + regress, CPU and ROCm** | 27.5 M / 61.5 M / 213.7 M (classifier); no conversion on the CPU (the `.pt` is read natively); upstream parity ≤ 1.5e-5 (probabilities); first model onboarded on the masked contract from day one |
 
 ### TabPFN-3 — done
 
@@ -560,6 +561,7 @@ regress capabilities above — there is no separate per-model work.
 | `orion-bix` | ✅ | ✗ | ✅ | categorical columns only |
 | `nori-30m` | ✗ | ✅ | ✗ (needs classification) | numeric columns only |
 | `exaone-tabular` | ✅ | ✅ | ✅ | ✅ all columns |
+| `kumo-tabular-*` | ✅ | ✅ | ✅ | ✅ all columns |
 
 `tabfm_generate` needs **only** classification, because every chain-rule step is
 a classification problem — continuous columns go through quantile bins. That is
@@ -1167,6 +1169,176 @@ uv run export_exaone --task regression     --config real --out ./out
 uv run make_exaone_fixture ../../test/fixtures/exaone
 TABFM_REAL_WEIGHTS=1 uv run pytest
 ```
+
+## Kumo-Tabular (NVIDIA) — shipped (classify + regress, three sizes)
+
+NVIDIA's tabular foundation model, released on Hugging Face as `nvidia/Kumo-Tabular` with code in
+`NVIDIA/structured-data-models` (`sdm/models/kumo/tabular`). It descends from TabFM and TabICL: Fourier
+cell embeddings with separate numerical / categorical frequencies and a missingness projection, induced
+column attention over feature groups of three, RoPE row attention that reads the row out through four
+learned tokens, then an in-context-learning transformer with test-time GQA. Three sizes ship as three
+catalog entries:
+
+| id | params (classifier / regressor) | download (clf + reg) | TabArena Elo (NVIDIA, 8 estimators) |
+|---|---|---|---|
+| `kumo-tabular-small` | 27.5 M / 28.5 M | 110 + 114 MB | 1820 |
+| `kumo-tabular-medium` | 61.5 M / 62.5 M | 246 + 250 MB | 1936 |
+| `kumo-tabular-large` | 213.7 M / 215.7 M | 855 + 863 MB | 2017 |
+
+The ids spell out upstream's own size names (`KumoTabular(size="small")`, the `small/` directory on HF)
+rather than abbreviating them. The Elo figures are NVIDIA's and use `num_estimators=8`; the engine runs
+one estimator, so they are not a claim about these entries.
+
+### Licence
+
+Code Apache-2.0. Weights **OpenMDW-1.1** (`LICENSE` in the HF repo, `Copyright (c) 2026 NVIDIA
+CORPORATION & AFFILIATES`): permission "to deal in the Model Materials without restriction", commercial
+use included, with no field-of-use clause and no claim on outputs. The repo is not gated. So all three
+entries are `commercial: true`, `redistributable: true` and have **no licence gate**
+(`tabfm_download` works without `anofox_tabfm_accept_hf_license`). The agreement's one duty applies to
+distribution: whoever distributes any portion of the Model Materials must retain a copy of the agreement
+and NVIDIA's copyright and origin notices. The registry's `attribution` carries the notice and the
+licence link. "Model Materials" is defined to include the architecture, so whether a weight-free graph of
+it counts as "a portion" is an open question we have not put to NVIDIA or counsel; the notice is shown
+either way. There is also a patent-retaliation clause (rights end for anyone who sues claiming the
+materials infringe). This is our reading, not legal advice.
+
+### How it runs
+
+**The graph contract is tabfm-v1's five inputs**, `x[1,T,H]`, `y[1,T]`, `train_size[1]`, `cat_mask[1,H]`,
+`d[1]`, not the positional `(x, y[1,S])` the TabICL family uses. Upstream already has the masked form:
+`_KumoTabular.forward_train(..., num_columns=, train_size=)` is its own padded-context / padded-column
+path (structured-data-models #1204, #1297), where every split is a mask. The exporter
+(`tools/export_kumo`) calls that path, so the split and the real width are values, padding is inert, and
+**one graph family serves the CPU, CUDA (ext graph) and bucket-padded ROCm (migraphx graph)**. There
+was no positional version to convert later. Gated in `tools/export_kumo/tests/test_export.py`: padded in
+both axes equals unpadded (< 1e-5), the masked path equals upstream's own positional inference forward
+(< 1e-5), and the negative controls (padding declared real, split off by one) are caught.
+
+**Preprocessing is the engine's.** Kumo's single-estimator numeric recipe is, step for step, the engine's
+standardising profile: `DropConstantColumns` = the unique-value filter, `Standardize(eps=1e-6)` +
+`Clip(-100, 100)` = the z-score with population std + 1e-6 and the clip, `ClipSigma(4, "log")` = the
+two-stage 4-sigma bounds with the log1p soft clip, and the regression target's `Standardize()` = the
+engine's target z-score and its inverse. Both sides compute it in float64. So the profile is
+`kumo_tabular_v1_minimal` (engine standardises), not `*_raw`. The regression graph emits the mean of the
+999 quantiles, which is upstream's own point estimate (`benchmark/tabular/model.py` takes
+`out.numerical.mean(-1)` for TabArena). The mean commutes with the affine target inverse.
+
+**Weights.** The published `<size>/{classifier,regressor}.pt` is a plain float32 state_dict, declared as
+`<size>/<task>/model.ckpt`. On the CPU the engine's native reader injects it directly, with no conversion.
+The GPU graphs (ext for CUDA and the CPU low-memory path, migraphx for ROCm) reference a safetensors file by
+offset, so they need the one-time converter:
+
+```bash
+cd tools/export_kumo && uv run convert_kumo_weights --size small   # writes <size>/<task>/model.safetensors
+```
+
+It writes every key in sorted order as float32 with no metadata, so the header is deterministic and
+`ExpectedWeightsHeaderShaFor` pins it per size and task. Pinned to HF tag `v1.0.1` (`b2f5a9d6…`), the
+revision upstream's loader asks for; the LFS hashes are identical on `main`.
+
+Four things the export had to change, each found by a failure: integer `index % num_columns` in the group
+wrap became conditional subtraction (MIGraphX's GPU target miscomputes data-dependent integer division,
+`docs/ROCM_TABPFN_PLAN.md`); upstream hands ONE `RotaryEmbedding` to every row block, so 8 checkpoint keys
+were one ONNX initializer and the engine refused the graph, and unsharing the leaf module gives a 1:1 map;
+the qkv / RoPE / readout splits lowered to `SplitToSequence` + `SequenceAt` (166 in the small graph), which
+MIGraphX and the MLX interpreter lack, and a graph rewrite turns them into `Slice`; and query rows carry the
+engine's `-100` label sentinel, which `Embedding` cannot index (upstream zeroes those rows' label
+embedding anyway).
+
+### What is verified, on the real weights
+
+**Parity with upstream** (`tools/export_kumo/tests/test_real_weights.py`, CPU). The reference is upstream's
+public `KumoTabular(...)(x_context, y_context, x_query)` with `num_estimators=1` and the default recipe made
+deterministic: the random `FlipSign`, `ShuffleColumns` and `ShuffleCategories` are removed and the
+round-robin `Choice` is pinned to its first member, `Identity`. The candidate is the shipped ext graph under
+ONNX Runtime on the float64 replica of the engine's preprocessing, which `test/sql/tabfm_kumo_tabular.test`
+in turn checks against the engine on every fixture row.
+
+| size | iris / wine / breast cancer | diabetes (spread 321) | synthetic regression (spread 24) |
+|---|---|---|---|
+| small | labels 100 %, probabilities ≤ 6.0e-6 | ≤ 2.4e-4, query R² 0.560 | ≤ 7.4e-6, R² 0.9994 |
+| medium | labels 100 %, ≤ 6.7e-6 | ≤ 3.8e-4, R² 0.561 | ≤ 1.1e-5 |
+| large | labels 100 %, ≤ 1.5e-5 | ≤ 4.1e-4, R² 0.559 | ≤ 9.5e-6 |
+
+For scale: upstream's own *default* recipe with one estimator is not this function. On breast cancer its
+random sign flips and shuffles move probabilities by up to 0.34 against the deterministic member (labels
+agree 98.8 %); with 8 estimators, 0.20. The engine reproduces the deterministic member.
+
+**Through the engine** (built-in path, `test/sql/tabfm_real_models.test` split: 168 context rows, 64 query
+rows, 4 features), CPU:
+
+| size | accuracy | R² | warm call (240 rows) | peak RSS |
+|---|---|---|---|---|
+| small | 0.969 | 0.999998 | 0.22 s | 0.6 GB |
+| medium | 0.938 | 0.999995 | 0.7 s | 1.3 GB |
+| large | 0.969 | 0.999998 | 1.0 s | 3.0 GB |
+
+The real-weights test also asserts in-context fitted values (`is_training` rows) and query rows separately,
+on all three sizes.
+
+**ROCm** (gfx1201, RX 9070 XT, fp32, built-in path with the converted weights;
+`tools/gpu_test/scenarios/kumo_rocm.sql`, 240 rows x 4 features padded to the 512 x 16 bucket, every
+row compared with the CPU in the same session):
+
+| size | served by | label disagreements (query / context) | regression max abs diff | warm call ROCm / CPU | cold compile per bucket (clf / reg) |
+|---|---|---|---|---|---|
+| small | `rocm:0` | 0 / 0 of 240 | 5.9e-6 | 0.04 s / 0.22 s | ~5 min / ~5 min |
+| medium | `rocm:0` | 0 / 0 of 240 | 5.5e-5 | 0.18 s / 0.7 s | 39 min / 39 min |
+| large | `rocm:0` | 0 / 0 of 240 | 6.9e-5 | 0.19 s / 1.0 s | 41 min / 33 min |
+
+The first compile of each (size, task, bucket) is long; `tabfm_gpu_precompile` moves it off the query path.
+Only the 512 x 16 bucket was measured; larger buckets were not compiled.
+
+**A MIGraphX miscompile, found and worked around.** The first medium run on ROCm was wrong: 6 of 64 query
+labels differed from the CPU and regression was off by 0.67 on average (R² 0.96 against 0.99999), while
+small was exact. Small is the one size without test-time GQA (medium and large attend query rows with 2 of
+their 8 / 16 K/V heads). Bisected on random-init models at medium dims with 2 layers, CPU vs ROCm through
+the engine: with GQA the GPU is off by about half the output spread; the same model without GQA agrees to
+2e-7; the fixture (1 K/V head) agrees too. `migraphx-driver verify -b` (reference target vs GPU) puts the
+first divergence in the first ICL layer's query path, at a concat of head slices of a transposed K/V
+tensor. Rewriting the head expansion as slices + Concat did not help; a one-hot [Hq, Hkv] GEMM over the
+reshaped K/V did (`verify` passes, engine difference 2.3e-7). It is the identical function: the upstream
+parity numbers above did not move and the fixture goldens are unchanged. The ORT paths (CPU, CUDA) were
+never affected; this only shows up on the GPU, so a CPU-only parity gate cannot see it
+(`tools/export_kumo/tests/test_export.py` checks the rewrite against torch's own `enable_gqa`).
+
+### Size and speed (CPU, 8 threads, 80 % context)
+
+| model | rows x features | wall | peak RSS |
+|---|---|---|---|
+| small | 2000 x 20 | 5.4 s | 1.8 GB |
+| small | 5000 x 20 | 19 s | 5.0 GB |
+| small | 10000 x 50 | 73 s | 30 GB |
+| large | 2000 x 20 | 26 s | 4.5 GB |
+| large | 5000 x 20 | 123 s | 14.7 GB |
+
+The masked graph attends over all T rows (context rows attend to the context as queries do), so memory grows
+faster than linearly in rows. The engine caps all three at **5,000 rows**, 500 features (upstream's own
+`SelectColumns(500)`) and 10 classes.
+
+### What it does not claim
+
+- **One estimator.** NVIDIA's leaderboard figures are 8-member ensembles (sign flips, column shuffles, class
+  shifts, four numeric transforms in rotation).
+- **More than 10 classes** is refused by the head width (`supports at most 10 classes`). Upstream reaches
+  more with error-correcting output codes (random codebooks over several forward passes), which the engine
+  does not reproduce.
+- **Categoricals differ in two details.** The engine codes a category by first appearance in the context
+  (and drops categories seen once); upstream sorts by value. The category-count columns upstream adds for
+  columns with 50 or more categories are not added. The categorical embedding itself is used: `cat_mask`
+  reaches the graph (asserted in the fixture test). Upstream's `infer_stypes` also treats a two-valued
+  numeric column as categorical; the engine treats any numeric column as numeric.
+- **NULLs are mean-imputed by the engine** before the graph, so Kumo's missing-value projection is unused.
+- **Context K/V caching** (upstream's prepare/query split) is not exported; every call re-encodes the
+  context.
+- **CUDA and MLX were not run.** The ext graphs and header hashes are bundled, but no CUDA device or Mac was
+  available. A static check of the graphs against the MLX interpreter's op table finds one missing op,
+  `ConstantOfShape` (one use, from upstream's `new_empty` in the cell embedding), the same op that keeps
+  tabdpt off MLX, so MLX should refuse Kumo by name rather than serve it.
+- **GPU paths need the converter.** Without `convert_kumo_weights` the weights are the raw `.pt`, whose
+  header no GPU graph is pinned to, so ROCm and CUDA should report the weights as not matching and `auto`
+  should run on the CPU (from the servability rule in `tabfm_model_spec.hpp`; not exercised here).
 
 ## TabICL v2 — shipped (classification)
 

@@ -67,6 +67,11 @@
 #                CALL tabfm_download('classification', model := 'exaone-tabular');
 #                CALL tabfm_download('regression', model := 'exaone-tabular');
 #
+#                # Kumo-Tabular (NVIDIA, OpenMDW-1.1, ungated) needs NO converter on the CPU: the engine's
+#                # native reader takes the published .pt state_dict. Six files, three sizes x two tasks:
+#                CALL tabfm_download('classification', model := 'kumo-tabular-small');   -- and regression,
+#                -- and the same for kumo-tabular-medium and kumo-tabular-large
+#
 #                TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
 # group: [anofox_tabfm]
 
@@ -942,3 +947,190 @@ SELECT corr(yhat, f1 * 0.7 + 3) > 0.999 AND max(abs(yhat - (f1 * 0.7 + 3))) < 0.
 FROM tabfm_regress('reg_in', 'target', model := 'exaone-tabular') WHERE NOT is_training;
 ----
 true
+
+# ---------------------------------------------------------------------------
+# Kumo-Tabular (NVIDIA), three sizes. Commercial (OpenMDW-1.1) and ungated, so no licence acceptance is
+# involved. The graph takes the tabfm-v1 five-input contract and the ENGINE standardises features and
+# target (kumo_tabular_v1_minimal): a skipped standardisation, or a doubled one, would pass the non-NULL
+# check and fail the floors. Context rows are in-context values from the same pass (the train_size mask,
+# not a second pass), so both halves are checked.
+#
+# Parity with upstream is exercised out-of-band, where upstream's own model is available
+# (tools/export_kumo/tests/test_real_weights.py): upstream's single deterministic estimator vs the engine.
+# The published Elo figures are num_estimators=8; this is one.
+
+statement ok
+CREATE TABLE c_ks AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'kumo-tabular-small');
+
+query I
+SELECT count(*) FROM c_ks WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_ks c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_ks AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'kumo-tabular-small');
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.95
+FROM r_ks r JOIN truth t USING (row_id)
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'kumo-tabular-small') WHERE is_training;
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = 'c' || round(f1 / 10)::INTEGER THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'kumo-tabular-small') WHERE NOT is_training;
+----
+true
+
+query I
+SELECT count(DISTINCT yhat) > 1 FROM tabfm_classify('fitted_t', 'label', model := 'kumo-tabular-small')
+WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'kumo-tabular-small') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, f1 * 0.7 + 3) > 0.99
+FROM tabfm_regress('reg_in', 'target', model := 'kumo-tabular-small') WHERE NOT is_training;
+----
+true
+
+statement ok
+CREATE TABLE c_km AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'kumo-tabular-medium');
+
+query I
+SELECT count(*) FROM c_km WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_km c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_km AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'kumo-tabular-medium');
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.95
+FROM r_km r JOIN truth t USING (row_id)
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'kumo-tabular-medium') WHERE is_training;
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = 'c' || round(f1 / 10)::INTEGER THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'kumo-tabular-medium') WHERE NOT is_training;
+----
+true
+
+query I
+SELECT count(DISTINCT yhat) > 1 FROM tabfm_classify('fitted_t', 'label', model := 'kumo-tabular-medium')
+WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'kumo-tabular-medium') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, f1 * 0.7 + 3) > 0.99
+FROM tabfm_regress('reg_in', 'target', model := 'kumo-tabular-medium') WHERE NOT is_training;
+----
+true
+
+statement ok
+CREATE TABLE c_kl AS
+SELECT row_id, yhat FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'kumo-tabular-large');
+
+query I
+SELECT count(*) FROM c_kl WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT (SELECT count(*) FILTER (WHERE c.yhat = t.y) FROM c_kl c JOIN truth t USING (row_id)) * 1.0
+       / (SELECT count(*) FROM truth) >= 0.90
+----
+true
+
+statement ok
+CREATE TABLE r_kl AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'kumo-tabular-large');
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.95
+FROM r_kl r JOIN truth t USING (row_id)
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = label THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'kumo-tabular-large') WHERE is_training;
+----
+true
+
+query I
+SELECT sum(CASE WHEN yhat = 'c' || round(f1 / 10)::INTEGER THEN 1 ELSE 0 END)::DOUBLE / count(*) > 0.9
+FROM tabfm_classify('sep_t', 'label', model := 'kumo-tabular-large') WHERE NOT is_training;
+----
+true
+
+query I
+SELECT count(DISTINCT yhat) > 1 FROM tabfm_classify('fitted_t', 'label', model := 'kumo-tabular-large')
+WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.9
+FROM tabfm_regress('reg_t', 'target', model := 'kumo-tabular-large') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, f1 * 0.7 + 3) > 0.99
+FROM tabfm_regress('reg_in', 'target', model := 'kumo-tabular-large') WHERE NOT is_training;
+----
+true
+
+# More than 10 classes: upstream reaches them with error-correcting output codes, which the engine does
+# not reproduce, so the head width is the ceiling and the refusal names the model and the fix.
+statement ok
+CREATE TABLE k11 AS SELECT i::DOUBLE f1, (i % 7)::DOUBLE f2, CASE WHEN i < 80 THEN 'k' || (i % 11)::VARCHAR END AS lbl
+FROM range(100) r(i);
+
+statement error
+SELECT count(*) FROM tabfm_classify('k11', 'lbl', model := 'kumo-tabular-small')
+----
+'kumo-tabular-small' supports at most 10 classes and 'lbl' has 11
