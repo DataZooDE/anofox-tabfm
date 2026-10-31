@@ -5,6 +5,11 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Google TabFM 1.1 (`tabfm-v1-1`)**, classification and regression: the v1 architecture at embed_dim 128
+  (410 M parameters, 0.82 GB BF16 per task, against 6.56 GB for v1), non-commercial like v1. Serves on CPU and on
+  ROCm (MIGraphX), whose graphs now Cast BF16-stored weights in-graph. `tabfm-v1` is unchanged.
+
 ## [v2026.10.26] - 2026-10-26
 
 ### Added

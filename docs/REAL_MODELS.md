@@ -29,6 +29,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
 | **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; ROCm refused by name |
 | **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
+| **Google TabFM 1.1** (`tabfm-v1-1`) | TabFM Non-Commercial License v1.0 (**non-commercial**, same text as v1) | ✅ shipped | **yes — classify + regress, CPU + ROCm** | 410 M / 0.82 GB per task (BF16), 4x fewer params than v1; no conversion; end-to-end parity with upstream 9.4e-06 clf / 4.9e-06 reg; ROCm agrees with CPU 64/64 |
 
 ### TabPFN-3 — done
 
@@ -307,6 +308,7 @@ regress capabilities above — there is no separate per-model work.
 | model | classify | regress | `tabfm_generate` | `tabfm_impute` |
 |---|---|---|---|---|
 | `tabfm-v1` | ✅ | ✅ | ✅ | ✅ all columns |
+| `tabfm-v1-1` | ✅ | ✅ | ✅ | ✅ all columns |
 | `mitra` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2` | ✅ | ✅ | ✅ | ✅ all columns |
 | `tabpfn-v2-5` | ✅ | ✅ | ✅ | ✅ all columns |
@@ -680,6 +682,90 @@ tensor map's `safetensors` field.
 Note the `Prior-Labs/tabpfn_2_5` repo carries `extra_gated_fields`, but its
 `resolve` endpoint currently serves anonymously; if that changes, the download
 fails with the actionable 401 described below.
+
+## Google TabFM 1.1 (`tabfm-v1-1`) — shipped (classify + regress)
+
+Google's second TabFM release (HF `google/tabfm-1.1.0-pytorch`, published 2026-08-01, pinned to commit
+`d7cfd3b8…`). It is a **separate catalog entry**; `tabfm-v1` is unchanged and still serves 1.0.0.
+
+### What changed from v1, and what did not
+
+The architecture code is the same: `vendor/tabfm`'s `model.py` at the pinned submodule loads the 1.1
+checkpoint with `strict=True` (913 classification / 918 regression tensors, every key the same as v1's).
+Upstream's public code has **no 1.1-specific module** (the model card's `tabfm_v1_1_0_pytorch` import
+exists neither on GitHub `main` nor in the PyPI releases 1.0.0 / 1.0.1), so the submodule was **not
+bumped**: newer upstream commits change estimator code (context caching, hold-out sets) and none touches
+the forward. What changed is the checkpoint:
+
+| | v1 (1.0.0) | 1.1 (1.1.0) |
+|---|---|---|
+| `embed_dim` (icl_dim = 8 x) | 256 (2048) | **128 (1024)** |
+| `decoder_hidden` in config.json | `null` → icl_dim x 2 = 4096 | **2048** (also icl_dim x 2) |
+| parameters | 1.64 B | **410 M** clf / 412 M reg |
+| tensor dtype on disk | F32 | **BF16** |
+| file per task | 6.56 GB | **0.82 GB** |
+
+`tools/export_onnx` now takes `--hf-repo/--hf-revision` and passes an explicit `decoder_hidden` through
+(it dropped the field only when null, so the value happened to be right; the 1.1 test pins it). The
+exported **tensor maps are byte-identical to v1's** and are reused; the graphs are new because the dims are
+baked into Reshape constants. BF16 needs nothing new on the CPU injection path (the safetensors reader
+upcasts exactly), but the external-data and MIGraphX graphs point ONNX initializers straight at the file,
+so `tools/make_migraphx_graph.py` (`retype_external`, also used by `make_external_graph.py`) now retypes a
+BF16-stored initializer to BF16 and adds a `Cast(to=FLOAT)`; it refuses any other dtype mismatch and any
+byte length that does not equal numel x itemsize. The v1 ext and MIGraphX graphs regenerate byte-identical
+with the changed tools.
+
+### Licence
+
+`LICENSE` in the 1.1 repo is byte-identical to v1's (sha256 `26d8c474…`): the TabFM Non-Commercial License
+v1.0 — testing, evaluation and research only, no commercial or production use, no redistribution. So the
+entry is `commercial: false`, gated by `anofox_tabfm_accept_hf_license`. The Hugging Face repo itself is
+**not access-gated** (API `gated: false`, like v1's): no token is needed.
+
+### What is verified, on the real weights
+
+- **Graph vs upstream PyTorch** (shipped weight-free graph + injected 1.1 weights in ORT, against
+  `vendor/tabfm`'s `TabFM` with the same weights): worst test-row difference 7.6e-05 on classification
+  logits and 2.5e-06 on regression, argmax identical, at (T, H) = (16, 4), (240, 4), (300, 25). The
+  external-data and MIGraphX graph variants run in ORT CPU agree to 3.1e-05 / 9.8e-06.
+- **SQL end to end vs upstream's estimator** (the standard split of `tabfm_real_models.test`, engine vs
+  `TabFMClassifier` / `TabFMRegressor` with `n_estimators=1`, norm none, no shuffle, no class shift, no AMP —
+  the single-member configuration the engine implements): probabilities within **9.4e-06**, labels 64/64,
+  regression within **4.9e-06** on a target spread of 13.8.
+- **Quality on that split (CPU):** accuracy **0.969**, R² **0.99996**. `tabfm-v1` on the same split: 0.969 and
+  0.99991. The context-row (`is_training`) oracles pass as for every other model.
+- The two CPU weight paths (external-data graph, the default; forced injection,
+  `TABFM_DISABLE_EXTERNAL_DATA=1`) give byte-identical answers.
+- Offline: `test/sql/tabfm_v1_1.test` (catalog entry, licence gate before any I/O, and a random-init BF16
+  fixture with a non-default `decoder_hidden` whose 20 rows per task are pinned against the upstream
+  estimator).
+
+### Size and speed
+
+CPU, default threads, the 240-row split (168 context + 64 query rows, 5 features), cold: **~6 s** per task
+including the model load, against ~39-54 s for `tabfm-v1`.
+
+### Platforms
+
+- **CPU:** Linux x86-64, as above.
+- **ROCm (gfx1201, RX 9070 XT, fp32 default):** served on **`rocm:0`** (`tools/gpu_test/scenarios/tabfm_v1_1_rocm.sql`
+  prints `V11_GPU_SERVED_BY=rocm:0`). Against the CPU on the standard split: **0/64 label disagreements**, top
+  probability within 1.1e-05, GPU accuracy 0.969; regression max abs diff 1.1e-05, correlation 1.000000, GPU
+  R² 0.99996. Warm predict 0.27 s. The cold MIGraphX compile of the T512/H16 bucket took **36 min
+  (classification) and 24 min (regression)** — measured while other builds shared the CPU, so not faster than
+  v1's ~25 min despite the 4x smaller model; the `.mxr` is 1.66 GB per bucket. Precompile
+  (`tabfm_gpu_precompile`) or stage `.mxr` files (`anofox_tabfm_mxr_source`) as for v1.
+- **CUDA:** the external-data graphs and header hashes are bundled, but **no CUDA device was available, so
+  nothing was run on CUDA**.
+- **MLX:** not run.
+
+### TabArena
+
+TabArena lists **"TabFM (default)"** (1815 Elo on the current all-datasets board, no imputation; 1823 in the
+open-entrants view) and **"TabFM+"**. It does not say which checkpoint it measured. TabFM was added on
+2026-07-08 (v0.1.5.2), **before 1.1.0 existed**, and the 2026-09-17 re-run notes only a timing change with
+Elo "unchanged within their confidence intervals"; the entry links the public GitHub code, which loads 1.0.0.
+So the figure is most likely **1.0.0, i.e. `tabfm-v1`**, and no leaderboard figure is claimed for 1.1.
 
 ## Gated HuggingFace repositories
 
