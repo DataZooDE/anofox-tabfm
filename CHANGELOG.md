@@ -27,15 +27,26 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 - **`nori-30m`** (Synthefy Nori-30M, Apache-2.0, ungated): the first REGRESSION-ONLY built-in. The engine
   reads the released `nori.pt` natively (the checkpoint reader now prefers `ema_state_dict`); the 999-quantile
   head is reduced in-graph to its mean. `tabfm_classify` is refused and the error now names the models that do
-  classify. ROCm is served through a second, masked graph (after the one-time `convert_nori_weights`).
+  classify. ROCm is served through a second, masked graph, which reads the `model.safetensors` that
+  `tabfm_download` writes beside the checkpoint.
 - **`exaone-tabular`** (LG AI Research EXAONE Tabular v1, classify + regress): non-commercial weights (EXAONE
   AI Model License 1.2 - NC), gated by `anofox_tabfm_accept_hf_license`. Plain attention in place of
   upstream's pinned FlashAttention; labels identical to upstream's single forward on iris and wine. ROCm is
   served through a second, masked graph per task (0/100 label differences against the CPU on a gfx1201).
 - **NVIDIA Kumo-Tabular, three sizes: `kumo-tabular-small`, `-medium`, `-large`** (classify + regress).
-  Weights OpenMDW-1.1: commercial use permitted, no licence gate. The `.pt` checkpoints run on the CPU with
-  no conversion; `tools/export_kumo` `convert_kumo_weights` enables the bundled CUDA/ROCm graphs. One estimator,
-  up to 10 classes, 5,000 rows. See docs/REAL_MODELS.md.
+  Weights OpenMDW-1.1: commercial use permitted, no licence gate; the agreement and NVIDIA's notice ship in the
+  binary and show in `tabfm_list_models()`. The `.pt` checkpoints run on the CPU with no conversion, and
+  `tabfm_download` writes the `model.safetensors` the bundled CUDA/ROCm graphs need. One estimator, up to 10
+  classes, 5,000 rows. See docs/REAL_MODELS.md.
+
+- **`tabfm_download` writes the GPU weights of `nori-30m` and the Kumo models itself**: the `model.safetensors`
+  beside the checkpoint that their bundled CUDA/ROCm graphs read by offset, byte for byte what
+  `tools/export_*/convert_*_weights` write, and only when its header matches the one the graphs pin. The Python
+  step is no longer needed.
+- **`tabfm_list_models()` gains an `attribution` column**: the notice each model's licence asks users to keep
+  (it was in the registry but shown nowhere). For Kumo-Tabular it includes the OpenMDW-1.1 agreement, which
+  the binary now carries because the bundled graphs may be a portion of the Model Materials; see
+  `THIRD_PARTY_NOTICES.md`.
 
 ### Changed
 - **Documentation restructured**: a short README in the anofox-forecast / anofox-decide layout, with guides
@@ -48,6 +59,22 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   and `context_rows` (accepted, no effect) described as they behave.
 
 ### Fixed
+- **Kumo-Tabular classifiers gave wrong answers on the CPU from a fresh download.** NVIDIA's classifier `.pt`
+  files store `row_embedding.y_emb.weight` and `icl_block.y_emb.weight` as transposed views, and the native
+  checkpoint reader ignored strides, so the CPU fed those embeddings in the wrong order: kumo-tabular-small
+  classified a 3-class probe at 28-34% instead of 94%. Caches that also held a converted `model.safetensors`
+  (which the engine prefers) were unaffected, which is how it passed review. The reader now gathers every
+  strided view in index order; a fixture checkpoint saved with transposed views pins it.
+- **A plugin from an older release no longer crashes the host.** A MIGraphX plugin from before the `n_rows`
+  input left it unbound; MIGraphX then failed inside its run call and reported it by writing to `std::cerr`
+  from a worker thread, which segfaulted `unittest` under `device = 'auto'`. Plugin ABI 2 makes each plugin
+  list the graph inputs it binds; the extension refuses older plugins (so `auto` uses the CPU) and refuses a
+  graph declaring an input the plugin does not bind, before the plugin runs. Plugins from v2026.10.26 are
+  ABI 1, so this release's plugins must be fetched with it (`CALL tabfm_accelerate()`).
+- **MLX no longer claims models it cannot run.** `tabfm_backends()` listed tabdpt, tabdpt-v1-3, the Kumo
+  models and orion-msp as runnable on `mlx`, and under `auto` an Apple-silicon machine picked mlx for them and
+  then failed to load. The extension now knows the op set of the plugin's graph interpreter (a test keeps it
+  equal to the plugin source), so those rows say which op is missing and `auto` serves them on the CPU.
 - `tabfm_load` on missing weights names the model and the exact fix: `model 'mitra' has no classification weights
   downloaded. Run: CALL tabfm_download('classification', model := 'mitra');` (it used to print the task as the model
   and leave out `model :=`). Its catalog description now says what it does: it checks the weights are present; the

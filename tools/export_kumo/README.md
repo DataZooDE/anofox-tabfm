@@ -12,7 +12,7 @@ for s in small medium large; do for t in classification regression; do
   uv run export_kumo --task $t --size $s --out ../../resources
 done; done
 uv run make_kumo_fixture ../../test/fixtures/kumo
-uv run convert_kumo_weights --size small        # .pt -> model.safetensors, for the GPU graphs
+uv run convert_kumo_weights --size small        # .pt -> model.safetensors (tabfm_download now writes the same bytes)
 uv run pytest                                   # fast exporter gates
 TABFM_REAL_WEIGHTS=1 uv run pytest tests/test_real_weights.py -s   # parity with upstream, real weights
 

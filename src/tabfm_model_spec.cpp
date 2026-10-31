@@ -303,6 +303,7 @@ void ParseV2(yyjson_val *root, ModelSpec &spec, const string &path) {
 	spec.license.commercial = OptBool(lic, "commercial", false);
 	spec.license.redistributable = OptBool(lic, "redistributable", false);
 	spec.license.attribution = OptStr(lic, "attribution", "", path);
+	spec.license.text_resource = OptStr(lic, "text_resource", "", path);
 	spec.license.gate_setting = OptStr(lic, "gate_setting", "", path);
 
 	spec.preprocessing_profile = ReqStr(root, "preprocessing_profile", path);

@@ -1360,7 +1360,7 @@ void ModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 //===--------------------------------------------------------------------===//
 
 struct ListModelsRow {
-	string model, family, capabilities, license;
+	string model, family, capabilities, license, attribution;
 	bool commercial = false;
 	int64_t max_rows = -1, max_features = -1, max_classes = -1;
 	bool downloaded = false;
@@ -1400,11 +1400,11 @@ bool TaskWeightsComplete(FileSystem &fs, const string &base_dir, const vector<We
 unique_ptr<FunctionData> ListModelsBind(ClientContext &, TableFunctionBindInput &, vector<LogicalType> &return_types,
                                         duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_list_models");
-	names = {"model",    "family",       "capabilities", "license",   "commercial",
-	         "max_rows", "max_features", "max_classes",  "downloaded"};
-	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
-	                LogicalType::VARCHAR, LogicalType::BOOLEAN, LogicalType::BIGINT,
-	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BOOLEAN};
+	names = {"model",    "family",       "capabilities", "license",    "commercial",
+	         "max_rows", "max_features", "max_classes",  "downloaded", "attribution"};
+	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
+	                LogicalType::BOOLEAN, LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,
+	                LogicalType::BOOLEAN, LogicalType::VARCHAR};
 	return make_uniq<ModelsBindData>();
 }
 
@@ -1420,6 +1420,15 @@ unique_ptr<GlobalTableFunctionState> ListModelsInit(ClientContext &context, Tabl
 		row.family = spec.family;
 		row.capabilities = StringUtil::Join(spec.capabilities, ", ");
 		row.license = spec.license.id;
+		// The notice a licence asks users to keep, plus any agreement it asks the distribution to retain
+		// verbatim -- the binary carries it, so this is where a user can read it.
+		row.attribution = spec.license.attribution;
+		if (!spec.license.text_resource.empty()) {
+			auto text = GetBundledResource(spec.license.text_resource);
+			if (text.data) {
+				row.attribution += (row.attribution.empty() ? "" : "\n\n") + string(text.data, text.size);
+			}
+		}
 		row.commercial = spec.license.commercial;
 		row.max_rows = spec.size_regime.max_rows;
 		row.max_features = spec.size_regime.max_features;
@@ -1453,6 +1462,7 @@ void ListModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 		output.SetValue(6, out, nbig(r.max_features));
 		output.SetValue(7, out, nbig(r.max_classes));
 		output.SetValue(8, out, Value::BOOLEAN(r.downloaded));
+		output.SetValue(9, out, r.attribution.empty() ? Value(LogicalType::VARCHAR) : Value(r.attribution));
 		out++;
 	}
 	duckdb_compat::SetChildCardinality(output, out);
@@ -2285,7 +2295,8 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	RegisterSet(loader, "anofox_tabfm_list_models", "tabfm_list_models", {{}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ListModelsBind), ListModelsInit,
 	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ListModelsExecute),
 	            "List every model in the registry (built-ins + user manifests), downloaded or not: model, family, "
-	            "capabilities, license, commercial, size regime (max_rows/features/classes), downloaded.",
+	            "capabilities, license, commercial, size regime (max_rows/features/classes), downloaded, and the "
+	            "attribution its licence asks users to keep (with any agreement text the binary must carry).",
 	            "SELECT * FROM tabfm_list_models();");
 	// CALL tabfm_gpu_precompile(task [, rows, features]);
 	RegisterSet(loader, "anofox_tabfm_gpu_precompile", "tabfm_gpu_precompile",

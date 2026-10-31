@@ -215,10 +215,15 @@ Prerequisites, the GPU plugins and source-build flavors: [docs/BUILDING.md](docs
 - **This extension's code:** MIT, see [LICENSE](LICENSE).
 - **Model weights:** the extension ships only **weight-free** graphs and never redistributes weights. Each
   model's weights are **your own Hugging Face download**, under that model's licence, listed in
-  [Models](#models) and in `tabfm_list_models()` (`license`, `commercial`). The repository and test fixtures
-  contain **zero model weight bytes** (fixtures are random-init).
-- **Non-commercial models:** `tabfm-v1`, `tabpfn-v2-5`, `tabpfn-v2-5-real`, `tabpfn-v2-6`, `tabpfn-v3` and
-  `causilo`. `causilo`'s licence also requires a separate licence for hosted, API or SaaS use.
+  [Models](#models) and in `tabfm_list_models()` (`license`, `commercial`, and the notice to keep in
+  `attribution`). The repository and test fixtures contain **zero model weight bytes** (fixtures are
+  random-init).
+- **Non-commercial models:** `tabfm-v1`, `tabfm-v1-1`, `tabpfn-v2-5`, `tabpfn-v2-5-real`, `tabpfn-v2-6`,
+  `tabpfn-v3`, `tabpfn-v3-5`, `tabpfn-v3-5-fast`, `exaone-tabular` and `causilo`. `causilo`'s licence also
+  requires a separate licence for hosted, API or SaaS use.
+- **Bundled graphs:** the Kumo-Tabular graphs encode NVIDIA's architecture, which OpenMDW-1.1 counts as part of
+  the Model Materials, so the binary carries that agreement and NVIDIA's notice; see
+  [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 - **Attribution:** `tabpfn-v2` is under the Prior Labs License v1.1 (Apache-2.0 plus attribution).
   `limix-2m` is under the Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 plus Section 10): if you
   make available a product or service that incorporates it, link the

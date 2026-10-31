@@ -35,6 +35,20 @@ kumo-tabular-large	icl-transformer	classify, regress	openmdw-1.1	true	500	10
 kumo-tabular-medium	icl-transformer	classify, regress	openmdw-1.1	true	500	10
 kumo-tabular-small	icl-transformer	classify, regress	openmdw-1.1	true	500	10
 
+# OpenMDW-1.1's one duty: whoever distributes "any portion of the Model Materials" retains a copy of the
+# agreement and NVIDIA's notices. The agreement counts the architecture as Model Materials, so the
+# weight-free graphs bundled into this binary may be such a portion; the extension carries both either
+# way, verbatim (resources/license_openmdw_1_1_nvidia.txt), and shows them in tabfm_list_models().
+query TTT
+SELECT model,
+       attribution LIKE '%Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.%',
+       attribution LIKE '%OpenMDW License Agreement, version 1.1 (OpenMDW-1.1)%IN NO EVENT SHALL THE PROVIDERS%'
+FROM tabfm_list_models() WHERE model LIKE 'kumo-tabular-%' ORDER BY model
+----
+kumo-tabular-large	true	true
+kumo-tabular-medium	true	true
+kumo-tabular-small	true	true
+
 # --- the fixture ----------------------------------------------------------------------------------
 
 statement ok

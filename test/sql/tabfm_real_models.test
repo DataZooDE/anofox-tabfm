@@ -1134,3 +1134,22 @@ statement error
 SELECT count(*) FROM tabfm_classify('k11', 'lbl', model := 'kumo-tabular-small')
 ----
 'kumo-tabular-small' supports at most 10 classes and 'lbl' has 11
+
+# ---------------------------------------------------------------------------
+# tabfm_download writes the GPU weights of the checkpoint-shipped models itself: the model.safetensors
+# beside the .ckpt that the bundled ext/migraphx graphs read by offset (it used to need
+# tools/export_*/convert_*_weights). A second row reports it: 'converted' when written now, 'cached' when
+# a file with the pinned header is already there.
+query TT
+SELECT parse_filename(file), status IN ('converted', 'cached') FROM tabfm_download('regression', model := 'nori-30m')
+ORDER BY 1
+----
+model.ckpt	true
+model.safetensors	true
+
+query TT
+SELECT parse_filename(file), status IN ('converted', 'cached') FROM tabfm_download('classification', model := 'kumo-tabular-small')
+ORDER BY 1
+----
+model.ckpt	true
+model.safetensors	true
