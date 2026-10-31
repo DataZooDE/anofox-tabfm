@@ -71,6 +71,9 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   list the graph inputs it binds; the extension refuses older plugins (so `auto` uses the CPU) and refuses a
   graph declaring an input the plugin does not bind, before the plugin runs. Plugins from v2026.10.26 are
   ABI 1, so this release's plugins must be fetched with it (`CALL tabfm_accelerate()`).
+- **Orion-BiX and Orion-MSP read their `.ckpt` natively again.** The checkpoint reader rejected pickle opcode
+  0x65 (`APPENDS`, which builds the lists in the checkpoint's config), so both needed
+  `tools/export_orion_*/convert_weights.py` before the CPU could read them; it now reads past lists.
 - **MLX no longer claims models it cannot run.** `tabfm_backends()` listed tabdpt, tabdpt-v1-3, the Kumo
   models and orion-msp as runnable on `mlx`, and under `auto` an Apple-silicon machine picked mlx for them and
   then failed to load. The extension now knows the op set of the plugin's graph interpreter (a test keeps it

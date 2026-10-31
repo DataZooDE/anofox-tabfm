@@ -279,6 +279,15 @@ public:
 			case 't': // TUPLE (to MARK)
 				MakeTupleToMark();
 				break;
+			case 'l': // LIST (to MARK) -> a tuple, like EMPTY_LIST
+				MakeTupleToMark();
+				break;
+			case 'a': // APPEND
+				Append();
+				break;
+			case 'e': // APPENDS (to MARK)
+				Appends();
+				break;
 			case 's': // SETITEM
 				SetItem();
 				break;
@@ -390,6 +399,29 @@ private:
 		}
 		stack_.back().items.push_back(std::move(k));
 		stack_.back().items.push_back(std::move(v));
+	}
+	// Lists are kept as tuples: a training checkpoint's config / optimizer state carries them beside the
+	// state_dict (Orion), and nothing here indexes them, but the VM has to get past them.
+	void Append() {
+		PVal v = Pop();
+		if (stack_.empty() || stack_.back().k != PVal::TUPLE) {
+			throw InvalidInputException("tabfm: checkpoint pickle APPEND without list");
+		}
+		stack_.back().items.push_back(std::move(v));
+	}
+	void Appends() {
+		idx_t m = MarkPos();
+		vector<PVal> values;
+		for (idx_t i = m + 1; i < stack_.size(); i++) {
+			values.push_back(std::move(stack_[i]));
+		}
+		stack_.resize(m); // drop mark + items
+		if (stack_.empty() || stack_.back().k != PVal::TUPLE) {
+			throw InvalidInputException("tabfm: checkpoint pickle APPENDS without list");
+		}
+		for (auto &x : values) {
+			stack_.back().items.push_back(std::move(x));
+		}
 	}
 	void SetItems() {
 		idx_t m = MarkPos();

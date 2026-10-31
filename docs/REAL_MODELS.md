@@ -20,11 +20,11 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
 | **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert |
 | **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert |
-| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; needs the ckpt→safetensors convert (native reader rejects opcode 0x65); upstream ships no regressor |
+| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; the `.ckpt` is read natively (no conversion step); upstream ships no regressor |
 | **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
 | **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; ckpt→safetensors convert required |
 | **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes** |
-| **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); ckpt→safetensors convert required |
+| **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); the `.ckpt` is read natively |
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
 | **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
 | **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; ROCm refused by name |
@@ -1398,16 +1398,13 @@ uses `CustomStandardScaler` / `RTDLQuantileTransformer` externally), so it
 declares `orion_bix_v1_minimal` — a normal engine-standardizes profile, not
 `_raw`. Export parity **2.24e-07**.
 
-**Conversion IS required** (verified 2026-08-11 against the current upstream
-file). This section previously claimed the ~315 MB `.ckpt` is read natively and
-needs no conversion step; that is no longer true for `Orion-BiX-v1.1.ckpt`, which
-the native reader rejects with `unsupported pickle opcode 0x65` (`APPENDS`).
-Until `src/tabfm_ckpt.cpp` learns that opcode, run the one-time conversion — the
-engine then prefers the `model.safetensors` it writes next to the checkpoint:
-
-```bash
-cd tools/export_orion_bix && uv run python convert_weights.py   # 277/277 tensors
-```
+**No conversion step.** `Orion-BiX-v1.1.ckpt` carries its `config` and optimizer state as lists beside
+the state_dict, which a protocol-2 pickle builds with `APPEND` / `APPENDS`. The native reader used to reject
+opcode 0x65 (`APPENDS`), so this section required `tools/export_orion_bix/convert_weights.py`; it now reads
+past lists, and the CPU serves the `.ckpt` alone with predictions identical to the converted file.
+`tabfm_download` also writes the `model.safetensors` the CUDA ext graph reads, byte for byte what
+`convert_weights.py` writes (277/277 tensors), which stays as the dev-side check that the tensor map covers
+the checkpoint.
 
 ## TabPFN-2.5 — shipped (classify + regress)
 

@@ -153,3 +153,16 @@ TEST_CASE("tabfm_ckpt: a strided view is read in index order, as torch reads it"
 	}
 	REQUIRE(sd.at("b").IsContiguous());
 }
+
+// A training checkpoint carries lists beside its state_dict (Orion's `config` and `optimizer_state`), and
+// protocol-2 pickles build lists with APPEND / APPENDS. The reader rejected opcode 0x65, so Orion-BiX and
+// Orion-MSP needed a Python conversion before the CPU could read them at all.
+TEST_CASE("tabfm_ckpt: lists beside the state_dict (APPEND, APPENDS) are read past", "[tabfm][ckpt]") {
+	auto buf = ReadFile("test/fixtures/ckpt/tiny_lists.ckpt");
+	auto sd = ReadTorchCkpt(buf.data(), buf.size());
+	REQUIRE(sd.size() == 2);
+	REQUIRE(sd.at("layer.weight").shape == vector<int64_t> {2, 3});
+	const float *b = reinterpret_cast<const float *>(sd.at("layer.bias").data);
+	REQUIRE(b[0] == 1.5f);
+	REQUIRE(b[1] == -2.5f);
+}
