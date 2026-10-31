@@ -36,7 +36,9 @@
 extern "C" {
 #endif
 
-#define TABFM_PLUGIN_ABI_VERSION 1
+/* 2: graph_inputs. A plugin built for 1 cannot say which graph inputs it binds, and the September
+ * MIGraphX plugin silently skipped n_rows -- which crashed the host inside MIGraphX's run call. */
+#define TABFM_PLUGIN_ABI_VERSION 2
 
 /*! The symbol every plugin must export. */
 #define TABFM_PLUGIN_ENTRY_SYMBOL "TabFMGetPluginApi"
@@ -133,6 +135,11 @@ typedef struct {
 
 	/*! Destroy a handle from create. Safe on NULL. */
 	void (*destroy)(void *handle);
+
+	/*! The graph inputs run() binds, as a NULL-terminated list of names. The host refuses, before
+	 *  create, a graph that declares an input missing from it: a plugin that predates an input would
+	 *  otherwise leave it unbound and the runtime would fail inside its own run call. */
+	const char *const *(*graph_inputs)(void);
 } TabFMPluginApi;
 
 /*! Signature of TABFM_PLUGIN_ENTRY_SYMBOL. */

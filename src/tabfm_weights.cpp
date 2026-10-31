@@ -1663,8 +1663,19 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				if (row.supported && (row.backend == "cuda" || row.backend == "rocm" || row.backend == "mlx") &&
 				    !PluginAvailableCached(ep_path, row.backend)) {
 					row.supported = false;
-					row.reason = "this model can run on '" + row.backend + "', but its backend plugin is not "
-					             "installed at " + ep_path + " — CALL tabfm_accelerate() to fetch and verify it";
+					// A file that is there but will not load (most often a plugin left over from an older
+					// release) is a different problem from no file, and "not installed" sends the user
+					// looking in the wrong place.
+					const auto plugin_path = ep_path + "/" + PluginFileName(row.backend);
+					string load_error;
+					if (FileSystem::CreateLocal()->FileExists(plugin_path) && !PluginLoadable(plugin_path, &load_error)) {
+						row.reason = "this model can run on '" + row.backend + "', but the backend plugin at " +
+						             plugin_path + " cannot be used: " + load_error +
+						             " — CALL tabfm_accelerate() to replace it";
+					} else {
+						row.reason = "this model can run on '" + row.backend + "', but its backend plugin is not "
+						             "installed at " + ep_path + " — CALL tabfm_accelerate() to fetch and verify it";
+					}
 				}
 				// ...but only when the missing weights are what is actually
 				// blocking it. A precision the backend cannot run is a knowable,

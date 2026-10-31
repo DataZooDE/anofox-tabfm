@@ -15,10 +15,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "tabfm_plugin_backend.hpp"
+#include "tabfm_onnx_reader.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/string_util.hpp"
 
 #include <cstring>
+#include <set>
 
 // Is this translation unit built with AddressSanitizer? GCC defines the macro
 // directly; Clang answers through __has_feature. Used only to drop
@@ -220,6 +223,36 @@ bool PluginLoadable(const string &library_path, string *error) {
 	return ok;
 }
 
+namespace {
+
+//! The inputs `graph_path` declares (initializers excluded) that `bound` does not name. Empty when the
+//! graph cannot be read here; the plugin then reports that itself, with more context.
+vector<string> UnboundGraphInputs(const string &graph_path, const char *const *bound) {
+	vector<string> missing;
+	::anofox::onnxread::Graph graph;
+	try {
+		graph = ::anofox::onnxread::ParseModelFile(graph_path);
+	} catch (const std::exception &) {
+		return missing;
+	}
+	std::set<std::string> initializers;
+	for (auto &t : graph.initializers) {
+		initializers.insert(t.name);
+	}
+	std::set<std::string> provided;
+	for (auto *name = bound; name && *name; name++) {
+		provided.insert(*name);
+	}
+	for (auto &input : graph.inputs) {
+		if (!initializers.count(input) && !provided.count(input)) {
+			missing.push_back(input);
+		}
+	}
+	return missing;
+}
+
+} // namespace
+
 unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const TabFMPluginCreateParams &params) {
 	auto library = OpenLibrary(library_path);
 	if (!library) {
@@ -250,8 +283,25 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 		const int plugin_abi = api->abi_version;
 		CloseLibrary(library);
 		throw IOException("anofox_tabfm: the backend plugin '%s' was built against plugin ABI version %d, but this "
-		                  "build speaks version %d. Update the plugin (or the extension) so the two match.",
+		                  "build speaks version %d. Update the plugin: CALL tabfm_accelerate() fetches the one built for "
+		                  "this release (or point anofox_tabfm_ep_path at a matching build).",
 		                  library_path, plugin_abi, TABFM_PLUGIN_ABI_VERSION);
+	}
+
+	// Before create, which is the first call that does real work: a graph input the plugin would leave
+	// unbound fails inside the runtime's own run call, and MIGraphX reports that by writing to std::cerr
+	// from the worker thread -- which crashed the host rather than raising anything it could catch.
+	if (params.graph_path && *params.graph_path) {
+		auto unbound = UnboundGraphInputs(params.graph_path, api->graph_inputs ? api->graph_inputs() : nullptr);
+		if (!unbound.empty()) {
+			const string backend_name = api->name();
+			CloseLibrary(library); // only name() and graph_inputs() ran, both static tables
+			throw IOException("anofox_tabfm: the '%s' backend plugin at '%s' does not bind the graph input(s) '%s' "
+			                  "that '%s' declares, so it is older than the graph. Update it: CALL "
+			                  "tabfm_accelerate(), or point anofox_tabfm_ep_path at a plugin built from this "
+			                  "release.",
+			                  backend_name, library_path, StringUtil::Join(unbound, "', '"), params.graph_path);
+		}
 	}
 
 	char err[512] = {0};

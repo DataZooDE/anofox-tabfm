@@ -407,8 +407,15 @@ void PluginDestroy(void *handle) {
 	delete static_cast<MigraphxPluginBackend *>(handle);
 }
 
+//! Every graph input PluginRun binds (tabfm_plugin_abi.h graph_inputs).
+const char *const *PluginGraphInputs(void) {
+	static const char *const inputs[] = {"x", "y", "cat_mask", "train_size", "d", "n_rows", nullptr};
+	return inputs;
+}
+
 const TabFMPluginApi kApi = {
     TABFM_PLUGIN_ABI_VERSION, PluginName, PluginCreate, PluginRun, PluginPrecompile, PluginFreeOutput, PluginDestroy,
+    PluginGraphInputs,
 };
 
 } // namespace
