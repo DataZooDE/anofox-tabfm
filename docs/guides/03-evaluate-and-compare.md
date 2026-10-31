@@ -37,8 +37,8 @@ WITH cm AS (
 SELECT 2.0*tp / nullif(2.0*tp + fp + fn, 0) AS f1 FROM cm;
 ```
 
-The same numbers come from the metric aggregates, which work on any model's output
-([Evaluation](../api/07-evaluation.md)):
+Related metrics (accuracy, macro F1 over both classes, ROC-AUC) come from the metric aggregates, which
+work on any model's output ([Evaluation](../api/07-evaluation.md)):
 
 ```sql
 SELECT tabfm_accuracy(t.Churn, p.pred)                 AS accuracy,
@@ -58,8 +58,8 @@ default first:
 ```sql
 SET anofox_tabfm_default_model = 'mitra';
 -- positional: data, target, row_key; then optional named k / seed / task / metric
-SELECT * FROM tabfm_cross_validate('(SELECT * EXCLUDE (bucket) FROM churn USING SAMPLE 600 ROWS (reservoir, 42))',
-                                   'Churn', 'customerID', k := 5, seed := 42);
+CREATE TABLE cv_sample AS SELECT * EXCLUDE (bucket) FROM churn USING SAMPLE 600 ROWS (reservoir, 42);
+SELECT * FROM tabfm_cross_validate('cv_sample', 'Churn', 'customerID', k := 5, seed := 42);
 -- tabfm_fold_assign('churn', 5, 'customerID', 42) exposes the fold ids directly (data, k, row_key, seed)
 ```
 

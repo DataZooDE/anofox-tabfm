@@ -1,7 +1,7 @@
 # Settings
 
-Set with `SET name = value;`. The texts below follow each setting's own description
-(`SELECT name, description FROM duckdb_settings() WHERE name LIKE 'anofox_tabfm%';`). Settings are not
+Set with `SET name = value;`. The texts below are checked against the code; each setting's own description is in
+`SELECT name, description FROM duckdb_settings() WHERE name LIKE 'anofox_tabfm%';`. Settings are not
 stored: repeat them in each new process.
 
 | Setting | Default | Meaning |
@@ -12,8 +12,8 @@ stored: repeat them in each new process.
 | `anofox_tabfm_threads` | usable cores / 2 | ONNX Runtime intra-op thread count for CPU inference |
 | `anofox_tabfm_cpu_prepack` | `true` | ONNX Runtime weight prepacking on the CPU: faster matmuls at ~+16% resident memory |
 | `anofox_tabfm_context_cache` | `false` | Encode the labelled context once and reuse it across calls, for models that ship a split graph pair (prepare/query). It pays off when the same context is scored more than once (chunked scoring, repeated queries against a fixed training table) and costs extra on a single call. Test-row predictions match the combined graph; the fitted values on *context* rows differ, because the query half no longer sees a context row's own label. Inert for a model that ships no pair |
-| `anofox_tabfm_max_rows` | `10000` | Maximum rows per predict call or group |
-| `anofox_tabfm_max_features` | `500` | Maximum feature columns per predict call |
+| `anofox_tabfm_max_rows` | `10000` | Maximum rows per predict call or group. This is the enforced cap; the per-model `max_rows` in `tabfm_list_models()` is a recommendation only (e.g. set `5000` for `limix-2m`) |
+| `anofox_tabfm_max_features` | `500` | Maximum feature columns per predict call (enforced; the per-model `max_features` is a recommendation only) |
 | `anofox_tabfm_max_sessions` | `4` | Cap on cached model sessions **across all models, devices and precisions**; beyond it the oldest-loaded session is evicted. Sessions are cached per (model, device, precision) so switching devices does not rebuild multi-GB sessions |
 | `anofox_tabfm_max_memory` | `''` | Refuse a predict call when this process's resident memory is already at or above this size (e.g. `'16GB'`) before the call starts, so the failure is a DuckDB exception instead of an OOM kill. `''` disables the check. It does not bound how much a single large call can grow memory by itself |
 | `anofox_tabfm_device` | `auto` | `auto` / `cpu` / `cuda` / `rocm` / `mlx` / `coreml` (`migraphx` is an alias for `rocm`). `auto` resolves per model: the best device that model can actually be served on (its plugin present and a graph available), else the CPU. Naming a device is a hard request: it errors rather than falling back. `coreml` needs a source build with `TABFM_FLAVOR=coreml` and `auto` does not reach for it ([GPU](04-gpu.md#choosing-the-device)) |

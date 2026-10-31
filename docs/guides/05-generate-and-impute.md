@@ -21,8 +21,12 @@ CALL tabfm_download('regression', model := 'mitra');       -- for tabfm_impute o
 -- 500 synthetic customers that look like the real ones
 SELECT * FROM tabfm_generate('customers', 500, model := 'mitra');
 
--- ...and straight back into the table, since the shape matches
+-- ...and straight back into the table: with features omitted the shape matches
 INSERT INTO customers SELECT * EXCLUDE (synthetic_id) FROM tabfm_generate('customers', 500, model := 'mitra');
+
+-- with features, only those columns come back: name them in the INSERT
+INSERT INTO customers (age, plan, income)
+SELECT age, plan, income FROM tabfm_generate('customers', 500, features := ['age', 'plan', 'income'], model := 'mitra');
 ```
 
 Generation works column by column: each column is sampled conditioned on the
@@ -40,7 +44,8 @@ SELECT * FROM tabfm_impute('raw', columns := ['income', 'plan'], model := 'mitra
 
 Imputation is the deterministic sibling: it takes the conditional best estimate
 rather than sampling, so continuous fills keep full precision. Non-NULL cells
-are never modified.
+are never modified. With `features` omitted the result has exactly the columns of `raw`, so it round-trips;
+with `features` it has only the selected columns.
 
 ## Check the output
 

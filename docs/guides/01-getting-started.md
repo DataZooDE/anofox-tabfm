@@ -90,8 +90,9 @@ Two separate gates can stand between you and a model's weights:
   CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_xxx', SCOPE 'https://huggingface.co');
   ```
 
-  A download that needs this fails with HTTP 401 (no token) or 403 (token fine, licence not accepted on the
-  model page), and the error names both steps. See
+  A download that needs this fails with `access denied (HTTP 401 Unauthorized)` or `(HTTP 403 Forbidden)`,
+  and the error names both steps (401 usually means no token, 403 a token whose account has not accepted the
+  licence on the model page). See
   [`docs/REAL_MODELS.md`](../REAL_MODELS.md#gated-huggingface-repositories).
 
 A model can need both.

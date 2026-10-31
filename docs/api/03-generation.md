@@ -20,13 +20,15 @@ a `FLOAT`/`DOUBLE` column being filled counts as missing, like `NULL`; `+/-Infin
 
 ## Output columns
 
-`tabfm_generate` returns every column of `data`, plus:
+With `features` omitted, `tabfm_generate` returns every column of `data`, plus the column below; with
+`features`, only the selected columns plus it:
 
 | column | meaning |
 |---|---|
 | `synthetic_id` | `1..n` in generation order — joinable and reproducible |
 
-`tabfm_impute` returns **exactly** the columns of `data`, so it round-trips.
+With `features` omitted, `tabfm_impute` returns **exactly** the columns of `data`, so it round-trips; with
+`features`, only the selected columns.
 
 ## Options
 

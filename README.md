@@ -109,7 +109,8 @@ FROM tabfm_classify('iris', 'species', model := 'mitra')
 WHERE species IS NULL;
 ```
 
-Every function takes `model :=`. Downloading does not choose a model for you: with no `model :=` and no
+Every predict, generate / impute and weight-lifecycle function takes `model :=`; cross-validation uses the
+default model. Downloading does not choose a model for you: with no `model :=` and no
 `SET anofox_tabfm_default_model = 'mitra'`, a call fails and says how to pick one. Regression needs its own
 weights: `CALL tabfm_download('regression', model := 'mitra');`. The full walk-through with output:
 [Getting Started](docs/guides/01-getting-started.md); runnable files in [`examples/`](examples/README.md).

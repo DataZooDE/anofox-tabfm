@@ -45,7 +45,8 @@ FROM scored;
 held-out rows via the two-table form; returns per-fold plus aggregate
 (mean ± std) results. It takes no `model :=`: it uses `anofox_tabfm_default_model`, so set that first.
 `metric` is one of `tabfm_accuracy` (the classification default), `tabfm_rmse` (the regression default),
-`tabfm_mae`, `tabfm_r2`, `tabfm_crps`, `tabfm_log_score`, `tabfm_interval_score`.
+`tabfm_mae` or `tabfm_r2`. The distribution scoring rules (`tabfm_crps`, `tabfm_log_score`,
+`tabfm_interval_score`) are not usable in cross-validation yet: the folds produce point predictions.
 
 ```sql
 SET anofox_tabfm_default_model = 'mitra';

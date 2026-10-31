@@ -39,10 +39,10 @@ If an error does not tell you what to do, please
 
 | You see | It means | Do this |
 |---|---|---|
-| `has no downloaded weights for task '<task>'` (from a predict), or `tabfm_load: ... is not downloaded` | the weights for that model and task are not in the cache | `CALL tabfm_download('<task>', model := '<id>');` (regression needs its own download) |
+| `has no downloaded weights for task '<task>'` (from a predict), or `tabfm_load: model '<id>' has no <task> weights downloaded` | the weights for that model and task are not in the cache | `CALL tabfm_download('<task>', model := '<id>');` (regression needs its own download) |
 | `weights in '<repo>' are licensed '<licence>' ... Run: SET anofox_tabfm_accept_hf_license = true;` | a gated model: its licence needs your acknowledgement | read the licence, then `SET anofox_tabfm_accept_hf_license = true;` and download again |
-| `access denied (HTTP 401) for the gated repository ...` | the Hugging Face repository needs a token | `CREATE SECRET hf (TYPE http, BEARER_TOKEN '<hf_token>', SCOPE 'https://huggingface.co');` |
-| `access denied (HTTP 403) for the gated repository ...` | the token is fine, but the licence was not accepted on the model page | accept it on the Hugging Face model page while signed in, then download again |
+| `access denied (HTTP 401 Unauthorized) for the gated repository ...` | usually: the Hugging Face repository needs a token (the error gives the same two steps for 401 and 403) | `CREATE SECRET hf (TYPE http, BEARER_TOKEN '<hf_token>', SCOPE 'https://huggingface.co');` |
+| `access denied (HTTP 403 Forbidden) for the gated repository ...` | usually: the token is fine, but the licence was not accepted on the model page | accept it on the Hugging Face model page while signed in, then download again |
 | `size mismatch for ...` | the download was truncated or the source changed | the download is aborted; run it again |
 
 ## Predicting
@@ -51,7 +51,7 @@ If an error does not tell you what to do, please
 |---|---|---|
 | ``the context relation and the `test` relation must expose the same feature columns, but only in ...`` | in the train / test form one relation has a column the other lacks, which would be filled with `NULL` and degrade the prediction silently | drop the column, add it to the other relation, or name the shared columns with `features := [...]` |
 | `features := [...] names '<x>', which matched no column` | a misspelled feature name | check it against the relation's columns (matching is case-insensitive) |
-| `input exceeds anofox_tabfm_max_rows` | more rows than the guardrail allows in one call or group | send fewer rows, or raise it: `SET anofox_tabfm_max_rows = <n>;` (mind the model's own `max_rows` in `tabfm_list_models()`) |
+| `input exceeds anofox_tabfm_max_rows` | more rows than the global guardrail allows in one call or group | send fewer rows, or raise it: `SET anofox_tabfm_max_rows = <n>;`. The per-model `max_rows` in `tabfm_list_models()` is a recommendation that is not enforced; to hold to it, set the guardrail to it (e.g. `5000` for `limix-2m`) |
 | `'<model>' supports at most N classes` | the target has more classes than the model's head | reduce the class count or decompose the problem; `SELECT model, max_classes FROM tabfm_list_models();` |
 | `task 'regression' requires a numeric target` | `tabfm_regress` on a text or boolean column | cast the target, or use `tabfm_classify` |
 | `n_estimators > 1 (ensemble) is not available yet` | only a single estimator is implemented | use `n_estimators = '1'` or leave it out |

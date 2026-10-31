@@ -7,11 +7,14 @@
 
 ## The built-in models
 
-The registry builds every model below in; `SELECT * FROM tabfm_list_models();` returns the same facts
+The canonical licence, commercial and gate table is the [Models table in the README](../../README.md#models);
+this page repeats it with sizes and notes so it stands on its own. The registry builds every model below in; `SELECT * FROM tabfm_list_models();` returns the same facts
 (`model, family, capabilities, license, commercial, max_rows, max_features, max_classes, downloaded`).
 *Gated* means the download needs `SET anofox_tabfm_accept_hf_license = true` first
 ([licence acknowledgement](../guides/01-getting-started.md#licence-acknowledgement-and-gated-repositories)).
-Sizes are the registry's per-task weight files.
+Sizes are the registry's per-task weight files. The `max_rows` / `max_features` that `tabfm_list_models()`
+reports are measured or recommended limits and are **not enforced**; only `max_classes` is. The enforced
+row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_features` settings.
 
 | `model` | by | tasks | licence id | `commercial` | gated | weights | notes |
 |---|---|---|---|---|---|---|---|
@@ -21,7 +24,7 @@ Sizes are the registry's per-task weight files.
 | `orion-bix` | Lexsi Labs | classify | `mit` | `true` | no | ~315 MB | classify only |
 | `orion-msp` | Lexsi Labs | classify | `mit` | `true` | no | ~336 MB | classify only |
 | `tabpfn-v2` | Prior Labs | classify, regress | `apache-2.0` | `true` | yes | | Prior Labs License v1.1 = Apache-2.0 + attribution |
-| `limix-2m` | StableAI | classify, regress | `limix-2m-license-v1.0` | `true` | yes | ~10 MB, one checkpoint for both tasks | Apache-2.0 + Section 10: "Built with StableAI LimiX"; at most 5,000 rows and 100 features |
+| `limix-2m` | StableAI | classify, regress | `limix-2m-license-v1.0` | `true` | yes | ~10 MB, one checkpoint for both tasks | Apache-2.0 + Section 10: "Built with StableAI LimiX"; recommended at most 5,000 rows and 100 features (not enforced: `SET anofox_tabfm_max_rows = 5000`) |
 | `tabpfn-v2-5` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | `false` | yes | ~43 MB / ~41 MB | |
 | `tabpfn-v2-5-real` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | `false` | yes | ~43 MB / ~41 MB | |
 | `tabpfn-v2-6` | Prior Labs | classify, regress | `tabpfn-2.6-license-v1.0` | `false` | yes | ~43 MB / ~52 MB | |
@@ -66,12 +69,14 @@ CALL tabfm_remove('regression', model := 'mitra');        -- delete from the cac
 SELECT * FROM tabfm_models();
 ```
 ```
-┌───────────┬────────────────┬──────────┬──────────────┬────────────┬─────────┬───────────────────────────┬─────────┐
-│   model   │      task      │ revision │     path     │   bytes    │ loaded  │          license          │ device  │
-├───────────┼────────────────┼──────────┼──────────────┼────────────┼─────────┼───────────────────────────┼─────────┤
-│ tabfm-v1  │ classification │ main     │ …/model.saf… │ 6557888408 │ true    │ tabfm-non-commercial-v1.0 │ rocm:0  │
-└───────────┴────────────────┴──────────┴──────────────┴────────────┴─────────┴───────────────────────────┴─────────┘
+┌─────────┬────────────────┬──────────┬──────────────┬───────────┬─────────┬────────────┬─────────┐
+│  model  │      task      │ revision │     path     │   bytes   │ loaded  │  license   │ device  │
+├─────────┼────────────────┼──────────┼──────────────┼───────────┼─────────┼────────────┼─────────┤
+│ mitra   │ classification │ main     │ …/model.saf… │ 302717904 │ false   │ apache-2.0 │         │
+└─────────┴────────────────┴──────────┴──────────────┴───────────┴─────────┴────────────┴─────────┘
 ```
+
+(Illustrative. After a predict the row shows `loaded = true` and the serving device, e.g. `cpu` or `rocm:0`.)
 
 `device` is empty until a predict warms a session; it is how you check that a GPU is used
 ([GPU acceleration](../guides/04-gpu-acceleration.md#2-check-what-serves-each-model)). To warm a ROCm
