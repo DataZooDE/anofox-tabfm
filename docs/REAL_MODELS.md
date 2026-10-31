@@ -681,7 +681,31 @@ rows, 4 features), CPU:
 The real-weights test also asserts in-context fitted values (`is_training` rows) and query rows separately,
 on all three sizes.
 
-**ROCm** — ROCM_RESULTS
+**ROCm** (gfx1201, RX 9070 XT, fp32, built-in path with the converted weights;
+`tools/gpu_test/scenarios/kumo_rocm.sql`, 240 rows x 4 features padded to the 512 x 16 bucket, every
+row compared with the CPU in the same session):
+
+| size | served by | label disagreements (query / context) | regression max abs diff | warm call ROCm / CPU | cold compile per bucket (clf / reg) |
+|---|---|---|---|---|---|
+| small | `rocm:0` | 0 / 0 of 240 | 5.9e-6 | 0.04 s / 0.22 s | ~5 min / ~5 min |
+| medium | `rocm:0` | 0 / 0 of 240 | 5.5e-5 | 0.18 s / 0.7 s | 39 min / 39 min |
+| large | `rocm:0` | 0 / 0 of 240 | 6.9e-5 | 0.19 s / 1.0 s | 41 min / 33 min |
+
+The first compile of each (size, task, bucket) is long; `tabfm_gpu_precompile` moves it off the query path.
+Only the 512 x 16 bucket was measured; larger buckets were not compiled.
+
+**A MIGraphX miscompile, found and worked around.** The first medium run on ROCm was wrong: 6 of 64 query
+labels differed from the CPU and regression was off by 0.67 on average (R² 0.96 against 0.99999), while
+small was exact. Small is the one size without test-time GQA (medium and large attend query rows with 2 of
+their 8 / 16 K/V heads). Bisected on random-init models at medium dims with 2 layers, CPU vs ROCm through
+the engine: with GQA the GPU is off by about half the output spread; the same model without GQA agrees to
+2e-7; the fixture (1 K/V head) agrees too. `migraphx-driver verify -b` (reference target vs GPU) puts the
+first divergence in the first ICL layer's query path, at a concat of head slices of a transposed K/V
+tensor. Rewriting the head expansion as slices + Concat did not help; a one-hot [Hq, Hkv] GEMM over the
+reshaped K/V did (`verify` passes, engine difference 2.3e-7). It is the identical function: the upstream
+parity numbers above did not move and the fixture goldens are unchanged. The ORT paths (CPU, CUDA) were
+never affected; this only shows up on the GPU, so a CPU-only parity gate cannot see it
+(`tools/export_kumo/tests/test_export.py` checks the rewrite against torch's own `enable_gqa`).
 
 ### Size and speed (CPU, 8 threads, 80 % context)
 
@@ -713,7 +737,12 @@ faster than linearly in rows. The engine caps all three at **5,000 rows**, 500 f
 - **Context K/V caching** (upstream's prepare/query split) is not exported; every call re-encodes the
   context.
 - **CUDA and MLX were not run.** The ext graphs and header hashes are bundled, but no CUDA device or Mac was
-  available.
+  available. A static check of the graphs against the MLX interpreter's op table finds one missing op,
+  `ConstantOfShape` (one use, from upstream's `new_empty` in the cell embedding), the same op that keeps
+  tabdpt off MLX, so MLX should refuse Kumo by name rather than serve it.
+- **GPU paths need the converter.** Without `convert_kumo_weights` the weights are the raw `.pt`, whose
+  header no GPU graph is pinned to, so ROCm and CUDA report the weights as not matching and `auto` runs
+  on the CPU.
 
 ## TabICL v2 — shipped (classification)
 
