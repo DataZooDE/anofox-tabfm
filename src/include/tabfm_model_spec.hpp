@@ -389,6 +389,9 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 		stem = "orion_bix";
 	} else if (model == "orion-msp") {
 		stem = "orion_msp";
+	} else if (model == "tabfm-v1-1") {
+		// Google TabFM 1.1.0: the v1 architecture at embed_dim 128, its own graphs (dims are baked in)
+		stem = "tabfm_v1_1";
 	} else if (model == "limix-2m") {
 		// "limix2m", not "limix": LimiX-2 (400M) is a different model, and a bare stem would hand its graphs
 		// to the wrong one
@@ -409,6 +412,17 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 		}
 		if (task_name == "regression") {
 			return "35c346e4e29f61b493a9e601e66bf0ae241d0fb76623a3336c61408cfc3e88d0";
+		}
+	}
+	// Google TabFM 1.1.0, pinned revision d7cfd3b8. Its tensors are BF16, so the ext/migraphx graphs
+	// retype each initializer to BF16 and Cast it to FLOAT (tools/make_migraphx_graph.py
+	// retype_external); the offsets are still only valid for exactly this header.
+	if (model == "tabfm-v1-1") {
+		if (task_name == "classification") {
+			return "37f754ec784e9a0f7be9f605c608b353ca4f214de936bb6baa21a6a277c3bf2e";
+		}
+		if (task_name == "regression") {
+			return "62fcd024cb068a83d8e5623ab4a8661eebb49f8e8de4b537e5ceeb9c307303fa";
 		}
 	}
 	if (model == "mitra") {

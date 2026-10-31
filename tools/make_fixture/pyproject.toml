@@ -39,6 +39,7 @@ dev = ["pytest>=8"]
 
 [project.scripts]
 make_fixture = "make_fixture.cli:main_fixture"
+make_fixture_v1_1 = "make_fixture.fixture_v1_1:main"
 golden_preprocess = "make_fixture.cli:main_golden_preprocess"
 
 [[tool.uv.index]]

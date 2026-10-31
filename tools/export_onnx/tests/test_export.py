@@ -148,3 +148,24 @@ def test_real_config_fetch_shapes_only():
   assert cfg.model_kwargs["embed_dim"] >= 8
   assert cfg.model_kwargs["max_classes"] == 10
   assert cfg.config_source and cfg.config_source["sha256"]
+
+
+def test_real_config_v1_1_keeps_decoder_hidden_and_names_its_repo():
+  """TabFM 1.1.0 (google/tabfm-1.1.0-pytorch): embed_dim 128 and an EXPLICIT
+  decoder_hidden 2048. v1's config has decoder_hidden null, which the loader
+  drops so TabFM falls back to icl_dim*2; 1.1's value must travel through, and
+  the provenance must name the 1.1 repo at the pinned revision, not v1's."""
+  local = pathlib.Path(__file__).parent / "data" / "config_v1_1_classification.json"
+  cfg = configs.real("classification", str(local),
+                     repo="google/tabfm-1.1.0-pytorch",
+                     revision="d7cfd3b8d184d7c8fed4210aeba9e1c967d45f2a")
+  assert cfg.model_kwargs["embed_dim"] == 128
+  assert cfg.model_kwargs["decoder_hidden"] == 2048
+  assert cfg.config_source["repo"] == "google/tabfm-1.1.0-pytorch"
+  assert cfg.config_source["revision"] == "d7cfd3b8d184d7c8fed4210aeba9e1c967d45f2a"
+  url = configs.hf_config_url("regression", "google/tabfm-1.1.0-pytorch", "abc")
+  assert url == ("https://huggingface.co/google/tabfm-1.1.0-pytorch/resolve/abc/"
+                 "regression/config.json")
+  # the model it builds has the 1.1 decoder width
+  model = export.build_model("classification", cfg.model_kwargs, seed=0)
+  assert tuple(model.icl_predictor.decoder.layers[0].weight.shape) == (2048, 1024)

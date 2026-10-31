@@ -446,6 +446,47 @@ static const char *const BUILTIN_LIMIX2M = R"json({
   "size_regime": {"max_rows": 5000, "max_features": 100, "max_classes": 10}
 })json";
 
+// Google TabFM 1.1.0 (HF google/tabfm-1.1.0-pytorch, 2026-08-01). The SAME architecture code as
+// tabfm-v1 (vendor/tabfm model.py at the pinned submodule needs no change, and upstream's public
+// repo has no 1.1-specific code at all), but a different checkpoint, so it is its own catalog entry
+// rather than a flag on tabfm-v1 -- the two score differently and v1 must keep working unchanged:
+//   * embed_dim 256 -> 128 (icl_dim 2048 -> 1024): 410 M params instead of 1.64 B, 0.82 GB per task
+//     instead of 6.56 GB, because the dims are 2x smaller AND the tensors ship as BF16 (v1: F32).
+//     The engine's safetensors reader upcasts BF16 -> F32 exactly (a 16-bit shift), so the CPU
+//     graph computes in f32 on the bf16 values, which is what upstream's torch load does too.
+//   * decoder_hidden is explicit (2048) where v1 has null; 2048 is also v1's fallback rule
+//     (icl_dim * 2), so the graph needs nothing new, but tools/export_onnx now carries the value
+//     through instead of relying on the coincidence.
+// Same licence text as v1 (the LICENSE files are byte-identical): TabFM Non-Commercial License
+// v1.0, so commercial:false + accept_hf_license. The HF repo itself is NOT access-gated (no token).
+// Tensor maps are REUSED from tabfm-v1: same 913 / 918 state_dict keys, and the exporter writes
+// byte-identical maps. The graphs are new (dims are baked into Reshape constants). Pinned to the
+// revision the graphs and the GPU-graph header sha were made against.
+static const char *const BUILTIN_TABFM_V1_1 = R"json({
+  "schema_version": 2, "id": "tabfm-v1-1", "display_name": "Google TabFM 1.1",
+  "family": "icl-transformer",
+  "license": {"id": "tabfm-non-commercial-v1.0", "commercial": false, "redistributable": false,
+              "gate_setting": "accept_hf_license",
+              "attribution": "TabFM 1.1.0 by Google Research. Code Apache-2.0; weights TabFM Non-Commercial License v1.0 -- non-commercial testing, evaluation and research only, no production use, no redistribution. Checkpoints: HF google/tabfm-1.1.0-pytorch."},
+  "preprocessing_profile": "tabfm-v1",
+  "weights": {
+    "classification": {"repo": "google/tabfm-1.1.0-pytorch", "revision": "d7cfd3b8d184d7c8fed4210aeba9e1c967d45f2a",
+      "files": [{"path": "classification/model.safetensors", "bytes": 820550772,
+                 "url": "https://huggingface.co/google/tabfm-1.1.0-pytorch/resolve/d7cfd3b8d184d7c8fed4210aeba9e1c967d45f2a/classification/model.safetensors"}]},
+    "regression": {"repo": "google/tabfm-1.1.0-pytorch", "revision": "d7cfd3b8d184d7c8fed4210aeba9e1c967d45f2a",
+      "files": [{"path": "regression/model.safetensors", "bytes": 824695714,
+                 "url": "https://huggingface.co/google/tabfm-1.1.0-pytorch/resolve/d7cfd3b8d184d7c8fed4210aeba9e1c967d45f2a/regression/model.safetensors"}]}
+  },
+  "graph": {"classification": "graph_tabfm_v1_1_classification", "regression": "graph_tabfm_v1_1_regression",
+    "tensor_map": {"classification": "tensor_map_classification.json",
+                   "regression": "tensor_map_regression.json"}},
+  "capabilities": ["classify", "regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
+                                 "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 100000, "max_features": 500, "max_classes": 10}
+})json";
+
 vector<ModelSpec> BuiltinModelSpecs() {
 	// Merge the two per-task built-in TabFM v1 manifests into one multi-task
 	// model spec (id "tabfm-v1"). Each task keeps its own graph/tensor-map/repo.
@@ -477,6 +518,7 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_ORION_MSP, "(built-in orion-msp)"));
 	specs.push_back(ParseModelSpec(BUILTIN_CAUSILO, "(built-in causilo)"));
 	specs.push_back(ParseModelSpec(BUILTIN_LIMIX2M, "(built-in limix-2m)"));
+	specs.push_back(ParseModelSpec(BUILTIN_TABFM_V1_1, "(built-in tabfm-v1-1)"));
 	return specs;
 }
 
