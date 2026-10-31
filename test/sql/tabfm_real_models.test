@@ -669,3 +669,14 @@ SELECT corr(yhat, f1 * 0.7 + 3) > 0.99
 FROM tabfm_regress('reg_in', 'target', model := 'kumo-tabular-large') WHERE NOT is_training;
 ----
 true
+
+# More than 10 classes: upstream reaches them with error-correcting output codes, which the engine does
+# not reproduce, so the head width is the ceiling and the refusal names the model and the fix.
+statement ok
+CREATE TABLE k11 AS SELECT i::DOUBLE f1, (i % 7)::DOUBLE f2, CASE WHEN i < 80 THEN 'k' || (i % 11)::VARCHAR END AS lbl
+FROM range(100) r(i);
+
+statement error
+SELECT count(*) FROM tabfm_classify('k11', 'lbl', model := 'kumo-tabular-small')
+----
+'kumo-tabular-small' supports at most 10 classes and 'lbl' has 11

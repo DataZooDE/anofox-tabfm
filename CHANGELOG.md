@@ -5,6 +5,12 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **NVIDIA Kumo-Tabular, three sizes: `kumo-tabular-small`, `-medium`, `-large`** (classify + regress).
+  Weights OpenMDW-1.1: commercial use permitted, no licence gate. The `.pt` checkpoints run on the CPU with
+  no conversion; `tools/export_kumo` `convert_kumo_weights` enables the bundled CUDA/ROCm graphs. One estimator,
+  up to 10 classes, 5,000 rows. See docs/REAL_MODELS.md.
+
 ## [v2026.10.26] - 2026-10-26
 
 ### Added
