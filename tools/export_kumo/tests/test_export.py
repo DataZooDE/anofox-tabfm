@@ -110,3 +110,25 @@ def test_onnx_parity_including_padded_columns(task, tmp_path):
     par = export.check_parity(g, w, ((40, 9, 25), (33, 12, 20, 10, (0, 4)), (17, 3, 9, 2)), classes)
     assert par["ok"], par
     assert all(np.isfinite(r["max_abs_delta_query_rows"]) for r in par["shapes"])
+
+
+def test_gqa_expansion_equals_torch_enable_gqa():
+    """The GQA rewrite (slices + Concat instead of SDPA's enable_gqa broadcast, which MIGraphX
+    miscompiles) is checked against torch's own enable_gqa, not against itself: the patch is global."""
+    from export_kumo.kumo_patches import _GqaFunctional
+
+    g = torch.Generator().manual_seed(0)
+    for hq, hkv in ((8, 2), (16, 2), (4, 1)):
+        q = torch.randn(1, hq, 9, 16, generator=g)
+        k = torch.randn(1, hkv, 13, 16, generator=g)
+        v = torch.randn(1, hkv, 13, 16, generator=g)
+        mask = torch.rand(1, 1, 9, 13, generator=g) > 0.3
+        mask[..., 0] = True
+        ref = torch.nn.functional.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=True)
+        ours = _GqaFunctional.scaled_dot_product_attention(q, k, v, attn_mask=mask, enable_gqa=True)
+        assert (ours - ref).abs().max().item() < 1e-6
+        # negative control: a wrong grouping (interleaved instead of blocked) must be caught
+        wrong_k = torch.cat([k[:, h % hkv:h % hkv + 1] for h in range(hq)], dim=1)
+        wrong_v = torch.cat([v[:, h % hkv:h % hkv + 1] for h in range(hq)], dim=1)
+        wrong = torch.nn.functional.scaled_dot_product_attention(q, wrong_k, wrong_v, attn_mask=mask)
+        assert hkv == 1 or (wrong - ref).abs().max().item() > 1e-3

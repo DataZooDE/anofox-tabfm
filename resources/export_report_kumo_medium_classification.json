@@ -39,7 +39,7 @@
     "logits": "[1,T,10] class logits; rows < train_size are in-context fitted values"
   },
   "split": "masked: arange(T) < train_size; padded columns masked by d",
-  "graph_bytes": 1958207,
+  "graph_bytes": 2021911,
   "n_initializers_mapped": 558,
   "unmatched_small_inline": [],
   "parity": {
@@ -55,7 +55,7 @@
         "cats": [],
         "max_abs_delta_context_rows": 6.258487701416016e-07,
         "max_abs_delta_query_rows": 6.854534149169922e-07,
-        "ort_ms": 2125.7498264312744
+        "ort_ms": 2114.051580429077
       },
       {
         "T": 33,
@@ -68,7 +68,7 @@
         ],
         "max_abs_delta_context_rows": 7.096678018569946e-07,
         "max_abs_delta_query_rows": 7.450580596923828e-07,
-        "ort_ms": 1685.2667331695557
+        "ort_ms": 1910.3806018829346
       },
       {
         "T": 17,
@@ -78,7 +78,7 @@
         "cats": [],
         "max_abs_delta_context_rows": 5.364418029785156e-07,
         "max_abs_delta_query_rows": 8.568167686462402e-07,
-        "ort_ms": 475.5218029022217
+        "ort_ms": 404.62779998779297
       }
     ]
   },

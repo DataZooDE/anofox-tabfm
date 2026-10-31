@@ -47,6 +47,7 @@ from __future__ import annotations
 import torch
 
 import sdm.models.tabfm.cell_embedding as _tabfm_cell
+import sdm.nn.attention as _attention
 from sdm.models.kumo.tabular.model import MODEL_KWARGS, _KumoTabular
 
 _APPLIED = False
@@ -70,6 +71,33 @@ def _wrap(index: torch.Tensor, num_columns: torch.Tensor) -> torch.Tensor:
     for _ in range(_WRAP_STEPS):
         index = torch.where(index >= n, index - n, index)
     return index
+
+
+class _GqaFunctional:
+    """torch.nn.functional, except that SDPA expands grouped K/V heads itself (see apply())."""
+
+    def __getattr__(self, name):
+        return getattr(torch.nn.functional, name)
+
+    @staticmethod
+    def scaled_dot_product_attention(query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False,
+                                     scale=None, enable_gqa=False):
+        if enable_gqa and query.size(-3) != key.size(-3):
+            hq, hkv = query.size(-3), key.size(-3)
+            group = hq // hkv
+            # One-hot [Hq, Hkv] selection applied as a GEMM: query head h reads K/V head h // group.
+            # Built from Range + compares (no integer division, no lifted constant), and the reshape
+            # around the GEMM materialises K/V in standard layout. Exact: every output element is one
+            # input element times 1.0 plus zeros (K/V are finite).
+            h = torch.arange(hq, device=key.device).unsqueeze(-1)
+            k0 = torch.arange(hkv, device=key.device).unsqueeze(0) * group
+            select = ((h >= k0) & (h < k0 + group)).to(key.dtype)                 # [Hq, Hkv]
+            *batch, _, s, c = key.shape
+            key = torch.matmul(select, key.reshape(*batch, hkv, s * c)).reshape(*batch, hq, s, c)
+            value = torch.matmul(select, value.reshape(*batch, hkv, s * value.size(-1))).reshape(
+                *batch, hq, s, value.size(-1))
+        return torch.nn.functional.scaled_dot_product_attention(
+            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale)
 
 
 def apply() -> None:
@@ -114,6 +142,17 @@ def apply() -> None:
         return self._forward(x, freq, weight, bias, out=None, **kwargs)
 
     _tabfm_cell.CellEmbedding.forward = cell_forward
+
+    # Test-time GQA: medium and large attend their query rows with 2 of the 8 / 16 K/V heads
+    # (`num_icl_key_value_heads_for_query`), which upstream hands to SDPA as `enable_gqa=True`. The
+    # exported broadcast of 2 K/V heads to 8 query heads is MIGRAPHX-MISCOMPILED on gfx1201: with GQA
+    # the GPU answer is off by about half the output spread, without it the same model agrees to
+    # 2e-7 (medium dims, 2 layers, measured; kv_heads=1 -- the fixture -- also agrees).
+    # `migraphx-driver verify -b` (ref vs gpu) puts the first divergence in the first ICL layer's
+    # query path, at a concat of head slices of a TRANSPOSED K/V tensor; replacing the broadcast with
+    # slices + Concat left the error in place. Expanding the heads with a one-hot GEMM over the
+    # reshaped (so materialised) K/V, then SDPA without enable_gqa, is the identical function.
+    _attention.F = _GqaFunctional()
     _APPLIED = True
 
 

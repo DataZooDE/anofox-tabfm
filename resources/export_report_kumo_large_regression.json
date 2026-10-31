@@ -39,7 +39,7 @@
     "logits": "[1,T,1] mean of the 999 quantiles in the standardised target space; the engine inverts its own target z-score"
   },
   "split": "masked: arange(T) < train_size; padded columns masked by d",
-  "graph_bytes": 1958801,
+  "graph_bytes": 2022723,
   "n_initializers_mapped": 556,
   "unmatched_small_inline": [],
   "parity": {
@@ -55,7 +55,7 @@
         "cats": [],
         "max_abs_delta_context_rows": 1.6763806343078613e-08,
         "max_abs_delta_query_rows": 1.1641532182693481e-08,
-        "ort_ms": 992.687463760376
+        "ort_ms": 452.4040222167969
       },
       {
         "T": 33,
@@ -68,7 +68,7 @@
         ],
         "max_abs_delta_context_rows": 1.4901161193847656e-08,
         "max_abs_delta_query_rows": 1.3620592653751373e-08,
-        "ort_ms": 1266.7031288146973
+        "ort_ms": 403.92446517944336
       },
       {
         "T": 17,
@@ -78,7 +78,7 @@
         "cats": [],
         "max_abs_delta_context_rows": 1.0244548320770264e-08,
         "max_abs_delta_query_rows": 7.101334631443024e-09,
-        "ort_ms": 417.52076148986816
+        "ort_ms": 348.3085632324219
       }
     ]
   },
