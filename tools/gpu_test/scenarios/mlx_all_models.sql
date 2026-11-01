@@ -31,9 +31,9 @@
 -- native reader takes the .ckpt directly (no converter). Its weights are under the Stable AI Technology
 -- Co., Ltd. License v1.0 (commercial use permitted; "Built with StableAI LimiX" attribution applies if you
 -- distribute or make available a product built on it), gated by the accept_hf_license setting above.
--- NOT RUN ON MLX by whoever added it: no Mac was available. A static check says all 54 distinct ops in its
--- four graphs are in the interpreter's table, which predicts servable, not correct. Read the printed device
--- first. LimiX's numeric tokenizer is hypersensitive to a standardised feature value near zero (and treats an
+-- First run on a Mac on 2026-11-01: it needed two interpreter fixes (integer Div truncation, float64
+-- initializers narrowed on load); since then both tasks agree with the CPU (test/sql/tabfm_mlx_real_models.test).
+-- LimiX's numeric tokenizer is hypersensitive to a standardised feature value near zero (and treats an
 -- exact zero as its own token), so a rare label that differs from CPU on this sin/cos table is worth checking
 -- against that before it is called an MLX bug: see docs/REAL_MODELS.md.
 --
