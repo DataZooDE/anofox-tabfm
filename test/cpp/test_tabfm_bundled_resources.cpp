@@ -11,9 +11,11 @@
 
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_ort_engine.hpp"
+#include "tabfm_model_spec.hpp"
 
 #include "../../duckdb/third_party/yyjson/include/yyjson.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -157,4 +159,32 @@ TEST_CASE("tabfm_bundled_resources: bundled graph is a valid weight-free ONNX gr
 		REQUIRE(message.find("model weights are not loaded") != string::npos);
 		REQUIRE(message.find("tabfm_download") != string::npos);
 	}
+}
+
+// TabICL v2 and LimiX-2M read the train/test split from len(y), which a fixed-shape MIGraphX compile cannot
+// bucket (docs/ROCM_SINGLE_EVAL_POS.md). Each now bundles a second, MASKED graph per task for ROCm
+// (tools/export_tabicl, tools/export_limix: --contract mask), keyed to the weights by the header sha the CPU
+// path already pins. The graph must declare the masked contract's inputs: the plugin binds by name, and a
+// positional (x, y) graph compiled at the bucket shape would treat every padded row as context.
+TEST_CASE("tabfm_bundled_resources: TabICL v2 and LimiX-2M bundle masked ROCm graphs", "[tabfm][bundled]") {
+	auto contains = [](const BundledResource &res, const string &needle) {
+		const auto *begin = reinterpret_cast<const char *>(res.data);
+		return std::search(begin, begin + res.size, needle.begin(), needle.end()) != begin + res.size;
+	};
+	for (auto *model : {"tabicl-v2", "limix-2m"}) {
+		for (auto *task : {"classification", "regression"}) {
+			auto id = BundledGpuGraphId(model, "migraphx", task);
+			INFO("model " << model << " task " << task << " id " << id);
+			auto res = GetBundledResource(id);
+			REQUIRE(res.data != nullptr);
+			REQUIRE(res.size > 0);
+			for (auto *input : {"train_size", "n_rows"}) {
+				REQUIRE(contains(res, input));
+			}
+			// the same weights the CPU/CUDA graphs were built against: one sha per file, unchanged by masking
+			REQUIRE(!ExpectedWeightsHeaderShaFor(model, task).empty());
+		}
+	}
+	REQUIRE(BundledGpuGraphId("tabicl-v2", "migraphx", "classification") == "graph_migraphx_tabicl_classification");
+	REQUIRE(BundledGpuGraphId("limix-2m", "migraphx", "regression") == "graph_migraphx_limix2m_regression");
 }

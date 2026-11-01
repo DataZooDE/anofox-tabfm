@@ -1,0 +1,136 @@
+# name: test/sql/tabfm_rocm_real_models.test
+# description: TabICL v2 and LimiX-2M on ROCm (MIGraphX), with the real weights: served on rocm:0 through
+#              their MASKED graphs (tools/export_tabicl, tools/export_limix: --contract mask), and agreeing
+#              with the CPU (ONNX Runtime, the positional graph) on every row.
+#
+#              Both models read the train/test split from len(y), which a fixed-shape MIGraphX compile cannot
+#              bucket (docs/ROCM_SINGLE_EVAL_POS.md); the masked graph takes the split as a value. This file is
+#              the check that the masked graph computes what the positional one does ON THE GPU: it asks for
+#              device 'rocm' explicitly (a silent CPU fallback would also "agree with the CPU") and reads the
+#              serving device from tabfm_models().
+#
+#              Needs an AMD GPU with MIGraphX, the plugin built by `make release`, and the weights downloaded
+#              (CALL tabfm_download('classification'|'regression', model := 'tabicl-v2'|'limix-2m'); for LimiX
+#              the download also writes the model.safetensors beside model.ckpt that MIGraphX reads). The first
+#              run compiles one program per model, task and (128 x 16) bucket -- tens of minutes each, cached
+#              as .mxr afterwards (docs/REAL_MODELS.md has the measured times):
+#
+#                TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1 ./build/release/test/unittest test/sql/tabfm_rocm_real_models.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_REAL_WEIGHTS
+
+require-env TABFM_ROCM
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true;
+
+statement ok
+SET anofox_tabfm_ep_path = 'build/release/extension/anofox_tabfm';
+
+# 100 rows x 8 features (the 128 x 16 bucket), 70 context rows and 30 queries; three classes and a smooth target.
+statement ok
+CREATE TABLE g AS SELECT i AS rid, sin(i * 0.11) f1, cos(i * 0.07) f2, (i % 13) / 13.0 f3, ln(1 + (i % 31)) f4,
+  (i % 5)::DOUBLE f5, sin(i * 0.3) * cos(i * 0.05) f6, (i * 7 % 11)::DOUBLE f7, i / 100.0 f8,
+  CASE WHEN i < 70 THEN (CASE WHEN sin(i * 0.11) + 0.5 * cos(i * 0.07) > 0.3 THEN 'a'
+                              WHEN sin(i * 0.11) + 0.5 * cos(i * 0.07) > -0.3 THEN 'b' ELSE 'c' END) END AS label,
+  CASE WHEN i < 70 THEN sin(i * 0.11) * 5 + cos(i * 0.07) * 2 + (i * 7 % 11) * 0.1 END AS target
+FROM range(100) t(i);
+
+statement ok
+CREATE TABLE gc AS SELECT * EXCLUDE (target) FROM g;
+
+statement ok
+CREATE TABLE gr AS SELECT * EXCLUDE (label) FROM g;
+
+# ---------------------------------------------------------------------------
+# tabicl-v2
+
+# the catalogue says ROCm can serve it, for both tasks (the masked graph is bundled and matches the weights)
+query TB
+SELECT task, supported FROM tabfm_backends() WHERE backend = 'rocm' AND model = 'tabicl-v2' ORDER BY task
+----
+classification	true
+regression	true
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabicl_cc AS SELECT rid, yhat, is_training FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabicl-v2') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabicl_cr AS SELECT rid, yhat, is_training FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabicl-v2') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'rocm';
+
+statement ok
+CREATE TABLE tabicl_gc AS SELECT rid, yhat, is_training FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabicl-v2') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabicl_gr AS SELECT rid, yhat, is_training FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabicl-v2') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'rocm:0') FROM tabfm_models() WHERE loaded AND model = 'tabicl-v2' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+# every row, context (fitted) rows included: 100 rows, 0 label differences
+query II
+SELECT count(*), count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabicl_cc c JOIN tabicl_gc g USING (rid)
+----
+100	0
+
+query II
+SELECT count(*), max(abs(c.yhat - g.yhat)) < 1e-3 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabicl_cr c JOIN tabicl_gr g USING (rid)
+----
+100	true
+
+# ---------------------------------------------------------------------------
+# limix-2m
+
+# the catalogue says ROCm can serve it, for both tasks (the masked graph is bundled and matches the weights)
+query TB
+SELECT task, supported FROM tabfm_backends() WHERE backend = 'rocm' AND model = 'limix-2m' ORDER BY task
+----
+classification	true
+regression	true
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE limix_cc AS SELECT rid, yhat, is_training FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'limix-2m') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE limix_cr AS SELECT rid, yhat, is_training FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'limix-2m') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'rocm';
+
+statement ok
+CREATE TABLE limix_gc AS SELECT rid, yhat, is_training FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'limix-2m') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE limix_gr AS SELECT rid, yhat, is_training FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'limix-2m') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'rocm:0') FROM tabfm_models() WHERE loaded AND model = 'limix-2m' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+# every row, context (fitted) rows included: 100 rows, 0 label differences
+query II
+SELECT count(*), count(*) FILTER (WHERE c.yhat <> g.yhat) FROM limix_cc c JOIN limix_gc g USING (rid)
+----
+100	0
+
+query II
+SELECT count(*), max(abs(c.yhat - g.yhat)) < 1e-3 AND corr(c.yhat, g.yhat) > 0.99999 FROM limix_cr c JOIN limix_gr g USING (rid)
+----
+100	true
