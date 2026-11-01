@@ -50,6 +50,18 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   end computed as `2 * ((H + 1) / 2)` came out `H + 1` and neither task ran; and float64 initializers and constants
   were handed to MLX as float32, reading each double as two garbage floats, so regression disagreed (max |diff|
   1.74, corr 0.9938 over 100 rows). With both fixed: 0/100 labels, regression max |diff| 1.1e-5.
+- **TabPFN-3.5 and TabPFN-3.5-Fast are refused on CUDA by name** (`CudaKnownWrong`). Measured on an RTX 4090,
+  both graphs fail inside ONNX Runtime 1.29's CUDA execution provider on both tasks (it reproduces with plain
+  `onnxruntime-gpu` 1.29.0 at every optimisation level), so `device := 'auto'` picked CUDA and then errored.
+  `auto` now serves them on the CPU and `tabfm_backends()` gives the reason.
+
+### Verified
+- **The whole catalog on CUDA** (RTX 4090, the released v2026.10.31 extension and CUDA plugin): every model
+  CUDA serves agrees with the CPU on 100-row tables (36 model×task pairs, 0 label differences, regression max
+  abs diff ≤ 6e-5), including the 12 never run on CUDA before (`limix-2m`, `causilo`, `tabpfn-v2-5-real`,
+  `tabpfn-v2-6`, `tabdpt`, `orion-msp`, `mitra-v2`, `tabdpt-v1-3`, `tabfm-v1-1`, the three Kumo sizes).
+  `nori-30m` and `exaone-tabular` are refused (no ext graph). Reproduce with `tools/gpu_test/cuda_catalog.sh`
+  (`scenarios/cuda_catalog*.sql`).
 
 ## [v2026.10.31] - 2026-10-31
 
