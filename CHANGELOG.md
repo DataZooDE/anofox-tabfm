@@ -20,6 +20,12 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   compile per bucket 2.2 / 4.3 minutes; warm 0.017 s / 0.023 s against 0.12 s / 0.31 s on the CPU. They read the
   same `model.safetensors` as the CUDA graphs, which `tabfm_download` already writes.
 
+- **`causilo` on ROCm (MIGraphX)**, classification and regression: a second, masked graph per task
+  (`x, y_full, train_size, n_rows, d`; `tools/export_causilo --contract mask`) replaces the positional split, so
+  MIGraphX can compile it per shape bucket. On gfx1201 with the real weights: 0/100 label differences from the CPU,
+  regression max |diff| 3.6e-5; ~13-16 min first compile per task and bucket; warm ~0.05 s vs ~0.2 s on the CPU.
+  See docs/ROCM_CAUSILO_PLAN.md.
+
 ### Fixed
 - **`tabpfn-v2-6` downloads and runs on a fresh machine, with no Python step.** The regressor's manifest byte
   count (51955328) matched no Hugging Face revision, so `tabfm_download` refused it everywhere; both tasks are

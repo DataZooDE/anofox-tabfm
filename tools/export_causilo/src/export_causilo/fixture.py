@@ -77,15 +77,21 @@ def sql_inputs(task: str):
     return x, y
 
 
-def sensitive(model):
+def sensitive(model, weight_gain: float = WEIGHT_GAIN, target_gain: float = TARGET_GAIN):
     """Scale a default-initialised model so it responds to its input without amplifying noise
     (see the module docstring). Used by the fixture AND by the tests, which would otherwise run
-    on an input-blind model and pass vacuously."""
+    on an input-blind model and pass vacuously.
+
+    The right gain depends on depth: at the released depth (12 prediction layers) a gain of 2 is
+    responsive but amplifies float32 noise ~14x more than a gain of 1.5 (1e-6 relative input noise moves
+    the output by 1.2e-4 against 8.8e-6), enough for ORT and PyTorch to disagree by 1.1e-4 ON THE SAME
+    GRAPH. configs.ExportConfig.weight_gain carries the measured value per config.
+    """
     with torch.no_grad():
         for name, param in model.named_parameters():
             if name.endswith(("frequencies", "latents", "missing")) or param.ndim != 2:
                 continue
-            param.mul_(TARGET_GAIN if name.startswith(("feature_target", "row_target")) else WEIGHT_GAIN)
+            param.mul_(target_gain if name.startswith(("feature_target", "row_target")) else weight_gain)
     return model
 
 

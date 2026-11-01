@@ -120,11 +120,14 @@ set(_tabfm_inputs
     "tensor_map_tabpfn_regression.json"
     "tensor_map_tabicl_classification.json"
     "tensor_map_tabicl_regression.json"
-    # Causilo (Nums AI, non-commercial weights) -- (x, y)-only like TabICL, so one plain graph and
-    # one tensor map per task and nothing else: the CPU path on every platform, no ext graph yet
-    # (CUDA), no migraphx graph (ROCm; its split is positional, see docs/ROCM_SINGLE_EVAL_POS.md).
+    # Causilo (Nums AI, non-commercial weights) -- (x, y)-only like TabICL on the CPU: one plain graph
+    # and one tensor map per task. The migraphx graphs are the MASKED contract (x, y_full, train_size,
+    # n_rows, d; tools/export_causilo --contract mask), so ROCm can bucket them; they bake offsets into the
+    # released safetensors, checked by the header sha in ExpectedWeightsHeaderShaFor.
     "graph_causilo_classification.onnx"
     "graph_causilo_regression.onnx"
+    "graph_migraphx_causilo_classification.onnx"
+    "graph_migraphx_causilo_regression.onnx"
     # The external-data variants: on CUDA, and on the CPU default path, ORT reads weights off the
     # cached safetensors by offset instead of copying them in (src/tabfm_engine.cpp
     # TryExternalDataSession). Valid only for the revision the registry pins; the header hash in

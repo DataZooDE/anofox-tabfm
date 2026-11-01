@@ -775,3 +775,16 @@ TEST_CASE("servability: a graph the backend runs wrongly is refused with the rea
 	REQUIRE_THAT(out.reason, Contains("it disagrees with the CPU"));
 	REQUIRE_THAT(out.reason, Contains("'mlx'"));
 }
+
+TEST_CASE("model_spec: Causilo bundles masked ROCm graphs, keyed to the pinned checkpoint", "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	REQUIRE(BundledGpuGraphId("causilo", "migraphx", "classification") == "graph_migraphx_causilo_classification");
+	REQUIRE(BundledGpuGraphId("causilo", "migraphx", "regression") == "graph_migraphx_causilo_regression");
+	// the masked graphs (tools/export_causilo --contract mask) reuse the shipped tensor map byte for byte, so they
+	// bake offsets into the same released files (revision 94f2bd91) as the ext graphs
+	REQUIRE(ExpectedWeightsHeaderShaFor("causilo", "classification") ==
+	        "85fb120c90878b69b0d34ff32fcfbdcf457ffd4d2ed7af2a102fe7c2d417d742");
+	REQUIRE(ExpectedWeightsHeaderShaFor("causilo", "regression") ==
+	        "0bbfd6114cbae8d2facfcbf11cb01796c88aa57e0bb57d4589d552ca8accc192");
+}

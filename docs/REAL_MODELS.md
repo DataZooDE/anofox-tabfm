@@ -26,7 +26,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes** |
 | **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); the `.ckpt` is read natively; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
-| **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
+| **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50; **ROCm served** (masked graph; 0/100 label diffs vs CPU, regression 3.6e-5) |
 | **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; **ROCm served** (masked graph, reads the `model.safetensors` `tabfm_download` writes; 0/100 label diffs vs CPU) |
 | **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; reads the downloaded .ckpt directly (no convert step) |
 | **Google TabFM 1.1** (`tabfm-v1-1`) | TabFM Non-Commercial License v1.0 (**non-commercial**, same text as v1) | ✅ shipped | **yes — classify + regress, CPU + ROCm** | 410 M / 0.82 GB per task (BF16), 4x fewer params than v1; no conversion; end-to-end parity with upstream 9.4e-06 clf / 4.9e-06 reg; ROCm agrees with CPU 64/64 |
@@ -788,7 +788,23 @@ The second pass gives 1.000 on both and leaves query rows unchanged. It costs `S
   are unaffected; pass `opts := MAP {'softmax_temperature': '1.0'}` to match upstream.
 - More than 10 classes (upstream handles them with error-correcting output codes) is not supported;
   the engine's class ceiling is the head width.
-- ROCm: refused by name (positional split; `docs/ROCM_SINGLE_EVAL_POS.md`).
+- ROCm: served on `rocm:0` through a second, MASKED graph per task (`tools/export_causilo --contract mask`;
+  `docs/ROCM_CAUSILO_PLAN.md`), not the positional CPU graph.
+
+**ROCm (Radeon RX 9070 XT, gfx1201, real weights).** `graph_migraphx_causilo_*` take `x, y` (full length,
+-100 off the context), `train_size`, `n_rows`, `d`: context statistics and every attention over rows are masked,
+whole padded feature groups are masked out of the row stages, and the `QueryScale` key counts come from the values.
+They reuse the shipped tensor map byte for byte, so the existing header sha applies. On 100 rows x 8 features
+(the 128 x 16 bucket, 70 context rows; `test/sql/tabfm_rocm_causilo.test`,
+`tools/gpu_test/scenarios/causilo_rocm.sql`), with `tabfm_models()` reading `rocm:0`:
+
+| | classification | regression |
+|---|---|---|
+| agreement with the CPU, 100 rows | 0 label differences | max abs diff 3.6e-5, corr 0.9999999999998 |
+| first compile per bucket (`migraphx-driver compile --gpu`) | ~13 min (791 s) | ~16 min (937 s) |
+| warm call, ROCm vs CPU | 0.049 s vs 0.22 s | 0.047 s vs 0.18 s |
+
+The CPU warm call uses ~3.3 s of CPU time over its threads; the ROCm one ~0.05 s.
 
 **Ext graphs (CUDA, and the CPU default).** `graph_ext_causilo_*` reference the cached safetensors
 by offset, so ORT reads weights off disk instead of copying them in; the engine uses them on CUDA

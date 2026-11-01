@@ -1,0 +1,128 @@
+{
+  "command": [
+    "export_causilo",
+    "--task",
+    "regression",
+    "--config",
+    "real",
+    "--contract",
+    "mask",
+    "--out",
+    "./mask"
+  ],
+  "task": "regression",
+  "config": "real",
+  "model": {
+    "width": 128,
+    "expansion": 2,
+    "group_size": 3,
+    "frequencies": 16,
+    "column_latents": 128,
+    "column_heads": 4,
+    "column_depths": [
+      3,
+      3
+    ],
+    "row_heads": 8,
+    "row_latents": 4,
+    "row_depths": [
+      3,
+      3
+    ],
+    "prediction_heads": 4,
+    "prediction_depth": 12
+  },
+  "outputs": 999,
+  "n_params": 37083799,
+  "seed": 0,
+  "opset": 18,
+  "contract": "mask",
+  "input_signature": {
+    "x": "[1,T,H] f32: engine-preprocessed (encoded, finite), NOT normalised; real data in [:n_rows,:d], zeros elsewhere",
+    "y": "[1,T] f32: training targets in [:train_size], -100 elsewhere; class ids, or RAW regression targets",
+    "train_size": "[1] int64",
+    "n_rows": "[1] int64 (declared for plugin parity; unused)",
+    "d": "[1] int64"
+  },
+  "output": {
+    "logits": "[1,T,1] RAW-space point estimate per row: the mean over the 999 output channels, inverse target StandardScaler applied in-graph; rows < S are in-context fitted values. The engine feeds RAW train targets and reads the output directly."
+  },
+  "in_graph_preprocessing": "Causilo single-estimator ('none') normaliser: train-prefix z-score, two-stage 4-sigma bounds, arcsinh tails; NaN restored",
+  "split": "value: train_size / n_rows / d inputs; y is full length",
+  "graph_bytes": 1075667,
+  "n_initializers_mapped": 697,
+  "unmatched_small_inline": [],
+  "parity": {
+    "ok": true,
+    "worst": 9.5367431640625e-07,
+    "tol": 0.0001,
+    "shapes": [
+      {
+        "n": 20,
+        "N": 12,
+        "d": 5,
+        "T": 32,
+        "H": 16,
+        "max_abs_delta_context_rows": 2.384185791015625e-07,
+        "max_abs_delta_query_rows": 1.1920928955078125e-07,
+        "ort_ms": 620.6984519958496
+      },
+      {
+        "n": 40,
+        "N": 30,
+        "d": 9,
+        "T": 64,
+        "H": 16,
+        "max_abs_delta_context_rows": 3.5762786865234375e-07,
+        "max_abs_delta_query_rows": 3.5762786865234375e-07,
+        "ort_ms": 618.9296245574951
+      },
+      {
+        "n": 16,
+        "N": 15,
+        "d": 3,
+        "T": 32,
+        "H": 18,
+        "max_abs_delta_context_rows": 9.5367431640625e-07,
+        "max_abs_delta_query_rows": 1.1920928955078125e-07,
+        "ort_ms": 316.0591125488281
+      },
+      {
+        "n": 12,
+        "N": 8,
+        "d": 2,
+        "T": 32,
+        "H": 16,
+        "max_abs_delta_context_rows": 1.993030309677124e-07,
+        "max_abs_delta_query_rows": 1.862645149230957e-07,
+        "ort_ms": 341.11809730529785
+      },
+      {
+        "n": 14,
+        "N": 1,
+        "d": 5,
+        "T": 32,
+        "H": 16,
+        "max_abs_delta_context_rows": 0.0,
+        "max_abs_delta_query_rows": 0.0,
+        "ort_ms": 362.6248836517334
+      },
+      {
+        "n": 9,
+        "N": 2,
+        "d": 7,
+        "T": 16,
+        "H": 24,
+        "max_abs_delta_context_rows": 2.9802322387695312e-08,
+        "max_abs_delta_query_rows": 5.960464477539063e-08,
+        "ort_ms": 389.8332118988037
+      }
+    ]
+  },
+  "versions": {
+    "torch": "2.13.0+cpu",
+    "onnx": "1.23.1",
+    "onnxruntime": "1.30.0",
+    "onnxscript": "0.7.2"
+  }
+}
