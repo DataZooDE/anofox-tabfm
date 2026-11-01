@@ -775,3 +775,37 @@ TEST_CASE("servability: a graph the backend runs wrongly is refused with the rea
 	REQUIRE_THAT(out.reason, Contains("it disagrees with the CPU"));
 	REQUIRE_THAT(out.reason, Contains("'mlx'"));
 }
+
+// Measured on an RTX 4090 (tools/gpu_test/cuda_catalog.sh, released v2026.10.31 artefacts, 100-row tables):
+// every bundled ext graph served on cuda:0 agreed with the CPU (0 label differences, regression max abs
+// diff <= 6e-5) EXCEPT TabPFN-3.5 and TabPFN-3.5-Fast, whose graphs fail inside ONNX Runtime 1.29's CUDA EP
+// on both tasks at every graph optimisation level (an Expand / Where whose shape operand arrives wrong). A
+// predict that fails after 'auto' chose CUDA is an error the CPU would not have raised, so these are refused
+// by name on cuda and 'auto' serves them on the CPU.
+TEST_CASE("servability: graphs the CUDA EP cannot run are refused by name", "[tabfm][model_spec][servability]") {
+	for (auto *model : {"tabpfn-v3-5", "tabpfn-v3-5-fast"}) {
+		for (auto *task : {"classification", "regression"}) {
+			REQUIRE_FALSE(CudaKnownWrong(model, task).empty());
+			REQUIRE_FALSE(GpuKnownWrong("cuda", model, task).empty());
+			auto in = ServableBase("cuda");
+			in.model = model;
+			in.task_name = task;
+			in.bundled_graph_exists = true;
+			in.bundled_header_matches = true;
+			in.known_wrong = GpuKnownWrong("cuda", model, task);
+			auto out = EvaluateGpuServability(in);
+			REQUIRE(!out.supported);
+			REQUIRE_THAT(out.reason, Contains("'cuda'"));
+			REQUIRE_THAT(out.reason, Contains(model));
+		}
+	}
+	// measured agreeing on CUDA, so not refused there
+	for (auto *model : {"tabpfn-v3", "tabfm-v1-1", "kumo-tabular-large", "limix-2m", "causilo", "mitra-v2",
+	                    "tabdpt-v1-3", "orion-msp"}) {
+		REQUIRE(CudaKnownWrong(model, "classification").empty());
+	}
+	// the cuda list does not leak into another backend, nor the mlx list into cuda
+	REQUIRE(GpuKnownWrong("rocm", "tabpfn-v3-5", "classification").empty());
+	REQUIRE(GpuKnownWrong("cuda", "tabdpt", "classification").empty());
+	REQUIRE_FALSE(GpuKnownWrong("mlx", "tabdpt", "classification").empty());
+}

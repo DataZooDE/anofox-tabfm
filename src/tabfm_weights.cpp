@@ -1702,10 +1702,11 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 						}
 					}
 				}
+				// A graph the backend runs but is measured to get wrong (or fail on) is refused by name.
+				in.known_wrong = GpuKnownWrong(row.backend, spec.id, task_name);
 				// MLX executes the graph op by op: the same question 'auto' asks, about the graph that
 				// would be served -- the model's own, else the bundled one once it matches the weights.
 				if (row.backend == "mlx") {
-					in.known_wrong = MlxKnownWrong(spec.id, task_name);
 					if (!model_graph.empty()) {
 						in.unsupported_ops = MlxUnsupportedOps(nullptr, 0, model_graph);
 					} else if (in.bundled_header_matches) {

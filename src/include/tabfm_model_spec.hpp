@@ -17,6 +17,7 @@
 #pragma once
 
 #include "tabfm_manifest.hpp" // ManifestFile, EngineProfile, TabFMTask
+#include "tabfm_mlx_ops.hpp"  // MlxKnownWrong
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/map.hpp"
@@ -287,7 +288,7 @@ struct GpuServabilityInputs {
 	//! Ops the graph that would be served uses and this backend cannot execute. Only MLX interprets
 	//! graphs op by op (tabfm_mlx_ops.hpp); the other backends hand the whole graph to a runtime.
 	vector<string> unsupported_ops;
-	//! Non-empty when the backend executes this graph but is known to get it wrong (MlxKnownWrong).
+	//! Non-empty when the backend executes this graph but is known to get it wrong (GpuKnownWrong).
 	string known_wrong;
 };
 
@@ -327,6 +328,34 @@ inline bool VanishedDeviceMustThrow(const string &resolved_id, const string &dev
 //! CALL tabfm_register_model (…_ext_graph / …_migraphx_graph).
 inline string GpuGraphKindFor(const string &backend) {
 	return (backend == "rocm" || backend == "migraphx") ? "migraphx_graph" : "ext_graph";
+}
+
+//! Why a bundled ext graph is refused on CUDA although the plugin loads it. Measured on an RTX 4090 with the
+//! released v2026.10.31 artefacts (tools/gpu_test/cuda_catalog.sh, 100-row tables): every other bundled ext
+//! graph agreed with the CPU there. Both TabPFN-3.5 graphs fail inside ONNX Runtime 1.29's CUDA execution
+//! provider on both tasks -- the same graphs run on ORT 1.29's CPU EP -- and reproduce outside this
+//! extension with plain onnxruntime-gpu 1.29.0 at every graph optimisation level, with or without the memory
+//! pattern. Refusing by name keeps 'auto' on the CPU instead of erroring after it chose CUDA. Remove an entry
+//! only with a cuda_catalog.sh run that shows the model agreeing with the CPU.
+inline string CudaKnownWrong(const string &model, const string &task) {
+	(void)task; // both tasks fail
+	if (model == "tabpfn-v3-5" || model == "tabpfn-v3-5-fast") {
+		return "its graph fails inside ONNX Runtime 1.29's CUDA execution provider (an Expand/Where node "
+		       "receives a wrong shape operand: 'node_expand: left operand cannot broadcast', 'Shape mismatch "
+		       "attempting to re-use buffer'), measured on an RTX 4090 for both tasks";
+	}
+	return string();
+}
+
+//! The per-backend known-wrong list: non-empty refuses the model on that backend even though a graph exists.
+inline string GpuKnownWrong(const string &backend, const string &model, const string &task) {
+	if (backend == "mlx") {
+		return MlxKnownWrong(model, task);
+	}
+	if (backend == "cuda") {
+		return CudaKnownWrong(model, task);
+	}
+	return string();
 }
 
 inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &in) {

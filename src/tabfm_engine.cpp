@@ -1143,7 +1143,8 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 	const bool bundled_matches =
 	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
 	auto servability = GpuServabilityFor(fs, resolved, "cuda", task_name, !resolved.ext_graph_path.empty(),
-	                                     graph.data != nullptr, bundled_matches, ctx.gpu_precision);
+	                                     graph.data != nullptr, bundled_matches, ctx.gpu_precision, {},
+	                                     CudaKnownWrong(resolved.manifest.model, task_name));
 	if (!servability.supported) {
 		// Same contract as the ROCm branch above: an explicit 'cuda' with no
 		// runnable graph names the model and the fix, never ep_path.
@@ -1412,8 +1413,7 @@ string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, cons
 		auto verdict = GpuServabilityFor(fs, resolved, backend, task_name, !model_graph.empty(),
 		                                 bundled.data != nullptr, header_matches, ctx.gpu_precision,
 		                                 std::move(unsupported_ops),
-		                                 backend == "mlx" ? MlxKnownWrong(resolved.manifest.model, task_name)
-		                                                  : string());
+		                                 GpuKnownWrong(backend, resolved.manifest.model, task_name));
 		if (verdict.supported) {
 			return device.device_id;
 		}
