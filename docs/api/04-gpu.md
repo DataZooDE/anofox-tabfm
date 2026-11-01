@@ -61,7 +61,7 @@ backend serves on your machine.
 |---|---|---|---|
 | CPU | Linux x64/arm64, macOS **arm64**, Windows x64 | every built-in model | CI suites + install-smoke with inference on every platform |
 | CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | every built-in model | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max, on the catalog of the time (seven models); `limix-2m` has not been run on CUDA |
-| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | `tabfm-v1`, `mitra`, `tabdpt` and the TabPFN family (`tabpfn-v2`, `tabpfn-v2-5`, `tabpfn-v2-5-real`, `tabpfn-v2-6`, `tabpfn-v3`), both tasks. Refused: `tabicl-v2`, `orion-bix`, `orion-msp`, `causilo`, `limix-2m` | RX 9070 XT: parity, concurrency, user workflow; tabdpt 5.6x CPU with identical predictions; TabPFN v2/v2.5/v2.6 3.5-7x CPU wall-clock and ~40x less CPU time, every row agreeing with the CPU to float noise; TabPFN-3 ~3-4x CPU wall-clock at small sizes, 0 label differences in 100 rows |
+| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | `tabfm-v1`, `mitra`, `tabdpt` and the TabPFN family (`tabpfn-v2`, `tabpfn-v2-5`, `tabpfn-v2-5-real`, `tabpfn-v2-6`, `tabpfn-v3`), both tasks; `orion-bix` and `orion-msp` (classification only). Refused: `tabicl-v2`, `causilo`, `limix-2m` | RX 9070 XT: parity, concurrency, user workflow; tabdpt 5.6x CPU with identical predictions; TabPFN v2/v2.5/v2.6 3.5-7x CPU wall-clock and ~40x less CPU time, every row agreeing with the CPU to float noise; TabPFN-3 ~3-4x CPU wall-clock at small sizes, 0 label differences in 100 rows; Orion-BiX / Orion-MSP 0 label differences in 100 rows, warm 0.017 s / 0.023 s against 0.12 s / 0.31 s on the CPU |
 | MLX (plugin) | macOS arm64 (Apple Silicon) | every model CPU serves (6 verified through SQL; `tabfm-v1` via the graph harness) | Apple M3: 10 model×task pairs cpu-compared (0 disagreements), 4000-row stress, device/precision alternation; `limix-2m` has not been run on a Mac |
 | CoreML | — | — | **dropped** — MLX supersedes it on Apple Silicon ([why](../DYNAMIC_BACKENDS.md#phase-4--coreml--dropped-2026-09-19)) |
 
@@ -78,7 +78,7 @@ it, every later one in that bucket is sub-second. Measured on gfx1201:
 |---|---|
 | `tabfm-v1` (full size) | about 25 minutes |
 | `tabpfn-v3` | about 16 minutes |
-| the other ROCm models | 2.5 to 9 minutes |
+| the other ROCm models | 2 to 9 minutes (`orion-bix` 2.2, `orion-msp` 4.3 at 128 x 16) |
 
 `CALL tabfm_gpu_precompile(...)` does it off the query path, and the compiled `.mxr` persists in the weight
 cache across sessions. `SET anofox_tabfm_mxr_source = '<dir>'` stages matching precompiled programs from a

@@ -3,9 +3,14 @@
 > **Update 2026-09-30.** The whole TabPFN family -- v2, v2.5, v2.6 and v3 -- was
 > converted and now runs on ROCm (docs/ROCM_TABPFN_PLAN.md), joining tabdpt
 > (docs/ROCM_TABDPT_SPIKE.md). What remains positional and refused on ROCm:
-> `tabicl-v2`, `orion-bix`, `orion-msp`, `causilo` and `limix-2m` (added later, same family: `limix-2m`'s
-> graph reads the split from `len(y)` exactly like TabICL's). `exaone-tabular` and `nori-30m` were added positional too and ship a second, masked graph for ROCm (tools/export_exaone,
-> tools/export_nori: `--contract mask`).
+> `tabicl-v2`, `causilo` and `limix-2m` (added later, same family: `limix-2m`'s
+> graph reads the split from `len(y)` exactly like TabICL's). `exaone-tabular`, `nori-30m`, `orion-bix` and
+> `orion-msp` are positional on the CPU and ship a second, masked graph for ROCm (tools/export_exaone,
+> tools/export_nori, tools/export_orion_bix, tools/export_orion_msp: `--contract mask`). The two Orion graphs
+> needed only key masks -- Orion is TabICL's architecture, so these masks are the TabICL ones too: the inducing
+> points and every ICL query attend to the context rows, the labels go to the context rows, padded columns are
+> masked out of the row attention; Orion-MSP adds its PMA pooling keys and draws its frozen random links from the
+> real columns only (an unrestricted top-k over the padded length hands real queries different links).
 > `tabfm_backends()` is the source of truth.
 
 

@@ -5,6 +5,14 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **ROCm serves `orion-bix` and `orion-msp`** (classification). Both read the train/test split from `len(y)`,
+  which a fixed-shape MIGraphX compile cannot bucket, so each now bundles a second, masked graph
+  (`tools/export_orion_bix`, `tools/export_orion_msp`: `--contract mask`) that takes the split and the feature
+  count as values. On a gfx1201 with the real weights: 0/100 label differences against the CPU for both; first
+  compile per bucket 2.2 / 4.3 minutes; warm 0.017 s / 0.023 s against 0.12 s / 0.31 s on the CPU. They read the
+  same `model.safetensors` as the CUDA graphs, which `tabfm_download` already writes.
+
 ## [v2026.10.31] - 2026-10-31
 
 ### Added
