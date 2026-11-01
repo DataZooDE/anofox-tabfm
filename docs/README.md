@@ -48,6 +48,7 @@ review that has been carried out, superseded or dropped.
 |---|---|
 | [DYNAMIC_BACKENDS.md](DYNAMIC_BACKENDS.md) | One artifact, GPU backends as runtime plugins, the equivalence suite |
 | [KV_CACHE_DESIGN.md](KV_CACHE_DESIGN.md) | The context cache behind `anofox_tabfm_context_cache` |
+| [CONTEXT_CACHE_PLAN.md](CONTEXT_CACHE_PLAN.md) | Next steps for the context cache (#37): SQL surface, the ICL key/value contract, every model, phases; with the tabicl-v2 spike |
 | [GPU_DISTRIBUTION.md](GPU_DISTRIBUTION.md) | Shipping GPU support |
 
 ### Reports

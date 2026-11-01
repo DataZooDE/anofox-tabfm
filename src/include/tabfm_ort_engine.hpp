@@ -292,6 +292,10 @@ TabFMRunOutput RunQuery(TabFMSession &session, const float *x, int64_t q, int64_
 //! supply. Used to drive RunPrepare and to reject a mismatched pair at load.
 vector<string> SplitContextInputs(const TabFMSession &query_session);
 
+//! Whether the session's graph declares an output of this name. The split path
+//! asks it of the prepare graph for the optional `context_logits` output.
+bool SessionHasOutput(const TabFMSession &session, const string &name);
+
 //! A compiled, ready-to-run inference backend for one loaded (model, device).
 //! The engine holds one per LoadedModel and calls Run() per forward pass.
 //! Implementations: OrtBackend (CPU + CUDA execution provider, via ORT) and
