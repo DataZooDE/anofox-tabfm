@@ -261,6 +261,10 @@ static const char *const BUILTIN_TABPFN25_REAL = R"json({
 // -v1.0 permits testing/evaluation/internal benchmarking only, and the HF repo
 // is gated — so commercial:false + accept_hf_license.
 //
+// Pinned to the Hugging Face revision of Prior Labs' 2026-04-02 config update, not "main": the regressor's
+// byte count was first recorded as 51955328, which no revision ever served (it is 51576286), and that
+// refused every fresh download. A pin keeps the next upstream re-upload from doing the same.
+//
 // The size regime is genuinely wider than 2.5's: Prior Labs document <=50k
 // samples and <=2000 features (2.5: 10k / 500).
 static const char *const BUILTIN_TABPFN26 = R"json({
@@ -271,12 +275,12 @@ static const char *const BUILTIN_TABPFN26 = R"json({
               "attribution": "TabPFN-2.6 by Prior Labs GmbH. Weights are testing/evaluation/internal-benchmarking only — NO commercial or production use. Contact sales@priorlabs.ai for a commercial license."},
   "preprocessing_profile": "tabpfn_v2_6_raw",
   "weights": {
-    "classification": {"repo": "Prior-Labs/tabpfn_2_6", "revision": "main",
+    "classification": {"repo": "Prior-Labs/tabpfn_2_6", "revision": "24148873a9a5992b429833d07363690dcffd02a8",
       "files": [{"path": "classification/model.ckpt", "bytes": 43044699,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/main/tabpfn-v2.6-classifier-v2.6_default.ckpt"}]},
-    "regression": {"repo": "Prior-Labs/tabpfn_2_6", "revision": "main",
-      "files": [{"path": "regression/model.ckpt", "bytes": 51955328,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/main/tabpfn-v2.6-regressor-v2.6_default.ckpt"}]}
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/24148873a9a5992b429833d07363690dcffd02a8/tabpfn-v2.6-classifier-v2.6_default.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_2_6", "revision": "24148873a9a5992b429833d07363690dcffd02a8",
+      "files": [{"path": "regression/model.ckpt", "bytes": 51576286,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/24148873a9a5992b429833d07363690dcffd02a8/tabpfn-v2.6-regressor-v2.6_default.ckpt"}]}
   },
   "graph": {"classification": "graph_tabpfn26_classification", "regression": "graph_tabpfn26_regression",
     "tensor_map": {"classification": "tensor_map_tabpfn26_classification.json",

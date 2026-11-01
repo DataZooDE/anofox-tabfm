@@ -28,7 +28,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
 | **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
 | **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; ROCm refused by name |
-| **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
+| **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; reads the downloaded .ckpt directly (no convert step) |
 | **Google TabFM 1.1** (`tabfm-v1-1`) | TabFM Non-Commercial License v1.0 (**non-commercial**, same text as v1) | ✅ shipped | **yes — classify + regress, CPU + ROCm** | 410 M / 0.82 GB per task (BF16), 4x fewer params than v1; no conversion; end-to-end parity with upstream 9.4e-06 clf / 4.9e-06 reg; ROCm agrees with CPU 64/64 |
 | **Mitra-v2** (`mitra-v2`) | Apache-2.0 (commercial, ungated) | ✅ shipped | **yes — classify + regress** | 75.7 M clf / 76.7 M reg; **classifier reuses mitra's graphs (byte-identical header) — zero new clf bytes**; new graph for the 1,000-bin regressor; 32,768 rows / 256 features; CPU + ROCm |
 | **TabDPT v1.3** (`tabdpt-v1-3`) | Apache-2.0 (commercial, ungated) | ✅ shipped | **yes — classify + regress** | 63.0 M; re-export for the per-task y-encoders; one 252 MB file, both tasks, under `tabdpt1_3/`; parity vs upstream 1.3.1 2.3e-05 clf / 2.3e-06 reg; CPU + ROCm |
@@ -277,8 +277,15 @@ own graphs rather than sharing 2.5's the way `tabpfn-v2-5-real` does.
 cd tools/export_tabpfn
 uv run export_tabpfn --task classification --config real26 --out ../../resources
 uv run python make_fixture.py --arch=v2.6          # regenerate the CI fixture
-uv run python convert_weights.py classification --arch=v2.6
+uv run python convert_weights.py classification --arch=v2.6   # optional since v2026.11.01
 ```
+
+Both tasks now run from the downloaded `.ckpt` with no conversion: the registry pins Hugging Face revision
+`24148873` (the regressor's byte count was first recorded as 51955328, which no revision ever served, so
+every fresh download was refused), and the regression tensor map declares `"ckpt_aliases":
+{"regression_borders": "criterion.borders"}`, the one name the checkpoint stores differently.
+`tabfm_download` writes the GPU `model.safetensors` too, byte-identical to `convert_weights.py`'s.
+`test/sql/tabfm_fresh_download.test` covers both tasks from an empty cache.
 
 Offline fixture: `test/sql/tabfm_tabpfn26.test`.
 

@@ -5,6 +5,16 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **`tabpfn-v2-6` downloads and runs on a fresh machine, with no Python step.** The regressor's manifest byte
+  count (51955328) matched no Hugging Face revision, so `tabfm_download` refused it everywhere; both tasks are
+  now pinned to revision `24148873` (the 2026-04-02 config update), so an upstream re-upload cannot break it
+  again. The cache directory moves from `Prior-Labs__tabpfn_2_6@main` to `...@24148873...`, so existing
+  caches download once more. The regressor's `.ckpt` also stores its borders as `criterion.borders`, where
+  the graph reads `regression_borders`: tensor maps gain an optional `"ckpt_aliases"` object, which the CPU
+  path and `tabfm_download` apply, so the CPU reads the `.ckpt` directly and the GPU `model.safetensors` is
+  written natively (byte-identical to `convert_weights.py`'s).
+
 ## [v2026.10.31] - 2026-10-31
 
 ### Added

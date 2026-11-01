@@ -538,6 +538,10 @@ bool WriteGpuWeights(FileSystem &fs, const WeightsManifest &manifest, const stri
 	string header;
 	try {
 		state_dict = ReadTorchCkpt(bytes, buffer.size());
+		auto map = GetBundledResource(manifest.tensor_map_path);
+		if (map.data) {
+			ApplyCkptAliases(ParseCkptAliases(map.data, map.size), state_dict);
+		}
 		header = CkptSafetensorsHeader(state_dict);
 	} catch (std::exception &ex) {
 		result.status = string("not converted: ") + ex.what();

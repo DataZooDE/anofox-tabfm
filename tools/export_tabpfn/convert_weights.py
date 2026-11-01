@@ -54,6 +54,7 @@ which = {"classification": "classifier", "regression": "regressor"}[task]
 # The cache-relative directory the safetensors lands in. `real` gets its own so
 # it cannot collide with the default checkpoint of the same repo (see docstring).
 task_dir = f"{task}-real" if variant == "real" else task
+revision = "main"
 
 if arch == "v2.5":
     slug_name = "tabpfn25"
@@ -65,8 +66,10 @@ elif arch == "v2.6":
     # but exports through the 2.5 patch surface — see tabpfn_patched.ARCHES.
     slug_name = "tabpfn26"
     repo_slug = "Prior-Labs__tabpfn_2_6"
+    # Pinned like the registry entry (src/tabfm_registry.cpp), so the cache dir matches the engine's.
+    revision = "24148873a9a5992b429833d07363690dcffd02a8"
     hf_file = f"tabpfn-v2.6-{which}-v2.6_default.ckpt"
-    hf_url = f"https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/main/{hf_file}"
+    hf_url = f"https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/{revision}/{hf_file}"
 elif arch == "v3":
     # tabpfn_patched.load_real_model has handled arch="v3" all along; only this
     # script's slug table did not, so `--arch=v3` fell into the v2 branch and
@@ -116,7 +119,7 @@ if missing:
     print(f"WARNING: {len(missing)} keys absent from state_dict (first: {missing[:3]})",
           flush=True)
 
-out = cache_dir / f"{repo_slug}@main" / task_dir / "model.safetensors"
+out = cache_dir / f"{repo_slug}@{revision}" / task_dir / "model.safetensors"
 out.parent.mkdir(parents=True, exist_ok=True)
 save_file(tensors, str(out))
 print(f"wrote {len(tensors)} tensors -> {out} ({out.stat().st_size} bytes)", flush=True)

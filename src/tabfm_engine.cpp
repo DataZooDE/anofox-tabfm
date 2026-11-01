@@ -133,6 +133,8 @@ struct ResolvedModel {
 	//! weights-file tensor it does not name is not this graph's and must not be injected (see
 	//! TensorMapDeclaresComplete). False keeps the "m." fallback for unmapped tensors.
 	bool tensor_map_complete = false;
+	//! The map's "ckpt_aliases": graph-side keys a raw checkpoint stores under another name.
+	unordered_map<string, string> ckpt_aliases;
 	string cache_key;
 	// Manifest-declared tensor contract (P4): graph input/output names to verify
 	// against the actual graph at load. Empty = no declared contract.
@@ -223,7 +225,8 @@ bool TensorMapDeclaresComplete(const string &json) {
 // `unused_weights` (optional) receives the document's "unused_by_graph" list.
 unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest &manifest, const string &dir,
                                             bool use_bundle, unordered_set<string> *unused_weights = nullptr,
-                                            bool *complete = nullptr) {
+                                            bool *complete = nullptr,
+                                            unordered_map<string, string> *ckpt_aliases = nullptr) {
 	if (!manifest.tensor_map.empty()) {
 		return manifest.tensor_map;
 	}
@@ -249,6 +252,9 @@ unordered_map<string, string> LoadTensorMap(FileSystem &fs, const ModelManifest 
 	}
 	if (complete) {
 		*complete = TensorMapDeclaresComplete(json);
+	}
+	if (ckpt_aliases) {
+		*ckpt_aliases = ParseCkptAliases(json.data(), json.size());
 	}
 	return ParseTensorMapJson(json, source);
 }
@@ -435,7 +441,7 @@ void ResolveModelArtifacts(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	resolved.migraphx_graph_path = resolve_gpu_graph(resolved.manifest.migraphx_graph, "migraphx_graph");
 	resolved.tensor_map =
 	    LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin, &resolved.unused_weights,
-	                  &resolved.tensor_map_complete);
+	                  &resolved.tensor_map_complete, &resolved.ckpt_aliases);
 	resolved.cache_key = TabFMModelCacheKey(resolved.manifest.model, task_name, resolved.manifest.revision);
 }
 
@@ -1588,6 +1594,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		// tensor by graph name. The bytes alias the mmap/read buffer (kept alive by
 		// the backend below), so no arena copy is needed for f32/i64.
 		sd = ReadTorchCkpt(bytes, nbytes);
+		ApplyCkptAliases(resolved.ckpt_aliases, sd);
 		// Does this checkpoint's namespace actually match the committed tensor
 		// map? For some models it does not: the map is keyed to the names the
 		// weights carry only after a `convert_weights.py` pass, and injecting the
