@@ -1,0 +1,116 @@
+{
+  "command": [
+    "export_orion_bix",
+    "--config",
+    "real",
+    "--contract",
+    "mask",
+    "--out",
+    "/tmp/claude-1000/-home-jr-Projects-datazoo-anofox-decide/7e409e93-cc2c-4f92-8eed-43d9e96cd3da/scratchpad/orion/bix_mask"
+  ],
+  "task": "classification",
+  "config": "real",
+  "model_kwargs": {
+    "max_classes": 10,
+    "embed_dim": 128,
+    "col_num_blocks": 3,
+    "col_nhead": 4,
+    "col_num_inds": 128,
+    "row_num_blocks": 3,
+    "row_nhead": 8,
+    "row_num_cls": 4,
+    "row_rope_base": 100000.0,
+    "icl_num_blocks": 12,
+    "icl_nhead": 4,
+    "ff_factor": 2,
+    "dropout": 0.0,
+    "activation": "gelu",
+    "norm_first": true,
+    "col_attention_type": "standard",
+    "col_feature_map": "identity",
+    "row_attention_type": "standard",
+    "row_feature_map": "identity",
+    "icl_attention_type": "standard",
+    "icl_feature_map": "identity"
+  },
+  "n_params": 27051666,
+  "seed": 0,
+  "opset": 18,
+  "upstream": {
+    "repo": "https://github.com/Lexsi-Labs/Orion-BiX",
+    "rev": "060d34606f56c591c47e0b6cbe971e5f5035f33e",
+    "license": "MIT",
+    "checkpoint": "Lexsi/Orion-BiX :: Orion-BiX-v1.1.ckpt"
+  },
+  "input_signature": {
+    "x": "[1,T,H] f32",
+    "y": "[1,T] f32 FULL length (-100 off-context)",
+    "train_size": "[1] i64",
+    "d": "[1] i64"
+  },
+  "output": {
+    "logits": "[1,T,C] class logits, C=max_classes"
+  },
+  "H_dynamic": true,
+  "train_size": "runtime VALUE (key masks), not a shape",
+  "cat_mask": "omitted (no categorical path)",
+  "d": "runtime VALUE: padded columns masked out of the row attention",
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    2,
+    512
+  ],
+  "example_THS": [
+    20,
+    8,
+    12
+  ],
+  "graph_bytes": 407875,
+  "n_initializers_mapped": 277,
+  "unmatched_small_inline": [],
+  "parity": {
+    "worst": 2.2351741790771484e-07,
+    "ok": true,
+    "cases": [
+      [
+        50,
+        7,
+        30,
+        128,
+        16
+      ],
+      [
+        31,
+        1,
+        30,
+        64,
+        16
+      ],
+      [
+        12,
+        5,
+        2,
+        128,
+        16
+      ],
+      [
+        20,
+        16,
+        12,
+        20,
+        16
+      ]
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.28.0",
+    "onnxscript": "0.7.1"
+  }
+}
