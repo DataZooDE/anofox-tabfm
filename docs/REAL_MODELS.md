@@ -1339,10 +1339,9 @@ faster than linearly in rows. The engine caps all three at **5,000 rows**, 500 f
 - **NULLs are mean-imputed by the engine** before the graph, so Kumo's missing-value projection is unused.
 - **Context K/V caching** (upstream's prepare/query split) is not exported; every call re-encodes the
   context.
-- **CUDA and MLX were not run.** The ext graphs and header hashes are bundled, but no CUDA device or Mac was
-  available. A static check of the graphs against the MLX interpreter's op table finds one missing op,
-  `ConstantOfShape` (one use, from upstream's `new_empty` in the cell embedding), the same op that keeps
-  tabdpt off MLX. `tabfm_backends()` says so for `mlx`, and `auto` serves Kumo on the CPU there.
+- **CUDA was not run**; no CUDA device was available. The ext graphs and header hashes are bundled.
+- **MLX serves all three sizes**, both tasks. On an Apple M3 with the real weights they agree with the CPU
+  (0/100 label differences, regression within 5e-5); `tabfm_mlx_real_models.test` pins that.
 - **The GPU paths need the converted file**, which `tabfm_download` now writes. Without it the weights are
   the raw `.pt`, whose header no GPU graph is pinned to, so ROCm and CUDA report the weights as not matching
   and `auto` runs on the CPU.

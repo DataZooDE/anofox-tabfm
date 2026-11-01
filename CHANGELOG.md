@@ -5,6 +5,15 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **MLX: TabDPT classification (v1.2 and v1.3) and orion-msp now agree with the CPU, and are no longer refused
+  on `mlx`.** No op was misinterpreted. MLX's Transpose and Slice return strided views, and the graph
+  interpreter copied its output, and the integer operands it reads to host (shapes, axes, indices), in
+  storage order rather than index order. tabdpt's classification graph ends in `Slice(Transpose(...))`, so
+  every probability was a scrambled one (63-66 of 100 labels differed); orion-msp read a strided integer
+  operand (9 of 100). Both reads are now made contiguous first. On an Apple M3 with the real weights all three
+  give 0/100 label differences, and `auto` serves them on `mlx`.
+
 ## [v2026.10.31] - 2026-10-31
 
 ### Added
