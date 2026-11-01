@@ -290,4 +290,44 @@ TEST_CASE("mlx_plugin: a graph whose output is a strided view returns it in inde
 	REQUIRE(mlx_output.logits == cpu_output.logits);
 }
 
+TEST_CASE("mlx_plugin: integer Div truncates, as ONNX Runtime's does", "[tabfm][plugin][mlx]") {
+	// LimiX-2M computes a Slice end as 2 * ((H + 1) / 2) in int64. MLX's divide
+	// is a TRUE division even on integers, so for an even H the end came out
+	// H + 1 and the next Reshape failed ("Cannot reshape array of size 1530
+	// into shape (1,170,4,2)"). The fixture is that arithmetic plus a negative
+	// quotient (-7 / 2), which tells truncation (-3) from floor division (-4).
+	const string graph = "test/fixtures/mlx/graph_int_div.onnx";
+	const int64_t t = 6, h = 4;
+	vector<float> x(static_cast<size_t>(t * h));
+	for (size_t i = 0; i < x.size(); i++) {
+		x[i] = static_cast<float>(i);
+	}
+	vector<float> y {0.0f, 1.0f, 0.0f};
+	vector<uint8_t> cat_mask(static_cast<size_t>(h), 0);
+	TabFMRunInput input;
+	input.x = x.data();
+	input.y = y.data();
+	input.cat_mask = reinterpret_cast<const bool *>(cat_mask.data());
+	input.t = t;
+	input.h = h;
+	input.train_size = 3;
+	input.d = h;
+
+	TabFMSessionConfig config;
+	config.intra_op_threads = 1;
+	config.device_id = "cpu";
+	config.model_tag = "int-div";
+	auto session = CreateSessionFromPath(graph, {}, config);
+	auto cpu_output = Run(*session, input);
+
+	auto params = MlxParams("test/fixtures/mlx", "limix-2m-classification");
+	params.graph_path = graph.c_str();
+	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
+	auto mlx_output = backend->Run(input);
+
+	REQUIRE(cpu_output.shape == vector<int64_t> {1, 4, 2});
+	REQUIRE(mlx_output.shape == cpu_output.shape);
+	REQUIRE(mlx_output.logits == cpu_output.logits);
+}
+
 #endif // TABFM_MLX_PLUGIN_PATH
