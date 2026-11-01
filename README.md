@@ -175,7 +175,7 @@ The full index, including design notes and the history of plans and reviews, is
 | [docs/GENERATE.md](docs/GENERATE.md) | Reference: how generation and imputation work, and what binning costs |
 | [docs/BUILDING.md](docs/BUILDING.md) | Reference: building and testing from source |
 | [docs/DYNAMIC_BACKENDS.md](docs/DYNAMIC_BACKENDS.md), [docs/KV_CACHE_DESIGN.md](docs/KV_CACHE_DESIGN.md) | Design: GPU backends as runtime plugins; the context cache |
-| [docs/ROCM_SINGLE_EVAL_POS.md](docs/ROCM_SINGLE_EVAL_POS.md), [docs/MLX_SPIKE_RESULTS.md](docs/MLX_SPIKE_RESULTS.md) | Report: why some models cannot use ROCm; the MLX spike |
+| [docs/ROCM_SINGLE_EVAL_POS.md](docs/ROCM_SINGLE_EVAL_POS.md), [docs/MLX_SPIKE_RESULTS.md](docs/MLX_SPIKE_RESULTS.md) | Report: how models that read the split from `len(y)` were given masked ROCm graphs; the MLX spike |
 | [docs/README.md](docs/README.md#history-plans-and-reviews) | History: the plans and reviews behind each feature |
 | [CHANGELOG.md](CHANGELOG.md) | Every release |
 

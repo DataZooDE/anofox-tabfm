@@ -64,7 +64,7 @@ If an error does not tell you what to do, please
 | You see | It means | Do this |
 |---|---|---|
 | `no usable '<device>' device was discovered` | `anofox_tabfm_device` names a device that is not there or not usable | `SELECT * FROM tabfm_devices();` for the driver state, or `SET anofox_tabfm_device = 'auto';` |
-| a predict on a named device fails with the reason the model cannot be served there | e.g. `orion-bix` on ROCm | `SELECT * FROM tabfm_backends() WHERE NOT supported;`, use `auto` or `cpu` |
+| a predict on a named device fails with the reason the model cannot be served there | e.g. `tabpfn-v3-5` on CUDA, or any model on a device whose plugin predates ABI 2 | `SELECT * FROM tabfm_backends() WHERE NOT supported;`, use `auto` or `cpu` |
 | `tabfm_accelerate()` reports `verify failed` | the plugin is missing, unreadable, or its runtime libraries are not installed (MIGraphX on ROCm) | install what the `detail` names, then run `CALL tabfm_accelerate();` again; predictions continue on the CPU |
 | a GPU mode is rejected | e.g. `bf16` or `fp16` on CUDA, `tf32` on ROCm | use a mode the backend supports ([Precision](04-gpu.md#precision)) |
 | a session on the GPU gives the same answers but is slow | it may be on the CPU | `SELECT model, device FROM tabfm_models() WHERE loaded;` |
