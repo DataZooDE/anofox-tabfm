@@ -464,8 +464,7 @@ true
 
 # ===========================================================================
 # The rest of the catalogue (sweep of 2026-11-01, Apple M3, 100 rows, against the CPU). Each block
-# unloads first so the file stays inside 16 GB; tabfm-v1 (6.6 GB per task) also unloads between its
-# CPU and MLX runs.
+# unloads first so the file stays inside 16 GB; tabfm-v1 (6.6 GB per task) holds one session at a time.
 
 # ---------------------------------------------------------------------------
 # limix-2m
@@ -872,7 +871,8 @@ true
 
 # ---------------------------------------------------------------------------
 # tabfm-v1
-# 6.6 GB per task. Measured: 0/100 labels; regression max |diff| 1.1e-5.
+# 6.6 GB per task, so ONE session at a time: each task runs on the CPU, unloads, runs on mlx, unloads.
+# Measured: 0/100 labels; regression max |diff| 1.1e-5.
 
 statement ok
 CALL tabfm_unload();
@@ -884,6 +884,31 @@ statement ok
 CREATE TABLE tabfm_v1_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
 
 statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabfm_v1_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabfm-v1' AND task = 'classification'
+----
+true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabfm_v1_cc c JOIN tabfm_v1_gc g USING (rid)
+----
+0
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
 CREATE TABLE tabfm_v1_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
 
 statement ok
@@ -893,21 +918,12 @@ statement ok
 SET anofox_tabfm_device = 'mlx';
 
 statement ok
-CREATE TABLE tabfm_v1_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
-
-statement ok
 CREATE TABLE tabfm_v1_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
 
-query TT
-SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabfm-v1' GROUP BY task ORDER BY task
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabfm-v1' AND task = 'regression'
 ----
-classification	true
-regression	true
-
-query I
-SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabfm_v1_cc c JOIN tabfm_v1_gc g USING (rid)
-----
-0
+true
 
 query I
 SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabfm_v1_cr c JOIN tabfm_v1_gr g USING (rid)

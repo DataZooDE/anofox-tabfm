@@ -13,6 +13,18 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   every probability was a scrambled one (63-66 of 100 labels differed); orion-msp read a strided integer
   operand (9 of 100). Both reads are now made contiguous first. On an Apple M3 with the real weights all three
   give 0/100 label differences, and `auto` serves them on `mlx`.
+- **MLX: `limix-2m` runs on `mlx` and agrees with the CPU; it had never been run on a Mac.** Two graph-interpreter
+  bugs, each with a weight-free fixture test: integer `Div` was a true division (ONNX Runtime truncates), so a Slice
+  end computed as `2 * ((H + 1) / 2)` came out `H + 1` and neither task ran; and float64 initializers and constants
+  were handed to MLX as float32, reading each double as two garbage floats, so regression disagreed (max |diff|
+  1.74, corr 0.9938 over 100 rows). With both fixed: 0/100 labels, regression max |diff| 1.1e-5.
+
+### Added
+- **The whole built-in catalog is checked on `mlx` against the CPU with the real weights**
+  (`test/sql/tabfm_mlx_real_models.test`, Apple M3, 100 rows). All 42 model x task pairs that ship an ext graph agree:
+  0/100 label differences for every classifier, regression max |diff| at most 1.3e-4 (mitra-v2: 1.0e-3) and corr
+  > 0.9999999. `exaone-tabular` and `nori-30m` ship no ext graph, so `mlx` refuses them (the test asserts it). No
+  model is refused as known wrong.
 
 ## [v2026.10.31] - 2026-10-31
 
