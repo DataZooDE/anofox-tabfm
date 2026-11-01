@@ -5,6 +5,7 @@
 #include "tabfm_ckpt.hpp"
 
 #include "duckdb/common/exception.hpp"
+#include "yyjson.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -809,6 +810,39 @@ void WriteCkptAsSafetensors(const unordered_map<string, CkptTensor> &state_dict,
 			}
 			write(chunk.data(), count * sizeof(float));
 		}
+	}
+}
+
+unordered_map<string, string> ParseCkptAliases(const char *json, idx_t size) {
+	unordered_map<string, string> aliases;
+	using namespace duckdb_yyjson; // NOLINT
+	auto doc = yyjson_read(json, size, 0);
+	if (!doc) {
+		return aliases;
+	}
+	auto obj = yyjson_obj_get(yyjson_doc_get_root(doc), "ckpt_aliases");
+	if (obj && yyjson_is_obj(obj)) {
+		size_t idx, max;
+		yyjson_val *key, *val;
+		yyjson_obj_foreach(obj, idx, max, key, val) {
+			if (yyjson_is_str(val)) {
+				aliases[yyjson_get_str(key)] = yyjson_get_str(val);
+			}
+		}
+	}
+	yyjson_doc_free(doc);
+	return aliases;
+}
+
+void ApplyCkptAliases(const unordered_map<string, string> &aliases, unordered_map<string, CkptTensor> &state_dict) {
+	for (auto &alias : aliases) {
+		auto from = state_dict.find(alias.second);
+		if (from == state_dict.end() || state_dict.count(alias.first)) {
+			continue;
+		}
+		CkptTensor t = std::move(from->second);
+		state_dict.erase(from);
+		state_dict.emplace(alias.first, std::move(t));
 	}
 }
 

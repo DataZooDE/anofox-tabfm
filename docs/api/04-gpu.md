@@ -60,14 +60,14 @@ backend serves on your machine.
 | backend | platforms | models | verified on |
 |---|---|---|---|
 | CPU | Linux x64/arm64, macOS **arm64**, Windows x64 | every built-in model | CI suites + install-smoke with inference on every platform |
-| CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | every built-in model | RTX 4090/3070/A5000/A40: full example suite, catalog parity, 10k-row guardrail max, on the catalog of the time (seven models); `limix-2m` has not been run on CUDA |
-| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | `tabfm-v1`, `mitra`, `tabdpt` and the TabPFN family (`tabpfn-v2`, `tabpfn-v2-5`, `tabpfn-v2-5-real`, `tabpfn-v2-6`, `tabpfn-v3`), both tasks. Refused: `tabicl-v2`, `orion-bix`, `orion-msp`, `causilo`, `limix-2m` | RX 9070 XT: parity, concurrency, user workflow; tabdpt 5.6x CPU with identical predictions; TabPFN v2/v2.5/v2.6 3.5-7x CPU wall-clock and ~40x less CPU time, every row agreeing with the CPU to float noise; TabPFN-3 ~3-4x CPU wall-clock at small sizes, 0 label differences in 100 rows |
-| MLX (plugin) | macOS arm64 (Apple Silicon) | every model CPU serves (6 verified through SQL; `tabfm-v1` via the graph harness) | Apple M3: 10 model×task pairs cpu-compared (0 disagreements), 4000-row stress, device/precision alternation; `limix-2m` has not been run on a Mac |
+| CUDA (plugin) | Linux x64, CUDA userspace ≥ 12.5 | every built-in model with an ext graph, both tasks. Refused: `nori-30m`, `exaone-tabular` (no ext graph), `tabpfn-v3-5`, `tabpfn-v3-5-fast` (fail inside ONNX Runtime 1.29's CUDA EP) | RTX 4090, v2026.10.31 release artefacts: all 19 servable models (36 model×task pairs, `tools/gpu_test/cuda_catalog.sh`) on `cuda:0` with **0 label differences** against the CPU and regression max abs diff ≤ 6e-5; warm 0.02-0.1 s per 100-row predict. Earlier (seven-model catalog): RTX 3070/A5000/A40 full example suite, 10k-row guardrail max |
+| ROCm (plugin) | Linux x64, gfx1201 verified (allowlist gates others) | every built-in model, both tasks. The ones whose CPU graph reads the train/test split from `len(y)` (the TabPFN family, `tabdpt`, `tabicl-v2`, `limix-2m`, `orion-bix`, `orion-msp`, `causilo`, `exaone-tabular`, `nori-30m`) ship a second, masked graph for ROCm | RX 9070 XT: parity, concurrency, user workflow; tabdpt 5.6x CPU with identical predictions; TabPFN v2/v2.5/v2.6 3.5-7x CPU wall-clock and ~40x less CPU time, every row agreeing with the CPU to float noise; TabPFN-3 ~3-4x CPU wall-clock at small sizes, 0 label differences in 100 rows; `tabicl-v2`, `limix-2m`, `orion-bix`, `orion-msp` and `causilo` 0/100 label differences against the CPU (regression max \|diff\| ≤ 3.5e-4), warm 4-13x CPU at 100 rows |
+| MLX (plugin) | macOS arm64 (Apple Silicon) | every task of every built-in model that ships an ext graph (40 model×task pairs). Refused: `exaone-tabular`, `nori-30m` (no ext graph) | Apple M3, real weights, 100 rows: all 40 pairs cpu-compared through SQL (`test/sql/tabfm_mlx_real_models.test`): 0/100 label differences for every classifier, regression max \|diff\| ≤ 1.3e-4 (mitra-v2 1.0e-3), corr > 0.9999999; `limix-2m` included since its two interpreter fixes; 4000-row stress, device/precision alternation |
 | CoreML | — | — | **dropped** — MLX supersedes it on Apple Silicon ([why](../DYNAMIC_BACKENDS.md#phase-4--coreml--dropped-2026-09-19)) |
 
-The models refused on ROCm read the train/test split from the length of `y`, which MIGraphX's fixed-shape
-compilation cannot express ([docs/ROCM_SINGLE_EVAL_POS.md](../ROCM_SINGLE_EVAL_POS.md)); CUDA and the CPU
-serve them.
+Models whose CPU graph reads the train/test split from the length of `y`, which MIGraphX's fixed-shape
+compilation cannot express, ship a masked graph that takes the split as a value instead
+([docs/ROCM_SINGLE_EVAL_POS.md](../ROCM_SINGLE_EVAL_POS.md)). The first predict per shape bucket compiles it (below).
 
 ## ROCm compile time
 
@@ -78,7 +78,7 @@ it, every later one in that bucket is sub-second. Measured on gfx1201:
 |---|---|
 | `tabfm-v1` (full size) | about 25 minutes |
 | `tabpfn-v3` | about 16 minutes |
-| the other ROCm models | 2.5 to 9 minutes |
+| the other ROCm models | 2 to 9 minutes (`orion-bix` 2.2, `orion-msp` 4.3 at 128 x 16) |
 
 `CALL tabfm_gpu_precompile(...)` does it off the query path, and the compiled `.mxr` persists in the weight
 cache across sessions. `SET anofox_tabfm_mxr_source = '<dir>'` stages matching precompiled programs from a

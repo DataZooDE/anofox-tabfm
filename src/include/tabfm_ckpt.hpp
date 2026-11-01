@@ -52,6 +52,15 @@ bool IsTorchCkpt(const uint8_t *buf, idx_t size);
 //! `data` pointers alias `buf`, except a strided view's, which is gathered into its `owned` copy.
 unordered_map<string, CkptTensor> ReadTorchCkpt(const uint8_t *buf, idx_t size);
 
+//! A tensor map's optional "ckpt_aliases" object, {key the graph's tensor map names: key the checkpoint
+//! stores it under} (TabPFN-2.6's regressor keeps `regression_borders` as `criterion.borders`). Empty when
+//! the document has none or does not parse.
+unordered_map<string, string> ParseCkptAliases(const char *json, idx_t size);
+
+//! Rename each aliased checkpoint key to the name the tensor map expects. An alias whose source is
+//! missing, or whose target the checkpoint already holds, is left alone.
+void ApplyCkptAliases(const unordered_map<string, string> &aliases, unordered_map<string, CkptTensor> &state_dict);
+
 //! The safetensors a checkpoint becomes for the GPU graphs: every tensor, keys sorted, contiguous
 //! float32 (other dtypes are cast), no __metadata__ -- byte for byte what tools/export_*/
 //! convert_*_weights write with safetensors.torch.save_file, so the header sha the bundled graphs pin

@@ -169,7 +169,7 @@ mlx_dtype OnnxDtype(int elem_type) {
 	case 1:
 		return MLX_FLOAT32;
 	case 11:
-		return MLX_FLOAT32; // DOUBLE: MLX has no float64; used only for constants
+		return MLX_FLOAT32; // DOUBLE: MLX has no float64; TensorArray narrows the bytes
 	case 10:
 		return MLX_FLOAT16;
 	case 16:
@@ -187,6 +187,27 @@ mlx_dtype OnnxDtype(int elem_type) {
 	default:
 		Fail("unhandled ONNX dtype " + std::to_string(elem_type));
 	}
+}
+
+//! An mlx array holding an ONNX tensor's bytes (copied). MLX has no float64, so a DOUBLE
+//! tensor is narrowed to float32 here; passing its bytes through as float32 reads every
+//! double as two garbage floats. LimiX-2M keeps its numeric encoder's RBF centers and a
+//! Pow exponent in float64, and its regression disagreed with the CPU by up to 1.7 until
+//! this narrowed them.
+Arr TensorArray(const void *bytes, const std::vector<int> &shape, int elem_type) {
+	if (elem_type == 11) {
+		size_t count = 1;
+		for (int d : shape) {
+			count *= static_cast<size_t>(d);
+		}
+		if (count > 0) {
+			std::vector<double> wide(count);
+			std::memcpy(wide.data(), bytes, count * sizeof(double)); // the bytes may be unaligned
+			std::vector<float> narrow(wide.begin(), wide.end());
+			return Arr(mlx_array_new_data(narrow.data(), shape.data(), static_cast<int>(shape.size()), MLX_FLOAT32));
+		}
+	}
+	return Arr(mlx_array_new_data(bytes, shape.data(), static_cast<int>(shape.size()), OnnxDtype(elem_type)));
 }
 
 //! A read-only mapping of the safetensors blob the graph's initializers index.

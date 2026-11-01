@@ -26,6 +26,13 @@ class ExportConfig:
     channels: int                  # regression output channels
     example: tuple                 # (T, H, S) used for tracing
     parity_shapes: tuple           # (T, H, S), all different from `example`
+    weight_gain: float = 2.0       # fixture.sensitive(): attention/feed-forward scale; see its docstring
+    mask_example: tuple = (32, 12, 20)    # (T, H, train_size) used for tracing the masked contract
+    # (n, N, d, T, H): real rows, train rows, real features, bucket rows, bucket features. Every one differs
+    # from `mask_example` in every coordinate, and they include features that fill and do not fill their group
+    # of 3, an entirely padded group, a single query row and a single training row.
+    mask_parity_cases: tuple = ((20, 12, 5, 32, 16), (40, 30, 9, 64, 16), (16, 15, 3, 32, 18),
+                                (12, 8, 2, 32, 16), (14, 1, 5, 32, 16), (9, 2, 7, 16, 24))
 
     def model_config(self, task: str) -> ModelConfig:
         outputs = self.classes if task == "classification" else self.channels
@@ -47,15 +54,33 @@ _FIXTURE = dict(
 )
 
 
+# What the released model does that `_FIXTURE` does not, at small width: every stack at the released
+# depth (3 column layers on each side, 3 row rounds on each side, 3 prediction layers), the released row
+# latent count (4, not 2), and more than one head with a head width that is not the layer width. Without
+# it the masked forward could pass its gate while a loop body ran only once. Used by the mask gate.
+_FIXTURE_R = dict(
+    width=32, expansion=2, group_size=3, frequencies=8,
+    column_latents=8, column_heads=4, column_depths=(3, 3),
+    row_heads=8, row_latents=4, row_depths=(3, 3),
+    prediction_heads=4, prediction_depth=3,
+)
+
+
+def fixture_r() -> ExportConfig:
+    return ExportConfig("fixture_r", dict(_FIXTURE_R), classes=3, channels=16,
+                        example=(20, 5, 12), parity_shapes=((40, 7, 30), (16, 9, 6)))
+
+
 def fixture() -> ExportConfig:
     return ExportConfig("fixture", dict(_FIXTURE), classes=3, channels=16,
                         example=(20, 5, 12), parity_shapes=((40, 7, 30), (16, 9, 6), (33, 4, 29)))
 
 
 def real() -> ExportConfig:
+    # weight_gain 1.5, not the fixtures' 2.0: measured at real depth, see fixture.sensitive
     return ExportConfig("real", dict(_REAL), classes=10, channels=999,
-                        example=(16, 6, 10), parity_shapes=((32, 12, 20), (24, 7, 15)))
+                        example=(16, 6, 10), parity_shapes=((32, 12, 20), (24, 7, 15)), weight_gain=1.5)
 
 
 def get(name: str) -> ExportConfig:
-    return {"fixture": fixture, "real": real}[name]()
+    return {"fixture": fixture, "fixture_r": fixture_r, "real": real}[name]()

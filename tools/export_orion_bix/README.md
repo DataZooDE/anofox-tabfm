@@ -74,3 +74,32 @@ Orion-BiX does no internal normalization; its sklearn wrapper standardizes
 externally (`CustomStandardScaler`, `RTDLQuantileTransformer`,
 `OutlierRemover`). The engine therefore standardizes features, as it does for
 `tabfm-v1` and `mitra`.
+
+## The ROCm graph (masked contract)
+
+The CPU graph's split is positional (`len(y)`), which a fixed-shape MIGraphX compile cannot bucket
+(docs/ROCM_SINGLE_EVAL_POS.md). `orion_mask.py` computes the same function with the split as a VALUE:
+`x[1,T,H]`, `y[1,T]` (full length, -100 off the context), `train_size[1]`, `d[1]`. Orion-BiX touches the split
+in two places and the padded columns in one, so three masks suffice: the inducing points and every ICL query
+attend to the context rows only, the label embedding goes to the context rows only, and padded columns are
+masked out as keys of the row attention. There is no `n_rows`: a padded row is a query everywhere, never a key.
+
+`mask_parity.gate` compares it, padded to a larger bucket, with the positional forward on the unpadded table and
+passes only when each of four negative controls (one mask broken each) is caught. On the released weights:
+worst 9.3e-5 on logits up to 12 (fp32 reassociation: the same comparison in float64 agrees to 1.5e-13), every
+control off by 2.8 or more.
+
+```bash
+uv run export_orion_bix --config real --contract mask --out ./mask
+W=~/.cache/anofox-tabfm/Lexsi__Orion-BiX@main/classification/model.safetensors   # written by tabfm_download
+uv run python ../make_migraphx_graph.py classification --weights $W \
+    --graph ./mask/graph_mask_orion_bix_classification.onnx \
+    --tensor-map ../../resources/tensor_map_orion_bix_classification.json \
+    --dynamic --out ../../resources/graph_migraphx_orion_bix_classification.onnx
+uv run python ../check_migraphx_int_div.py ../../resources/graph_migraphx_orion_bix_classification.onnx
+uv run pytest tests/test_mask.py   # gate on random + real weights, and the committed graph in ORT
+```
+
+`tools/export_orion_msp` does the same for Orion-MSP (`--contract mask`, `--inline-ok _LINK_SCORES` for the
+frozen random-link table), adding two masks of its own: the PMA pooling's keys and the random links, which are
+drawn from the real columns only.

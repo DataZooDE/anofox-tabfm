@@ -74,6 +74,22 @@ std::vector<int64_t> FlattenNdIndices(const std::vector<int64_t> &idx, const std
 	return flat;
 }
 
+bool IsIntegerDtype(mlx_dtype dt) {
+	switch (dt) {
+	case MLX_INT8:
+	case MLX_INT16:
+	case MLX_INT32:
+	case MLX_INT64:
+	case MLX_UINT8:
+	case MLX_UINT16:
+	case MLX_UINT32:
+	case MLX_UINT64:
+		return true;
+	default:
+		return false;
+	}
+}
+
 const std::unordered_map<std::string, Handler> &Handlers() {
 	static const std::unordered_map<std::string, Handler> table = {
 	    UNARY("Neg", mlx_negative),      UNARY("Abs", mlx_abs),         UNARY("Sqrt", mlx_sqrt),
@@ -84,12 +100,35 @@ const std::unordered_map<std::string, Handler> &Handlers() {
 	    UNARY("Not", mlx_logical_not),   UNARY("Reciprocal", mlx_reciprocal),
 
 	    BINARY("Add", mlx_add),          BINARY("Sub", mlx_subtract),   BINARY("Mul", mlx_multiply),
-	    BINARY("Div", mlx_divide),       BINARY("MatMul", mlx_matmul),  BINARY("Equal", mlx_equal),
+	    BINARY("MatMul", mlx_matmul),  BINARY("Equal", mlx_equal),
 	    BINARY("Greater", mlx_greater),  BINARY("Less", mlx_less),      BINARY("And", mlx_logical_and),
 	    BINARY("Or", mlx_logical_or),    BINARY("Mod", mlx_remainder),  BINARY("Pow", mlx_power),
 	    BINARY("GreaterOrEqual", mlx_greater_equal),
 	    BINARY("LessOrEqual", mlx_less_equal),
 
+	    {"Div",
+	     [](const Node &, const Args &in, const Ctx &c) {
+		     // ONNX Runtime's integer Div truncates toward zero (C++ `/`); MLX's divide is a TRUE
+		     // division even on integers and returns float. LimiX-2M computes a Slice end as
+		     // 2 * ((H + 1) / 2) in int64, which came out H + 1 for even H. Truncation is the floor
+		     // quotient plus one where the remainder is nonzero and the signs differ.
+		     Arr r;
+		     if (!IsIntegerDtype(in[0]->dtype()) || !IsIntegerDtype(in[1]->dtype())) {
+			     Ok(mlx_divide(r.out(), in[0]->get(), in[1]->get(), c.s), "Div");
+			     return Wrap(std::move(r));
+		     }
+		     Arr q, rem, zero(mlx_array_new_int(0)), inexact, a_neg, b_neg, signs_differ, fix, fix_t;
+		     Ok(mlx_floor_divide(q.out(), in[0]->get(), in[1]->get(), c.s), "floor_divide");
+		     Ok(mlx_remainder(rem.out(), in[0]->get(), in[1]->get(), c.s), "remainder");
+		     Ok(mlx_not_equal(inexact.out(), rem.get(), zero.get(), c.s), "inexact");
+		     Ok(mlx_less(a_neg.out(), in[0]->get(), zero.get(), c.s), "a_neg");
+		     Ok(mlx_less(b_neg.out(), in[1]->get(), zero.get(), c.s), "b_neg");
+		     Ok(mlx_not_equal(signs_differ.out(), a_neg.get(), b_neg.get(), c.s), "signs_differ");
+		     Ok(mlx_logical_and(fix.out(), inexact.get(), signs_differ.get(), c.s), "fix");
+		     Ok(mlx_astype(fix_t.out(), fix.get(), q.dtype(), c.s), "fix dtype");
+		     Ok(mlx_add(r.out(), q.get(), fix_t.get(), c.s), "truncate");
+		     return Wrap(std::move(r));
+	     }},
 	    {"Round",
 	     [](const Node &, const Args &in, const Ctx &c) {
 		     // ONNX Round is round-half-to-even, as MLX's (numpy semantics) is.
@@ -114,7 +153,7 @@ const std::unordered_map<std::string, Handler> &Handlers() {
 				     Fail("ConstantOfShape '" + n.name + "' has a value attribute with no data");
 			     }
 			     dt = OnnxDtype(t.data_type);
-			     fill = Arr(mlx_array_new_data(bytes, nullptr, 0, dt)); // rank 0: the one element
+			     fill = TensorArray(bytes, {}, t.data_type); // rank 0: the one element
 		     }
 		     Arr r;
 		     Ok(mlx_full(r.out(), shape.data(), shape.size(), fill.get(), dt, c.s), "constant_of_shape");
@@ -656,7 +695,6 @@ Graph::Graph(const std::string &graph_path, const std::string &weights_dir) : im
 
 	for (const auto &t : impl_->parsed.initializers) {
 		std::vector<int> shape(t.dims.begin(), t.dims.end()); // rank preserved, incl. 0
-		const mlx_dtype dt = OnnxDtype(t.data_type);
 		const void *bytes = nullptr;
 		if (t.location == ::anofox::onnxread::DataLocation::EXTERNAL) {
 			size_t offset = 0, length = 0;
@@ -677,8 +715,7 @@ Graph::Graph(const std::string &graph_path, const std::string &weights_dir) : im
 		if (!bytes) {
 			continue; // empty initializer; nothing reads it
 		}
-		impl_->initializers.emplace(
-		    t.name, Arr(mlx_array_new_data(bytes, shape.data(), static_cast<int>(shape.size()), dt)));
+		impl_->initializers.emplace(t.name, TensorArray(bytes, shape, t.data_type));
 	}
 
 	// Last-use analysis. A value may be dropped once the last node reading it
@@ -785,8 +822,7 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 				if (!bytes) {
 					Fail("Constant '" + node.name + "' carries no data");
 				}
-				env[node.outputs[0]] = Arr(mlx_array_new_data(
-				    bytes, shape.data(), static_cast<int>(shape.size()), OnnxDtype(t.data_type)));
+				env[node.outputs[0]] = TensorArray(bytes, shape, t.data_type);
 				continue;
 			}
 			if (const auto *a = node.Attr("value_int")) {

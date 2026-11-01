@@ -261,6 +261,10 @@ static const char *const BUILTIN_TABPFN25_REAL = R"json({
 // -v1.0 permits testing/evaluation/internal benchmarking only, and the HF repo
 // is gated — so commercial:false + accept_hf_license.
 //
+// Pinned to the Hugging Face revision of Prior Labs' 2026-04-02 config update, not "main": the regressor's
+// byte count was first recorded as 51955328, which no revision ever served (it is 51576286), and that
+// refused every fresh download. A pin keeps the next upstream re-upload from doing the same.
+//
 // The size regime is genuinely wider than 2.5's: Prior Labs document <=50k
 // samples and <=2000 features (2.5: 10k / 500).
 static const char *const BUILTIN_TABPFN26 = R"json({
@@ -271,12 +275,12 @@ static const char *const BUILTIN_TABPFN26 = R"json({
               "attribution": "TabPFN-2.6 by Prior Labs GmbH. Weights are testing/evaluation/internal-benchmarking only — NO commercial or production use. Contact sales@priorlabs.ai for a commercial license."},
   "preprocessing_profile": "tabpfn_v2_6_raw",
   "weights": {
-    "classification": {"repo": "Prior-Labs/tabpfn_2_6", "revision": "main",
+    "classification": {"repo": "Prior-Labs/tabpfn_2_6", "revision": "24148873a9a5992b429833d07363690dcffd02a8",
       "files": [{"path": "classification/model.ckpt", "bytes": 43044699,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/main/tabpfn-v2.6-classifier-v2.6_default.ckpt"}]},
-    "regression": {"repo": "Prior-Labs/tabpfn_2_6", "revision": "main",
-      "files": [{"path": "regression/model.ckpt", "bytes": 51955328,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/main/tabpfn-v2.6-regressor-v2.6_default.ckpt"}]}
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/24148873a9a5992b429833d07363690dcffd02a8/tabpfn-v2.6-classifier-v2.6_default.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_2_6", "revision": "24148873a9a5992b429833d07363690dcffd02a8",
+      "files": [{"path": "regression/model.ckpt", "bytes": 51576286,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/24148873a9a5992b429833d07363690dcffd02a8/tabpfn-v2.6-regressor-v2.6_default.ckpt"}]}
   },
   "graph": {"classification": "graph_tabpfn26_classification", "regression": "graph_tabpfn26_regression",
     "tensor_map": {"classification": "tensor_map_tabpfn26_classification.json",
@@ -287,6 +291,9 @@ static const char *const BUILTIN_TABPFN26 = R"json({
   "size_regime": {"max_rows": 50000, "max_features": 2000, "max_classes": 10}
 })json";
 
+// TabICL v2's CPU/CUDA graphs are (x, y)-only: the split is the length of y. For ROCm a second, MASKED graph per
+// task (x, y_full, train_size, d, n_rows; tools/export_tabicl --contract mask) is bundled, keyed to the same
+// safetensors by header sha (docs/ROCM_SINGLE_EVAL_POS.md).
 static const char *const BUILTIN_TABICL = R"json({
   "schema_version": 2, "id": "tabicl-v2", "display_name": "TabICL v2 (soda-inria)",
   "family": "icl-transformer",
@@ -433,7 +440,9 @@ static const char *const BUILTIN_ORION_BIX = R"json({
 // attribution. The HF repo itself is ungated; no token is needed.
 //
 // Its graph is (x, y)-only like TabICL's: the split is the length of y, so the engine needs no
-// model-specific code (tools/export_causilo). The graph normalises its own features, hence a
+// model-specific code (tools/export_causilo). For ROCm a second, MASKED graph per task (x, y_full,
+// train_size, n_rows, d; tools/export_causilo --contract mask, docs/ROCM_CAUSILO_PLAN.md) is bundled,
+// keyed to the pinned safetensors by header sha. The graph normalises its own features, hence a
 // *_raw profile. Weights are already safetensors with the keys the tensor map names, so there is
 // no converter, and they are pinned to the commit the graph was exported from: HF main has moved
 // past it, and a moving ref would pair a newer checkpoint with this graph.
@@ -481,7 +490,9 @@ static const char *const BUILTIN_CAUSILO = R"json({
 // "distributing the Work" under Section 10 has NOT been confirmed with StableAI; docs/REAL_MODELS.md says so.
 //
 // Its graph is (x, y)-only like TabICL's and Causilo's: the split is the length of y, so the engine needs
-// no model-specific code (tools/export_limix), and ROCm refuses it by name (docs/ROCM_SINGLE_EVAL_POS.md).
+// no model-specific code (tools/export_limix). For ROCm a second, MASKED graph per task (x, y_full,
+// train_size, d, n_rows; tools/export_limix --contract mask) is bundled; it reads the model.safetensors that
+// tabfm_download writes beside the checkpoint (docs/ROCM_SINGLE_EVAL_POS.md).
 // The model standardises its own features and the export wrapper standardises the regression target
 // in-graph, hence a *_raw profile. ONE checkpoint serves both tasks, so both name the same file.
 //

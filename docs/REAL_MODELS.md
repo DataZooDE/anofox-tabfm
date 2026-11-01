@@ -19,24 +19,24 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Google TabFM** (`tabfm-v1`) | non-commercial (gated) | ✅ shipped | yes | the original; 1.6 B params / 6.56 GB |
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
 | **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert |
-| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert |
-| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; the `.ckpt` is read natively (no conversion step); upstream ships no regressor |
+| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
+| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; the `.ckpt` is read natively (no conversion step); upstream ships no regressor; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
 | **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
 | **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; ckpt→safetensors convert required |
 | **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes** |
-| **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); the `.ckpt` is read natively |
+| **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); the `.ckpt` is read natively; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
-| **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
-| **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; ROCm refused by name |
-| **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; ckpt→safetensors convert required |
-| **Google TabFM 1.1** (`tabfm-v1-1`) | TabFM Non-Commercial License v1.0 (**non-commercial**, same text as v1) | ✅ shipped | **yes — classify + regress, CPU + ROCm** | 410 M / 0.82 GB per task (BF16), 4x fewer params than v1; no conversion; end-to-end parity with upstream 9.4e-06 clf / 4.9e-06 reg; ROCm agrees with CPU 64/64 |
+| **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50; **ROCm served** (masked graph; 0/100 label diffs vs CPU, regression 3.6e-5) |
+| **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; **ROCm served** (masked graph, reads the `model.safetensors` `tabfm_download` writes; 0/100 label diffs vs CPU) |
+| **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; reads the downloaded .ckpt directly (no convert step) |
+| **Google TabFM 1.1** (`tabfm-v1-1`) | TabFM Non-Commercial License v1.0 (**non-commercial**, same text as v1) | ✅ shipped | **yes — classify + regress, CPU, CUDA + ROCm** | 410 M / 0.82 GB per task (BF16), 4x fewer params than v1; no conversion; end-to-end parity with upstream 9.4e-06 clf / 4.9e-06 reg; ROCm agrees with CPU 64/64 |
 | **Mitra-v2** (`mitra-v2`) | Apache-2.0 (commercial, ungated) | ✅ shipped | **yes — classify + regress** | 75.7 M clf / 76.7 M reg; **classifier reuses mitra's graphs (byte-identical header) — zero new clf bytes**; new graph for the 1,000-bin regressor; 32,768 rows / 256 features; CPU + ROCm |
 | **TabDPT v1.3** (`tabdpt-v1-3`) | Apache-2.0 (commercial, ungated) | ✅ shipped | **yes — classify + regress** | 63.0 M; re-export for the per-task y-encoders; one 252 MB file, both tasks, under `tabdpt1_3/`; parity vs upstream 1.3.1 2.3e-05 clf / 2.3e-06 reg; CPU + ROCm |
 | **TabPFN-3.5** (`tabpfn-v3-5`) | tabpfn-3-5-license-v1.0 (**non-commercial**, no hosted service) | ✅ shipped | **yes — classify + regress** | 219.0 M / 876 MB; ONE safetensors serves both tasks, **no conversion**; parity vs upstream 1.7e-05 clf / 3.8e-06 reg; ROCm served (0 label diffs; cold compile ~1 h per task) |
 | **TabPFN-3.5-Fast** (`tabpfn-v3-5-fast`) | tabpfn-3-5-license-v1.0 (**non-commercial**, no hosted service) | ✅ shipped | **yes — classify + regress** | 83.5 M / 334 MB; 3.5 at 8 ICL layers instead of 24; parity 1.5e-04 clf (logit floor) / 6.2e-06 reg; ROCm served (0 label diffs; cold compile ~17 min per task) |
 | **Nori-30M** (`nori-30m`) | Apache-2.0, code and weights (commercial, ungated) | ✅ shipped | **yes — regress only** | 29.2 M; a LimiX fork; **no conversion — the engine reads `nori.pt` natively**; 999-quantile head reduced in-graph to its mean; parity with upstream's single forward 1.0e-4 (california); **ROCm served** (masked graph, after a one-time convert; 3.8e-6 vs CPU) |
 | **EXAONE Tabular** (`exaone-tabular`) | EXAONE AI Model License 1.2 - NC (**non-commercial**, gated) | ✅ shipped | **yes — classify + regress** | 20.8 M clf / 21.1 M reg; **no conversion — LG ship safetensors**; iris 45/45 and wine 54/54 labels identical to upstream's single forward; plain attention instead of upstream's pinned FlashAttention; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
-| **Kumo-Tabular** (`kumo-tabular-small` / `-medium` / `-large`) | OpenMDW-1.1 (**commercial**, ungated; keep the agreement + NVIDIA notice when distributing) | ✅ shipped | **yes — classify + regress, CPU and ROCm** | 27.5 M / 61.5 M / 213.7 M (classifier); no conversion on the CPU (the `.pt` is read natively); upstream parity ≤ 1.5e-5 (probabilities); first model onboarded on the masked contract from day one |
+| **Kumo-Tabular** (`kumo-tabular-small` / `-medium` / `-large`) | OpenMDW-1.1 (**commercial**, ungated; keep the agreement + NVIDIA notice when distributing) | ✅ shipped | **yes — classify + regress, CPU, CUDA and ROCm** | 27.5 M / 61.5 M / 213.7 M (classifier); no conversion on the CPU (the `.pt` is read natively); upstream parity ≤ 1.5e-5 (probabilities); first model onboarded on the masked contract from day one |
 
 ### TabPFN-3 — done
 
@@ -193,6 +193,15 @@ row:
 | 3.5 | cls | 0/30 query, 0/70 context labels; max prob diff 1.1e-06 | 3724 s |
 | 3.5 | reg | max abs 1.3e-04, corr 1.000000, 100 distinct | ~3060 s (inferred from the .mxr timestamp: the timed run was interrupted) |
 
+**CUDA: refused by name.** Measured on an RTX 4090 (RunPod; released v2026.10.31 extension and CUDA plugin, `tools/gpu_test/cuda_catalog.sh`, 70 context / 30 query rows, 4 features, fp32), both graphs of both variants fail inside ONNX Runtime 1.29's
+CUDA execution provider, on both tasks: an `Expand` (`node_expand: left operand cannot broadcast on dim 2`)
+or a `Where` (`Shape mismatch attempting to re-use buffer {1,1,100} != {1,5,100}`) receives a wrong shape
+operand. The same graphs run on ORT 1.29's CPU EP. It reproduces outside the extension with plain
+`onnxruntime-gpu` 1.29.0 (the CUDA-12 wheel the plugin ships) at every graph optimisation level, with and
+without the memory pattern, and with the graph's `value_info` stripped, so it is not a tabfm session option.
+Until the cause is found the models are refused on `cuda` (`CudaKnownWrong`, `src/include/tabfm_model_spec.hpp`):
+`tabfm_backends()` names the reason, and `auto` serves them on the CPU instead of failing after it picked CUDA.
+
 The compiles are the longest in the catalog (v3: ~16 min). 3.5's ICL stack is
 1024 wide and 24 deep, and MIGraphX compiles per (rows, features) bucket.
 `tabfm_gpu_precompile` moves that off the query path. Nothing has been tried yet
@@ -277,8 +286,15 @@ own graphs rather than sharing 2.5's the way `tabpfn-v2-5-real` does.
 cd tools/export_tabpfn
 uv run export_tabpfn --task classification --config real26 --out ../../resources
 uv run python make_fixture.py --arch=v2.6          # regenerate the CI fixture
-uv run python convert_weights.py classification --arch=v2.6
+uv run python convert_weights.py classification --arch=v2.6   # optional since v2026.11.01
 ```
+
+Both tasks now run from the downloaded `.ckpt` with no conversion: the registry pins Hugging Face revision
+`24148873` (the regressor's byte count was first recorded as 51955328, which no revision ever served, so
+every fresh download was refused), and the regression tensor map declares `"ckpt_aliases":
+{"regression_borders": "criterion.borders"}`, the one name the checkpoint stores differently.
+`tabfm_download` writes the GPU `model.safetensors` too, byte-identical to `convert_weights.py`'s.
+`test/sql/tabfm_fresh_download.test` covers both tasks from an empty cache.
 
 Offline fixture: `test/sql/tabfm_tabpfn26.test`.
 
@@ -485,6 +501,20 @@ uv run make_orion_msp_fixture ../../test/fixtures/orion_msp
 ```
 
 Offline fixture: `test/sql/tabfm_orion_msp.test`.
+
+**ROCm: served on `rocm:0`, verified on a real gfx1201 with the real weights.** The CPU graph's split is
+positional, so a second, MASKED graph is bundled (`graph_migraphx_orion_msp_classification.onnx`,
+`tools/export_orion_msp --contract mask`, `orion_mask.py`): `x, y_full, train_size, d`. On top of Orion-BiX's
+masks (below) the row stage needs two of its own: the PMA pooling's keys exclude padded columns (upstream's own
+`valid_counts` mask), and the frozen random links are the top-2 of the score table over the REAL columns only --
+the CPU graph takes the top-2 of `table[:L, :L]` with `L` the real length, and an unrestricted top-2 over the
+padded length would hand a real query a different link whenever a padded column scores higher. The gate compares
+padded + masked with the positional forward on the unpadded table: worst 7.2e-4 on logits up to 11 (fp32
+reassociation; in float64 the two agree to 1.4e-12), and each of six negative controls (one mask broken each,
+random links included) is caught by 0.26 or more. Through the engine, 100 rows x 8 features (the 128 x 16 bucket),
+fp32, against the CPU: **0 / 100 label disagreements** (context and query). First call on a bucket compiles for
+about **4.3 minutes** (259 s); warm calls take **0.023 s on ROCm against 0.31 s on the CPU**
+(`tools/gpu_test/scenarios/orion_rocm.sql`).
 
 ### Testing against real weights
 
@@ -767,16 +797,32 @@ The second pass gives 1.000 on both and leaves query rows unchanged. It costs `S
   are unaffected; pass `opts := MAP {'softmax_temperature': '1.0'}` to match upstream.
 - More than 10 classes (upstream handles them with error-correcting output codes) is not supported;
   the engine's class ceiling is the head width.
-- ROCm: refused by name like `tabicl-v2` (positional split; `docs/ROCM_SINGLE_EVAL_POS.md`).
+- ROCm: served on `rocm:0` through a second, MASKED graph per task (`tools/export_causilo --contract mask`;
+  `docs/ROCM_CAUSILO_PLAN.md`), not the positional CPU graph.
+
+**ROCm (Radeon RX 9070 XT, gfx1201, real weights).** `graph_migraphx_causilo_*` take `x, y` (full length,
+-100 off the context), `train_size`, `n_rows`, `d`: context statistics and every attention over rows are masked,
+whole padded feature groups are masked out of the row stages, and the `QueryScale` key counts come from the values.
+They reuse the shipped tensor map byte for byte, so the existing header sha applies. On 100 rows x 8 features
+(the 128 x 16 bucket, 70 context rows; `test/sql/tabfm_rocm_causilo.test`,
+`tools/gpu_test/scenarios/causilo_rocm.sql`), with `tabfm_models()` reading `rocm:0`:
+
+| | classification | regression |
+|---|---|---|
+| agreement with the CPU, 100 rows | 0 label differences | max abs diff 3.6e-5, corr 0.9999999999998 |
+| first compile per bucket (`migraphx-driver compile --gpu`) | ~13 min (791 s) | ~16 min (937 s) |
+| warm call, ROCm vs CPU | 0.049 s vs 0.22 s | 0.047 s vs 0.18 s |
+
+The CPU warm call uses ~3.3 s of CPU time over its threads; the ROCm one ~0.05 s.
 
 **Ext graphs (CUDA, and the CPU default).** `graph_ext_causilo_*` reference the cached safetensors
 by offset, so ORT reads weights off disk instead of copying them in; the engine uses them on CUDA
 and as the default CPU path whenever the weights' header hash matches the pinned revision. On the
 real checkpoints the two paths give **bit-identical** answers (0.0 difference over 770 rows,
 classification and regression), checked by forcing the injection path with
-`TABFM_DISABLE_EXTERNAL_DATA=1`. **CUDA is prepared but has not been run on a CUDA device**: the
-graph and hash are bundled and `tabfm_backends()` should list it, but `SERVED_BY=cuda:0` and
-agreement with the CPU still need a GPU box (`tools/gpu_test`).
+`TABFM_DISABLE_EXTERNAL_DATA=1`. **CUDA, measured** on an RTX 4090 (RunPod; released v2026.10.31 extension and CUDA plugin, `tools/gpu_test/cuda_catalog.sh`, 70 context / 30 query rows, 4 features, fp32): served on `cuda:0`, **0/30 label
+differences** (top-probability max |diff| 2.0e-05) and regression max |diff| 1.0e-05 against the CPU; warm
+0.04-0.05 s against 3.4 s on the CPU.
 
 **MLX.** The interpreter has no per-model code; all 50 distinct ops in Causilo's four graphs are in
 its 68-entry op table, so it should not be refused at session creation. That predicts servable, not
@@ -914,11 +960,15 @@ check the table above against your machine. (The first declared limit, 10,000 x 
 
 - **CPU:** verified on Linux x86-64 (this section's numbers). macOS arm64 and Windows x64 build in CI like every
   model but nobody ran LimiX there; the fixture SQL test is `notwindows`, as for the other ORT-forward tests.
-- **ROCm:** refused by name, like `tabicl-v2` and `causilo` (positional split;
-  `docs/ROCM_SINGLE_EVAL_POS.md`). Verified on a real gfx1201: `SET anofox_tabfm_device = 'rocm'` fails with
-  the reason and `SET anofox_tabfm_device = 'cpu'` as the fix; `auto` runs on the CPU and reports it.
-- **CUDA:** the external-data graphs and their header hash are bundled, but **no CUDA device was available,
-  so none of this was run on CUDA.**
+- **ROCm:** served through a second, MASKED graph per task (`tools/export_limix --contract mask`;
+  `docs/ROCM_SINGLE_EVAL_POS.md`), which reads the `model.safetensors` `tabfm_download` writes beside
+  `model.ckpt` (header sha `0c6a8684...`, the same file the ext graphs use). Verified on a gfx1201 (RX 9070 XT,
+  fp32, 100 x 8, 70 context rows; `test/sql/tabfm_rocm_real_models.test`): served by `rocm:0`, **0/100** label
+  differences from the CPU, regression max |diff| 3.5e-4 on a target scale of 7.9 (corr 0.9999999996); cold
+  compile 162 s (classification) / 155 s (regression) at T128 H16; warm 0.017 s against 0.11-0.12 s on the CPU.
+- **CUDA, measured** on an RTX 4090 (RunPod; released v2026.10.31 extension and CUDA plugin, `tools/gpu_test/cuda_catalog.sh`, 70 context / 30 query rows, 4 features, fp32), with the `model.safetensors` that `convert_limix_weights` writes (the ext
+  graphs need it; without it `auto` stays on the CPU): served on `cuda:0`, **0/30 label differences** (top
+  probability within 2.0e-06), regression max |diff| 7.2e-06; warm 0.02-0.05 s.
 - **MLX:** a static check finds all 54 distinct ops in the four shipped graphs in the interpreter's table (the
   export removes `Unique` and `Relu`, which it lacked). That predicts servable, not correct. **Not run on a
   Mac**; `tools/gpu_test/scenarios/mlx_all_models.sql` has LimiX blocks that print the serving device beside the
@@ -1023,7 +1073,10 @@ features, independent limits):
   scale of 8, corr 1.0000000, in-context corr 0.99998. First call on a bucket compiles for about **37
   minutes** (2229 s); warm calls take **0.18 s on ROCm against 2.6 s on the CPU** (about 15x). The CPU path
   gives byte-identical answers from `nori.pt` and from the converted file.
-- **CUDA / MLX:** no external-data graph is bundled and nothing was run on either.
+- **CUDA:** no external-data graph is bundled, so CUDA does not serve it. Measured on an RTX 4090 (RunPod; released v2026.10.31 extension and CUDA plugin, `tools/gpu_test/cuda_catalog.sh`, 70 context / 30 query rows, 4 features, fp32):
+  `tabfm_backends()` says `supported = false` with that reason and `SET anofox_tabfm_device = 'cuda'` is
+  refused by name, so `auto` serves it on the CPU.
+- **MLX:** nothing was run.
 
 ```bash
 cd tools/export_nori && uv sync
@@ -1160,8 +1213,10 @@ chunked CUDA runtime serves.
   GPU's in-context accuracy 1.000. First call on a bucket compiles for about **19 minutes per task** (1155 s
   classification, 1132 s regression); warm calls take **0.10 s on ROCm against 3.6 s on the CPU** (about
   35x). `tabfm_gpu_precompile` moves the compile off the query path.
-- **CUDA / MLX:** no external-data graph is bundled and nothing was run on either. Upstream's own CUDA path
-  runs in fp16; this export is float32.
+- **CUDA:** no external-data graph is bundled, so CUDA does not serve it. Measured on an RTX 4090 (RunPod; released v2026.10.31 extension and CUDA plugin, `tools/gpu_test/cuda_catalog.sh`, 70 context / 30 query rows, 4 features, fp32):
+  `tabfm_backends()` says `supported = false` with that reason for both tasks, and `SET anofox_tabfm_device =
+  'cuda'` is refused by name. Upstream's own CUDA path runs in fp16; this export is float32.
+- **MLX:** nothing was run.
 
 ```bash
 cd tools/export_exaone && uv sync
@@ -1339,7 +1394,9 @@ faster than linearly in rows. The engine caps all three at **5,000 rows**, 500 f
 - **NULLs are mean-imputed by the engine** before the graph, so Kumo's missing-value projection is unused.
 - **Context K/V caching** (upstream's prepare/query split) is not exported; every call re-encodes the
   context.
-- **CUDA was not run**; no CUDA device was available. The ext graphs and header hashes are bundled.
+- **CUDA, measured** on an RTX 4090 (RunPod; released v2026.10.31 extension and CUDA plugin, `tools/gpu_test/cuda_catalog.sh`, 70 context / 30 query rows, 4 features, fp32), all three sizes on `cuda:0` against the CPU: **0/30 label differences**
+  each, top-probability max |diff| 1.4e-06 / 2.1e-06 / 4.1e-06 (small / medium / large), regression max
+  |diff| 1.0e-05 / 5.2e-06 / 1.1e-05; warm 0.03-0.10 s against 3-16 s on the CPU.
 - **MLX serves all three sizes**, both tasks. On an Apple M3 with the real weights they agree with the CPU
   (0/100 label differences, regression within 5e-5); `tabfm_mlx_real_models.test` pins that.
 - **The GPU paths need the converted file**, which `tabfm_download` now writes. Without it the weights are
@@ -1364,6 +1421,13 @@ R² 0.821 tracking the sklearn regressor at corr 0.9999; `mstz/wine` MSE **0.586
 vs 0.860 baseline. Note the checkpoints differ (`bias_free_ln`: classifier 391
 tensors, regressor 347), so the exporter is task-aware; the regressor keys are a
 subset of the classifier's, so a shared tensor_map still drives both graphs.
+
+**ROCm** serves both tasks through a second, MASKED graph per task (`tools/export_tabicl --contract mask`,
+`docs/ROCM_SINGLE_EVAL_POS.md`): the same initializers and safetensors, the split as a value. On the real
+checkpoints the masked forward matches the positional one to 2.6e-5 (five negative controls caught). On a
+gfx1201 (RX 9070 XT, fp32, 100 x 8, 70 context rows; `test/sql/tabfm_rocm_real_models.test`): served by
+`rocm:0`, **0/100** label differences from the CPU, regression max |diff| 4.4e-5 on a scale of 7.3; cold
+compile 228 s (classification) / 203 s (regression) at T128 H16; warm 0.020 s against 0.134 s on the CPU.
 
 ## Orion-BiX — shipped (classification only)
 
@@ -1404,6 +1468,21 @@ past lists, and the CPU serves the `.ckpt` alone with predictions identical to t
 `tabfm_download` also writes the `model.safetensors` the CUDA ext graph reads, byte for byte what
 `convert_weights.py` writes (277/277 tensors), which stays as the dev-side check that the tensor map covers
 the checkpoint.
+
+**ROCm: served on `rocm:0`, verified on a real gfx1201 with the real weights.** The CPU graph's split is
+positional (`len(y)`), so a second, MASKED graph is bundled (`graph_migraphx_orion_bix_classification.onnx`,
+`tools/export_orion_bix --contract mask`, `orion_mask.py`): `x, y_full, train_size, d`, reading the same
+`model.safetensors` as the CUDA ext graph (so the pinned header sha is unchanged). Orion-BiX touches the split in
+two places and the padded columns in one, so three key masks suffice: the column embedder's inducing points attend
+to the context rows only, every ICL query attends to the context rows only (upstream's split attention is exactly
+that) with the label embedding on the context rows only, and padded columns are masked out of the row attention.
+There is no `n_rows`: a padded row is a query everywhere, never a key. The gate compares padded + masked with the
+positional forward on the unpadded table: worst 9.3e-5 on logits up to 12 (fp32 reassociation; in float64 they
+agree to 1.5e-13), and each of four negative controls is caught by 2.8 or more. No MIGraphX rewrite was needed
+beyond the conversions' usual habits (attention written out with a -1e4 key bias, RoPE without einsum). Through
+the engine, 100 rows x 8 features (the 128 x 16 bucket), fp32, against the CPU: **0 / 100 label
+disagreements** (context and query). First call on a bucket compiles for about **2.2 minutes** (134 s); warm calls
+take **0.017 s on ROCm against 0.12 s on the CPU** (`tools/gpu_test/scenarios/orion_rocm.sql`).
 
 ## TabPFN-2.5 — shipped (classify + regress)
 
@@ -1524,8 +1603,8 @@ including the model load, against ~39-54 s for `tabfm-v1`.
   (classification) and 24 min (regression)** — measured while other builds shared the CPU, so not faster than
   v1's ~25 min despite the 4x smaller model; the `.mxr` is 1.66 GB per bucket. Precompile
   (`tabfm_gpu_precompile`) or stage `.mxr` files (`anofox_tabfm_mxr_source`) as for v1.
-- **CUDA:** the external-data graphs and header hashes are bundled, but **no CUDA device was available, so
-  nothing was run on CUDA**.
+- **CUDA, measured** on an RTX 4090 (RunPod; released v2026.10.31 extension and CUDA plugin, `tools/gpu_test/cuda_catalog.sh`, 70 context / 30 query rows, 4 features, fp32): served on `cuda:0`, **0/30 label differences** (top probability within
+  6.5e-06), regression max |diff| 4.3e-06; cold 7-8 s, warm 0.04 s against 14-17 s on the CPU.
 - **MLX:** not run.
 
 ### TabArena
