@@ -287,6 +287,9 @@ static const char *const BUILTIN_TABPFN26 = R"json({
   "size_regime": {"max_rows": 50000, "max_features": 2000, "max_classes": 10}
 })json";
 
+// TabICL v2's CPU/CUDA graphs are (x, y)-only: the split is the length of y. For ROCm a second, MASKED graph per
+// task (x, y_full, train_size, d, n_rows; tools/export_tabicl --contract mask) is bundled, keyed to the same
+// safetensors by header sha (docs/ROCM_SINGLE_EVAL_POS.md).
 static const char *const BUILTIN_TABICL = R"json({
   "schema_version": 2, "id": "tabicl-v2", "display_name": "TabICL v2 (soda-inria)",
   "family": "icl-transformer",
@@ -481,7 +484,9 @@ static const char *const BUILTIN_CAUSILO = R"json({
 // "distributing the Work" under Section 10 has NOT been confirmed with StableAI; docs/REAL_MODELS.md says so.
 //
 // Its graph is (x, y)-only like TabICL's and Causilo's: the split is the length of y, so the engine needs
-// no model-specific code (tools/export_limix), and ROCm refuses it by name (docs/ROCM_SINGLE_EVAL_POS.md).
+// no model-specific code (tools/export_limix). For ROCm a second, MASKED graph per task (x, y_full,
+// train_size, d, n_rows; tools/export_limix --contract mask) is bundled; it reads the model.safetensors that
+// tabfm_download writes beside the checkpoint (docs/ROCM_SINGLE_EVAL_POS.md).
 // The model standardises its own features and the export wrapper standardises the regression target
 // in-graph, hence a *_raw profile. ONE checkpoint serves both tasks, so both name the same file.
 //

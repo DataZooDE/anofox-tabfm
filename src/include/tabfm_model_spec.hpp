@@ -368,9 +368,9 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		// The case worth being precise about: a model whose context split is
 		// positional (it reads the split from y's length), which a fixed-shape
 		// compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). tabdpt and the
-		// whole TabPFN family (v2, v2.5, v2.6, v3) have had that split converted to
-		// a value and so no longer land here; tabicl-v2 and the orion models still
-		// do, and tabfm_backends() is the source of truth for which.
+		// whole TabPFN family (v2, v2.5, v2.6, v3), tabicl-v2 and limix-2m have had
+		// that split converted to a value and so no longer land here; the orion
+		// models and causilo still do, and tabfm_backends() is the source of truth.
 		out.reason = "model '" + in.model + "' has no " + in.backend + "-servable graph for task '" + in.task_name +
 		             "': it declares no " + GpuGraphKindFor(in.backend) +
 		             (in.bundled_graph_exists ? " and the bundled GPU graph does not match its weights"
@@ -508,6 +508,8 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 			return "ca4435a405cbd17afc8cf08346954705d7cc01fc6d08bdcf9c06363faed867a9";
 		}
 	}
+	// TabICL v2: also pins the masked ROCm graphs (tools/export_tabicl --contract mask), which reuse every
+	// initializer and the tensor-map keys of the positional pair, so the header is unchanged.
 	if (model == "tabicl-v2") {
 		if (task_name == "classification") {
 			return "085731de6a7b33e6fcbda7e1b3cba725d798d30f93ec3cdc91c3ac2c2c762d3f";
@@ -561,8 +563,9 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	}
 	// LimiX-2M: ONE checkpoint serves both tasks, so both share a header sha. It pins the header of the
 	// safetensors that tools/export_limix's convert_limix_weights writes from LimiX-2M.ckpt (137 tensors,
-	// byte-deterministic). The ext graphs bake offsets into THAT file; without it, the loader falls back to
-	// the layout-independent injection path, which reads the checkpoint natively.
+	// byte-deterministic). The ext graphs and the masked ROCm graphs (tools/export_limix --contract mask) bake
+	// offsets into THAT file; without it, the CPU loader falls back to the layout-independent injection path,
+	// which reads the checkpoint natively, and ROCm reports the bundled graph as not matching.
 	if (model == "limix-2m") {
 		if (task_name == "classification" || task_name == "regression") {
 			return "0c6a868493ea16aaa88bd604b7f769b34018e82941eae90abd9d16072cf283eb";
