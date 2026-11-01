@@ -330,4 +330,46 @@ TEST_CASE("mlx_plugin: integer Div truncates, as ONNX Runtime's does", "[tabfm][
 	REQUIRE(mlx_output.logits == cpu_output.logits);
 }
 
+TEST_CASE("mlx_plugin: float64 initializers and constants are narrowed, not reinterpreted", "[tabfm][plugin][mlx]") {
+	// MLX has no float64. LimiX-2M keeps its numeric encoder's RBF centers (an
+	// external initializer) and a Pow exponent (a Constant) in float64, and the
+	// interpreter handed those bytes to MLX as float32: every double read as two
+	// garbage floats, and limix-2m regression disagreed with the CPU by up to 1.7.
+	const string graph = "test/fixtures/mlx/graph_double.onnx";
+	const int64_t t = 5, h = 4;
+	vector<float> x(static_cast<size_t>(t * h));
+	for (size_t i = 0; i < x.size(); i++) {
+		x[i] = static_cast<float>(i) / 10.0f;
+	}
+	vector<float> y {0.0f, 1.0f, 0.0f};
+	vector<uint8_t> cat_mask(static_cast<size_t>(h), 0);
+	TabFMRunInput input;
+	input.x = x.data();
+	input.y = y.data();
+	input.cat_mask = reinterpret_cast<const bool *>(cat_mask.data());
+	input.t = t;
+	input.h = h;
+	input.train_size = 3;
+	input.d = h;
+
+	TabFMSessionConfig config;
+	config.intra_op_threads = 1;
+	config.device_id = "cpu";
+	config.model_tag = "double";
+	auto session = CreateSessionFromPath(graph, {}, config);
+	auto cpu_output = Run(*session, input);
+
+	auto params = MlxParams("test/fixtures/mlx", "limix-2m-regression");
+	params.graph_path = graph.c_str();
+	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
+	auto mlx_output = backend->Run(input);
+
+	REQUIRE(mlx_output.shape == cpu_output.shape);
+	REQUIRE(mlx_output.logits.size() == cpu_output.logits.size());
+	for (size_t i = 0; i < cpu_output.logits.size(); i++) {
+		INFO("element " << i << ": cpu " << cpu_output.logits[i] << ", mlx " << mlx_output.logits[i]);
+		REQUIRE(std::fabs(mlx_output.logits[i] - cpu_output.logits[i]) <= 1e-5f * (1.0f + std::fabs(cpu_output.logits[i])));
+	}
+}
+
 #endif // TABFM_MLX_PLUGIN_PATH
