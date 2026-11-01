@@ -201,3 +201,35 @@ def test_the_ort_outlier_is_the_tokenizers_near_zero_sensitivity_not_an_export_d
     nudged["x"][0, 0, 5] += 0.37
     fixed, min_z2 = delta_and_min_z(nudged)
     assert min_z2 > 1e-4 and fixed < 1e-4 and outlier / fixed > 50, (fixed, min_z2)
+
+
+@pytest.mark.parametrize("task", ("classification", "regression"))
+def test_the_masked_rocm_contract_on_the_real_weights(wrappers, task):
+    """Padded + masked == positional on the real weights, and every negative control is caught."""
+    from export_limix.mask_parity import gate
+
+    res = gate(wrappers[task].m, task)
+    assert res["ok"], res
+
+
+@pytest.mark.parametrize("task", ("classification", "regression"))
+def test_the_masked_graph_equals_the_shipped_positional_graph(wrappers, tmp_path, task):
+    """In ORT on the real weights: the masked graph export_limix --contract mask writes (padded) against the
+    SHIPPED positional graph (unpadded). Set LIMIX_MASK_DIR to that --out directory."""
+    import pathlib
+
+    from huggingface_hub import hf_hub_download
+
+    from export_limix.convert import convert
+    from export_limix.mask_parity import check_shipped
+
+    mask_dir = os.environ.get("LIMIX_MASK_DIR")
+    if not mask_dir:
+        pytest.skip("set LIMIX_MASK_DIR to an export_limix --contract mask --out directory")
+    mask_dir, resources = pathlib.Path(mask_dir), pathlib.Path(__file__).resolve().parents[3] / "resources"
+    weights = tmp_path / "model.safetensors"
+    convert(hf_hub_download("stable-ai/LimiX-2M", "LimiX-2M.ckpt"), weights)
+    res = check_shipped(mask_dir / f"graph_mask_limix_{task}.onnx", mask_dir / f"tensor_map_mask_limix_{task}.json",
+                        resources / f"graph_limix2m_{task}.onnx", resources / f"tensor_map_limix2m_{task}.json",
+                        weights, wrappers[task].m, task)
+    assert res["ok"], res

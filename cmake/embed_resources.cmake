@@ -109,6 +109,11 @@ set(_tabfm_inputs
     "graph_tabpfn_regression.onnx"
     "graph_tabicl_classification.onnx"
     "graph_tabicl_regression.onnx"
+    # TabICL v2's ROCm graphs: the MASKED contract (x, y_full, train_size, d, n_rows; tools/export_tabicl
+    # --contract mask), so MIGraphX can bucket them. Same weights and tensor-map keys as the positional pair
+    # (ExpectedWeightsHeaderShaFor pins the header).
+    "graph_migraphx_tabicl_classification.onnx"
+    "graph_migraphx_tabicl_regression.onnx"
     "tensor_map_mitra_classification.json"
     "tensor_map_mitra_regression.json"
     "tensor_map_tabpfn_classification.json"
@@ -129,13 +134,16 @@ set(_tabfm_inputs
     "tensor_map_causilo_classification.json"
     "tensor_map_causilo_regression.json"
     # LimiX-2M (StableAI; commercial under the Stable AI Technology Co., Ltd. License v1.0) -- (x, y)-only,
-    # one plain graph and one tensor map per task, plus the CUDA/CPU external-data variants. NO migraphx
-    # graph: its split is positional, so ROCm refuses it by name (docs/ROCM_SINGLE_EVAL_POS.md). The stem is
-    # "limix2m" so LimiX-2 (400M) can never be mistaken for it.
+    # one plain graph and one tensor map per task, plus the CUDA/CPU external-data variants. The migraphx
+    # graphs are the MASKED contract (tools/export_limix --contract mask) and read the model.safetensors that
+    # tabfm_download (or convert_limix_weights) writes beside the checkpoint. The stem is "limix2m" so
+    # LimiX-2 (400M) can never be mistaken for it.
     "graph_limix2m_classification.onnx"
     "graph_limix2m_regression.onnx"
     "graph_ext_limix2m_classification.onnx"
     "graph_ext_limix2m_regression.onnx"
+    "graph_migraphx_limix2m_classification.onnx"
+    "graph_migraphx_limix2m_regression.onnx"
     "tensor_map_limix2m_classification.json"
     "tensor_map_limix2m_regression.json"
     # Google TabFM 1.1.0 (tabfm-v1-1; non-commercial like v1). New graphs only: the dims are baked in

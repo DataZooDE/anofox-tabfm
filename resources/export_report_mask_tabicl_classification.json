@@ -1,0 +1,131 @@
+{
+  "command": [
+    "export_tabicl",
+    "--task",
+    "classification",
+    "--config",
+    "real",
+    "--contract",
+    "mask",
+    "--out",
+    "./mask"
+  ],
+  "task": "classification",
+  "config": "real",
+  "model_kwargs": {
+    "max_classes": 10,
+    "num_quantiles": 999,
+    "embed_dim": 128,
+    "col_num_blocks": 3,
+    "col_nhead": 8,
+    "col_num_inds": 128,
+    "row_num_blocks": 3,
+    "row_nhead": 8,
+    "row_num_cls": 4,
+    "icl_num_blocks": 12,
+    "icl_nhead": 8,
+    "ff_factor": 2,
+    "bias_free_ln": false
+  },
+  "n_params": 27552258,
+  "seed": 0,
+  "opset": 18,
+  "input_signature": {
+    "x": "[1,T,H] f32 (padded)",
+    "y": "[1,T] f32 FULL length (-100 off-context)",
+    "train_size": "[1] i64",
+    "d": "[1] i64 (real feature count)",
+    "n_rows": "[1] i64 (declared, unused)"
+  },
+  "output": {
+    "logits": "[1,T,C] class logits, C=max_classes"
+  },
+  "H_dynamic": true,
+  "train_size": "input (a value: the context is a mask, not a slice)",
+  "cat_mask": "omitted (no categorical path)",
+  "d": "input (padded feature groups masked in the row interactor)",
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_train": [
+    "train",
+    2,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    2,
+    512
+  ],
+  "example_THS": [
+    20,
+    8,
+    12
+  ],
+  "graph_bytes": 660529,
+  "n_initializers_mapped": 391,
+  "unmatched_small_inline": [],
+  "parity": {
+    "worst": 1.7881393432617188e-07,
+    "ok": true,
+    "cases": [
+      [
+        50,
+        7,
+        30,
+        128,
+        16
+      ],
+      [
+        31,
+        1,
+        30,
+        64,
+        16
+      ],
+      [
+        12,
+        5,
+        2,
+        128,
+        16
+      ],
+      [
+        20,
+        16,
+        12,
+        20,
+        16
+      ],
+      [
+        40,
+        3,
+        25,
+        128,
+        16
+      ],
+      [
+        100,
+        8,
+        70,
+        128,
+        16
+      ],
+      [
+        24,
+        2,
+        10,
+        32,
+        8
+      ]
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.22.0",
+    "onnxruntime": "1.27.0",
+    "onnxscript": "0.7.1"
+  }
+}

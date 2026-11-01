@@ -5,6 +5,14 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **ROCm serves `tabicl-v2` and `limix-2m`** (classification and regression) through a second, masked graph per
+  task (`x, y_full, train_size, d, n_rows`; tools/export_tabicl and tools/export_limix `--contract mask`),
+  bundled beside the positional CPU/CUDA graphs and keyed to the same weights. On a gfx1201 (100 x 8, fp32):
+  0/100 label differences from the CPU for both models; regression max |diff| 4.4e-5 (TabICL) and 3.5e-4
+  (LimiX, scale 7.9); warm calls 0.02 s against 0.11-0.14 s on the CPU; cold compile 3-4 min per task and
+  bucket. LimiX's graph reads the `model.safetensors` that `tabfm_download` writes beside the checkpoint.
+
 ### Fixed
 - **`tabpfn-v2-6` downloads and runs on a fresh machine, with no Python step.** The regressor's manifest byte
   count (51955328) matched no Hugging Face revision, so `tabfm_download` refused it everywhere; both tasks are

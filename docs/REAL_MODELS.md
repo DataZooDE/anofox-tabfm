@@ -19,7 +19,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Google TabFM** (`tabfm-v1`) | non-commercial (gated) | ✅ shipped | yes | the original; 1.6 B params / 6.56 GB |
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
 | **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert |
-| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert |
+| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
 | **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; the `.ckpt` is read natively (no conversion step); upstream ships no regressor |
 | **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
 | **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; ckpt→safetensors convert required |
@@ -27,7 +27,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); the `.ckpt` is read natively |
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
 | **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
-| **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; ROCm refused by name |
+| **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; **ROCm served** (masked graph, reads the `model.safetensors` `tabfm_download` writes; 0/100 label diffs vs CPU) |
 | **TabPFN-2.6** (`tabpfn-v2-6`) | tabpfn-2.6-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 12.9 M reg; rmsnorm; export parity 8.9e-08 clf / 1.4e-06 reg; reads the downloaded .ckpt directly (no convert step) |
 | **Google TabFM 1.1** (`tabfm-v1-1`) | TabFM Non-Commercial License v1.0 (**non-commercial**, same text as v1) | ✅ shipped | **yes — classify + regress, CPU + ROCm** | 410 M / 0.82 GB per task (BF16), 4x fewer params than v1; no conversion; end-to-end parity with upstream 9.4e-06 clf / 4.9e-06 reg; ROCm agrees with CPU 64/64 |
 | **Mitra-v2** (`mitra-v2`) | Apache-2.0 (commercial, ungated) | ✅ shipped | **yes — classify + regress** | 75.7 M clf / 76.7 M reg; **classifier reuses mitra's graphs (byte-identical header) — zero new clf bytes**; new graph for the 1,000-bin regressor; 32,768 rows / 256 features; CPU + ROCm |
@@ -774,7 +774,7 @@ The second pass gives 1.000 on both and leaves query rows unchanged. It costs `S
   are unaffected; pass `opts := MAP {'softmax_temperature': '1.0'}` to match upstream.
 - More than 10 classes (upstream handles them with error-correcting output codes) is not supported;
   the engine's class ceiling is the head width.
-- ROCm: refused by name like `tabicl-v2` (positional split; `docs/ROCM_SINGLE_EVAL_POS.md`).
+- ROCm: refused by name (positional split; `docs/ROCM_SINGLE_EVAL_POS.md`).
 
 **Ext graphs (CUDA, and the CPU default).** `graph_ext_causilo_*` reference the cached safetensors
 by offset, so ORT reads weights off disk instead of copying them in; the engine uses them on CUDA
@@ -921,9 +921,12 @@ check the table above against your machine. (The first declared limit, 10,000 x 
 
 - **CPU:** verified on Linux x86-64 (this section's numbers). macOS arm64 and Windows x64 build in CI like every
   model but nobody ran LimiX there; the fixture SQL test is `notwindows`, as for the other ORT-forward tests.
-- **ROCm:** refused by name, like `tabicl-v2` and `causilo` (positional split;
-  `docs/ROCM_SINGLE_EVAL_POS.md`). Verified on a real gfx1201: `SET anofox_tabfm_device = 'rocm'` fails with
-  the reason and `SET anofox_tabfm_device = 'cpu'` as the fix; `auto` runs on the CPU and reports it.
+- **ROCm:** served through a second, MASKED graph per task (`tools/export_limix --contract mask`;
+  `docs/ROCM_SINGLE_EVAL_POS.md`), which reads the `model.safetensors` `tabfm_download` writes beside
+  `model.ckpt` (header sha `0c6a8684...`, the same file the ext graphs use). Verified on a gfx1201 (RX 9070 XT,
+  fp32, 100 x 8, 70 context rows; `test/sql/tabfm_rocm_real_models.test`): served by `rocm:0`, **0/100** label
+  differences from the CPU, regression max |diff| 3.5e-4 on a target scale of 7.9 (corr 0.9999999996); cold
+  compile 162 s (classification) / 155 s (regression) at T128 H16; warm 0.017 s against 0.11-0.12 s on the CPU.
 - **CUDA:** the external-data graphs and their header hash are bundled, but **no CUDA device was available,
   so none of this was run on CUDA.**
 - **MLX:** a static check finds all 54 distinct ops in the four shipped graphs in the interpreter's table (the
@@ -1371,6 +1374,13 @@ R² 0.821 tracking the sklearn regressor at corr 0.9999; `mstz/wine` MSE **0.586
 vs 0.860 baseline. Note the checkpoints differ (`bias_free_ln`: classifier 391
 tensors, regressor 347), so the exporter is task-aware; the regressor keys are a
 subset of the classifier's, so a shared tensor_map still drives both graphs.
+
+**ROCm** serves both tasks through a second, MASKED graph per task (`tools/export_tabicl --contract mask`,
+`docs/ROCM_SINGLE_EVAL_POS.md`): the same initializers and safetensors, the split as a value. On the real
+checkpoints the masked forward matches the positional one to 2.6e-5 (five negative controls caught). On a
+gfx1201 (RX 9070 XT, fp32, 100 x 8, 70 context rows; `test/sql/tabfm_rocm_real_models.test`): served by
+`rocm:0`, **0/100** label differences from the CPU, regression max |diff| 4.4e-5 on a scale of 7.3; cold
+compile 228 s (classification) / 203 s (regression) at T128 H16; warm 0.020 s against 0.134 s on the CPU.
 
 ## Orion-BiX — shipped (classification only)
 
