@@ -153,7 +153,7 @@ const std::unordered_map<std::string, Handler> &Handlers() {
 				     Fail("ConstantOfShape '" + n.name + "' has a value attribute with no data");
 			     }
 			     dt = OnnxDtype(t.data_type);
-			     fill = Arr(mlx_array_new_data(bytes, nullptr, 0, dt)); // rank 0: the one element
+			     fill = TensorArray(bytes, {}, t.data_type); // rank 0: the one element
 		     }
 		     Arr r;
 		     Ok(mlx_full(r.out(), shape.data(), shape.size(), fill.get(), dt, c.s), "constant_of_shape");
@@ -695,7 +695,6 @@ Graph::Graph(const std::string &graph_path, const std::string &weights_dir) : im
 
 	for (const auto &t : impl_->parsed.initializers) {
 		std::vector<int> shape(t.dims.begin(), t.dims.end()); // rank preserved, incl. 0
-		const mlx_dtype dt = OnnxDtype(t.data_type);
 		const void *bytes = nullptr;
 		if (t.location == ::anofox::onnxread::DataLocation::EXTERNAL) {
 			size_t offset = 0, length = 0;
@@ -716,8 +715,7 @@ Graph::Graph(const std::string &graph_path, const std::string &weights_dir) : im
 		if (!bytes) {
 			continue; // empty initializer; nothing reads it
 		}
-		impl_->initializers.emplace(
-		    t.name, Arr(mlx_array_new_data(bytes, shape.data(), static_cast<int>(shape.size()), dt)));
+		impl_->initializers.emplace(t.name, TensorArray(bytes, shape, t.data_type));
 	}
 
 	// Last-use analysis. A value may be dropped once the last node reading it
@@ -824,8 +822,7 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 				if (!bytes) {
 					Fail("Constant '" + node.name + "' carries no data");
 				}
-				env[node.outputs[0]] = Arr(mlx_array_new_data(
-				    bytes, shape.data(), static_cast<int>(shape.size()), OnnxDtype(t.data_type)));
+				env[node.outputs[0]] = TensorArray(bytes, shape, t.data_type);
 				continue;
 			}
 			if (const auto *a = node.Attr("value_int")) {
