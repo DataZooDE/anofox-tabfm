@@ -250,4 +250,44 @@ TEST_CASE("mlx_plugin: CPU and MLX agree on the same real weights", "[tabfm][plu
 	REQUIRE(spread > 1e-3);
 }
 
+TEST_CASE("mlx_plugin: a graph whose output is a strided view returns it in index order", "[tabfm][plugin][mlx]") {
+	// MLX's Transpose and Slice return views over their input's buffer. The
+	// tabdpt classification graphs END in Slice(Transpose(...)), so the logits
+	// were copied out in storage order: every probability was a scrambled
+	// one, close to uniform, while regression (which ends in an Add) was
+	// exact. The fixture is that tail and nothing else, so it needs no weights.
+	const string graph = "test/fixtures/mlx/graph_transpose_slice.onnx";
+	const int64_t t = 5, h = 3;
+	vector<float> x(static_cast<size_t>(t * h));
+	for (size_t i = 0; i < x.size(); i++) {
+		x[i] = static_cast<float>(i);
+	}
+	vector<float> y {0.0f, 1.0f, 0.0f};
+	vector<uint8_t> cat_mask(static_cast<size_t>(h), 0);
+	TabFMRunInput input;
+	input.x = x.data();
+	input.y = y.data();
+	input.cat_mask = reinterpret_cast<const bool *>(cat_mask.data());
+	input.t = t;
+	input.h = h;
+	input.train_size = 3;
+	input.d = h;
+
+	TabFMSessionConfig config;
+	config.intra_op_threads = 1;
+	config.device_id = "cpu";
+	config.model_tag = "transpose-slice";
+	auto session = CreateSessionFromPath(graph, {}, config);
+	auto cpu_output = Run(*session, input);
+
+	auto params = MlxParams("test/fixtures/mlx", "tabdpt-classification");
+	params.graph_path = graph.c_str();
+	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
+	auto mlx_output = backend->Run(input);
+
+	REQUIRE(cpu_output.shape == vector<int64_t> {1, h, t - 1});
+	REQUIRE(mlx_output.shape == cpu_output.shape);
+	REQUIRE(mlx_output.logits == cpu_output.logits);
+}
+
 #endif // TABFM_MLX_PLUGIN_PATH
