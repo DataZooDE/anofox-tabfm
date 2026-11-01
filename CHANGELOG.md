@@ -12,19 +12,22 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   0/100 label differences from the CPU for both models; regression max |diff| 4.4e-5 (TabICL) and 3.5e-4
   (LimiX, scale 7.9); warm calls 0.02 s against 0.11-0.14 s on the CPU; cold compile 3-4 min per task and
   bucket. LimiX's graph reads the `model.safetensors` that `tabfm_download` writes beside the checkpoint.
-
 - **ROCm serves `orion-bix` and `orion-msp`** (classification). Both read the train/test split from `len(y)`,
   which a fixed-shape MIGraphX compile cannot bucket, so each now bundles a second, masked graph
   (`tools/export_orion_bix`, `tools/export_orion_msp`: `--contract mask`) that takes the split and the feature
   count as values. On a gfx1201 with the real weights: 0/100 label differences against the CPU for both; first
   compile per bucket 2.2 / 4.3 minutes; warm 0.017 s / 0.023 s against 0.12 s / 0.31 s on the CPU. They read the
   same `model.safetensors` as the CUDA graphs, which `tabfm_download` already writes.
-
 - **`causilo` on ROCm (MIGraphX)**, classification and regression: a second, masked graph per task
   (`x, y_full, train_size, n_rows, d`; `tools/export_causilo --contract mask`) replaces the positional split, so
   MIGraphX can compile it per shape bucket. On gfx1201 with the real weights: 0/100 label differences from the CPU,
   regression max |diff| 3.6e-5; ~13-16 min first compile per task and bucket; warm ~0.05 s vs ~0.2 s on the CPU.
   See docs/ROCM_CAUSILO_PLAN.md.
+- **The whole built-in catalog is checked on `mlx` against the CPU with the real weights**
+  (`test/sql/tabfm_mlx_real_models.test`, Apple M3, 100 rows). All 40 model x task pairs that ship an ext graph agree:
+  0/100 label differences for every classifier, regression max |diff| at most 1.3e-4 (mitra-v2: 1.0e-3) and corr
+  > 0.9999999. `exaone-tabular` and `nori-30m` ship no ext graph, so `mlx` refuses them (the test asserts it). No
+  model is refused as known wrong.
 
 ### Fixed
 - **`tabpfn-v2-6` downloads and runs on a fresh machine, with no Python step.** The regressor's manifest byte
@@ -42,6 +45,11 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   every probability was a scrambled one (63-66 of 100 labels differed); orion-msp read a strided integer
   operand (9 of 100). Both reads are now made contiguous first. On an Apple M3 with the real weights all three
   give 0/100 label differences, and `auto` serves them on `mlx`.
+- **MLX: `limix-2m` runs on `mlx` and agrees with the CPU; it had never been run on a Mac.** Two graph-interpreter
+  bugs, each with a weight-free fixture test: integer `Div` was a true division (ONNX Runtime truncates), so a Slice
+  end computed as `2 * ((H + 1) / 2)` came out `H + 1` and neither task ran; and float64 initializers and constants
+  were handed to MLX as float32, reading each double as two garbage floats, so regression disagreed (max |diff|
+  1.74, corr 0.9938 over 100 rows). With both fixed: 0/100 labels, regression max |diff| 1.1e-5.
 
 ## [v2026.10.31] - 2026-10-31
 
