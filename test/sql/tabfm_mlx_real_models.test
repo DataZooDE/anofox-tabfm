@@ -8,7 +8,7 @@
 #              for device 'mlx' explicitly (a silent CPU fallback would also "agree with the CPU") and
 #              reads the serving device from tabfm_models().
 #
-#              It covers EVERY built-in model x task (45 pairs: 42 served and compared, 3 refused because
+#              It covers EVERY built-in model x task (43 pairs: 40 served and compared, 3 refused because
 #              no ext graph ships for them). Needs Apple silicon and every model's weights downloaded (see
 #              tabfm_real_models.test for the CALL tabfm_download lines). tabfm_download writes the
 #              model.safetensors a .ckpt model's GPU graph needs, except for tabpfn-v2-5-real, whose
@@ -967,4 +967,4 @@ nori-30m	regression	false
 query I
 SELECT count(*) FROM tabfm_backends() WHERE backend = 'mlx' AND supported
 ----
-42
+40

@@ -21,7 +21,7 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ### Added
 - **The whole built-in catalog is checked on `mlx` against the CPU with the real weights**
-  (`test/sql/tabfm_mlx_real_models.test`, Apple M3, 100 rows). All 42 model x task pairs that ship an ext graph agree:
+  (`test/sql/tabfm_mlx_real_models.test`, Apple M3, 100 rows). All 40 model x task pairs that ship an ext graph agree:
   0/100 label differences for every classifier, regression max |diff| at most 1.3e-4 (mitra-v2: 1.0e-3) and corr
   > 0.9999999. `exaone-tabular` and `nori-30m` ship no ext graph, so `mlx` refuses them (the test asserts it). No
   model is refused as known wrong.
