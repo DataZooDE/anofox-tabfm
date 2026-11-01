@@ -68,20 +68,15 @@ TEST_CASE("mlx ops: which bundled ext graphs MLX can run", "[tabfm][mlx_ops]") {
 	REQUIRE(missing_for("graph_ext_orion_msp_classification") == V {});
 }
 
-// Executable is not the same as right. With every op present, three graphs run on mlx and disagree with the
-// CPU (Apple M3, real weights, 100 rows): tabdpt and tabdpt-v1-3 classification (63-66 labels, and the
-// scores of CONTEXT rows near uniform where the CPU is near certain), and orion-msp (9 labels). Their
-// regression graphs, and all six Kumo graphs, agree. The wrong ones are refused by name until the
-// misinterpreted op is found.
-TEST_CASE("mlx ops: graphs that run but disagree with the CPU are refused by name", "[tabfm][mlx_ops]") {
-	REQUIRE_FALSE(MlxKnownWrong("tabdpt", "classification").empty());
-	REQUIRE_FALSE(MlxKnownWrong("tabdpt-v1-3", "classification").empty());
-	REQUIRE_FALSE(MlxKnownWrong("orion-msp", "classification").empty());
-	REQUIRE(MlxKnownWrong("tabdpt", "regression").empty());
-	REQUIRE(MlxKnownWrong("tabdpt-v1-3", "regression").empty());
-	for (auto *size : {"small", "medium", "large"}) {
+// Executable is not the same as right, so a graph can be refused by name (MlxKnownWrong). None is today:
+// tabdpt and tabdpt-v1-3 classification and orion-msp used to be, until the strided-view reads that made
+// them disagree with the CPU were fixed (test_tabfm_mlx_plugin.cpp pins that).
+TEST_CASE("mlx ops: no bundled graph is refused as known wrong", "[tabfm][mlx_ops]") {
+	for (auto *model : {"tabdpt", "tabdpt-v1-3", "orion-msp", "kumo-tabular-small", "kumo-tabular-medium",
+	                    "kumo-tabular-large"}) {
 		for (auto *task : {"classification", "regression"}) {
-			REQUIRE(MlxKnownWrong(std::string("kumo-tabular-") + size, task).empty());
+			INFO(model << " " << task);
+			REQUIRE(MlxKnownWrong(model, task).empty());
 		}
 	}
 }

@@ -943,8 +943,9 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 		mlx_stream_free(gpu);
 		Fail("graph produced no '" + (impl_->parsed.outputs.empty() ? std::string("<none>") : impl_->parsed.outputs[0]) + "'");
 	}
-	Arr out32;
-	Ok(mlx_astype(out32.out(), it->second.get(), MLX_FLOAT32, ctx.s), "output f32");
+	Arr cast;
+	Ok(mlx_astype(cast.out(), it->second.get(), MLX_FLOAT32, ctx.s), "output f32");
+	Arr out32 = Contiguous(cast, ctx.s);
 	Ok(mlx_array_eval(out32.get()), "eval output"); // MLX is lazy; nothing ran until here
 
 	Tensor result;

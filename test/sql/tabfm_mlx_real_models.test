@@ -282,44 +282,91 @@ SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM 
 true
 
 # ---------------------------------------------------------------------------
-# Executable is not the same as right: TabDPT classification (v1.2 and v1.3) runs on mlx and disagrees with
-# the CPU (63-66 of 100 labels; context rows scored near-uniform where the CPU is near-certain), and so does
-# orion-msp (9 of 100). They are refused by name (MlxKnownWrong) until the misinterpreted op is found, and
-# the refusal says why and names the way out.
+# TabDPT classification (v1.2 and v1.3) and orion-msp used to disagree with the CPU on mlx (63-66 and 9 of
+# 100 labels) and were refused by name. No op was misinterpreted: tabdpt's graph ENDS in Slice(Transpose(...)),
+# a strided view MLX copied out in storage order, and orion-msp read a strided integer operand the same way.
+# With every read to host made contiguous they agree, and nothing is refused.
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabdpt_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
 
 statement ok
 SET anofox_tabfm_device = 'mlx';
 
-statement error
-SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt-v1-3')
-----
-<REGEX>:.*disagrees with the CPU.*anofox_tabfm_device='cpu'.*
+statement ok
+CREATE TABLE tabdpt_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
 
-statement error
-SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt')
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabdpt' AND task = 'classification'
 ----
-<REGEX>:.*disagrees with the CPU.*anofox_tabfm_device='cpu'.*
+true
 
-statement error
-SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'orion-msp')
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabdpt_cc c JOIN tabdpt_gc g USING (rid)
 ----
-<REGEX>:.*disagrees with the CPU.*anofox_tabfm_device='cpu'.*
+0
 
-# ...and the capability relation says so up front, per task.
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabdpt_v1_3_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt-v1-3') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabdpt_v1_3_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt-v1-3') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabdpt-v1-3' AND task = 'classification'
+----
+true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabdpt_v1_3_cc c JOIN tabdpt_v1_3_gc g USING (rid)
+----
+0
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE orion_msp_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'orion-msp') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE orion_msp_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'orion-msp') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'orion-msp' AND task = 'classification'
+----
+true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM orion_msp_cc c JOIN orion_msp_gc g USING (rid)
+----
+0
+
+# ...and the capability relation says so, per task.
 query TTTT
-SELECT model, task, supported, coalesce(reason LIKE '%disagrees with the CPU%', false) FROM tabfm_backends()
+SELECT model, task, supported, reason IS NULL FROM tabfm_backends()
 WHERE backend = 'mlx' AND model IN ('tabdpt', 'tabdpt-v1-3', 'orion-msp', 'kumo-tabular-small') ORDER BY model, task
 ----
-kumo-tabular-small	classification	true	false
-kumo-tabular-small	regression	true	false
-orion-msp	classification	false	true
-tabdpt	classification	false	true
-tabdpt	regression	true	false
-tabdpt-v1-3	classification	false	true
-tabdpt-v1-3	regression	true	false
+kumo-tabular-small	classification	true	true
+kumo-tabular-small	regression	true	true
+orion-msp	classification	true	true
+tabdpt	classification	true	true
+tabdpt	regression	true	true
+tabdpt-v1-3	classification	true	true
+tabdpt-v1-3	regression	true	true
 
-# Under 'auto' an Apple-silicon machine must not pick mlx for a graph mlx gets wrong: tabdpt classification
-# is served, on the CPU, without a word.
+# Under 'auto' an Apple-silicon machine picks mlx for tabdpt classification now that it agrees.
 statement ok
 SET anofox_tabfm_device = 'auto';
 
@@ -334,7 +381,7 @@ SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3'
 query T
 SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND model = 'tabdpt' AND task = 'classification'
 ----
-cpu
+mlx:0
 
 # ---------------------------------------------------------------------------
 # tabpfn-v3-5-fast

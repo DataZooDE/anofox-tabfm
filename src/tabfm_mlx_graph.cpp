@@ -107,6 +107,18 @@ private:
 	mlx_array a_;
 };
 
+//! A row-major copy of `a`, or `a` itself when it already is one. MLX's
+//! Transpose, Slice and friends return VIEWS -- strides over the input's
+//! buffer -- and mlx_array_data_* hands back that buffer as stored, not in
+//! index order. A same-dtype astype is a no-op that keeps the view, so every
+//! read to host goes through this first. Skipping it scrambled the tabdpt
+//! classification logits, whose graph ends in Slice(Transpose(...)).
+Arr Contiguous(const Arr &a, mlx_stream s) {
+	Arr c;
+	Ok(mlx_contiguous(c.out(), a.get(), /*allow_col_major=*/false, s), "contiguous");
+	return c;
+}
+
 //! Read a small integer tensor to host. Used for shapes, axes and indices --
 //! never for weights, which stay on device.
 //!
@@ -117,8 +129,9 @@ private:
 //! mlx_array_data_int64 comes back null -- which surfaces as the misleading
 //! "expected an integer tensor" rather than as a stream error.
 std::vector<int64_t> ToInts(const Arr &a, mlx_stream s) {
-	Arr i64;
-	Ok(mlx_astype(i64.out(), a.get(), MLX_INT64, s), "astype int64");
+	Arr cast;
+	Ok(mlx_astype(cast.out(), a.get(), MLX_INT64, s), "astype int64");
+	Arr i64 = Contiguous(cast, s);
 	Ok(mlx_array_eval(i64.get()), "eval ints");
 	if (i64.size() == 0) {
 		return {}; // a legitimately empty shape/axes operand
