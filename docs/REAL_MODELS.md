@@ -20,11 +20,11 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
 | **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert |
 | **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
-| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; the `.ckpt` is read natively (no conversion step); upstream ships no regressor |
+| **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; the `.ckpt` is read natively (no conversion step); upstream ships no regressor; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
 | **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
 | **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; ckpt→safetensors convert required |
 | **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes** |
-| **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); the `.ckpt` is read natively |
+| **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); the `.ckpt` is read natively; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
 | **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50 |
 | **LimiX-2M** (`limix-2m`) | Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + attribution; **commercial use permitted**) | ✅ shipped | **yes — classify + regress** | 2.4 M; **no conversion — the engine reads the `.ckpt` directly**; ONE 9.5 MB file serves both tasks; **single forward only**; built with StableAI LimiX; **ROCm served** (masked graph, reads the `model.safetensors` `tabfm_download` writes; 0/100 label diffs vs CPU) |
@@ -492,6 +492,20 @@ uv run make_orion_msp_fixture ../../test/fixtures/orion_msp
 ```
 
 Offline fixture: `test/sql/tabfm_orion_msp.test`.
+
+**ROCm: served on `rocm:0`, verified on a real gfx1201 with the real weights.** The CPU graph's split is
+positional, so a second, MASKED graph is bundled (`graph_migraphx_orion_msp_classification.onnx`,
+`tools/export_orion_msp --contract mask`, `orion_mask.py`): `x, y_full, train_size, d`. On top of Orion-BiX's
+masks (below) the row stage needs two of its own: the PMA pooling's keys exclude padded columns (upstream's own
+`valid_counts` mask), and the frozen random links are the top-2 of the score table over the REAL columns only --
+the CPU graph takes the top-2 of `table[:L, :L]` with `L` the real length, and an unrestricted top-2 over the
+padded length would hand a real query a different link whenever a padded column scores higher. The gate compares
+padded + masked with the positional forward on the unpadded table: worst 7.2e-4 on logits up to 11 (fp32
+reassociation; in float64 the two agree to 1.4e-12), and each of six negative controls (one mask broken each,
+random links included) is caught by 0.26 or more. Through the engine, 100 rows x 8 features (the 128 x 16 bucket),
+fp32, against the CPU: **0 / 100 label disagreements** (context and query). First call on a bucket compiles for
+about **4.3 minutes** (259 s); warm calls take **0.023 s on ROCm against 0.31 s on the CPU**
+(`tools/gpu_test/scenarios/orion_rocm.sql`).
 
 ### Testing against real weights
 
@@ -1421,6 +1435,21 @@ past lists, and the CPU serves the `.ckpt` alone with predictions identical to t
 `tabfm_download` also writes the `model.safetensors` the CUDA ext graph reads, byte for byte what
 `convert_weights.py` writes (277/277 tensors), which stays as the dev-side check that the tensor map covers
 the checkpoint.
+
+**ROCm: served on `rocm:0`, verified on a real gfx1201 with the real weights.** The CPU graph's split is
+positional (`len(y)`), so a second, MASKED graph is bundled (`graph_migraphx_orion_bix_classification.onnx`,
+`tools/export_orion_bix --contract mask`, `orion_mask.py`): `x, y_full, train_size, d`, reading the same
+`model.safetensors` as the CUDA ext graph (so the pinned header sha is unchanged). Orion-BiX touches the split in
+two places and the padded columns in one, so three key masks suffice: the column embedder's inducing points attend
+to the context rows only, every ICL query attends to the context rows only (upstream's split attention is exactly
+that) with the label embedding on the context rows only, and padded columns are masked out of the row attention.
+There is no `n_rows`: a padded row is a query everywhere, never a key. The gate compares padded + masked with the
+positional forward on the unpadded table: worst 9.3e-5 on logits up to 12 (fp32 reassociation; in float64 they
+agree to 1.5e-13), and each of four negative controls is caught by 2.8 or more. No MIGraphX rewrite was needed
+beyond the conversions' usual habits (attention written out with a -1e4 key bias, RoPE without einsum). Through
+the engine, 100 rows x 8 features (the 128 x 16 bucket), fp32, against the CPU: **0 / 100 label
+disagreements** (context and query). First call on a bucket compiles for about **2.2 minutes** (134 s); warm calls
+take **0.017 s on ROCm against 0.12 s on the CPU** (`tools/gpu_test/scenarios/orion_rocm.sql`).
 
 ## TabPFN-2.5 — shipped (classify + regress)
 

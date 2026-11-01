@@ -13,6 +13,13 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   (LimiX, scale 7.9); warm calls 0.02 s against 0.11-0.14 s on the CPU; cold compile 3-4 min per task and
   bucket. LimiX's graph reads the `model.safetensors` that `tabfm_download` writes beside the checkpoint.
 
+- **ROCm serves `orion-bix` and `orion-msp`** (classification). Both read the train/test split from `len(y)`,
+  which a fixed-shape MIGraphX compile cannot bucket, so each now bundles a second, masked graph
+  (`tools/export_orion_bix`, `tools/export_orion_msp`: `--contract mask`) that takes the split and the feature
+  count as values. On a gfx1201 with the real weights: 0/100 label differences against the CPU for both; first
+  compile per bucket 2.2 / 4.3 minutes; warm 0.017 s / 0.023 s against 0.12 s / 0.31 s on the CPU. They read the
+  same `model.safetensors` as the CUDA graphs, which `tabfm_download` already writes.
+
 ### Fixed
 - **`tabpfn-v2-6` downloads and runs on a fresh machine, with no Python step.** The regressor's manifest byte
   count (51955328) matched no Hugging Face revision, so `tabfm_download` refused it everywhere; both tasks are

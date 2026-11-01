@@ -97,9 +97,10 @@ true
 # structural "positional context split" reason — that reason means "no fixed
 # shape can be bucketed for this architecture", which is false for every one of
 # these: tabfm-v1, tabfm-v1-1, mitra, mitra-v2 and kumo-tabular-* (train_size-scalar family), and tabdpt, tabdpt-v1-3, tabpfn-v2,
-# tabpfn-v2-5, tabpfn-v2-6, tabpfn-v3, tabpfn-v3-5(-fast), exaone-tabular, nori-30m, tabicl-v2 and limix-2m, whose split was
-# converted to a value (see docs/ROCM_TABDPT_SPIKE.md, docs/ROCM_TABPFN_PLAN.md, tools/export_exaone, tools/export_nori,
-# tools/export_tabicl and tools/export_limix: *_mask.py). They may still be
+# tabpfn-v2-5, tabpfn-v2-6, tabpfn-v3, tabpfn-v3-5(-fast), exaone-tabular, nori-30m, tabicl-v2, limix-2m, orion-bix and
+# orion-msp, whose split was converted to a value (see docs/ROCM_TABDPT_SPIKE.md, docs/ROCM_TABPFN_PLAN.md,
+# tools/export_exaone, tools/export_nori, tools/export_tabicl, tools/export_limix and tools/export_orion_*: *_mask.py).
+# They may still be
 # unsupported for a situational cause (weights not downloaded), so this asserts
 # the REASON rather than the verdict.
 #
@@ -112,7 +113,8 @@ SELECT count(*) FROM tabfm_backends()
 WHERE backend = 'rocm'
   AND model IN ('tabfm-v1', 'tabfm-v1-1', 'mitra', 'tabdpt', 'tabpfn-v2', 'tabpfn-v2-5', 'tabpfn-v2-6', 'tabpfn-v3',
                 'mitra-v2', 'tabdpt-v1-3', 'tabpfn-v3-5', 'tabpfn-v3-5-fast', 'exaone-tabular', 'nori-30m',
-                'tabicl-v2', 'limix-2m', 'kumo-tabular-small', 'kumo-tabular-medium', 'kumo-tabular-large')
+                'tabicl-v2', 'limix-2m', 'orion-bix', 'orion-msp',
+                'kumo-tabular-small', 'kumo-tabular-medium', 'kumo-tabular-large')
   AND reason IS NOT NULL AND reason LIKE '%ROCM_SINGLE_EVAL_POS%';
 ----
 0
@@ -128,7 +130,7 @@ WHERE backend = 'rocm'
 query I
 SELECT count(*) = 0 OR bool_and(reason LIKE '%ROCM_SINGLE_EVAL_POS%')
 FROM tabfm_backends()
-WHERE backend = 'rocm' AND model IN ('orion-bix', 'orion-msp', 'causilo')
+WHERE backend = 'rocm' AND model IN ('causilo')
   AND NOT supported;
 ----
 true

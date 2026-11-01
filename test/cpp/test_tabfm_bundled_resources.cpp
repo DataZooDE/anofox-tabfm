@@ -10,6 +10,7 @@
 #include "catch.hpp"
 
 #include "tabfm_bundled_resources.hpp"
+#include "tabfm_model_spec.hpp"
 #include "tabfm_ort_engine.hpp"
 #include "tabfm_model_spec.hpp"
 
@@ -187,4 +188,24 @@ TEST_CASE("tabfm_bundled_resources: TabICL v2 and LimiX-2M bundle masked ROCm gr
 	}
 	REQUIRE(BundledGpuGraphId("tabicl-v2", "migraphx", "classification") == "graph_migraphx_tabicl_classification");
 	REQUIRE(BundledGpuGraphId("limix-2m", "migraphx", "regression") == "graph_migraphx_limix2m_regression");
+}
+
+// Orion-BiX and Orion-MSP read the train/test split from len(y) on the CPU, which a fixed-shape MIGraphX compile
+// cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). Each bundles a second, MASKED graph for ROCm
+// (tools/export_orion_*: --contract mask): x, y (full length), train_size, d. Its external data points into the
+// same model.safetensors the CUDA ext graph reads, so ExpectedWeightsHeaderShaFor is unchanged.
+TEST_CASE("tabfm_bundled_resources: Orion-BiX and Orion-MSP bundle masked MIGraphX graphs", "[tabfm][bundled]") {
+	for (auto *model : {"orion-bix", "orion-msp"}) {
+		const auto id = BundledGpuGraphId(model, "migraphx", "classification");
+		INFO("model: " << model << " id: " << id);
+		auto res = GetBundledResource(id);
+		REQUIRE(res.data != nullptr);
+		auto disk = ReadDiskFile(ResourcesDir() + "/" + id + ".onnx");
+		REQUIRE(res.size == disk.size());
+		REQUIRE(std::memcmp(res.data, disk.data(), disk.size()) == 0);
+		// the split is a VALUE: the masked contract declares train_size and d (the positional graph has neither)
+		REQUIRE(disk.find("train_size") != string::npos);
+		REQUIRE(disk.find("model.safetensors") != string::npos);
+		REQUIRE(GetBundledResource(BundledGpuGraphId(model, "migraphx", "regression")).data == nullptr);
+	}
 }

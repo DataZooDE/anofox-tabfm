@@ -186,11 +186,16 @@ set(_tabfm_inputs
     "tensor_map_tabpfn26_regression.json"
     "tensor_map_tabpfn25_classification.json"
     "tensor_map_tabpfn25_regression.json"
-    # Orion-BiX (MIT) — classification only, no regression graph upstream.
+    # Orion-BiX (MIT) — classification only, no regression graph upstream. The CPU graph is (x, y)-only (split =
+    # len(y)); the migraphx graph is the MASKED contract (x, y_full, train_size, d; tools/export_orion_bix
+    # --contract mask) so ROCm can bucket it. It reads the same model.safetensors as the ext graph.
     "graph_orion_bix_classification.onnx"
+    "graph_migraphx_orion_bix_classification.onnx"
     "tensor_map_orion_bix_classification.json"
-    # Orion-MSP (MIT) — classification only, like its Orion-BiX sibling.
+    # Orion-MSP (MIT) — classification only, like its Orion-BiX sibling, and like it with a second, MASKED
+    # migraphx graph for ROCm (tools/export_orion_msp --contract mask; the frozen random-link table stays inline).
     "graph_orion_msp_classification.onnx"
+    "graph_migraphx_orion_msp_classification.onnx"
     "tensor_map_orion_msp_classification.json"
     # TabDPT (Layer 6 AI, Apache-2.0) — both tasks off one checkpoint.
     "graph_tabdpt_classification.onnx"

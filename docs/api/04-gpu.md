@@ -78,7 +78,7 @@ it, every later one in that bucket is sub-second. Measured on gfx1201:
 |---|---|
 | `tabfm-v1` (full size) | about 25 minutes |
 | `tabpfn-v3` | about 16 minutes |
-| the other ROCm models | 2.5 to 9 minutes |
+| the other ROCm models | 2 to 9 minutes (`orion-bix` 2.2, `orion-msp` 4.3 at 128 x 16) |
 
 `CALL tabfm_gpu_precompile(...)` does it off the query path, and the compiled `.mxr` persists in the weight
 cache across sessions. `SET anofox_tabfm_mxr_source = '<dir>'` stages matching precompiled programs from a
