@@ -29,7 +29,8 @@ each to the same function: ``F._in_projection_packed`` splits the packed q/k/v w
 whenever the keys are not the queries (the column ISAB and the row interactor's last block), which exports as
 SplitToSequence / SequenceAt (slices instead, docs/ROCM_TABDPT_SPIKE.md); and RoPE's ``einsum("..., f -> ...
 f")`` is an outer product (a broadcast multiply instead; no committed MIGraphX graph uses Einsum). QASSMax's
-``base_mlp`` on the scalar log(S) is written out elementwise (the Nori and Causilo graphs failed on it).
+``base_mlp`` on the scalar log(S) is written out elementwise (the Nori and Causilo graphs failed on it), and
+the all-equal skip tests (SkippableLinear, ISAB) are counts by GEMM, not ReduceMin (MIGraphX's reducer bug).
 
 Nothing in TabICL reads statistics over every row, so padded rows cannot reach a statistic and ``n_rows``
 stays unused (it is declared because the plugin binds it when a graph has it).
@@ -132,14 +133,19 @@ def migraphx_safe():
     import tabicl._model.rope as rope
     import tabicl._model.ssmax as ssmax
 
+    import tabicl._model.layers as layers
+
     real_f, real_einsum, real_qass = attention.F, rope.einsum, ssmax.QASSMaxMLP.forward
+    real_skip = layers.SkippableLinear.forward
     attention.F = _FunctionalShim(real_f, _in_projection_packed=_in_projection_sliced)
     rope.einsum = _outer_einsum
     ssmax.QASSMaxMLP.forward = _qassmax_forward
+    layers.SkippableLinear.forward = _skippable_linear
     try:
         yield
     finally:
         attention.F, rope.einsum, ssmax.QASSMaxMLP.forward = real_f, real_einsum, real_qass
+        layers.SkippableLinear.forward = real_skip
 
 
 def _sum_rows(x: torch.Tensor) -> torch.Tensor:
@@ -182,6 +188,25 @@ def _linear1(linear, v):
     return out + linear.bias if linear.bias is not None else out
 
 
+def _count_ne(x: torch.Tensor, value: float, dims: int) -> torch.Tensor:
+    """How many of the last ``dims`` axes' entries differ from ``value``, as GEMMs against a ones vector (exact
+    in float32 below 2**24). ``(x == v).all(...)`` lowers to a ReduceMin that MIGraphX fuses with its
+    neighbours into a kernel its own reducer templates fail to compile on gfx1201 ("type 'float' does not
+    provide a subscript operator", then an assertion in tuning_config) -- the TabDPT reducer bug
+    (docs/ROCM_TABDPT_SPIKE.md, blocker 3), here on the SkippableLinear test of the column features."""
+    n = (x != value).to(x.dtype)
+    for _ in range(dims):
+        n = n @ torch.ones(n.shape[-1], dtype=n.dtype, device=n.device)
+    return n
+
+
+def _skippable_linear(self, src):
+    """``SkippableLinear.forward`` (the exporter's branchless form) with the all-equal test as a count."""
+    out = F.linear(src, self.weight, self.bias)
+    skip = (_count_ne(src, self.skip_value, 1) == 0).unsqueeze(-1)
+    return torch.where(skip, torch.full_like(out, self.skip_value), out)
+
+
 def _isab(block, src, key_bias):
     """InducedSelfAttentionBlock (patched branchless forward) with the context as the inducing points' keys.
     src [1, G, T, E], key_bias [T] (0 on context rows, NEG elsewhere)."""
@@ -190,7 +215,7 @@ def _isab(block, src, key_bias):
     mask = key_bias.view(*([1] * len(batch)), rows).expand(*batch, rows)
     hidden = block.multihead_attn1(ind, src, src, key_padding_mask=mask)
     out = block.multihead_attn2(src, hidden, hidden)
-    skip = (src == block.skip_value).all(dim=-1, keepdim=True).all(dim=-2, keepdim=True)
+    skip = (_count_ne(src, block.skip_value, 2) == 0).view(*batch, 1, 1)
     return torch.where(skip, torch.full_like(out, block.skip_value), out)
 
 

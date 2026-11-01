@@ -3,9 +3,10 @@
 > **Update 2026-09-30.** The whole TabPFN family -- v2, v2.5, v2.6 and v3 -- was
 > converted and now runs on ROCm (docs/ROCM_TABPFN_PLAN.md), joining tabdpt
 > (docs/ROCM_TABDPT_SPIKE.md). What remains positional and refused on ROCm:
-> `tabicl-v2`, `orion-bix`, `orion-msp`, `causilo` and `limix-2m` (added later, same family: `limix-2m`'s
-> graph reads the split from `len(y)` exactly like TabICL's). `exaone-tabular` and `nori-30m` were added positional too and ship a second, masked graph for ROCm (tools/export_exaone,
-> tools/export_nori: `--contract mask`).
+> `orion-bix`, `orion-msp` and `causilo`. `exaone-tabular` and `nori-30m` were added positional too and ship a
+> second, masked graph for ROCm (tools/export_exaone, tools/export_nori: `--contract mask`), and so, since
+> 2026-11-01, do `tabicl-v2` and `limix-2m` (tools/export_tabicl, tools/export_limix: `--contract mask`; see
+> "TabICL v2 and LimiX-2M" at the end).
 > `tabfm_backends()` is the source of truth.
 
 
@@ -148,3 +149,39 @@ So "cheapest to convert" was reasoned from one obstacle out of three. The
 recommendation happened to be right; the estimate behind it was not. Any future
 statement about which models are worth converting should be read with that in
 mind — the split is what analysis can see, and it was the least of it.
+
+## TabICL v2 and LimiX-2M (2026-11-01)
+
+Both converted and verified on the gfx1201 (RX 9070 XT, MIGraphX 2.15, fp32, the T128 x H16 bucket): served by
+`rocm:0`, **0/100** label differences from the CPU for both models, regression max |diff| 4.4e-5 (TabICL) and
+3.5e-4 (LimiX, target scale 7.9). Cold compile 2.6-3.8 minutes per task and bucket; warm calls 0.02 s against
+0.11-0.14 s on the CPU at 100 rows. `test/sql/tabfm_rocm_real_models.test` (TABFM_REAL_WEIGHTS + TABFM_ROCM)
+and `tools/gpu_test/scenarios/tabicl_limix_rocm.sql` are the checks.
+
+As this document predicted, the two share an approach -- the masked contract (`x, y_full, train_size, d,
+n_rows`) the TabPFN, EXAONE and Nori conversions use -- but the places the split hides differ:
+
+- **TabICL** (tools/export_tabicl/tabicl_mask.py): the circular feature grouping `(j + 2**i) % H` is a
+  function of the WIDTH, so padding H changes every group's partners; it is taken modulo `d`, division-free,
+  and gathered. The target-aware column embedding and the ICL label embedding go to the context rows only;
+  the column ISAB's inducing points and the ICL transformer attend to the context through a key mask; QASSMax
+  reads `log(S)` from the value; the row interactor's own `d` mask removes padded groups.
+- **LimiX-2M** (tools/export_limix/limix_mask.py): Nori's recipe (Nori is its fork) plus one place Nori does
+  not have: `ValidFeatureEncoder` tests "every row equals the first" over the whole table, so a zero padded
+  row would make a constant column valid. That test reads `n_rows`, the first model here that needs it for
+  a statistic over the real (not the context) rows.
+
+What MIGraphX could not take, each rewritten to the same function (and now caught before a GPU run by
+`tests/migraphx_guards.py`, shared with tools/export_causilo):
+
+| construct | where | MIGraphX failure | rewrite |
+|---|---|---|---|
+| `Tensor.split` of the packed q/k/v weight (cross-attention) | TabICL ISAB, row interactor | parser: no SplitToSequence | slices |
+| RoPE `einsum("..., f -> ... f")` | TabICL row interactor | (avoided; no shipped graph uses Einsum) | broadcast multiply |
+| `reshape(())` of log(S) | TabICL QASSMax | parser: "reshape has 0 elements whereas the input has 1"; the plugin then crashed | keep it `[1]` |
+| `(x == v).all(...)` skip tests | TabICL SkippableLinear / ISAB | GPU codegen: `reducer ... type 'float' does not provide a subscript operator`, then the `tuning_config` assertion -- the TabDPT reducer bug, in a fused `reduce min` | count by GEMM against a ones vector |
+| `Linear(1, n)` | TabICL QASSMax `base_mlp`, regression y-encoders | (guard; failed on Nori and Causilo) | elementwise |
+| `torch.cat([t, t])` | LimiX doubled context | (guard; preceded a `fuse_concat` assertion on Causilo) | expand + reshape |
+
+Remaining positional on ROCm: `orion-bix`, `orion-msp`, `causilo` (each being converted on its own branch at
+the time of writing).
