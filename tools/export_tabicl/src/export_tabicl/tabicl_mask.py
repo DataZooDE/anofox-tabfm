@@ -28,7 +28,8 @@ Two ops MIGraphX's ONNX parser cannot take are rewritten while the masked forwar
 each to the same function: ``F._in_projection_packed`` splits the packed q/k/v weight with ``Tensor.split``
 whenever the keys are not the queries (the column ISAB and the row interactor's last block), which exports as
 SplitToSequence / SequenceAt (slices instead, docs/ROCM_TABDPT_SPIKE.md); and RoPE's ``einsum("..., f -> ...
-f")`` is an outer product (a broadcast multiply instead; no committed MIGraphX graph uses Einsum).
+f")`` is an outer product (a broadcast multiply instead; no committed MIGraphX graph uses Einsum). QASSMax's
+``base_mlp`` on the scalar log(S) is written out elementwise (the Nori and Causilo graphs failed on it).
 
 Nothing in TabICL reads statistics over every row, so padded rows cannot reach a statistic and ``n_rows``
 stays unused (it is declared because the plugin binds it when a graph has it).
@@ -69,7 +70,9 @@ def install() -> None:
 
     def _logn(n, device, dtype):
         if _SSMAX_LOGN is not None:
-            return _SSMAX_LOGN.to(dtype).reshape(())
+            # [1], not a 0-d tensor: MIGraphX's parser rejects a Reshape to a scalar shape ("reshape has 0
+            # elements whereas the input has 1"); every caller broadcasts or reshapes it to (1, 1) anyway
+            return _SSMAX_LOGN.to(dtype)
         return positional(n, device, dtype)
 
     _logn._masked = True
@@ -105,18 +108,38 @@ def _outer_einsum(equation, *operands):
     return torch.einsum(equation, *operands)
 
 
+def _qassmax_forward(self, q, n):
+    """``QASSMaxMLP.forward`` with ``base_mlp`` (Linear(1, 64) -> GELU -> Linear) written out on the scalar
+    log(n): the module applied to a [1, 1] tensor made MIGraphX's GPU pipeline fail on the Nori and Causilo
+    graphs (simplify_reshapes, "cannot create std::vector larger than max_size()"). Same function."""
+    import tabicl._model.ssmax as ssmax
+
+    logn = ssmax._logn(n, q.device, q.dtype).reshape(-1)[:1]                          # [1]
+    l1, act, l2 = self.base_mlp[0], self.base_mlp[1], self.base_mlp[2]
+    hidden = act(l1.weight.view(-1) * logn + l1.bias)                                 # [64]
+    base = hidden.unsqueeze(0) @ l2.weight.transpose(0, 1) + l2.bias                  # [1, out]
+    if self.elementwise:
+        base_scales = base.view(1, self.num_heads, 1, self.head_dim)
+    else:
+        base_scales = base.view(1, self.num_heads, 1, 1)
+    modulation = 1 + torch.tanh(self.query_mlp(q))
+    return q * (base_scales * modulation)
+
+
 @contextlib.contextmanager
 def migraphx_safe():
     import tabicl._model.attention as attention
     import tabicl._model.rope as rope
+    import tabicl._model.ssmax as ssmax
 
-    real_f, real_einsum = attention.F, rope.einsum
+    real_f, real_einsum, real_qass = attention.F, rope.einsum, ssmax.QASSMaxMLP.forward
     attention.F = _FunctionalShim(real_f, _in_projection_packed=_in_projection_sliced)
     rope.einsum = _outer_einsum
+    ssmax.QASSMaxMLP.forward = _qassmax_forward
     try:
         yield
     finally:
-        attention.F, rope.einsum = real_f, real_einsum
+        attention.F, rope.einsum, ssmax.QASSMaxMLP.forward = real_f, real_einsum, real_qass
 
 
 def _sum_rows(x: torch.Tensor) -> torch.Tensor:
@@ -151,6 +174,14 @@ def feature_grouping(ce, x: torch.Tensor, d: torch.Tensor) -> torch.Tensor:
     return torch.stack([x.index_select(2, c) for c in cols], dim=-1)
 
 
+def _linear1(linear, v):
+    """``nn.Linear(1, n)`` on a trailing size-1 axis, written elementwise: a matmul with contraction dimension 1
+    feeding a broadcast Mul kills MIGraphX's simplify_reshapes (tools/export_causilo, docs/ROCM_CAUSILO_PLAN.md).
+    v [...] -> [..., n]; the same function."""
+    out = v.unsqueeze(-1) * linear.weight.view(-1)
+    return out + linear.bias if linear.bias is not None else out
+
+
 def _isab(block, src, key_bias):
     """InducedSelfAttentionBlock (patched branchless forward) with the context as the inducing points' keys.
     src [1, G, T, E], key_bias [T] (0 on context rows, NEG elsewhere)."""
@@ -172,7 +203,7 @@ def column_embedding(ce, x, y_lab, ctx, key_bias, d):
     src = ce.in_linear(features)
     if ce.target_aware:
         y_exp = y_lab.unsqueeze(1).expand(-1, features.shape[1], -1)                  # [1, G+C, T]
-        y_emb = ce.y_encoder(y_exp.float()) if ce.max_classes > 0 else ce.y_encoder(y_exp.unsqueeze(-1))
+        y_emb = ce.y_encoder(y_exp.float()) if ce.max_classes > 0 else _linear1(ce.y_encoder, y_exp)
         src = src + torch.where(ctx.view(1, 1, -1, 1), y_emb, torch.zeros_like(y_emb))
     for block in ce.tf_col.blocks:
         src = _isab(block, src, key_bias)
@@ -196,7 +227,7 @@ def icl(icl_mod, reps, y_lab, ctx, key_bias):
     if icl_mod.max_classes > 0:
         ry = icl_mod.y_encoder(y_lab.float())
     else:
-        ry = icl_mod.y_encoder(y_lab.unsqueeze(-1))
+        ry = _linear1(icl_mod.y_encoder, y_lab)
     src = reps + torch.where(ctx.view(1, -1, 1), ry, torch.zeros_like(ry))
     mask = key_bias.view(1, -1)
     for block in icl_mod.tf_icl.blocks:

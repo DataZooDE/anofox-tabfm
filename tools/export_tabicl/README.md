@@ -132,3 +132,29 @@ first confirm their config matches the exported dims (the TabICL v2 `__init__`
 defaults, see `configs._REAL_KWARGS`); a shape mismatch fails injection. The
 tensor map keys are the bare model `state_dict` keys, so they match a checkpoint
 loaded via `TabICL.load_state_dict` when the config agrees.
+
+## The ROCm graph (masked contract)
+
+`tabicl_mask.py` computes the same function with the split as a VALUE, so MIGraphX can compile it per (T, H)
+shape bucket: `x[1,T,H]`, `y[1,T]` (full length, -100 off the context), `train_size`, `d`, `n_rows`. It runs
+upstream's own modules and changes only what read a padded shape: the circular feature grouping is taken
+modulo `d` (division-free, then a gather), the target-aware column embedding and the ICL label embedding go to
+the context rows only, the column ISAB's inducing points and the ICL transformer attend to the context through
+a key mask, QASSMax reads `log(S)` from the value, and the row interactor masks padded groups with its own `d`
+mask. While it traces, the packed q/k/v weight is sliced rather than `split` (no SplitToSequence) and RoPE's
+outer-product einsum is a broadcast. `mask_parity.gate` passes only when each of five negative controls is
+caught; on the real checkpoints the masked forward matches the positional one to 2.6e-5 (both tasks).
+
+```bash
+uv run export_tabicl --task classification --config real --contract mask --out ./mask
+uv run python ../make_migraphx_graph.py classification \
+    --weights ~/.cache/anofox-tabfm/jingang__TabICL@main/classification/model.safetensors \
+    --graph ./mask/graph_mask_tabicl_classification.onnx \
+    --tensor-map ./mask/tensor_map_mask_tabicl_classification.json \
+    --dynamic --out ../../resources/graph_migraphx_tabicl_classification.onnx
+uv run python ../check_migraphx_int_div.py ../../resources/graph_migraphx_tabicl_classification.onnx
+TABFM_REAL_WEIGHTS=1 TABICL_MASK_DIR=./mask uv run pytest tests/test_real_weights.py   # vs the shipped graph
+```
+
+(and the same with `regression`). The masked graph reads the same 391 / 347 initializers as the positional
+pair, so the tensor-map keys and the weights header sha are unchanged.

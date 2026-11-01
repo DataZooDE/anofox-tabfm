@@ -253,7 +253,9 @@ def masked_forward(model, task, x, y_lab, train_size, d, n_rows):
     ctx = row < train_size                                                                 # [T]
     real = row < n_rows
     pre = preprocess(model, xg, ctx.view(-1, 1, 1), real.view(-1, 1, 1))                  # [T, G, 2]
-    pre = torch.cat((pre, pre), dim=0).unsqueeze(0)                                       # [1, 2T, G, 2]
+    # the two copies as expand + reshape, not torch.cat([t, t]): a Concat listing one tensor twice preceded a
+    # fuse_concat assertion on the Causilo graph (docs/ROCM_CAUSILO_PLAN.md)
+    pre = pre.unsqueeze(0).expand(2, *pre.shape).reshape(1, 2 * rows, *pre.shape[1:])  # [1, 2T, G, 2]
     x_emb = encode_x(model.encoder_x[0], pre)                                             # [1, 2T, G, E]
 
     y_ctx = torch.where(ctx, y_lab[0], torch.full_like(y_lab[0], float("nan")))

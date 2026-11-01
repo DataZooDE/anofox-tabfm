@@ -49,7 +49,7 @@ CREATE TABLE gr AS SELECT * EXCLUDE (label) FROM g;
 # tabicl-v2
 
 # the catalogue says ROCm can serve it, for both tasks (the masked graph is bundled and matches the weights)
-query TB
+query TT
 SELECT task, supported FROM tabfm_backends() WHERE backend = 'rocm' AND model = 'tabicl-v2' ORDER BY task
 ----
 classification	true
@@ -94,7 +94,7 @@ SELECT count(*), max(abs(c.yhat - g.yhat)) < 1e-3 AND corr(c.yhat, g.yhat) > 0.9
 # limix-2m
 
 # the catalogue says ROCm can serve it, for both tasks (the masked graph is bundled and matches the weights)
-query TB
+query TT
 SELECT task, supported FROM tabfm_backends() WHERE backend = 'rocm' AND model = 'limix-2m' ORDER BY task
 ----
 classification	true
