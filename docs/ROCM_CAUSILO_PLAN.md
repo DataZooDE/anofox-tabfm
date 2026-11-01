@@ -1,7 +1,12 @@
 # Causilo on ROCm: what the masked graph has to reproduce
 
-Status: **inventory, masked forward, parity gate, masked export and structural guards done; no GPU compile yet.**
-MIGraphX has only PARSED and reference-compiled the graph (CPU), which cannot see the failures that matter most. This is the Causilo counterpart of `docs/ROCM_TABPFN_PLAN.md`; read that for why the
+Status: **shipped. Causilo serves on ROCm (gfx1201) for both tasks** through the bundled
+`graph_migraphx_causilo_<task>.onnx` (masked contract, below). Measured on an RX 9070 XT with the real weights, 100 rows
+x 8 features (bucket 128 x 16), served by `rocm:0` (read from `tabfm_models()`): **0/100 label differences** from the
+CPU for classification; regression max |diff| **3.6e-5**, corr 0.9999999999998; warm calls 0.049 s / 0.047 s against
+0.22 s / 0.18 s on the CPU. `migraphx-driver compile --gpu` at that bucket: classification 791 s, regression 937 s.
+Tests: `test/sql/tabfm_rocm_causilo.test` (TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1), `tools/gpu_test/scenarios/causilo_rocm.sql`.
+The sections below are the history of how it got there; "What is not done" at the end is superseded by this line. This is the Causilo counterpart of `docs/ROCM_TABPFN_PLAN.md`; read that for why the
 split must become a value (MIGraphX compiles one program per fixed `(T, H)` bucket, so a split read from
 `y`'s length would need one compile per distinct training size).
 
@@ -309,9 +314,9 @@ on this GPU.
   that moved the failure to section 2, which the matmul sums resolve for the fixture only.
 * Section 2 was reproduced on a 16-line graph; section 1 and section 3 were not reduced.
 
-## What is not done
+## What is not done (superseded: see the status line at the top)
 
-Only the fixture graph compiles on the GPU target, nothing else does (see the section above), no bundling (nothing under `resources/`, no `cmake/embed_resources.cmake` entry), no
+At the time of writing, only the fixture graph compiled on the GPU target, nothing else does (see the section above), no bundling (nothing under `resources/`, no `cmake/embed_resources.cmake` entry), no
 `tabfm_backends()` or test-list change, no timing on any device, no plugin involvement. `make_migraphx_graph.py` was
 run only into a scratch directory to feed the parser. The GPU pipeline does not accept the graph yet; the
 TabPFN conversion found four such failures only on the GPU.

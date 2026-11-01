@@ -550,7 +550,8 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	}
 	// Causilo (Nums AI). The graphs bake absolute offsets into the checkpoint at the revision the
 	// registry pins (94f2bd91...); HF main has moved past it, which is exactly the situation this
-	// hash exists to catch: a mismatch falls back to the layout-independent injection path.
+	// hash exists to catch: a mismatch falls back to the layout-independent injection path. The masked
+	// ROCm graphs (tools/export_causilo --contract mask) reuse the same tensor map, so the same header.
 	if (model == "causilo") {
 		if (task_name == "classification") {
 			return "85fb120c90878b69b0d34ff32fcfbdcf457ffd4d2ed7af2a102fe7c2d417d742";

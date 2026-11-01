@@ -5,6 +5,13 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`causilo` on ROCm (MIGraphX)**, classification and regression: a second, masked graph per task
+  (`x, y_full, train_size, n_rows, d`; `tools/export_causilo --contract mask`) replaces the positional split, so
+  MIGraphX can compile it per shape bucket. On gfx1201 with the real weights: 0/100 label differences from the CPU,
+  regression max |diff| 3.6e-5; ~13-16 min first compile per task and bucket; warm ~0.05 s vs ~0.2 s on the CPU.
+  See docs/ROCM_CAUSILO_PLAN.md.
+
 ## [v2026.10.31] - 2026-10-31
 
 ### Added

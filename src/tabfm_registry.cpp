@@ -433,7 +433,9 @@ static const char *const BUILTIN_ORION_BIX = R"json({
 // attribution. The HF repo itself is ungated; no token is needed.
 //
 // Its graph is (x, y)-only like TabICL's: the split is the length of y, so the engine needs no
-// model-specific code (tools/export_causilo). The graph normalises its own features, hence a
+// model-specific code (tools/export_causilo). For ROCm a second, MASKED graph per task (x, y_full,
+// train_size, n_rows, d; tools/export_causilo --contract mask, docs/ROCM_CAUSILO_PLAN.md) is bundled,
+// keyed to the pinned safetensors by header sha. The graph normalises its own features, hence a
 // *_raw profile. Weights are already safetensors with the keys the tensor map names, so there is
 // no converter, and they are pinned to the commit the graph was exported from: HF main has moved
 // past it, and a moving ref would pair a newer checkpoint with this graph.
