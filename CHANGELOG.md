@@ -5,6 +5,8 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+## [v2026.11.01] - 2026-11-01
+
 ### Added
 - **ROCm serves `tabicl-v2` and `limix-2m`** (classification and regression) through a second, masked graph per
   task (`x, y_full, train_size, d, n_rows`; tools/export_tabicl and tools/export_limix `--contract mask`),
