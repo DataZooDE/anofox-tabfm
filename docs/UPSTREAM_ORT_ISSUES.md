@@ -89,7 +89,7 @@ archive's build configuration.
 
 ## Draft 3 — CUDA EP: a CPU-side shape tensor's buffer is reused while still live (Expand gets a wrong shape)
 
-Status 2026-11-02: **draft, not filed** (review first). Affects us today; worked around graph-side
+Status 2026-11-02: **filed** as [microsoft/onnxruntime#33807](https://github.com/microsoft/onnxruntime/issues/33807). Affects us today; worked around graph-side
 (`tools/pin_cuda_shape_operands.py`), so filing is for the fix upstream, not for us.
 
 **Title:** `[CUDA EP] Expand receives a wrong shape: CPU buffer of a live int64 shape tensor is reused (1.29.0, 1.31.1)`
