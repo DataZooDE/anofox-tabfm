@@ -272,8 +272,11 @@ struct TabFMPrecompileResult {
 	int64_t bucket_rows = 0;
 	int64_t bucket_features = 0;
 	//! "compiled" (a new .mxr was written), "cached" (the bucket's program was already in memory or
-	//! on disk), or "not needed" (the device has no per-shape compile: CPU, CUDA, MLX).
+	//! on disk), "not needed" (the device has no per-shape compile: CPU, CUDA, MLX), or "refused" (the
+	//! bucket is over the model's ROCm ceiling, RocmBucketRefusal; nothing was compiled).
 	string status;
+	//! Why the bucket was refused; "" otherwise.
+	string reason;
 	//! Wall time of the call, model load included.
 	double seconds = 0;
 };

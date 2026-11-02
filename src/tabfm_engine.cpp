@@ -1093,6 +1093,36 @@ string GpuRefusalMessage(const string &device, const string &reason) {
 // rocm device, this must succeed or throw: silently falling back to CPU here
 // would be exactly the "requested device quietly becomes CPU" failure mode
 // the equivalence suite's tier 4 exists to catch (DYNAMIC_BACKENDS.md).
+//! Refuses a call whose padded bucket is over the model's ROCm ceiling (RocmBucketRefusal), before the
+//! plugin starts a MIGraphX compile that would abort the process on a failed VRAM allocation. Wraps the
+//! plugin backend, so every route into a compile goes through it: a predict and tabfm_gpu_precompile.
+class RocmCeilingBackend : public TabFMBackend {
+public:
+	RocmCeilingBackend(shared_ptr<TabFMBackend> inner, string model, int64_t vram_total)
+	    : inner(std::move(inner)), model(std::move(model)), vram_total(vram_total) {
+	}
+	TabFMRunOutput Run(const TabFMRunInput &input) override {
+		Check(input.t, input.h);
+		return inner->Run(input);
+	}
+	void Precompile(int64_t rows, int64_t features) override {
+		Check(rows, features);
+		inner->Precompile(rows, features);
+	}
+
+private:
+	void Check(int64_t rows, int64_t features) const {
+		auto bucket = PadToShapeBucket(rows, features);
+		auto reason = RocmBucketRefusal(model, bucket.padded_t, bucket.padded_h, vram_total);
+		if (!reason.empty()) {
+			throw InvalidInputException("anofox_tabfm: " + reason + ".");
+		}
+	}
+	shared_ptr<TabFMBackend> inner;
+	string model;
+	int64_t vram_total;
+};
+
 shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                            const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
@@ -1158,6 +1188,9 @@ shared_ptr<LoadedModel> TryMIGraphXBackend(FileSystem &fs, TabFMState &state, co
 	params.mxr_source = ctx.mxr_source.c_str();
 	params.device_ordinal = device.device_ordinal;
 	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
+	if (!RocmBucketCeilingNote(resolved.manifest.model).empty()) {
+		backend = make_shared_ptr<RocmCeilingBackend>(std::move(backend), resolved.manifest.model, device.vram_total);
+	}
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0, false,
 	                       ctx.gpu_precision, NumericCast<idx_t>(ctx.max_sessions));
 }
@@ -2262,6 +2295,19 @@ TabFMPrecompileResult TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask ta
 		auto bucket = PadToShapeBucket(rows, features);
 		result.bucket_rows = bucket.padded_t;
 		result.bucket_features = bucket.padded_h;
+		// A bucket over the model's ceiling is reported, not compiled: the compile would abort the process.
+		int64_t vram_total = -1;
+		for (auto &d : DiscoverDevices()) {
+			if (d.device_id == model->device_id) {
+				vram_total = d.vram_total;
+			}
+		}
+		result.reason = RocmBucketRefusal(result.model, bucket.padded_t, bucket.padded_h, vram_total);
+		if (!result.reason.empty()) {
+			result.status = "refused";
+			result.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+			return result;
+		}
 		mxr_dir = fs->JoinPath(ctx.cache_dir, "migraphx");
 		before = NewestBucketMxr(*fs, mxr_dir, bucket.padded_t, bucket.padded_h);
 	}

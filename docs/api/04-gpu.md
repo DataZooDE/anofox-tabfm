@@ -42,7 +42,7 @@ the file and `CALL tabfm_accelerate()` as the fix). They land in the `runtime` s
 | `CALL tabfm_download_runtime(backend)` | `file, bytes, status` | fetch one plugin: `'cuda'`, `'rocm'` or `'mlx'` |
 | `SELECT * FROM tabfm_devices()` | `device_id, ep, name, arch, vram_total, vram_free, driver, usable` | the devices found: always `cpu`, plus any CUDA, ROCm or MLX device, `usable = false` when present but unsupported |
 | `SELECT * FROM tabfm_backends()` | `model, task, device, backend, supported, reason` | which device can serve which model, and why not; `supported` is `NULL` while the weights are not downloaded |
-| `CALL tabfm_gpu_precompile(task [, rows, features], model := '<id>')` | `task, rows, features, device, status, model, bucket_rows, bucket_features, seconds` | compile a shape bucket ahead of the first predict (ROCm); `status` is `compiled`, `cached` or `not needed` (CPU, CUDA, MLX) |
+| `CALL tabfm_gpu_precompile(task [, rows, features], model := '<id>')` | `task, rows, features, device, status, model, bucket_rows, bucket_features, seconds, reason` | compile a shape bucket ahead of the first predict (ROCm); `status` is `compiled`, `cached`, `not needed` (CPU, CUDA, MLX) or `refused` (the bucket is over the model's ROCm ceiling, `reason` says why) |
 | `SELECT model, device FROM tabfm_models()` | | which device serves each loaded model right now |
 
 ## Choosing the device
@@ -84,6 +84,14 @@ it, every later one in that bucket is sub-second. Measured on gfx1201:
 cache across sessions. `SET anofox_tabfm_mxr_source = '<dir>'` stages matching precompiled programs from a
 shared directory instead of compiling; they are arch- and ROCm-version-specific. CUDA has no analogous cost
 (~30 s cold start).
+
+**LimiX-2M has a bucket ceiling on ROCm.** Its sample attention holds a `[ceil(features / 2) + 1, 6, rows, rows]`
+float32 score tensor, and when MIGraphX cannot allocate it in VRAM it aborts the process instead of raising an
+error. Buckets larger than the biggest one measured to work on a 16 GiB GPU (4096 rows x 16 features, which
+covers 2048 x 64, 1024 x 256 and 512 x 512 too) are refused before the compile: a predict raises an error naming
+the bucket, `tabfm_gpu_precompile` returns `status = 'refused'`, and `tabfm_backends()` states the ceiling.
+A GPU with less VRAM gets a proportionally lower ceiling. Use `SET anofox_tabfm_device = 'cpu'` for larger
+tables. Details: [ROCM_SINGLE_EVAL_POS.md](../ROCM_SINGLE_EVAL_POS.md#limix-2m-bucket-ceiling-2026-11-02).
 
 ## Precision
 

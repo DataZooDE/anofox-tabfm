@@ -20,6 +20,15 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   pins the ROCm side.
 
 ### Fixed
+- **LimiX-2M on ROCm no longer aborts DuckDB on a large table.** At 3000 rows x 100 features (the 4096 x 128
+  bucket), the sample attention's score tensor is 24.4 GiB. MIGraphX's compile could not allocate it on a 16 GiB
+  GPU, and its `hip.cpp:155` assertion killed the process, for both tasks. LimiX buckets larger than the largest
+  one measured to work (4096 x 16, which admits 2048 x 64, 1024 x 256 and 512 x 512 too) are now refused before
+  the compile. A predict raises an error naming the bucket and `SET anofox_tabfm_device = 'cpu'`.
+  `tabfm_gpu_precompile` returns `status = 'refused'` with the reason in a new `reason` column. `tabfm_backends()`
+  states the ceiling. GPUs with less VRAM get a proportionally lower ceiling. Diagnosis, measurements and a
+  four-node MIGraphX reproducer: docs/ROCM_SINGLE_EVAL_POS.md "LimiX-2M bucket ceiling",
+  tools/gpu_test/repro/migraphx_attention_oom.py.
 - **TabPFN-3.5 and TabPFN-3.5-Fast now run on CUDA, and are no longer refused there.** Their ext graphs failed
   inside ONNX Runtime 1.29's CUDA execution provider: in a CUDA session ORT gives the CPU buffer of one live
   shape tensor to another, so `node_expand` received `{170, 1, 170}` instead of `{170, 1, 5}`. ORT 1.31.1 fails

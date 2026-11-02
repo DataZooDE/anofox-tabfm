@@ -353,6 +353,75 @@ inline string GpuKnownWrong(const string &backend, const string &model, const st
 	return string();
 }
 
+//===----------------------------------------------------------------------===//
+// ROCm bucket ceilings: shapes a model's MIGraphX program cannot be built for
+//
+// MIGraphX compiles one program per padded (T, H) bucket, and some graphs grow
+// a tensor quadratically in T. When hipMalloc cannot place a buffer MIGraphX
+// 2.15 falls back to pinned host memory and then asserts on it
+// (src/targets/gpu/hip.cpp:155, `host or is_device_ptr(result.get())`). The
+// assertion is compiled in on distribution builds, so it aborts the whole
+// DuckDB process from a single SQL call. Such buckets are refused here, before
+// the plugin starts the compile (docs/ROCM_SINGLE_EVAL_POS.md, "LimiX-2M bucket
+// ceiling").
+//===----------------------------------------------------------------------===//
+
+//! Float32 elements of LimiX-2M's largest tensor at bucket (T, H): the per-token
+//! sample attention keeps a [G + 1, 6 heads, T, T] score tensor, with
+//! G = ceil(H / 2) feature groups plus the label token. At T4096 x H128 that is
+//! 24.4 GiB, which is what failed.
+inline int64_t LimixRocmScoreElements(int64_t bucket_t, int64_t bucket_h) {
+	const int64_t tokens = (bucket_h + 1) / 2 + 1;
+	return tokens * 6 * bucket_t * bucket_t;
+}
+
+//! The largest LimiX-2M bucket measured to compile AND run, on a 16 GiB card
+//! (RX 9070 XT, gfx1201, MIGraphX 2.15): T4096 x H16, 3.4 GiB of scores, peak
+//! VRAM 10.5 GiB over the idle card, 0/3000 label differences from the CPU. Its
+//! score size is the ceiling. The next larger buckets (T2048 x H128, T1024 x
+//! H512) need about 1.8x that, more than the card holds at the measured
+//! ~3x peak-to-score ratio.
+static constexpr int64_t LIMIX_ROCM_MEASURED_T = 4096;
+static constexpr int64_t LIMIX_ROCM_MEASURED_H = 16;
+static constexpr int64_t ROCM_CEILING_MEASURED_VRAM = int64_t(16) << 30;
+
+//! "" when (model, bucket) can be compiled on a ROCm device with vram_total
+//! bytes (negative: unknown); otherwise the reason it is refused. A card smaller
+//! than the measured one scales the ceiling down in proportion. A larger card
+//! does NOT raise it, because a bigger bucket was never measured.
+inline string RocmBucketRefusal(const string &model, int64_t bucket_t, int64_t bucket_h, int64_t vram_total) {
+	if (model != "limix-2m") {
+		return string();
+	}
+	int64_t ceiling = LimixRocmScoreElements(LIMIX_ROCM_MEASURED_T, LIMIX_ROCM_MEASURED_H);
+	if (vram_total > 0 && vram_total < ROCM_CEILING_MEASURED_VRAM) {
+		ceiling = int64_t(double(ceiling) * double(vram_total) / double(ROCM_CEILING_MEASURED_VRAM));
+	}
+	const int64_t need = LimixRocmScoreElements(bucket_t, bucket_h);
+	if (need <= ceiling) {
+		return string();
+	}
+	const double gib = double(need) * 4.0 / double(int64_t(1) << 30);
+	return StringUtil::Format(
+	    "model 'limix-2m' cannot be compiled for the ROCm shape bucket %d rows x %d features: its sample "
+	    "attention holds a %.1f GiB float32 score tensor there, and when MIGraphX runs out of VRAM it aborts the "
+	    "process instead of raising an error. The largest bucket measured to work on a 16 GiB GPU is %d x %d "
+	    "(docs/ROCM_SINGLE_EVAL_POS.md). Use fewer rows or features, or SET anofox_tabfm_device = 'cpu'",
+	    bucket_t, bucket_h, gib, LIMIX_ROCM_MEASURED_T, LIMIX_ROCM_MEASURED_H);
+}
+
+//! The tabfm_backends() note for a model that serves on ROCm only up to a ceiling; "" for the others.
+inline string RocmBucketCeilingNote(const string &model) {
+	if (model != "limix-2m") {
+		return string();
+	}
+	return StringUtil::Format("served up to the %d rows x %d features shape bucket (or any bucket whose sample-"
+	                          "attention score tensor is no larger) on a 16 GiB GPU; larger buckets are refused "
+	                          "because MIGraphX aborts the process when it runs out of VRAM "
+	                          "(docs/ROCM_SINGLE_EVAL_POS.md)",
+	                          LIMIX_ROCM_MEASURED_T, LIMIX_ROCM_MEASURED_H);
+}
+
 inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &in) {
 	GpuServabilityResult out;
 	if (!BackendSupportsPrecision(in.backend, in.precision)) {

@@ -1720,6 +1720,10 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				auto verdict = EvaluateGpuServability(in);
 				row.supported = verdict.supported;
 				row.reason = verdict.reason;
+				// Served, but only up to a shape-bucket ceiling: say so, because a larger table is refused.
+				if (row.supported && row.backend == "rocm") {
+					row.reason = RocmBucketCeilingNote(spec.id);
+				}
 				// Plugin presence is checked AFTER servability, and only when
 				// the model would otherwise run. Both can be true at once --
 				// tabdpt on ROCm has no MIGraphX graph AND no plugin installed
@@ -2018,10 +2022,11 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	// The first five columns are the original contract; the rest say what the
 	// call actually did, so a user can tell a cold compile from a cache hit and
 	// see which padded bucket a (rows, features) shape lands in.
-	names = {"task", "rows", "features", "device", "status", "model", "bucket_rows", "bucket_features", "seconds"};
+	names = {"task",  "rows",          "features",        "device",  "status",
+	         "model", "bucket_rows", "bucket_features", "seconds", "reason"};
 	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR,
 	                LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT,
-	                LogicalType::DOUBLE};
+	                LogicalType::DOUBLE,  LogicalType::VARCHAR};
 	return std::move(result);
 }
 
@@ -2046,6 +2051,7 @@ void PrecompileExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 	output.SetValue(6, 0, result.bucketed ? Value::BIGINT(result.bucket_rows) : Value(LogicalType::BIGINT));
 	output.SetValue(7, 0, result.bucketed ? Value::BIGINT(result.bucket_features) : Value(LogicalType::BIGINT));
 	output.SetValue(8, 0, Value::DOUBLE(result.seconds));
+	output.SetValue(9, 0, result.reason.empty() ? Value(LogicalType::VARCHAR) : Value(result.reason));
 	duckdb_compat::SetChildCardinality(output, 1);
 }
 
