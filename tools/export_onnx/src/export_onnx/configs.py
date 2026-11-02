@@ -16,13 +16,13 @@ import json
 import urllib.request
 
 HF_CONFIG_URL = (
-    "https://huggingface.co/google/tabfm-1.0.0-pytorch/resolve/main/"
+    "https://huggingface.co/google/tabfm-1.0.0-pytorch/resolve/77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83/"
     "{task}/config.json"
 )
 # The v1 default. TabFM 1.1.0 lives in its own repo (google/tabfm-1.1.0-pytorch)
 # and is exported with --hf-repo/--hf-revision (registry id tabfm-v1-1).
 DEFAULT_REPO = "google/tabfm-1.0.0-pytorch"
-DEFAULT_REVISION = "main"
+DEFAULT_REVISION = "77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83"  # pinned like src/tabfm_manifest.cpp
 
 
 def hf_config_url(task: str, repo: str = DEFAULT_REPO,

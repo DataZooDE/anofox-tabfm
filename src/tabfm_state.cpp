@@ -36,14 +36,17 @@ shared_ptr<TabFMState> TabFMState::Get(ClientContext &context) {
 namespace {
 //! Inner-map key: a session is identified by what shaped it. '\x1f' cannot
 //! appear in a device id or a precision name, so the join is unambiguous.
-string SessionKey(const string &device_id, const string &precision) {
-	return device_id + '\x1f' + precision;
+//! A context-cache (split) session gets its own slot beside the combined one: callers that want the
+//! combined graph (generation, imputation, a connection with the kill switch on) must not evict it, and
+//! with it every cached context.
+string SessionKey(const string &device_id, const string &precision, bool split) {
+	return device_id + '\x1f' + precision + (split ? "\x1fsplit" : "");
 }
 } // anonymous namespace
 
 void TabFMState::Register(const string &key, shared_ptr<LoadedModel> model, idx_t max_sessions) {
 	lock_guard<mutex> guard(lock);
-	auto session_key = SessionKey(model->device_id, model->precision);
+	auto session_key = SessionKey(model->device_id, model->precision, model->split_context);
 	auto &sessions = models[key];
 	auto entry = sessions.find(session_key);
 	if (entry != sessions.end()) {
@@ -93,14 +96,14 @@ void TabFMState::Register(const string &key, shared_ptr<LoadedModel> model, idx_
 	}
 }
 
-shared_ptr<LoadedModel> TabFMState::Snapshot(const string &key, const string &device_id,
-                                             const string &precision) const {
+shared_ptr<LoadedModel> TabFMState::Snapshot(const string &key, const string &device_id, const string &precision,
+                                             bool split) const {
 	lock_guard<mutex> guard(lock);
 	auto entry = models.find(key);
 	if (entry == models.end()) {
 		return nullptr;
 	}
-	auto session = entry->second.find(SessionKey(device_id, precision));
+	auto session = entry->second.find(SessionKey(device_id, precision, split));
 	if (session == entry->second.end()) {
 		return nullptr;
 	}

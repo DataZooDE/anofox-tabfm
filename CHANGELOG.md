@@ -5,7 +5,69 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Context cache for `tabicl-v2`, on by default (#37, docs/CONTEXT_CACHE_PLAN.md Phase 1).** The labelled
+  context is encoded once and reused across calls: a later call against the same support rows runs the query
+  rows only. Through `tabfm_classify` / `tabfm_regress` on the CPU (H = 100, medians of 10, shared machine) a
+  warm call costs 5.3-26x less CPU time than the combined graph, and the first call against a new context
+  costs about the same as before (0.79-1.15x). Exact: every output row, context rows included, equals the
+  combined graph's (real weights: 0 label differences, |Δlogit| ≤ 1.9e-05; regression |Δ| ≤ 2.8e-06 x std(y)).
+  - The key is the preprocessed support rows and labels themselves: a 64-bit hash finds a candidate, a full
+    compare accepts it, so a changed table misses rather than answering stale.
+  - `anofox_tabfm_context_cache_memory` (default `'256MB'`, instance-wide, read when a statement runs) bounds
+    the cached contexts per loaded model, least recently used first; a context larger than the budget serves
+    its own call and is dropped. 256 MB rather than 1 GB: a 500-group aggregate of single-use 64-row contexts
+    left 1.0 GB of contexts resident at 1 GB (RSS 1.72 GB vs 0.58 GB with the cache off) and 0.25 GB at 256 MB
+    (RSS 1.15 GB).
+  - `tabfm_models()` gains `context_cache` (the cached session's row) and `context_bytes`, `context_entries`,
+    `context_hits`, `context_misses` (lookups, one per call).
+  - `opts := MAP{'query_batch': 'N'}` scores a call's test rows N at a time against one encoded context, looked
+    up once per call, so bounding peak memory no longer costs a re-encode per chunk (for models without the
+    cache each batch still re-runs the context). Keep N in the hundreds: each pass has a fixed cost.
+  - The cached (split) session sits beside the combined one, so generation, imputation and connections with
+    the kill switch on do not evict it. A model with the cache on holds both ORT sessions (about +300 MB for
+    `tabicl-v2`).
+  - `resources/` bundles the pair for both tasks (`graph_{prepare,query}_tabicl_<task>.onnx` + maps).
+    `tools/export_tabicl --split-context` now writes this pair (`kv.py`): prepare emits each ICL layer's
+    support keys/values and the context rows' own outputs, query takes no `y`; the regression pair carries the
+    target scaler and returns the shipped graph's point estimate. `gate_context_cache` is the real-weight ship
+    gate.
+
 ### Changed
+- **`anofox_tabfm_context_cache` defaults to `true` and is now the kill switch.** A session `SET` applies to
+  statements bound after it; `SET GLOBAL ... = false` also stops prepared statements. It serves exact pairs
+  only: the prepare graph emits `context_logits` and every state tensor the query graph reads, and the combined
+  graph takes nothing beyond `(x, y)`; any other pair is ignored and the combined graph answers. A first-generation pair from the old `--split-context` (no
+  `context_logits`, context rows scored without their own labels) is no longer served: the combined graph
+  answers instead. GPU sessions (CUDA, ROCm, MLX) bypass the cache and run as before; naming a GPU device with
+  the cache on no longer refuses because of the cache.
+- The `anofox_tabfm_max_memory` refusal names `query_batch` and `anofox_tabfm_context_cache_memory` as
+  remedies.
+- **Every built-in model's weights are pinned to a fixed Hugging Face commit instead of `main`** (and so are the
+  file URLs): mitra, mitra-v2, tabpfn-v2, tabpfn-v2-5, tabpfn-v2-5-real, tabpfn-v3, tabpfn-v3-5,
+  tabpfn-v3-5-fast, tabicl-v2, orion-msp, orion-bix, tabdpt, tabdpt-v1-3 and tabfm-v1, the way tabpfn-v2-6 was in
+  v2026.11.01. Each pin is the commit whose LFS object hashes to the weights the graphs, tensor maps and GPU
+  header shas were made from; every declared byte count matches what that commit serves (no other latent size
+  bug like 2.6's turned up), and the entries that declared none now do (tabpfn-v2, tabpfn-v3's regressor,
+  tabicl-v2, tabfm-v1's regressor). A registry test asserts that every built-in names a commit, fetches from
+  it, and declares each file's size. An upstream re-upload can no longer be refused at download time or paired
+  with graphs made for another upload.
+- **Existing caches download once more**: the cache directory is `<repo>@<revision>`, so a directory written
+  under `...@main` is no longer found. `python3 tools/migrate_cache_revisions.py` (dry run by default, `--apply`
+  to rename, `--sha256` to also hash) renames each `@main` directory whose weights match the pinned sizes, which
+  keeps converted files and compiled graphs; it never overwrites a pinned directory. The `convert_weights.py`
+  scripts (tools/export_tabpfn, export_tabicl, export_orion_bix, export_orion_msp) download from the pinned
+  commit and write into the pinned directory, and the tools/ tests and docs that read the developer cache name
+  it too.
+- **`tabpfn-v2`, `tabpfn-v2-5` and `tabpfn-v2-5-real` still need `tools/export_tabpfn/convert_weights.py`**, now
+  stated precisely (docs/REAL_MODELS.md, RealTabPFN-2.5): besides renames, the released checkpoints store each
+  attention block's q/k/v as one `_w_qkv` `[3, H, D, E]` and the output projection as `_w_out` `[H, D, E]`, which
+  the graphs read as `[H*D, E]` slices and as the transpose of the reshaped `_w_out`. A transpose reorders values,
+  which `"ckpt_aliases"` and `"complete"` cannot express. `test/sql/tabfm_fresh_download_convert.test` pins that
+  they download at the declared size and then refuse with the conversion hint.
+- Fresh-download coverage (`TABFM_REAL_WEIGHTS=1`, empty cache, CPU): `tabfm_fresh_download.test` adds tabicl-v2
+  and tabpfn-v3; new `tabfm_fresh_download_safetensors.test` covers mitra, mitra-v2, tabdpt, tabdpt-v1-3,
+  tabpfn-v3-5 and tabpfn-v3-5-fast; new `tabfm_fresh_download_convert.test` covers the three above.
 - **`anofox_tabfm_context_cache`: a prepare graph may now emit `context_logits`**, the context rows' own
   logits computed as the combined graph computes them. When it does, the split path takes the fitted values
   from it instead of a second query pass over the support rows, so every output row equals the combined
@@ -29,6 +91,13 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   states the ceiling. GPUs with less VRAM get a proportionally lower ceiling. Diagnosis, measurements and a
   four-node MIGraphX reproducer: docs/ROCM_SINGLE_EVAL_POS.md "LimiX-2M bucket ceiling",
   tools/gpu_test/repro/migraphx_attention_oom.py.
+- **`tabpfn-v3` classification works from a fresh download.** Its `.ckpt` also stores `regression_borders`, which
+  the classification graph does not use; the CPU offered it to ORT under the `m.` fallback name, so every
+  prediction failed ("Failed to find existing initializer with name m.regression_borders") unless the cache
+  already held `convert_weights.py`'s output, and `tabfm_download` wrote no GPU file. The classification tensor
+  map now declares `"complete": true`: the CPU reads the `.ckpt` with no Python step, and `tabfm_download` writes
+  the GPU `model.safetensors` byte-identical to `convert_weights.py`'s (the regressor already did).
+  `tools/export_tabpfn` keeps a map's `"complete"` and `"ckpt_aliases"` when it re-exports.
 - **TabPFN-3.5 and TabPFN-3.5-Fast now run on CUDA, and are no longer refused there.** Their ext graphs failed
   inside ONNX Runtime 1.29's CUDA execution provider: in a CUDA session ORT gives the CPU buffer of one live
   shape tensor to another, so `node_expand` received `{170, 1, 170}` instead of `{170, 1, 5}`. ORT 1.31.1 fails

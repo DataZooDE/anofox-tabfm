@@ -19,18 +19,25 @@ namespace anofox {
 // manifests referencing BUNDLED graphs + tensor-maps (embedded in the binary via
 // cmake/embed_resources.cmake), so they are usable by name with no JSON file.
 // Weight bytes are still the user's own HF download — nothing licensed is here.
+//
+// Every entry pins its Hugging Face "revision" (and its file URLs) to a fixed commit, never "main": the
+// declared byte counts, the GPU header shas (ExpectedWeightsHeaderShaFor) and the tensor maps describe
+// exactly one upload, and a moving branch let an upstream re-upload refuse every fresh download (TabPFN-2.6,
+// whose recorded regressor size no revision ever served). Each pin is the commit whose LFS object hashes to
+// the weights the graphs were exported against. The cache directory is "<repo>@<revision>", so a cache
+// written under "@main" is used again only after tools/migrate_cache_revisions.py renames it.
 static const char *const BUILTIN_MITRA = R"json({
   "schema_version": 2, "id": "mitra", "display_name": "Mitra (AWS AutoGluon)",
   "family": "icl-transformer",
   "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null},
   "preprocessing_profile": "mitra_v1_minimal",
   "weights": {
-    "classification": {"repo": "autogluon/mitra-classifier", "revision": "main",
+    "classification": {"repo": "autogluon/mitra-classifier", "revision": "c425e9fa0910a6be1c494321792e7ba2a1367b1a",
       "files": [{"path": "model.safetensors", "bytes": 302717904,
-                 "url": "https://huggingface.co/autogluon/mitra-classifier/resolve/main/model.safetensors"}]},
-    "regression": {"repo": "autogluon/mitra-regressor", "revision": "main",
+                 "url": "https://huggingface.co/autogluon/mitra-classifier/resolve/c425e9fa0910a6be1c494321792e7ba2a1367b1a/model.safetensors"}]},
+    "regression": {"repo": "autogluon/mitra-regressor", "revision": "5f277aa8f69042d39d6ac3612aed18bb9279bd95",
       "files": [{"path": "model.safetensors", "bytes": 302683140,
-                 "url": "https://huggingface.co/autogluon/mitra-regressor/resolve/main/model.safetensors"}]}
+                 "url": "https://huggingface.co/autogluon/mitra-regressor/resolve/5f277aa8f69042d39d6ac3612aed18bb9279bd95/model.safetensors"}]}
   },
   "graph": {"classification": "graph_mitra_classification", "regression": "graph_mitra_regression",
     "tensor_map": {"classification": "tensor_map_mitra_classification.json",
@@ -49,12 +56,12 @@ static const char *const BUILTIN_TABPFN = R"json({
               "attribution": "TabPFN v2 by Prior Labs GmbH (Prior Labs License v1.1 = Apache-2.0 + attribution)."},
   "preprocessing_profile": "tabpfn_v2_raw",
   "weights": {
-    "classification": {"repo": "Prior-Labs/TabPFN-v2-clf", "revision": "main",
-      "files": [{"path": "classification/model.ckpt",
-                 "url": "https://huggingface.co/Prior-Labs/TabPFN-v2-clf/resolve/main/tabpfn-v2-classifier.ckpt"}]},
-    "regression": {"repo": "Prior-Labs/TabPFN-v2-reg", "revision": "main",
-      "files": [{"path": "regression/model.ckpt",
-                 "url": "https://huggingface.co/Prior-Labs/TabPFN-v2-reg/resolve/main/tabpfn-v2-regressor.ckpt"}]}
+    "classification": {"repo": "Prior-Labs/TabPFN-v2-clf", "revision": "275f19d2add9c2c0de38f9ebaded3856599fa2e7",
+      "files": [{"path": "classification/model.ckpt", "bytes": 29016968,
+                 "url": "https://huggingface.co/Prior-Labs/TabPFN-v2-clf/resolve/275f19d2add9c2c0de38f9ebaded3856599fa2e7/tabpfn-v2-classifier.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/TabPFN-v2-reg", "revision": "02a44705ff7790b50cded404bc59adb94da456a1",
+      "files": [{"path": "regression/model.ckpt", "bytes": 44390977,
+                 "url": "https://huggingface.co/Prior-Labs/TabPFN-v2-reg/resolve/02a44705ff7790b50cded404bc59adb94da456a1/tabpfn-v2-regressor.ckpt"}]}
   },
   "graph": {"classification": "graph_tabpfn_classification", "regression": "graph_tabpfn_regression",
     "tensor_map": {"classification": "tensor_map_tabpfn_classification.json",
@@ -79,12 +86,12 @@ static const char *const BUILTIN_TABPFN25 = R"json({
               "attribution": "TabPFN-2.5 by Prior Labs GmbH. Weights are research/internal-evaluation only — NO commercial or production use. Contact sales@priorlabs.ai for a commercial license."},
   "preprocessing_profile": "tabpfn_v2_5_raw",
   "weights": {
-    "classification": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "main",
+    "classification": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b",
       "files": [{"path": "classification/model.ckpt", "bytes": 42935499,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/main/tabpfn-v2.5-classifier-v2.5_default.ckpt"}]},
-    "regression": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "main",
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b/tabpfn-v2.5-classifier-v2.5_default.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b",
       "files": [{"path": "regression/model.ckpt", "bytes": 40831995,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/main/tabpfn-v2.5-regressor-v2.5_default.ckpt"}]}
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b/tabpfn-v2.5-regressor-v2.5_default.ckpt"}]}
   },
   "graph": {"classification": "graph_tabpfn25_classification", "regression": "graph_tabpfn25_regression",
     "tensor_map": {"classification": "tensor_map_tabpfn25_classification.json",
@@ -114,12 +121,12 @@ static const char *const BUILTIN_TABPFN3 = R"json({
               "attribution": "TabPFN-3 by Prior Labs GmbH. Weights are testing/evaluation/internal-benchmarking only — NO commercial or production use. Contact sales@priorlabs.ai for a commercial license."},
   "preprocessing_profile": "tabpfn_v3_raw",
   "weights": {
-    "classification": {"repo": "Prior-Labs/tabpfn_3", "revision": "main",
+    "classification": {"repo": "Prior-Labs/tabpfn_3", "revision": "24a16a89d245878b846555110985634aa2e656d7",
       "files": [{"path": "classification/model.ckpt", "bytes": 212804803,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3/resolve/main/tabpfn-v3-classifier-v3_default.ckpt"}]},
-    "regression": {"repo": "Prior-Labs/tabpfn_3", "revision": "main",
-      "files": [{"path": "regression/model.ckpt",
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3/resolve/main/tabpfn-v3-regressor-v3_default.ckpt"}]}
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3/resolve/24a16a89d245878b846555110985634aa2e656d7/tabpfn-v3-classifier-v3_default.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_3", "revision": "24a16a89d245878b846555110985634aa2e656d7",
+      "files": [{"path": "regression/model.ckpt", "bytes": 233289807,
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3/resolve/24a16a89d245878b846555110985634aa2e656d7/tabpfn-v3-regressor-v3_default.ckpt"}]}
   },
   "graph": {"classification": "graph_tabpfn3_classification", "regression": "graph_tabpfn3_regression",
     "tensor_map": {"classification": "tensor_map_tabpfn3_classification.json",
@@ -163,12 +170,12 @@ static const char *const BUILTIN_TABPFN35 = R"json({
               "attribution": "TabPFN-3.5 by Prior Labs GmbH. Weights are testing/evaluation/research only — NO commercial or production use, and no hosted/API/SaaS service. Contact sales@priorlabs.ai for a commercial license."},
   "preprocessing_profile": "tabpfn_v3_5_raw",
   "weights": {
-    "classification": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+    "classification": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "06bf2ba35c80a92a3b9abb436b99cf49e7a0365e",
       "files": [{"path": "v3.5/model.safetensors", "bytes": 876027932,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-20260909.safetensors"}]},
-    "regression": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/06bf2ba35c80a92a3b9abb436b99cf49e7a0365e/tabpfn-v3.5-20260909.safetensors"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "06bf2ba35c80a92a3b9abb436b99cf49e7a0365e",
       "files": [{"path": "v3.5/model.safetensors", "bytes": 876027932,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-20260909.safetensors"}]}
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/06bf2ba35c80a92a3b9abb436b99cf49e7a0365e/tabpfn-v3.5-20260909.safetensors"}]}
   },
   "graph": {"classification": "graph_tabpfn35_classification", "regression": "graph_tabpfn35_regression",
     "tensor_map": {"classification": "tensor_map_tabpfn35_classification.json",
@@ -187,12 +194,12 @@ static const char *const BUILTIN_TABPFN35_FAST = R"json({
               "attribution": "TabPFN-3.5-Fast by Prior Labs GmbH. Weights are testing/evaluation/research only — NO commercial or production use, and no hosted/API/SaaS service. Contact sales@priorlabs.ai for a commercial license."},
   "preprocessing_profile": "tabpfn_v3_5_raw",
   "weights": {
-    "classification": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+    "classification": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "06bf2ba35c80a92a3b9abb436b99cf49e7a0365e",
       "files": [{"path": "v3.5-fast/model.safetensors", "bytes": 334181708,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-fast-20260909.safetensors"}]},
-    "regression": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "main",
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/06bf2ba35c80a92a3b9abb436b99cf49e7a0365e/tabpfn-v3.5-fast-20260909.safetensors"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_3_5", "revision": "06bf2ba35c80a92a3b9abb436b99cf49e7a0365e",
       "files": [{"path": "v3.5-fast/model.safetensors", "bytes": 334181708,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/main/tabpfn-v3.5-fast-20260909.safetensors"}]}
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_3_5/resolve/06bf2ba35c80a92a3b9abb436b99cf49e7a0365e/tabpfn-v3.5-fast-20260909.safetensors"}]}
   },
   "graph": {"classification": "graph_tabpfn35fast_classification", "regression": "graph_tabpfn35fast_regression",
     "tensor_map": {"classification": "tensor_map_tabpfn35fast_classification.json",
@@ -229,12 +236,12 @@ static const char *const BUILTIN_TABPFN25_REAL = R"json({
               "attribution": "RealTabPFN-2.5 by Prior Labs GmbH (TabPFN-2.5 continued pre-training on real data). Weights are research/internal-evaluation only — NO commercial or production use. Contact sales@priorlabs.ai for a commercial license."},
   "preprocessing_profile": "tabpfn_v2_5_raw",
   "weights": {
-    "classification": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "main",
+    "classification": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b",
       "files": [{"path": "classification-real/model.ckpt", "bytes": 42929707,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/main/tabpfn-v2.5-classifier-v2.5_real.ckpt"}]},
-    "regression": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "main",
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b/tabpfn-v2.5-classifier-v2.5_real.ckpt"}]},
+    "regression": {"repo": "Prior-Labs/tabpfn_2_5", "revision": "6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b",
       "files": [{"path": "regression-real/model.ckpt", "bytes": 40831868,
-                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/main/tabpfn-v2.5-regressor-v2.5_real.ckpt"}]}
+                 "url": "https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b/tabpfn-v2.5-regressor-v2.5_real.ckpt"}]}
   },
   "graph": {"classification": "graph_tabpfn25_classification", "regression": "graph_tabpfn25_regression",
     "tensor_map": {"classification": "tensor_map_tabpfn25_classification.json",
@@ -301,12 +308,12 @@ static const char *const BUILTIN_TABICL = R"json({
               "attribution": "TabICL (soda-inria), BSD-3-Clause. Checkpoints: HF jingang/TabICL."},
   "preprocessing_profile": "tabicl_v2_raw",
   "weights": {
-    "classification": {"repo": "jingang/TabICL", "revision": "main",
-      "files": [{"path": "classification/model.ckpt",
-                 "url": "https://huggingface.co/jingang/TabICL/resolve/main/tabicl-classifier-v2-20260212.ckpt"}]},
-    "regression": {"repo": "jingang/TabICL", "revision": "main",
-      "files": [{"path": "regression/model.ckpt",
-                 "url": "https://huggingface.co/jingang/TabICL/resolve/main/tabicl-regressor-v2-20260212.ckpt"}]}
+    "classification": {"repo": "jingang/TabICL", "revision": "4dcd344ece2c00be9e831fdd35bed57b5ad83e19",
+      "files": [{"path": "classification/model.ckpt", "bytes": 110368038,
+                 "url": "https://huggingface.co/jingang/TabICL/resolve/4dcd344ece2c00be9e831fdd35bed57b5ad83e19/tabicl-classifier-v2-20260212.ckpt"}]},
+    "regression": {"repo": "jingang/TabICL", "revision": "4dcd344ece2c00be9e831fdd35bed57b5ad83e19",
+      "files": [{"path": "regression/model.ckpt", "bytes": 114324594,
+                 "url": "https://huggingface.co/jingang/TabICL/resolve/4dcd344ece2c00be9e831fdd35bed57b5ad83e19/tabicl-regressor-v2-20260212.ckpt"}]}
   },
   "graph": {"classification": "graph_tabicl_classification", "regression": "graph_tabicl_regression",
     "tensor_map": {"classification": "tensor_map_tabicl_classification.json",
@@ -377,9 +384,9 @@ static const char *const BUILTIN_ORION_MSP = R"json({
               "attribution": "Orion-MSP by Lexsi Labs, MIT. Checkpoint: HF Lexsi/Orion-MSP."},
   "preprocessing_profile": "orion_msp_v1_minimal",
   "weights": {
-    "classification": {"repo": "Lexsi/Orion-MSP", "revision": "main",
+    "classification": {"repo": "Lexsi/Orion-MSP", "revision": "8b712f6ff699750f7ac5825f31e89e6f6f161577",
       "files": [{"path": "classification/model.ckpt", "bytes": 335545028,
-                 "url": "https://huggingface.co/Lexsi/Orion-MSP/resolve/main/OrionMSP-classifier-v1.5-202603.ckpt"}]}
+                 "url": "https://huggingface.co/Lexsi/Orion-MSP/resolve/8b712f6ff699750f7ac5825f31e89e6f6f161577/OrionMSP-classifier-v1.5-202603.ckpt"}]}
   },
   "graph": {"classification": "graph_orion_msp_classification",
     "tensor_map": {"classification": "tensor_map_orion_msp_classification.json"}},
@@ -396,12 +403,12 @@ static const char *const BUILTIN_TABDPT = R"json({
               "attribution": "TabDPT by Layer 6 AI, Apache-2.0. Checkpoint: HF Layer6/TabDPT (tabdpt1_2.safetensors)."},
   "preprocessing_profile": "tabdpt_v1_raw",
   "weights": {
-    "classification": {"repo": "Layer6/TabDPT", "revision": "main",
+    "classification": {"repo": "Layer6/TabDPT", "revision": "a5ca6e01c0fa09ec68c73e958e5199d1932abb3a",
       "files": [{"path": "model.safetensors", "bytes": 254098072,
-                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/main/tabdpt1_2.safetensors"}]},
-    "regression": {"repo": "Layer6/TabDPT", "revision": "main",
+                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/a5ca6e01c0fa09ec68c73e958e5199d1932abb3a/tabdpt1_2.safetensors"}]},
+    "regression": {"repo": "Layer6/TabDPT", "revision": "a5ca6e01c0fa09ec68c73e958e5199d1932abb3a",
       "files": [{"path": "model.safetensors", "bytes": 254098072,
-                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/main/tabdpt1_2.safetensors"}]}
+                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/a5ca6e01c0fa09ec68c73e958e5199d1932abb3a/tabdpt1_2.safetensors"}]}
   },
   "graph": {"classification": "graph_tabdpt_classification", "regression": "graph_tabdpt_regression",
     "tensor_map": {"classification": "tensor_map_tabdpt_classification.json",
@@ -419,9 +426,9 @@ static const char *const BUILTIN_ORION_BIX = R"json({
               "attribution": "Orion-BiX by Lexsi Labs, MIT. Checkpoint: HF Lexsi/Orion-BiX."},
   "preprocessing_profile": "orion_bix_v1_minimal",
   "weights": {
-    "classification": {"repo": "Lexsi/Orion-BiX", "revision": "main",
+    "classification": {"repo": "Lexsi/Orion-BiX", "revision": "9504590d769648eeeb7ecfb0fead2a01c11fb12a",
       "files": [{"path": "classification/model.ckpt", "bytes": 314653437,
-                 "url": "https://huggingface.co/Lexsi/Orion-BiX/resolve/main/Orion-BiX-v1.1.ckpt"}]}
+                 "url": "https://huggingface.co/Lexsi/Orion-BiX/resolve/9504590d769648eeeb7ecfb0fead2a01c11fb12a/Orion-BiX-v1.1.ckpt"}]}
   },
   "graph": {"classification": "graph_orion_bix_classification",
     "tensor_map": {"classification": "tensor_map_orion_bix_classification.json"}},
@@ -598,12 +605,12 @@ static const char *const BUILTIN_MITRA2 = R"json({
               "attribution": "Mitra-v2 by AWS AutoGluon, Apache-2.0. Checkpoints: HF autogluon/mitra-classifier-2, autogluon/mitra-regressor-2."},
   "preprocessing_profile": "mitra_v2_raw",
   "weights": {
-    "classification": {"repo": "autogluon/mitra-classifier-2", "revision": "main",
+    "classification": {"repo": "autogluon/mitra-classifier-2", "revision": "edada0d20759c58ada8c8605c25f22f6e98ea5f0",
       "files": [{"path": "model.safetensors", "bytes": 302717904,
-                 "url": "https://huggingface.co/autogluon/mitra-classifier-2/resolve/main/model.safetensors"}]},
-    "regression": {"repo": "autogluon/mitra-regressor-2", "revision": "main",
+                 "url": "https://huggingface.co/autogluon/mitra-classifier-2/resolve/edada0d20759c58ada8c8605c25f22f6e98ea5f0/model.safetensors"}]},
+    "regression": {"repo": "autogluon/mitra-regressor-2", "revision": "246c7d310fff04296a2388df5f448e3ffe809283",
       "files": [{"path": "model.safetensors", "bytes": 306776952,
-                 "url": "https://huggingface.co/autogluon/mitra-regressor-2/resolve/main/model.safetensors"}]}
+                 "url": "https://huggingface.co/autogluon/mitra-regressor-2/resolve/246c7d310fff04296a2388df5f448e3ffe809283/model.safetensors"}]}
   },
   "graph": {"classification": "graph_mitra_classification", "regression": "graph_mitra2_regression",
     "tensor_map": {"classification": "tensor_map_mitra_classification.json",
@@ -635,12 +642,12 @@ static const char *const BUILTIN_TABDPT13 = R"json({
               "attribution": "TabDPT by Layer 6 AI, Apache-2.0. Checkpoint: HF Layer6/TabDPT (tabdpt1_3.safetensors)."},
   "preprocessing_profile": "tabdpt_v1_raw",
   "weights": {
-    "classification": {"repo": "Layer6/TabDPT", "revision": "main",
+    "classification": {"repo": "Layer6/TabDPT", "revision": "a5ca6e01c0fa09ec68c73e958e5199d1932abb3a",
       "files": [{"path": "tabdpt1_3/model.safetensors", "bytes": 252233296,
-                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/main/tabdpt1_3.safetensors"}]},
-    "regression": {"repo": "Layer6/TabDPT", "revision": "main",
+                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/a5ca6e01c0fa09ec68c73e958e5199d1932abb3a/tabdpt1_3.safetensors"}]},
+    "regression": {"repo": "Layer6/TabDPT", "revision": "a5ca6e01c0fa09ec68c73e958e5199d1932abb3a",
       "files": [{"path": "tabdpt1_3/model.safetensors", "bytes": 252233296,
-                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/main/tabdpt1_3.safetensors"}]}
+                 "url": "https://huggingface.co/Layer6/TabDPT/resolve/a5ca6e01c0fa09ec68c73e958e5199d1932abb3a/tabdpt1_3.safetensors"}]}
   },
   "graph": {"classification": "graph_tabdpt13_classification", "regression": "graph_tabdpt13_regression",
     "tensor_map": {"classification": "tensor_map_tabdpt13_classification.json",

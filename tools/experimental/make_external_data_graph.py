@@ -10,7 +10,7 @@ from onnx import TensorProto
 GRAPH = "resources/graph_classification.onnx"
 TMAP = "resources/tensor_map_classification.json"
 ST = os.path.expanduser(
-    "~/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorch@main/classification/model.safetensors")
+    "~/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorch@77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83/classification/model.safetensors")
 OUT_DIR = os.path.dirname(ST)
 OUT = os.path.join(OUT_DIR, "graph_ext.onnx")
 

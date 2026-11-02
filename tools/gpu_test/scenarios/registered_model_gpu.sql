@@ -7,7 +7,7 @@ SET anofox_tabfm_gpu_precision = 'bf16';
 
 CALL tabfm_register_model(
   id := 'tabfm-as-user-model',
-  base_dir := '/home/jr/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorch@main/classification',
+  base_dir := '/home/jr/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorch@77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83/classification',
   classification_graph := 'graph_ext_classification.onnx',
   classification_migraphx_graph := 'graph_migraphx_classification.onnx',
   classification_weights := 'model.safetensors',

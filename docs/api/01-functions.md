@@ -101,7 +101,7 @@ SELECT * FROM tabfm_classify(
 A name in `features` that matches no column is an error, not a quietly smaller model. In the train / test
 form both relations must expose the same feature columns: a column on one side only is an error naming it,
 because it would otherwise be filled with `NULL` on the other side and degrade the prediction silently.
-The `opts` keys (`seed`, `softmax_temperature`, `output_mode`, `context_rows`, ...) are listed in
+The `opts` keys (`seed`, `softmax_temperature`, `output_mode`, `query_batch`, ...) are listed in
 [Settings](05-settings.md#options).
 
 ## Output columns
@@ -122,7 +122,7 @@ Every column of the scored rows, plus:
 | `tabfm_classify`, `tabfm_regress` | table macro | predict | this page |
 | `tabfm_generate`, `tabfm_impute` | table macro | sample rows, fill NULLs | [Generation](03-generation.md) |
 | `tabfm_list_models()` | table | the registry: every model, downloaded or not | [Models and weights](02-models-and-weights.md) |
-| `tabfm_models()` | table | cached and loaded weights, and the device serving each | [Models and weights](02-models-and-weights.md#managing-weights) |
+| `tabfm_models()` | table | cached and loaded weights, the device serving each, and its context cache | [Models and weights](02-models-and-weights.md#managing-weights) |
 | `tabfm_download`, `tabfm_load`, `tabfm_unload`, `tabfm_remove` | table (`CALL`) | the weight lifecycle | [Models and weights](02-models-and-weights.md#managing-weights) |
 | `tabfm_register_model`, `tabfm_unregister_model` | table (`CALL`) | your own model, in SQL | [Models and weights](02-models-and-weights.md#registering-your-own-model) |
 | `tabfm_devices()`, `tabfm_backends()` | table | devices found; which device can serve which model | [GPU](04-gpu.md) |

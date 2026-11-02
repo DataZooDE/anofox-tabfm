@@ -17,6 +17,8 @@ from huggingface_hub import hf_hub_download
 
 TASK = "classification"  # Orion-MSP ships no regressor
 REPO = "Lexsi/Orion-MSP"
+# Pinned like the registry entry (src/tabfm_registry.cpp), so the download and the cache dir match the engine's.
+REVISION = "8b712f6ff699750f7ac5825f31e89e6f6f161577"
 # The v1.5 classifier is the current release; Orion-MSP-v1.0.ckpt is also in the
 # repo but is the older/larger artifact. configs.real() is transcribed from THIS
 # file's embedded `config`.
@@ -31,7 +33,7 @@ inits = tmap.get("initializers", tmap)
 want = set(inits.values())
 
 print(f"downloading {FNAME} from {REPO} ...", flush=True)
-ckpt_path = hf_hub_download(repo_id=REPO, filename=FNAME)
+ckpt_path = hf_hub_download(repo_id=REPO, filename=FNAME, revision=REVISION)
 obj = torch.load(ckpt_path, map_location="cpu", weights_only=True)
 # Orion-MSP saves {"state_dict":..., "config":..., "optimizer_state":...}
 sd = obj
@@ -53,7 +55,7 @@ if missing:
     sys.exit(2)
 
 tensors = {k: sd[k].detach().to(torch.float32).contiguous() for k in present}
-out = cache_dir / "Lexsi__Orion-MSP@main" / TASK / "model.safetensors"
+out = cache_dir / f"Lexsi__Orion-MSP@{REVISION}" / TASK / "model.safetensors"
 out.parent.mkdir(parents=True, exist_ok=True)
 save_file(tensors, str(out))
 print(f"wrote {len(tensors)} tensors -> {out} ({out.stat().st_size} bytes)")

@@ -17,6 +17,8 @@ from huggingface_hub import hf_hub_download
 
 TASK = "classification"  # Orion-BiX ships no regressor
 REPO = "Lexsi/Orion-BiX"
+# Pinned like the registry entry (src/tabfm_registry.cpp), so the download and the cache dir match the engine's.
+REVISION = "9504590d769648eeeb7ecfb0fead2a01c11fb12a"
 FNAME = "Orion-BiX-v1.1.ckpt"
 
 cache_dir = pathlib.Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 \
@@ -28,7 +30,7 @@ inits = tmap.get("initializers", tmap)
 want = set(inits.values())
 
 print(f"downloading {FNAME} from {REPO} ...", flush=True)
-ckpt_path = hf_hub_download(repo_id=REPO, filename=FNAME)
+ckpt_path = hf_hub_download(repo_id=REPO, filename=FNAME, revision=REVISION)
 obj = torch.load(ckpt_path, map_location="cpu", weights_only=True)
 # Orion-BiX saves {"state_dict":..., "config":..., "optimizer_state":...}
 sd = obj
@@ -50,7 +52,7 @@ if missing:
     sys.exit(2)
 
 tensors = {k: sd[k].detach().to(torch.float32).contiguous() for k in present}
-out = cache_dir / "Lexsi__Orion-BiX@main" / TASK / "model.safetensors"
+out = cache_dir / f"Lexsi__Orion-BiX@{REVISION}" / TASK / "model.safetensors"
 out.parent.mkdir(parents=True, exist_ok=True)
 save_file(tensors, str(out))
 print(f"wrote {len(tensors)} tensors -> {out} ({out.stat().st_size} bytes)")

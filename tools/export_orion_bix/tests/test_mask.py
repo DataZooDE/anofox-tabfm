@@ -18,7 +18,7 @@ from export_orion_bix.mask_parity import NEGATIVE_CONTROLS, TOL, check_onnx, com
 from export_orion_bix.orion_bix_patches import build_model
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
-WEIGHTS = pathlib.Path(os.path.expanduser("~/.cache/anofox-tabfm/Lexsi__Orion-BiX@main/classification/model.safetensors"))
+WEIGHTS = pathlib.Path(os.path.expanduser("~/.cache/anofox-tabfm/Lexsi__Orion-BiX@9504590d769648eeeb7ecfb0fead2a01c11fb12a/classification/model.safetensors"))
 
 
 def _model():

@@ -1,0 +1,196 @@
+# name: test/sql/tabfm_fresh_download_safetensors.test
+# description: The models whose Hugging Face repos publish safetensors (no conversion step) answer correctly
+#              from a FRESH download at the revision the registry pins: Mitra, Mitra-v2, TabDPT v1.2 and
+#              v1.3, TabPFN-3.5 and 3.5-Fast. Each download is checked against the byte count the manifest
+#              declares (a mismatch is refused, as TabPFN-2.6's was). About 2.9 GB into an empty cache, CPU.
+#
+#                TABFM_REAL_WEIGHTS=1 ./build/release/test/unittest test/sql/tabfm_fresh_download_safetensors.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_REAL_WEIGHTS
+
+# downloads need httpfs; the unittest binary does not link it, so load the installed one
+statement ok
+INSTALL httpfs;
+
+statement ok
+LOAD httpfs;
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/fresh_cache_st';
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true;
+
+# The probe of tabfm_fresh_download.test: 3 classes, 150 context rows, 50 queries (chance 0.33); the
+# regression target is 2a + 0.5c with `a` withheld, so a misread checkpoint lands near 0 correlation.
+statement ok
+CREATE TABLE t AS SELECT i AS row_id, (i % 3)::VARCHAR AS y, sin(i * 0.37) + (i % 3) AS a, cos(i * 0.11) * (i % 3) AS b,
+  (i * 7 % 11)::DOUBLE AS c FROM range(200) r(i);
+
+statement ok
+CREATE TABLE ctx AS SELECT * FROM t WHERE row_id < 150;
+
+statement ok
+CREATE TABLE qry AS SELECT * EXCLUDE (y) FROM t WHERE row_id >= 150;
+
+statement ok
+CREATE TABLE rctx AS SELECT row_id, 2 * a + 0.5 * c AS target, b, c, (row_id % 3)::DOUBLE AS k FROM t WHERE row_id < 150;
+
+statement ok
+CREATE TABLE rqry AS SELECT row_id, b, c, (row_id % 3)::DOUBLE AS k FROM t WHERE row_id >= 150;
+
+# --- Mitra: two repos, one safetensors each ---
+# 0.94 / 0.870 measured
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('classification', model := 'mitra') ORDER BY 1
+----
+model.safetensors 302717904 downloaded
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('regression', model := 'mitra') ORDER BY 1
+----
+model.safetensors 302683140 downloaded
+
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.9
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'mitra') p JOIN t USING (row_id)
+----
+true
+
+query T
+SELECT corr(p.yhat, 2 * t.a + 0.5 * t.c) > 0.8
+FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'mitra') p JOIN t USING (row_id)
+----
+true
+
+# --- Mitra-v2: classifier-2 and regressor-2 ---
+# 0.94 / 0.937 measured
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('classification', model := 'mitra-v2') ORDER BY 1
+----
+model.safetensors 302717904 downloaded
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('regression', model := 'mitra-v2') ORDER BY 1
+----
+model.safetensors 306776952 downloaded
+
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.9
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'mitra-v2') p JOIN t USING (row_id)
+----
+true
+
+query T
+SELECT corr(p.yhat, 2 * t.a + 0.5 * t.c) > 0.9
+FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'mitra-v2') p JOIN t USING (row_id)
+----
+true
+
+# --- TabDPT v1.2: ONE file serves both tasks, so the second download is a cache hit ---
+# 0.88 / 0.899 measured
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('classification', model := 'tabdpt') ORDER BY 1
+----
+model.safetensors 254098072 downloaded
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('regression', model := 'tabdpt') ORDER BY 1
+----
+model.safetensors 254098072 cached
+
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.85
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabdpt') p JOIN t USING (row_id)
+----
+true
+
+query T
+SELECT corr(p.yhat, 2 * t.a + 0.5 * t.c) > 0.85
+FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabdpt') p JOIN t USING (row_id)
+----
+true
+
+# --- TabDPT v1.3: same repo as v1.2, its own tabdpt1_3/ file ---
+# 0.92 / 0.891 measured
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('classification', model := 'tabdpt-v1-3') ORDER BY 1
+----
+model.safetensors 252233296 downloaded
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('regression', model := 'tabdpt-v1-3') ORDER BY 1
+----
+model.safetensors 252233296 cached
+
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.88
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabdpt-v1-3') p JOIN t USING (row_id)
+----
+true
+
+query T
+SELECT corr(p.yhat, 2 * t.a + 0.5 * t.c) > 0.85
+FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabdpt-v1-3') p JOIN t USING (row_id)
+----
+true
+
+# --- TabPFN-3.5: one published file holds both heads ---
+# 0.96 / 0.901 measured
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('classification', model := 'tabpfn-v3-5') ORDER BY 1
+----
+model.safetensors 876027932 downloaded
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('regression', model := 'tabpfn-v3-5') ORDER BY 1
+----
+model.safetensors 876027932 cached
+
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.9
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabpfn-v3-5') p JOIN t USING (row_id)
+----
+true
+
+query T
+SELECT corr(p.yhat, 2 * t.a + 0.5 * t.c) > 0.85
+FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabpfn-v3-5') p JOIN t USING (row_id)
+----
+true
+
+# --- TabPFN-3.5-Fast ---
+# 0.96 / 0.905 measured
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('classification', model := 'tabpfn-v3-5-fast') ORDER BY 1
+----
+model.safetensors 334181708 downloaded
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('regression', model := 'tabpfn-v3-5-fast') ORDER BY 1
+----
+model.safetensors 334181708 cached
+
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.9
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabpfn-v3-5-fast') p JOIN t USING (row_id)
+----
+true
+
+query T
+SELECT corr(p.yhat, 2 * t.a + 0.5 * t.c) > 0.85
+FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabpfn-v3-5-fast') p JOIN t USING (row_id)
+----
+true

@@ -16,7 +16,7 @@ import tabpfn.architectures.tabpfn_v3_5 as v35
 
 from export_tabpfn35 import configs
 
-CACHE = pathlib.Path.home() / ".cache/anofox-tabfm/Prior-Labs__tabpfn_3_5@main"
+CACHE = pathlib.Path.home() / ".cache/anofox-tabfm/Prior-Labs__tabpfn_3_5@06bf2ba35c80a92a3b9abb436b99cf49e7a0365e"
 
 
 def _ckpt_config(path):
