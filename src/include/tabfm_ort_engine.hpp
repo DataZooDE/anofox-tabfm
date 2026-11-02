@@ -239,6 +239,9 @@ struct TabFMRunInput {
 	int64_t h = 0;
 	int64_t train_size = 0;
 	int64_t d = 0;
+	//! anofox_tabfm_context_cache_memory, in bytes: how much a split backend may
+	//! keep in cached contexts. Ignored by every other backend.
+	idx_t context_cache_bytes = 0;
 };
 
 struct TabFMRunOutput {

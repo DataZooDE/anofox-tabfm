@@ -943,6 +943,29 @@ TEST_CASE("tabfm_state: re-register replaces and evicts the old model", "[tabfm]
 	REQUIRE(!freed_new);
 }
 
+TEST_CASE("tabfm_state: the context cache serves exact pairs on the CPU only", "[tabfm][ort_engine][state]") {
+	// The cache is on by default (anofox_tabfm_context_cache), so the GPU half of this predicate is what
+	// keeps a GPU session running exactly as before: the plugins run single-graph forwards with no split
+	// form, and a split session built "for" a GPU device would silently serve it from the CPU. CI has no
+	// GPU, so the predicate the engine consults is asserted here.
+	SECTION("on, exact pair, cpu: the cache") {
+		REQUIRE(UseContextCache(true, true, "cpu"));
+	}
+	SECTION("the kill switch") {
+		REQUIRE_FALSE(UseContextCache(false, true, "cpu"));
+	}
+	SECTION("a first-generation pair (no context_logits) is never served") {
+		REQUIRE_FALSE(UseContextCache(true, false, "cpu"));
+	}
+	SECTION("every GPU device bypasses it, whatever the setting") {
+		for (auto *device : {"cuda:0", "cuda:1", "rocm:0", "mlx:0", "coreml:0"}) {
+			INFO(device);
+			REQUIRE_FALSE(UseContextCache(true, true, device));
+			REQUIRE_FALSE(UseContextCache(false, true, device));
+		}
+	}
+}
+
 TEST_CASE("tabfm_state: UnloadAll evicts everything", "[tabfm][ort_engine][state]") {
 	auto state = make_shared_ptr<TabFMState>();
 	bool freed_a = false, freed_b = false;

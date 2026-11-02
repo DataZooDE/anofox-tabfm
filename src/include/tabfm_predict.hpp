@@ -58,6 +58,9 @@ struct TabFMPredictOptions {
 	//! subsample the context to at most N rows (0 = use all context rows)
 	idx_t context_rows = 0;
 	double softmax_temperature = 0.9;
+	//! opts['query_batch']: score the query rows at most N per forward pass,
+	//! against one encoded context (0 = all query rows in one pass).
+	idx_t query_batch = 0;
 	//! Selected model id (from opts['model'] / model :=). Empty = "not specified"
 	//! → the registry resolves it (default model → single-file manifest → sole).
 	string model;
@@ -206,9 +209,13 @@ struct PredictContext {
 	//! must be bounded now that one model can hold cpu + GPU entries at once.
 	int64_t max_sessions = 4;
 	//! SET anofox_tabfm_context_cache — reuse the encoded labelled context across
-	//! calls when the model ships a split (prepare/query) graph pair. Off by
-	//! default; inert for a model that ships no pair.
+	//! calls when the model ships an exact split (prepare/query) graph pair. The
+	//! setting is on by default and the predict bind reads it; this field stays
+	//! false for surfaces that do not (generation), which keep the combined graph.
 	bool context_cache = false;
+	//! SET anofox_tabfm_context_cache_memory, in bytes: the budget for cached
+	//! contexts per loaded model; least recently used are evicted beyond it.
+	idx_t context_cache_bytes = 1000000000; // '1GB', as DuckDB parses it (1000^3)
 	//! SET anofox_tabfm_cpu_prepack — ORT weight prepacking on the CPU EP: faster
 	//! matmuls at ~+16% RSS. On by default now that external-data keeps RSS low.
 	bool cpu_prepack = true;

@@ -61,7 +61,7 @@ Every lifecycle function takes the task first and `model :=` (or falls back to
 | `CALL tabfm_load(task, model := '<id>')` | check that the weights are downloaded and fail with the fix if not; the session itself is built on the first predict |
 | `CALL tabfm_unload([task], model := '<id>')` | free a loaded session (all of them without a task); memory returns to baseline |
 | `CALL tabfm_remove(task [, revision], model := '<id>')` | delete the weights from the cache |
-| `SELECT * FROM tabfm_models()` | what is cached and loaded, and which device serves it |
+| `SELECT * FROM tabfm_models()` | what is cached and loaded, which device serves it, and its [context cache](#context-cache) |
 
 ```sql
 CALL tabfm_download('classification', model := 'mitra');
@@ -71,14 +71,15 @@ CALL tabfm_remove('regression', model := 'mitra');        -- delete from the cac
 SELECT * FROM tabfm_models();
 ```
 ```
-┌─────────┬────────────────┬──────────┬──────────────┬───────────┬─────────┬────────────┬─────────┐
-│  model  │      task      │ revision │     path     │   bytes   │ loaded  │  license   │ device  │
-├─────────┼────────────────┼──────────┼──────────────┼───────────┼─────────┼────────────┼─────────┤
-│ mitra   │ classification │ main     │ …/model.saf… │ 302717904 │ false   │ apache-2.0 │         │
-└─────────┴────────────────┴──────────┴──────────────┴───────────┴─────────┴────────────┴─────────┘
+┌─────────┬────────────────┬──────────┬──────────────┬───────────┬─────────┬────────────┬─────────┬───────────────┬─────────────────┬──────────────┬────────────────┐
+│  model  │      task      │ revision │     path     │   bytes   │ loaded  │  license   │ device  │ context_bytes │ context_entries │ context_hits │ context_misses │
+├─────────┼────────────────┼──────────┼──────────────┼───────────┼─────────┼────────────┼─────────┼───────────────┼─────────────────┼──────────────┼────────────────┤
+│ mitra   │ classification │ main     │ …/model.saf… │ 302717904 │ false   │ apache-2.0 │         │             0 │               0 │            0 │              0 │
+└─────────┴────────────────┴──────────┴──────────────┴───────────┴─────────┴────────────┴─────────┴───────────────┴─────────────────┴──────────────┴────────────────┘
 ```
 
-(Illustrative. After a predict the row shows `loaded = true` and the serving device, e.g. `cpu` or `rocm:0`.)
+(Illustrative. After a predict the row shows `loaded = true` and the serving device, e.g. `cpu` or `rocm:0`.
+The four `context_*` columns are zero for a session that does not use the context cache.)
 
 `device` is empty until a predict warms a session; it is how you check that a GPU is used
 ([GPU acceleration](../guides/04-gpu-acceleration.md#2-check-what-serves-each-model)). To warm a ROCm
@@ -89,6 +90,37 @@ For a gated or private HF repo, add a bearer token — no custom credential stor
 ```sql
 CREATE SECRET hf (TYPE http, BEARER_TOKEN 'hf_…', SCOPE 'https://huggingface.co');
 ```
+
+## Context cache
+
+Most of a `tabicl-v2` call re-encodes the labelled context: 83-98% of its CPU time at a 375- or 1000-row
+context ([CONTEXT_CACHE_PLAN.md](../CONTEXT_CACHE_PLAN.md)). The context cache encodes it once and reuses it,
+transparently: there is no new function, and every existing query benefits, including repeated scoring
+against a fixed training table, cross-validation folds and per-segment `UNION ALL` calls.
+
+- **Which models.** Models that ship an *exact* prepare/query graph pair, on the CPU. Today that is
+  `tabicl-v2`, both tasks. Every other model, and every GPU session, runs the combined graph exactly as before.
+- **Exact.** A cached context is keyed by the preprocessed support rows and labels themselves: a 64-bit hash
+  finds a candidate, and a full compare accepts it. A changed value, label, row or column is a different key,
+  so it is a miss, never a stale answer. Every output row, the context rows' fitted values included, equals the
+  combined graph's (on the real `tabicl-v2` weights: identical labels, |Δlogit| ≤ 1.0e-5).
+- **Cost.** The first call against a new context costs about what it costs without the cache. Later calls
+  run the query rows only.
+- **Memory.** `anofox_tabfm_context_cache_memory` (default `1GB`) bounds the cached contexts per loaded model;
+  the least recently used goes first. `tabfm_unload()` drops them with the session.
+- **Batches within one call.** `opts := MAP{'query_batch': 'N'}` scores the test rows N at a time against one
+  encoded context, so it bounds the peak memory of a large call without re-encoding the context per batch.
+- **Kill switch.** `SET anofox_tabfm_context_cache = false`.
+
+```sql
+SELECT * FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'tabicl-v2',
+                             opts := MAP{'query_batch': '128'});
+SELECT model, task, context_bytes, context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE loaded;
+```
+
+`context_hits` and `context_misses` count forward passes: a call with `query_batch` adds one per batch.
+The support rows have to arrive in the same order to hit; a different order is a miss (safe, just slower).
 
 ## Registering your own model
 

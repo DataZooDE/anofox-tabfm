@@ -70,6 +70,7 @@ struct PredictBindData : public FunctionData {
 		       options.task == other.options.task && options.detail == other.options.detail &&
 		       options.n_estimators == other.options.n_estimators && options.seed == other.options.seed &&
 		       options.context_rows == other.options.context_rows && options.model == other.options.model &&
+		       options.query_batch == other.options.query_batch &&
 		       max_rows == other.max_rows && max_memory_bytes == other.max_memory_bytes;
 	}
 
@@ -183,6 +184,22 @@ void ParseOneOption(const string &fname, PredictBindData &bind, const string &ke
 			throw BinderException("%s: softmax_temperature must be a positive number, got '%s'", fname, val);
 		}
 		opts.softmax_temperature = temp;
+	} else if (key == "query_batch") {
+		// One call, its query rows scored at most N per forward pass. With the context cache the
+		// labelled context is encoded once for the whole call, so this bounds peak memory without
+		// paying a re-encode per batch (#37).
+		int64_t n = 0;
+		try {
+			n = ParseIntegerOption(fname, "query_batch", val, "must be a positive integer");
+		} catch (const BinderException &) {
+			n = 0;
+		}
+		if (n <= 0) {
+			throw BinderException("%s: query_batch must be a positive integer (query rows per forward pass), got "
+			                      "'%s'",
+			                      fname, val);
+		}
+		opts.query_batch = NumericCast<idx_t>(n);
 	} else if (key == "model") {
 		opts.model = val;
 	} else if (key == "__features") {
@@ -191,7 +208,7 @@ void ParseOneOption(const string &fname, PredictBindData &bind, const string &ke
 		bind.requested_features = val;
 	} else {
 		throw BinderException("%s: unknown option '%s'; valid options are task, n_estimators, seed, output_mode, "
-		                      "context_rows, softmax_temperature, model",
+		                      "context_rows, softmax_temperature, query_batch, model",
 		                      fname, key_raw);
 	}
 }
@@ -425,8 +442,22 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, duckdb_comp
 	if (context.TryGetCurrentSetting("anofox_tabfm_cpu_prepack", setting) && !setting.IsNull()) {
 		bind->context.cpu_prepack = BooleanValue::Get(setting);
 	}
+	// On by default (the setting's default is true); a session that never reads the setting keeps the
+	// combined graph, which is why PredictContext's own default is false.
+	bind->context.context_cache = true;
 	if (context.TryGetCurrentSetting("anofox_tabfm_context_cache", setting) && !setting.IsNull()) {
 		bind->context.context_cache = BooleanValue::Get(setting);
+	}
+	if (context.TryGetCurrentSetting("anofox_tabfm_context_cache_memory", setting) && !setting.IsNull()) {
+		// Validated at SET time; a bare '0' (no unit) is the one form DuckDB's parser does not take.
+		auto raw = setting.ToString();
+		StringUtil::Trim(raw);
+		idx_t bytes = 0;
+		if (raw == "0") {
+			bind->context.context_cache_bytes = 0;
+		} else if (StringUtil::TryParseFormattedBytes(raw, bytes).empty()) {
+			bind->context.context_cache_bytes = bytes;
+		}
 	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
 		bind->context.mxr_source = setting.ToString();

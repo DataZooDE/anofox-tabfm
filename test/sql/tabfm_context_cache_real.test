@@ -1,0 +1,138 @@
+# name: test/sql/tabfm_context_cache_real.test
+# description: The context cache on the REAL tabicl-v2 weights: the bundled prepare/query pair against the
+#              bundled combined graph (the kill switch), every output row, both tasks, plus query_batch and
+#              a permuted-label control. The CI fixture cannot show parity (it is near-constant); this can.
+#
+#              Needs the pinned TabICL checkpoints in the weight cache
+#              (jingang__TabICL@4dcd344ece2c00be9e831fdd35bed57b5ad83e19/{classification,regression}/; CALL
+#              tabfm_download('classification', model := 'tabicl-v2') and the same for regression):
+#
+#                TABFM_REAL_WEIGHTS=1 ./build/release/test/unittest test/sql/tabfm_context_cache_real.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_REAL_WEIGHTS
+
+statement ok
+SET anofox_tabfm_device = 'cpu'
+
+# 600 rows x 10 features: 500 context rows and 100 to score; three classes and a smooth target.
+statement ok
+CREATE TABLE g AS SELECT i AS rid, sin(i * 0.11) f1, cos(i * 0.07) f2, (i % 13) / 13.0 f3, ln(1 + (i % 31)) f4,
+  (i % 5)::DOUBLE f5, sin(i * 0.3) * cos(i * 0.05) f6, (i * 7 % 11)::DOUBLE f7, i / 600.0 f8,
+  cos(i * 0.017) * 3 f9, ((i * 13) % 17) / 17.0 f10,
+  CASE WHEN i < 500 THEN (CASE WHEN sin(i * 0.11) + 0.5 * cos(i * 0.07) + 0.2 * (i % 5) > 0.9 THEN 'a'
+                               WHEN sin(i * 0.11) + 0.5 * cos(i * 0.07) > -0.3 THEN 'b' ELSE 'c' END) END AS label,
+  CASE WHEN i < 500 THEN sin(i * 0.11) * 5 + cos(i * 0.07) * 2 + (i * 7 % 11) * 0.1 + 40 END AS target
+FROM range(600) t(i);
+
+statement ok
+CREATE TABLE gc AS SELECT * EXCLUDE (target) FROM g;
+
+statement ok
+CREATE TABLE gr AS SELECT * EXCLUDE (label) FROM g;
+
+# ---------------------------------------------------------------------------
+# Classification
+
+statement ok
+SET anofox_tabfm_context_cache = false
+
+statement ok
+CREATE TABLE c_off AS SELECT rid, yhat, yhat_score, is_training
+FROM tabfm_classify('gc', 'label', features := ['f1','f2','f3','f4','f5','f6','f7','f8','f9','f10'],
+                    model := 'tabicl-v2') JOIN gc USING (f1,f2,f3,f4,f5,f6,f7,f8,f9,f10);
+
+statement ok
+RESET anofox_tabfm_context_cache
+
+statement ok
+CREATE TABLE c_cold AS SELECT rid, yhat, yhat_score, is_training
+FROM tabfm_classify('gc', 'label', features := ['f1','f2','f3','f4','f5','f6','f7','f8','f9','f10'],
+                    model := 'tabicl-v2') JOIN gc USING (f1,f2,f3,f4,f5,f6,f7,f8,f9,f10);
+
+statement ok
+CREATE TABLE c_warm AS SELECT rid, yhat, yhat_score, is_training
+FROM tabfm_classify('gc', 'label', features := ['f1','f2','f3','f4','f5','f6','f7','f8','f9','f10'],
+                    model := 'tabicl-v2', opts := MAP{'query_batch': '32'})
+JOIN gc USING (f1,f2,f3,f4,f5,f6,f7,f8,f9,f10);
+
+# The cache really ran: one encode, then four query passes against it (100 rows in batches of 32).
+query IIII
+SELECT context_entries, context_hits, context_misses, context_bytes > 10000000
+FROM tabfm_models() WHERE model = 'tabicl-v2' AND task = 'classification' AND loaded
+----
+1	4	1	true
+
+# Every row, the 500 context rows included: same label, top-class probability within 1e-5.
+query IIII
+SELECT count(*), count(*) FILTER (WHERE o.yhat <> c.yhat), count(*) FILTER (WHERE abs(o.yhat_score - c.yhat_score) > 1e-5),
+       count(*) FILTER (WHERE o.is_training <> c.is_training)
+FROM c_off o JOIN c_cold c USING (rid)
+----
+600	0	0	0
+
+query III
+SELECT count(*), count(*) FILTER (WHERE o.yhat <> w.yhat), count(*) FILTER (WHERE abs(o.yhat_score - w.yhat_score) > 1e-5)
+FROM c_off o JOIN c_warm w USING (rid)
+----
+600	0	0
+
+# The control. The same rows with the labels permuted must change the answers, or the identity above
+# would also hold for a model that ignored its context.
+statement ok
+CREATE TABLE gc_perm AS SELECT * REPLACE (CASE WHEN label IS NULL THEN NULL
+  ELSE (SELECT label FROM gc g2 WHERE g2.rid = (gc.rid * 37 + 11) % 500) END AS label) FROM gc;
+
+query I
+SELECT count(*) > 10 FROM c_cold c JOIN (
+  SELECT rid, yhat FROM tabfm_classify('gc_perm', 'label', features := ['f1','f2','f3','f4','f5','f6','f7','f8','f9','f10'],
+                                       model := 'tabicl-v2') JOIN gc_perm USING (f1,f2,f3,f4,f5,f6,f7,f8,f9,f10)) p USING (rid)
+WHERE NOT c.is_training AND c.yhat <> p.yhat
+----
+true
+
+# ---------------------------------------------------------------------------
+# Regression: the pair's in-graph scaler and point estimate match the combined graph's.
+
+statement ok
+SET anofox_tabfm_context_cache = false
+
+statement ok
+CREATE TABLE r_off AS SELECT rid, yhat, is_training
+FROM tabfm_regress('gr', 'target', features := ['f1','f2','f3','f4','f5','f6','f7','f8','f9','f10'],
+                   model := 'tabicl-v2') JOIN gr USING (f1,f2,f3,f4,f5,f6,f7,f8,f9,f10);
+
+statement ok
+RESET anofox_tabfm_context_cache
+
+statement ok
+CREATE TABLE r_cold AS SELECT rid, yhat, is_training
+FROM tabfm_regress('gr', 'target', features := ['f1','f2','f3','f4','f5','f6','f7','f8','f9','f10'],
+                   model := 'tabicl-v2') JOIN gr USING (f1,f2,f3,f4,f5,f6,f7,f8,f9,f10);
+
+statement ok
+CREATE TABLE r_warm AS SELECT rid, yhat, is_training
+FROM tabfm_regress('gr', 'target', features := ['f1','f2','f3','f4','f5','f6','f7','f8','f9','f10'],
+                   model := 'tabicl-v2', opts := MAP{'query_batch': '25'})
+JOIN gr USING (f1,f2,f3,f4,f5,f6,f7,f8,f9,f10);
+
+query III
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-v2' AND task = 'regression' AND loaded
+----
+1	4	1
+
+# Within 1e-5 of the target's spread (std ~3.9 here), every row.
+query III
+SELECT count(*), count(*) FILTER (WHERE abs(o.yhat - c.yhat) > 4e-5), count(*) FILTER (WHERE abs(o.yhat - w.yhat) > 4e-5)
+FROM r_off o JOIN r_cold c USING (rid) JOIN r_warm w USING (rid)
+----
+600	0	0
+
+# Raw target space, not z-scores: the targets are centred near 40.
+query I
+SELECT count(*) FROM r_cold WHERE yhat < 25 OR yhat > 55
+----
+0

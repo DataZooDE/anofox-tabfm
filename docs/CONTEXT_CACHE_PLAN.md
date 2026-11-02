@@ -1,8 +1,73 @@
 # Context cache, next steps: design and tabicl-v2 spike (#37), 2026-11-01
 
-**Status: design + spike.** The C++ change in this round is small and covered by a test: the split path
-uses a prepare graph's `context_logits` output when the graph has one. Everything else here is a plan.
+**Status: Phase 1 shipped (2026-11-02), covering the plan's phases 1-3 for `tabicl-v2` on the CPU.** See
+[Phase 1: what shipped](#phase-1-what-shipped) for the result and where it departs from the plan below. The
+sections after it are the design and spike this round was built from, kept as written.
 Background: [KV_CACHE_DESIGN.md](KV_CACHE_DESIGN.md), which records what shipped in #38 and #40.
+
+## Phase 1: what shipped
+
+**Surface.** No new function.
+- `anofox_tabfm_context_cache` defaults to `true` and is the kill switch.
+- `anofox_tabfm_context_cache_memory` (default `'1GB'`, `'0'` keeps nothing) bounds the cached contexts per
+  loaded model (per backend, i.e. per model, task, revision, device, precision).
+- `opts := MAP{'query_batch': 'N'}` scores a call's test rows N per forward pass against one encoded context.
+- `tabfm_models()` gains `context_bytes`, `context_entries`, `context_hits`, `context_misses`. Hits and misses
+  count forward passes, so a call with `query_batch` adds one per batch.
+
+**Graphs.** `export_tabicl --split-context` writes the kv pair (`kv.py`) for both tasks, and `resources/`
+bundles it for `tabicl-v2`. The regression pair z-scores `y` in prepare, carries `y_mean`/`y_std` as state and
+returns the mean over the quantiles, inverse-scaled, as the shipped regression graph does. Both halves inject
+through their own tensor maps by name, so no header sha is involved (the pinned weights' header shas are
+unchanged; the gate ran on the pinned revision `4dcd344e`).
+
+**Exactness on the real weights** (`gate_context_cache`, pair vs the shipped combined graph, ORT, CPU):
+- classification, 11 tables (breast_cancer, digits, random labels; S 64-1000, Q 16-128): 0 label differences
+  on test and context rows, max |Δlogit| 1.9e-05; re-batching bit-identical; the permuted-label control moves
+  the answers by 0.46-9.8 logits;
+- regression, 6 tables (diabetes, a synthetic nonlinear target; S 64-1000): max |Δyhat| 2.8e-06 x std(y);
+  re-batching within 7.8e-07 x std(y); the control moves the answers by 1.8-2.4 std(y);
+- through the extension (`test/sql/tabfm_context_cache_real.test`, 600 rows x 10 features): every row equal to
+  the kill switch's, labels identical, |Δscore| ≤ 1e-5, regression |Δ| ≤ 4e-5 at std(y) ≈ 3.9.
+
+**Speed through `tabfm_classify` / `tabfm_regress`** (built-in `tabicl-v2`, CPU, H = 100, `SET threads = 4;
+SET anofox_tabfm_threads = 4`, single-relation form so each call returns S + Q rows). Two rounds of one *off*
+process (combined graph, 5 timed calls) and one *on* process (5 x [cold, warm]); medians of the 10 values per
+cell. *cold* is a support table the cache has never seen (one feature of one row perturbed). Cells are wall
+seconds / CPU seconds (user + sys). The machine was shared (load average 12-40 on 32 cores): read the ratios.
+Single cells swing; *off* at S=375, Q=16 came out slower than at Q=128, which is load, not the model.
+
+| task | S | Q | off | cold | warm | warm vs off, CPU | warm vs off, wall | cold vs off, CPU |
+|---|---|---|---|---|---|---|---|---|
+| classification | 64 | 16 | 1.45 s / 6.6 | 1.56 s / 7.6 | 0.24 s / 1.15 | **5.7x** | 6.1x | 1.15x |
+| classification | 375 | 16 | 3.41 s / 16.0 | 2.67 s / 12.6 | 0.13 s / 0.62 | **26.0x** | 25.7x | 0.79x |
+| classification | 375 | 128 | 1.78 s / 8.7 | 1.69 s / 7.8 | 0.35 s / 1.64 | **5.3x** | 5.1x | 0.90x |
+| classification | 1000 | 16 | 3.73 s / 14.6 | 3.70 s / 15.9 | 0.15 s / 0.60 | **24.5x** | 24.6x | 1.09x |
+| classification | 1000 | 128 | 4.09 s / 18.1 | 3.84 s / 18.7 | 0.41 s / 1.65 | **10.9x** | 10.1x | 1.03x |
+| regression | 375 | 16 | 1.52 s / 6.0 | 1.42 s / 5.9 | 0.11 s / 0.43 | **13.8x** | 14.1x | 0.99x |
+| regression | 1000 | 16 | 3.69 s / 14.7 | 3.72 s / 16.5 | 0.15 s / 0.58 | **25.1x** | 25.0x | 1.12x |
+| regression | 1000 | 128 | 4.96 s / 22.2 | 4.71 s / 21.4 | 0.47 s / 2.13 | **10.4x** | 10.6x | 0.96x |
+
+**Chunked scoring in one call** (the `--test-chunk` case from #37): every call a new support table, so every
+call is cold; *off* re-encodes the context per batch, *on* encodes it once.
+
+| task | S | Q | query_batch | cache off | cache on | CPU | wall |
+|---|---|---|---|---|---|---|---|
+| classification | 450 | 128 | 32 | 9.89 s / 39.0 | 2.24 s / 10.1 | **3.9x** | 4.4x |
+| classification | 1000 | 512 | 128 | 16.59 s / 80.7 | 5.72 s / 26.0 | **3.1x** | 2.9x |
+
+**Where it departs from the plan.**
+- *A pair without `context_logits` is no longer served*, rather than kept opt-in. With the setting default-on,
+  "opt-in" would have needed a third state; the only such pair is the CI fixture's, and no released model
+  ships one. `test/sql/tabfm_context_cache.test` pins that it is ignored.
+- *GPU sessions bypass the cache* (the plan's fallback, done by device rather than by error): the split path is
+  only ever considered when the resolved device is the CPU (`UseContextCache`, unit-tested without a GPU), so
+  CUDA/ROCm/MLX sessions are built and served exactly as before.
+- *Eviction is LRU per backend*: a hit moves the context to the front; a lowered budget applies on the next call.
+- *Not done in this phase:* canonical row order (a reordered support table misses; safe), the two-connection
+  concurrency test (Tests item 6; the per-device lock keyed on the resolved device is unchanged from #42), and
+  a context larger than the budget is re-encoded per batch under `query_batch` rather than held for the call.
+- *Not run:* the reporter's 28-dataset harness (the external check), and anything on a GPU.
 
 ## Summary
 
@@ -377,10 +442,10 @@ to the combined graph instead, because the cache becomes default-on and must not
 
 | phase | scope | done when |
 |---|---|---|
-| 0 (this PR) | This document. The spike module. The engine reads `context_logits` from prepare when present (prototype, behind the existing off-by-default setting), with a kv-contract CI fixture and its test | spike numbers in this doc; test green |
-| 1 | `export_tabicl --split-context` emits the **kv** pair (classification), and the regression pair with the target scaler. Bundle both for `tabicl-v2` in `resources/`. Real-weights parity in CI's real-model job | `tabicl-v2` ships an exact pair |
-| 2 | `anofox_tabfm_context_cache_memory`, LRU over several contexts, `context_bytes` in `tabfm_models()`. Default the setting to `true` for exact pairs. Non-ORT devices fall back to the combined graph instead of erroring | the reporter's harness runs unchanged and gets the warm-call numbers |
-| 3 | `opts.query_batch`: query chunking inside one call. Canonical row order, if measured worthwhile | chunked scoring costs one encode per call, not one per chunk |
+| 0 (#89) | This document. The spike module. The engine reads `context_logits` from prepare when present (prototype, behind the existing off-by-default setting), with a kv-contract CI fixture and its test | spike numbers in this doc; test green |
+| 1 (shipped, Phase 1 PR) | `export_tabicl --split-context` emits the **kv** pair (classification), and the regression pair with the target scaler. Bundle both for `tabicl-v2` in `resources/`. Real-weights parity in CI's real-model job | `tabicl-v2` ships an exact pair |
+| 2 (shipped, Phase 1 PR) | `anofox_tabfm_context_cache_memory`, LRU over several contexts, `context_bytes` in `tabfm_models()`. Default the setting to `true` for exact pairs. Non-ORT devices fall back to the combined graph instead of erroring | the reporter's harness runs unchanged and gets the warm-call numbers |
+| 3 (query_batch shipped in Phase 1; row order open) | `opts.query_batch`: query chunking inside one call. Canonical row order, if measured worthwhile | chunked scoring costs one encode per call, not one per chunk |
 | 4 | Further models, in the order in [Per model](#per-model), each with its own parity row | per model |
 | 5 | CUDA device-resident state (IoBinding); ROCm masked S-buckets; MLX named-state ABI | per backend |
 
