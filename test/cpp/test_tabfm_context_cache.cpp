@@ -8,6 +8,7 @@
 
 #include "catch.hpp"
 #include "duckdb.hpp"
+#include "duckdb_compat.hpp"
 
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_onnx_reader.hpp"
@@ -18,11 +19,15 @@
 #include <iterator>
 #include <map>
 #include <thread>
+#include <utility>
 
 using namespace duckdb;
 using namespace duckdb::anofox;
 
 namespace {
+
+//! What Connection::Query returns: MaterializedQueryResult before DuckDB 2.0, a different type after.
+using QueryResultPtr = decltype(std::declval<Connection &>().Query(string()));
 
 string ThisDir() {
 	string file = __FILE__;
@@ -136,10 +141,10 @@ struct KvFixture {
 		}
 	}
 
-	unique_ptr<MaterializedQueryResult> Q(const string &sql) {
+	QueryResultPtr Q(const string &sql) {
 		return Q(setup, sql);
 	}
-	static unique_ptr<MaterializedQueryResult> Q(Connection &con, const string &sql) {
+	static QueryResultPtr Q(Connection &con, const string &sql) {
 		auto result = con.Query(sql);
 		if (result->HasError()) {
 			FAIL(sql << ": " << result->GetError());
@@ -158,15 +163,15 @@ struct KvFixture {
 		if (result->HasError()) {
 			return "ERROR " + result->GetError();
 		}
-		return result->GetValue(0, 0).ToString();
+		return duckdb_compat::ResultValue(*result, 0, 0).ToString();
 	}
 	//! entries, bytes, hits, misses of the context-cache session (zeros when not loaded)
 	vector<int64_t> Counters() {
 		auto r = Q("SELECT coalesce(sum(context_entries), 0), coalesce(sum(context_bytes), 0), "
 		           "coalesce(sum(context_hits), 0), coalesce(sum(context_misses), 0) FROM tabfm_models() "
 		           "WHERE model = 'kvfx' AND loaded AND context_cache");
-		return {r->GetValue(0, 0).GetValue<int64_t>(), r->GetValue(1, 0).GetValue<int64_t>(),
-		        r->GetValue(2, 0).GetValue<int64_t>(), r->GetValue(3, 0).GetValue<int64_t>()};
+		return {duckdb_compat::ResultValue(*r, 0, 0).GetValue<int64_t>(), duckdb_compat::ResultValue(*r, 1, 0).GetValue<int64_t>(),
+		        duckdb_compat::ResultValue(*r, 2, 0).GetValue<int64_t>(), duckdb_compat::ResultValue(*r, 3, 0).GetValue<int64_t>()};
 	}
 };
 
