@@ -628,14 +628,16 @@ FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification
 ----
 1	5	1
 
-# a session-level SET after PREPARE: the prepared statement keeps the value it was bound with (a hit) ...
-statement ok con1
-SET anofox_tabfm_context_cache = false
-
+# A session-level SET after PREPARE is version-dependent: DuckDB 1.x keeps the value the statement was bound
+# with, DuckDB 2.0 re-binds on EXECUTE and honours it. Not pinned here; SET GLOBAL (above) works on both.
+# One more cached call (a hit everywhere), then a statement prepared after a session SET must not use the cache.
 query I con1
-EXECUTE p
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture')
 ----
 10
+
+statement ok con1
+SET anofox_tabfm_context_cache = false
 
 query III con1
 SELECT context_entries, context_hits, context_misses
@@ -643,7 +645,6 @@ FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification
 ----
 1	6	1
 
-# ... and a statement prepared after the SET does not use the cache.
 statement ok con1
 PREPARE p2 AS SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture');
 
