@@ -66,27 +66,33 @@ class PrepareWrapper(torch.nn.Module):
         self.m = model
 
     def forward(self, x, y):
-        ce = self.m.col_embedder
-        features = _grouped_features(ce, x)
-        src = ce.in_linear(features)
-        if ce.target_aware:
-            y_exp = y.unsqueeze(1).expand(-1, features.shape[1], -1)
-            src = src + (ce.y_encoder(y_exp.float()) if ce.max_classes > 0
-                         else ce.y_encoder(y_exp.unsqueeze(-1)))
+        return prepare_columns(self.m, x, y)
 
-        hiddens = []
-        out = src
-        for block in ce.tf_col.blocks:
-            *batch_shape, _, d_model = out.shape
-            ind = block.ind_vectors.expand(*batch_shape, block.num_inds, d_model)
-            # Every row in this graph is a support row, so the whole tensor is the key/value set --
-            # which is what `train_size` selects in the combined pass.
-            hidden = block.multihead_attn1(ind, out, out)
-            hiddens.append(hidden)
-            out = block.multihead_attn2(out, hidden, hidden)
 
-        emb = _affine(ce, features, out).transpose(1, 2)
-        return (*hiddens, self.m.row_interactor(emb, d=None))
+def prepare_columns(m, x, y):
+    """PrepareWrapper's computation as a function of the model, so other wrappers (kv.py) can run it
+    without holding a second submodule (which would rename every initializer)."""
+    ce = m.col_embedder
+    features = _grouped_features(ce, x)
+    src = ce.in_linear(features)
+    if ce.target_aware:
+        y_exp = y.unsqueeze(1).expand(-1, features.shape[1], -1)
+        src = src + (ce.y_encoder(y_exp.float()) if ce.max_classes > 0
+                     else ce.y_encoder(y_exp.unsqueeze(-1)))
+
+    hiddens = []
+    out = src
+    for block in ce.tf_col.blocks:
+        *batch_shape, _, d_model = out.shape
+        ind = block.ind_vectors.expand(*batch_shape, block.num_inds, d_model)
+        # Every row in this graph is a support row, so the whole tensor is the key/value set --
+        # which is what `train_size` selects in the combined pass.
+        hidden = block.multihead_attn1(ind, out, out)
+        hiddens.append(hidden)
+        out = block.multihead_attn2(out, hidden, hidden)
+
+    emb = _affine(ce, features, out).transpose(1, 2)
+    return (*hiddens, m.row_interactor(emb, d=None))
 
 
 class QueryWrapper(torch.nn.Module):

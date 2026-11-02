@@ -857,6 +857,47 @@ TabFMRunOutput RunQuery(TabFMSession &session, const float *x, int64_t q, int64_
 	}
 }
 
+TabFMRunOutput TabFMBackend::RunBatched(const TabFMRunInput &input, int64_t query_batch) {
+	const int64_t s = input.train_size;
+	const int64_t q = input.t - s;
+	const int64_t h = input.h;
+	if (query_batch <= 0 || q <= query_batch) {
+		return Run(input);
+	}
+	// Each pass sees the full context plus one batch. A query row's answer depends on the context only,
+	// never on the other query rows (the graph contract's row independence), so this is the answer one
+	// unbatched pass gives; the context rows' outputs come from the first pass. y is [T]: the context's
+	// labels, then the query rows' padding.
+	TabFMRunOutput out;
+	vector<float> batch_x, batch_y;
+	for (int64_t offset = 0; offset < q; offset += query_batch) {
+		const int64_t n = MinValue<int64_t>(query_batch, q - offset);
+		batch_x.assign(input.x, input.x + s * h);
+		batch_x.insert(batch_x.end(), input.x + (s + offset) * h, input.x + (s + offset + n) * h);
+		batch_y.assign(input.y, input.y + s);
+		batch_y.insert(batch_y.end(), input.y + s + offset, input.y + s + offset + n);
+		TabFMRunInput part_input = input;
+		part_input.x = batch_x.data();
+		part_input.y = batch_y.data();
+		part_input.t = s + n;
+		auto part = Run(part_input);
+		if (part.shape.size() != 3 || part.shape[0] != 1 || part.shape[1] != s + n || part.shape[2] < 1 ||
+		    part.logits.size() != static_cast<size_t>((s + n) * part.shape[2]) ||
+		    (offset > 0 && part.shape[2] != out.shape[2])) {
+			return part; // the caller's contract check names the problem
+		}
+		const int64_t c = part.shape[2];
+		if (offset == 0) {
+			out.shape = {1, input.t, c};
+			out.logits.reserve(static_cast<size_t>(input.t * c));
+			out.logits.insert(out.logits.end(), part.logits.begin(), part.logits.end());
+		} else {
+			out.logits.insert(out.logits.end(), part.logits.begin() + s * c, part.logits.end());
+		}
+	}
+	return out;
+}
+
 void ValidateTabFMOutput(const TabFMRunOutput &out, idx_t expected_t, idx_t min_classes, const char *task_name) {
 	auto shape_str = [&]() {
 		string s = "[";

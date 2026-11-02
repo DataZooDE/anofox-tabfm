@@ -35,11 +35,10 @@ PARITY_RTOL = 1e-4
 SPLIT_PARITY_TOL = 1e-3  # same budget the single-graph export is held to
 
 TASKS = ("classification", "regression")
-# Tasks that ALSO ship the support/query pair, so the engine's context-cache path
-# (anofox_tabfm_context_cache) has something to run offline. Classification only,
-# on purpose: the regression task then exercises the other half of the contract --
-# a model whose task ships no pair must keep taking the combined graph with the
-# setting on. Both halves of that are asserted in test/sql/tabfm_context_cache.test.
+# Tasks that ALSO ship the FIRST-GENERATION support/query pair (split.py, no context_logits). The
+# engine no longer serves such a pair -- only exact pairs (kv.py, test/fixtures/tabicl_kv) -- so this
+# one now pins that it is ignored, and the regression task that no pair at all is harmless; both in
+# test/sql/tabfm_context_cache.test.
 SPLIT_TASKS = ("classification",)
 # Shared tensor map: injection is name-based (onnx init "m.<key>" <- safetensors
 # "<key>", with an "m."-prefix fallback in the engine), so one map serves both

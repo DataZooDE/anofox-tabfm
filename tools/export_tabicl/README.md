@@ -13,54 +13,53 @@ uv run make_tabicl_fixture ../../test/fixtures/tabicl          # CI fixture
 uv run pytest
 ```
 
-## Optional: `--split-context`, the support/query split
+## Optional: `--split-context`, the context-cache pair
 
-`tabfm_classify` re-encodes the labelled context on every call, because the graph is one forward
-pass over support and query concatenated. Measured on `tabicl-v2` (CPU, idle 16-core box) that pass
-is **71-80% of a call** — 1.398 s fixed + 9.0 ms per query row at a 64-row context, 5.053 s + 9.7 ms
-at 375 — and the support set never changes between calls. Context: DataZooDE/anofox-tabfm#37.
+`tabfm_classify` re-encodes the labelled context on every call, because the combined graph is one forward
+pass over support and query rows together. On `tabicl-v2` that pass is 83-98% of a call's CPU time at a 375-
+or 1000-row context, and the support set never changes between calls (DataZooDE/anofox-tabfm#37,
+`docs/CONTEXT_CACHE_PLAN.md`).
 
 ```bash
-uv run export_tabicl --task classification --config real --out ../../resources --split-context
+# export into a scratch directory, then copy only the pair into resources/: the combined graph and its
+# report there stay as shipped
+uv run export_tabicl --task classification --config real --out /tmp/kv/classification --split-context
+uv run export_tabicl --task regression     --config real --out /tmp/kv/regression     --split-context
+# the ship gate: the pair against the SHIPPED combined graph, on the real (pinned) weights
+uv run gate_context_cache --pair DIR_WITH_BOTH_PAIRS
 ```
 
-emits two extra weight-free graphs and their tensor maps:
+emits two weight-free graphs per task and their tensor maps (`kv.py`):
 
 | | inputs | outputs |
 |---|---|---|
-| `graph_prepare_tabicl_*.onnx` | `x[1,S,H]`, `y[1,S]` | `hidden_0..hidden_{K-1}`, `support_reps[1,S,R]` |
-| `graph_query_tabicl_*.onnx` | `x[1,Q,H]`, `y[1,S]`, `support_reps`, `hidden_*` | `logits[1,Q,C]` |
+| `graph_prepare_tabicl_<task>.onnx` | `x[1,S,H]`, `y[1,S]` | `hidden_0..2` (column-ISAB state), `icl_k_0`, `icl_v_0`, ... `icl_v_11` (each ICL layer's support keys/values), regression only `y_mean`, `y_std`, and `context_logits[1,S,C]` |
+| `graph_query_tabicl_<task>.onnx` | `x[1,Q,H]` and the state by name (no `y`) | `logits[1,Q,C]` |
 
-`K` is `col_num_blocks` (3 on the v2 architecture). A caller runs `prepare` once per support set and
-`query` per batch; the support rows never pass through `multihead_attn2` or the row interactor again.
-They do still pass through the ICL stage: `QueryWrapper` concatenates `support_reps` with the query rows
-and runs the 12-layer ICL over S+Q rows on every call. `spike_context_cache` (below) measures a pair
-that caches each ICL layer's support keys/values instead.
+- **Query rows only.** The query graph runs the query rows through TabICL's own `cached_kv` attention
+  path against the cached keys/values; the support rows never pass through any layer again.
+- **Every row is exact.** `context_logits` are the support rows' outputs as the combined graph computes
+  them (each with its own label), so the engine's fitted values do not change with the cache.
+- **Regression matches the shipped regression graph:** the raw targets are z-scored in prepare
+  (population std, `0 -> 1`), the model sees `y_z` everywhere, and query returns the mean over the 999
+  quantiles, inverse-scaled: `[1,Q,1]` in raw target units. The first-generation pair (`split.py`) fed raw
+  `y` and returned raw quantiles, which is what this replaces.
+- **Each half has its own tensor map,** mapped by NAME. `kv.finish` refuses a map built by value hash:
+  zero-initialised biases are identical at export time and would map to the wrong real tensor (that bug hit
+  the first draft of this exporter: a prefixed wrapper mapped ISAB biases to row-interactor biases, and the
+  random-weight parity still passed).
 
-Each half also gets its own tensor map — `tensor_map_prepare_tabicl_*.json`,
-`tensor_map_query_tabicl_*.json`, named from its own graph by the rule the combined pair already
-follows. They are not interchangeable: the prepare half is a proper SUBSET of the checkpoint (no
-predictor head), and ORT rejects an injected initializer its graph does not declare.
+**Parity.** At export: chained pair vs one PyTorch forward of the combined wrapper, every row, random
+weights, shapes other than the export example (3.4e-07 classification, 1.8e-07 regression, budget 1e-3).
+The ship gate (`gate_context_cache`, and `tests/test_real_weights.py` under `TABFM_REAL_WEIGHTS=1`) runs the
+pair against the shipped combined graph on the real pinned weights: classification 0 label differences and
+|Δlogit| ≤ 1.9e-05 on test and context rows over 11 tables (S 64-1000); regression |Δyhat| ≤ 2.8e-06 x
+std(y); re-batching the query rows changes nothing beyond fp32 rounding; and a permuted-label control moves
+the answers by 0.5-10 logits (≈2 std for regression), so the identity is not vacuous.
 
-**The extension uses the pair when it is there.** `SET anofox_tabfm_context_cache = true` makes the
-engine look for these four files next to the model's combined graph and, finding them, encode the
-context once per support set instead of once per call. Nothing to declare in the manifest — a
-re-export that emits the pair is enough. See `docs/KV_CACHE_DESIGN.md` for what that path does and
-does not preserve.
-
-**Parity is the same as the single graph** — 1.27e-07 on the real config, 8.94e-08 on the fixture,
-against a 1e-3 budget, at shapes that differ from the export example. A PyTorch prototype of the
-same decomposition on **trained** `tabicl-classifier-v2` weights gives 100% argmax agreement and
-these speedups per query batch (CPU, 500 features per call):
-
-| support | query | speedup |
-|---|---|---|
-| 375 | 22 | **11.2x** |
-| 375 | 128 | 4.1x |
-| 375 | 375 | 2.3x |
-| 64 | 14 | 5.0x |
-
-Biggest where a small batch meets a large context, which is the escalation case in #37.
+**The extension uses the pair by default** (`anofox_tabfm_context_cache`, default `true`): it looks for the
+four files next to the model's combined graph (bundled ones for the built-ins) and serves the pair only when
+the prepare graph emits `context_logits`. The pair from older exports (no `context_logits`) is ignored.
 
 ### Spike: `spike_context_cache`, the per-layer key/value contract (#37)
 
@@ -77,7 +76,7 @@ combined graph on the real `tabicl-classifier-v2` weights, injected through the 
   query rows only and takes no `y`.
 
 Results, and what they imply for the engine and the other models: `docs/CONTEXT_CACHE_PLAN.md`.
-`test/fixtures/tabicl_kv` is the fixture-scale kv pair this command writes.
+`test/fixtures/tabicl_kv` holds the fixture-scale pairs, now written by `kv.py` (both tasks).
 
 ### Why the split is exact
 

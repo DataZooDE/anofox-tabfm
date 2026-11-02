@@ -239,6 +239,9 @@ struct TabFMRunInput {
 	int64_t h = 0;
 	int64_t train_size = 0;
 	int64_t d = 0;
+	//! anofox_tabfm_context_cache_memory, in bytes: how much a split backend may
+	//! keep in cached contexts. Ignored by every other backend.
+	idx_t context_cache_bytes = 0;
 };
 
 struct TabFMRunOutput {
@@ -305,6 +308,15 @@ class TabFMBackend {
 public:
 	virtual ~TabFMBackend() = default;
 	virtual TabFMRunOutput Run(const TabFMRunInput &input) = 0;
+	//! One call's forward with its query rows scored at most `query_batch` per pass (opts query_batch).
+	//! The default runs Run() once per batch on the support rows plus that batch, which re-encodes the
+	//! context per batch; a backend with a context cache overrides it to encode (or look up) the context
+	//! once and loop over the batches. The context rows' outputs come from the first pass.
+	virtual TabFMRunOutput RunBatched(const TabFMRunInput &input, int64_t query_batch);
+	//! Shrink any retained per-backend state (the context cache) to `budget` bytes. Called before the
+	//! anofox_tabfm_max_memory check, so lowering the budget can free memory even when inference is refused.
+	virtual void TrimContextCache(idx_t budget) {
+	}
 	//! Warm the backend for a (rows, features) shape without predicting — used by
 	//! tabfm_gpu_precompile to move MIGraphX's per-bucket compile (minutes) off
 	//! the first query. Default: no-op (ORT has no per-shape compile).

@@ -15,7 +15,7 @@ import pathlib
 import sys
 import time
 
-from export_tabicl import configs, export, split
+from export_tabicl import configs, export
 from export_tabicl.tabicl_patches import build_model
 
 
@@ -27,9 +27,10 @@ def main(argv=None) -> int:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
     ap.add_argument("--split-context", action="store_true",
-                    help="ALSO export the support/query split pair (graph_prepare_*.onnx, "
-                         "graph_query_*.onnx), which lets a caller encode the labelled context "
-                         "once and reuse it across query batches. See split.py.")
+                    help="ALSO export the context-cache pair (graph_prepare_*.onnx, "
+                         "graph_query_*.onnx): prepare encodes the labelled context once, down to "
+                         "each ICL layer's support keys/values plus the context rows' own outputs; "
+                         "query scores query rows only. See kv.py.")
     ap.add_argument("--contract", choices=["positional", "mask"], default="positional",
                     help="positional: (x, y) with the split = len(y) (the CPU graph). mask: x, y (full length), "
                          "train_size, d, n_rows -- the ROCm/MIGraphX contract (tabicl_mask.py).")
@@ -89,41 +90,20 @@ def main(argv=None) -> int:
             print("[export_tabicl] PARITY FAILED", file=sys.stderr)
             return 1
 
+    split_report = None
     if args.split_context:
-        prep_path = out / f"graph_prepare_tabicl_{args.task}.onnx"
-        qry_path = out / f"graph_query_tabicl_{args.task}.onnx"
+        from export_tabicl import kv
         t0 = time.time()
-        split.export_split(model, prep_path, qry_path, dim_train=cfg.dim_train,
-                           dim_features=cfg.dim_features, example=cfg.example)
-        print(f"[export_tabicl] split export done ({time.time()-t0:.1f}s): "
-              f"{split.n_context_tensors(model)} context tensor(s) + support_reps", flush=True)
-        if not args.skip_parity:
-            t0 = time.time()
-            worst = split.check_split_parity(
-                prep_path, qry_path, model,
-                [(s_, max(2, t_ - s_), h_) for t_, h_, s_ in cfg.parity_shapes])
-            ok = worst < 1e-3
-            print(f"[export_tabicl] split parity ({time.time()-t0:.1f}s): worst {worst:.2e} "
-                  f"(budget 1e-03) -> {'OK' if ok else 'FAIL'}", flush=True)
-            if not ok:
-                print("[export_tabicl] SPLIT PARITY FAILED", file=sys.stderr)
-                return 1
-        # Same shipping treatment as the single graph: externalize the checkpoint initializers,
-        # write a tensor map per half, then drop the weights. Without this the pair would ship
-        # random weights, which is exactly what assert_weight_free exists to prevent.
-        for path, half in ((prep_path, "prepare"), (qry_path, "query")):
-            tmap = export.postprocess(path, dict(model.state_dict()))
-            # Named from its own graph by the rule the combined pair already
-            # follows -- graph_ -> tensor_map_, .onnx -> .json -- so the runtime
-            # finds a half's map from the half's filename and nothing else.
-            export.write_tensor_map(out / f"tensor_map_{half}_tabicl_{args.task}.json", tmap,
-                                    task=args.task,
-                                    safetensors_rel=f"{args.task}/model.safetensors")
-            export.delete_weight_data(path)
-            export.assert_weight_free(path, tmap)
-            print(f"[export_tabicl] split {half}: {path.name} "
-                  f"({path.stat().st_size / 1e6:.2f} MB, weight-free, "
-                  f"{len(tmap['initializers'])} initializers mapped)", flush=True)
+        split_report = kv.export_pair(model, out, args.task, cfg, check=not args.skip_parity)
+        ok = split_report.get("torch_parity_ok", True)
+        worst = split_report.get("torch_parity_worst")
+        print(f"[export_tabicl] context-cache pair ({time.time()-t0:.1f}s): "
+              f"{split_report['prepare']}, {split_report['query']}"
+              + (f"; parity vs PyTorch, every row, worst {worst:.2e} -> {'OK' if ok else 'FAIL'}"
+                 if worst is not None else ""), flush=True)
+        if not ok:
+            print("[export_tabicl] CONTEXT-CACHE PAIR PARITY FAILED", file=sys.stderr)
+            return 1
 
     export.delete_weight_data(graph_path)
     export.assert_weight_free(graph_path, tensor_map)
@@ -151,6 +131,7 @@ def main(argv=None) -> int:
         "n_initializers_mapped": len(tensor_map["initializers"]),
         "unmatched_small_inline": tensor_map["unmatched_small"],
         "parity": parity,
+        "context_cache_pair": split_report,
         "versions": {"torch": _torch.__version__, "onnx": _onnx.__version__,
                      "onnxruntime": _ort.__version__, "onnxscript": _onnxscript.__version__},
     }

@@ -33,6 +33,19 @@ class DatabaseInstance;
 
 namespace anofox {
 
+//! The context cache's counters for one loaded split backend (docs/CONTEXT_CACHE_PLAN.md). The backend
+//! updates them under the per-device lock; tabfm_models() reads them from another thread without it, so
+//! they are atomics. Shared rather than owned by either side, so the state layer stays free of ORT types.
+struct ContextCacheStats {
+	//! Resident bytes of every cached context: state tensors, the context rows' outputs, and the verbatim
+	//! key (support rows and labels).
+	atomic<idx_t> bytes {0};
+	atomic<idx_t> entries {0};
+	//! Calls answered from a cached context, and calls that had to encode one.
+	atomic<idx_t> hits {0};
+	atomic<idx_t> misses {0};
+};
+
 //! One loaded model. `session` is deliberately an opaque shared_ptr<void>
 //! (holds a SessionHolder with the TabFMSessionHandle) so the state layer never
 //! depends on ORT headers; the safetensors arena behind it is kept alive by
@@ -60,6 +73,8 @@ struct LoadedModel {
 	//! argument applies to device_id above, which is why CanReuseSession below
 	//! checks both — it used to check only this one.
 	bool split_context = false;
+	//! The context cache's counters when split_context, else null (reported as zeros).
+	shared_ptr<ContextCacheStats> context_stats;
 	//! Set by Unload; snapshot holders may finish their forward, new
 	//! snapshots will not see this model anymore.
 	atomic<bool> evicted {false};
@@ -92,6 +107,23 @@ inline bool CanReuseSession(const LoadedModel &cached, bool want_split, const st
                             const string &wanted_precision) {
 	return cached.split_context == want_split && cached.device_id == wanted_device &&
 	       cached.precision == wanted_precision;
+}
+
+//! Whether a call takes the context-cache path (a split prepare/query pair with a cached labelled
+//! context) instead of the combined graph.
+//!
+//! All three must hold:
+//!   - `setting`: anofox_tabfm_context_cache, on by default; false is the kill switch.
+//!   - `pair_exact`: the model ships a pair whose prepare graph emits `context_logits`, so every output
+//!     row (the context rows' fitted values included) is the combined graph's. A first-generation pair
+//!     without it (#38/#40) scored the context rows without their own labels; it is not served.
+//!   - `device` is the CPU. The GPU plugins (CUDA, MIGraphX, MLX) run bundled single-graph forwards and
+//!     have no split form yet (Phase 5 of the plan), so a GPU session bypasses the cache and runs exactly
+//!     as it did before the cache existed -- it neither errors nor falls back to the CPU.
+//!
+//! A pure function so the GPU half is testable on a machine without a GPU.
+inline bool UseContextCache(bool setting, bool pair_exact, const string &device) {
+	return setting && pair_exact && device == "cpu";
 }
 
 //! Canonical loaded-model key for a (model, task, revision). The engine (which
@@ -142,7 +174,9 @@ public:
 	//! Snapshot for a predict: the entry built for exactly this device and
 	//! precision ("" = a CPU session; the gpu_precision setting does not shape
 	//! those). nullptr if not loaded in that configuration.
-	shared_ptr<LoadedModel> Snapshot(const string &key, const string &device_id, const string &precision) const;
+	//! `split` selects the context-cache session, which has its own slot beside the combined one.
+	shared_ptr<LoadedModel> Snapshot(const string &key, const string &device_id, const string &precision,
+	                                 bool split = false) const;
 	//! Every loaded configuration of `key`, sorted by (device, precision) —
 	//! tabfm_models() reports one row per entry.
 	vector<shared_ptr<LoadedModel>> SnapshotsFor(const string &key) const;

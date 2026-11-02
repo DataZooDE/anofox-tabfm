@@ -5,7 +5,44 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **Context cache for `tabicl-v2`, on by default (#37, docs/CONTEXT_CACHE_PLAN.md Phase 1).** The labelled
+  context is encoded once and reused across calls: a later call against the same support rows runs the query
+  rows only. Through `tabfm_classify` / `tabfm_regress` on the CPU (H = 100, medians of 10, shared machine) a
+  warm call costs 5.3-26x less CPU time than the combined graph, and the first call against a new context
+  costs about the same as before (0.79-1.15x). Exact: every output row, context rows included, equals the
+  combined graph's (real weights: 0 label differences, |Δlogit| ≤ 1.9e-05; regression |Δ| ≤ 2.8e-06 x std(y)).
+  - The key is the preprocessed support rows and labels themselves: a 64-bit hash finds a candidate, a full
+    compare accepts it, so a changed table misses rather than answering stale.
+  - `anofox_tabfm_context_cache_memory` (default `'256MB'`, instance-wide, read when a statement runs) bounds
+    the cached contexts per loaded model, least recently used first; a context larger than the budget serves
+    its own call and is dropped. 256 MB rather than 1 GB: a 500-group aggregate of single-use 64-row contexts
+    left 1.0 GB of contexts resident at 1 GB (RSS 1.72 GB vs 0.58 GB with the cache off) and 0.25 GB at 256 MB
+    (RSS 1.15 GB).
+  - `tabfm_models()` gains `context_cache` (the cached session's row) and `context_bytes`, `context_entries`,
+    `context_hits`, `context_misses` (lookups, one per call).
+  - `opts := MAP{'query_batch': 'N'}` scores a call's test rows N at a time against one encoded context, looked
+    up once per call, so bounding peak memory no longer costs a re-encode per chunk (for models without the
+    cache each batch still re-runs the context). Keep N in the hundreds: each pass has a fixed cost.
+  - The cached (split) session sits beside the combined one, so generation, imputation and connections with
+    the kill switch on do not evict it. A model with the cache on holds both ORT sessions (about +300 MB for
+    `tabicl-v2`).
+  - `resources/` bundles the pair for both tasks (`graph_{prepare,query}_tabicl_<task>.onnx` + maps).
+    `tools/export_tabicl --split-context` now writes this pair (`kv.py`): prepare emits each ICL layer's
+    support keys/values and the context rows' own outputs, query takes no `y`; the regression pair carries the
+    target scaler and returns the shipped graph's point estimate. `gate_context_cache` is the real-weight ship
+    gate.
+
 ### Changed
+- **`anofox_tabfm_context_cache` defaults to `true` and is now the kill switch.** A session `SET` applies to
+  statements bound after it; `SET GLOBAL ... = false` also stops prepared statements. It serves exact pairs
+  only: the prepare graph emits `context_logits` and every state tensor the query graph reads, and the combined
+  graph takes nothing beyond `(x, y)`; any other pair is ignored and the combined graph answers. A first-generation pair from the old `--split-context` (no
+  `context_logits`, context rows scored without their own labels) is no longer served: the combined graph
+  answers instead. GPU sessions (CUDA, ROCm, MLX) bypass the cache and run as before; naming a GPU device with
+  the cache on no longer refuses because of the cache.
+- The `anofox_tabfm_max_memory` refusal names `query_batch` and `anofox_tabfm_context_cache_memory` as
+  remedies.
 - **Every built-in model's weights are pinned to a fixed Hugging Face commit instead of `main`** (and so are the
   file URLs): mitra, mitra-v2, tabpfn-v2, tabpfn-v2-5, tabpfn-v2-5-real, tabpfn-v3, tabpfn-v3-5,
   tabpfn-v3-5-fast, tabicl-v2, orion-msp, orion-bix, tabdpt, tabdpt-v1-3 and tabfm-v1, the way tabpfn-v2-6 was in

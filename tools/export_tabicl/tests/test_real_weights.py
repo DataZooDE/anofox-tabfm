@@ -54,3 +54,16 @@ def test_the_masked_graph_equals_the_shipped_positional_graph(task):
                         RESOURCES / f"graph_tabicl_{task}.onnx", RESOURCES / f"tensor_map_tabicl_{task}.json",
                         CACHE / task / "model.safetensors", _real_model(task))
     assert res["ok"], res
+
+
+@pytest.mark.parametrize("task", TASKS)
+def test_the_shipped_context_cache_pair_on_the_real_weights(task):
+    """The bundled kv pair (resources/graph_{prepare,query}_tabicl_<task>.onnx) against the bundled combined
+    graph, real weights injected through each graph's tensor map: identical labels and |dlogit| <= 1e-4
+    (classification), |dyhat| <= 1e-4 x std(y) (regression), on every row, context rows included; re-batching
+    leaves the answers alone; and a permuted-label control moves them, so the identity is not vacuous."""
+    from export_tabicl import kv
+
+    prep, qry = kv.pair_paths(RESOURCES, task)
+    res = kv.gate(prep, qry, RESOURCES / f"graph_tabicl_{task}.onnx", CACHE / task / "model.safetensors", task)
+    assert res["ok"], res["failures"]

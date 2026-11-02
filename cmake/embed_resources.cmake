@@ -114,6 +114,18 @@ set(_tabfm_inputs
     # (ExpectedWeightsHeaderShaFor pins the header).
     "graph_migraphx_tabicl_classification.onnx"
     "graph_migraphx_tabicl_regression.onnx"
+    # TabICL v2's context-cache pair (tools/export_tabicl --split-context, kv.py): prepare encodes the
+    # labelled context once (column-ISAB state + per-ICL-layer support K/V + the context rows' own
+    # outputs), query scores the query rows only. Found by name next to graph_tabicl_<task>
+    # (FindSplitGraphs); each half injects through its own tensor map, so no header sha is involved.
+    "graph_prepare_tabicl_classification.onnx"
+    "graph_query_tabicl_classification.onnx"
+    "tensor_map_prepare_tabicl_classification.json"
+    "tensor_map_query_tabicl_classification.json"
+    "graph_prepare_tabicl_regression.onnx"
+    "graph_query_tabicl_regression.onnx"
+    "tensor_map_prepare_tabicl_regression.json"
+    "tensor_map_query_tabicl_regression.json"
     "tensor_map_mitra_classification.json"
     "tensor_map_mitra_regression.json"
     "tensor_map_tabpfn_classification.json"

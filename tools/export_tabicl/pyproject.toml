@@ -31,6 +31,7 @@ dev = ["pytest>=8"]
 export_tabicl = "export_tabicl.cli:main"
 make_tabicl_fixture = "export_tabicl.fixture_cli:main"
 spike_context_cache = "export_tabicl.context_spike:main"
+gate_context_cache = "export_tabicl.kv:main"
 
 [[tool.uv.index]]
 name = "pytorch-cpu"
