@@ -1,7 +1,7 @@
 """TabICL v2 on the REAL checkpoints: the masked (ROCm) contract against the positional CPU graph.
 
 Skipped unless TABFM_REAL_WEIGHTS is set. Reads the model.safetensors the engine uses
-(~/.cache/anofox-tabfm/jingang__TabICL@main/<task>/, written by convert_weights.py or tabfm_download), never
+(~/.cache/anofox-tabfm/jingang__TabICL@4dcd344ece2c00be9e831fdd35bed57b5ad83e19/<task>/, written by convert_weights.py or tabfm_download), never
 anything in this repo. The masked graph is the one export_tabicl --contract mask writes; set
 TABICL_MASK_DIR to its --out directory to also compare it, in ORT, against the SHIPPED positional graph.
 """
@@ -16,7 +16,7 @@ import pytest
 pytestmark = pytest.mark.skipif(not os.environ.get("TABFM_REAL_WEIGHTS"),
                                 reason="needs the real TabICL v2 checkpoints (set TABFM_REAL_WEIGHTS=1)")
 
-CACHE = pathlib.Path(os.environ.get("TABFM_CACHE", "~/.cache/anofox-tabfm")).expanduser() / "jingang__TabICL@main"
+CACHE = pathlib.Path(os.environ.get("TABFM_CACHE", "~/.cache/anofox-tabfm")).expanduser() / "jingang__TabICL@4dcd344ece2c00be9e831fdd35bed57b5ad83e19"
 RESOURCES = pathlib.Path(__file__).resolve().parents[3] / "resources"
 TASKS = ("classification", "regression")
 

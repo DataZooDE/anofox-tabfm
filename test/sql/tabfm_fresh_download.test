@@ -4,8 +4,10 @@
 #              Python-converted model.safetensors the engine prefers -- and that hid two bugs: Kumo's
 #              classifier .pt stores two tensors as transposed views (28-34% accuracy from the .pt alone),
 #              and Orion-MSP's .ckpt carries tensors its graph does not use, which made injection fail.
-#              This downloads into an empty cache dir (~900 MB), reads only what tabfm_download wrote, and
-#              runs on the CPU.
+#              This downloads into an empty cache dir (~1.6 GB), reads only what tabfm_download wrote, and
+#              runs on the CPU. Every download comes from the Hugging Face commit the registry pins.
+#              Siblings: tabfm_fresh_download_safetensors.test (the safetensors-shipped models) and
+#              tabfm_fresh_download_convert.test (the TabPFN checkpoints that still need convert_weights.py).
 #
 #                TABFM_REAL_WEIGHTS=1 ./build/release/test/unittest test/sql/tabfm_fresh_download.test
 # group: [anofox_tabfm]
@@ -113,5 +115,62 @@ CALL tabfm_download('classification', model := 'tabpfn-v2-6');
 query T
 SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.75
 FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabpfn-v2-6') p JOIN t USING (row_id)
+----
+true
+
+# --- TabICL v2: the .ckpt is read natively; the GPU file it writes is byte-identical to convert_weights.py's --
+
+query T
+SELECT parse_filename(file) || ' ' || status FROM tabfm_download('classification', model := 'tabicl-v2') ORDER BY 1
+----
+model.ckpt downloaded
+model.safetensors converted
+
+query T
+SELECT parse_filename(file) || ' ' || status FROM tabfm_download('regression', model := 'tabicl-v2') ORDER BY 1
+----
+model.ckpt downloaded
+model.safetensors converted
+
+# 0.64 / 0.906 from the converted file and from the .ckpt alone (identical predictions)
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.6
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabicl-v2') p JOIN t USING (row_id)
+----
+true
+
+query T
+SELECT corr(p.yhat, 2 * t.a + 0.5 * t.c) > 0.85
+FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabicl-v2') p JOIN t USING (row_id)
+----
+true
+
+# --- TabPFN-3: the classifier's .ckpt also stores `regression_borders`, which its graph does not use ------
+# Before its tensor map said "complete", the CPU offered that tensor to ORT under the "m." fallback name and
+# every prediction failed ("Failed to find existing initializer with name m.regression_borders"), and
+# tabfm_download wrote no GPU file. Both files it writes are byte-identical to convert_weights.py's.
+
+query T
+SELECT parse_filename(file) || ' ' || status FROM tabfm_download('classification', model := 'tabpfn-v3') ORDER BY 1
+----
+model.ckpt downloaded
+model.safetensors converted
+
+query T
+SELECT parse_filename(file) || ' ' || status FROM tabfm_download('regression', model := 'tabpfn-v3') ORDER BY 1
+----
+model.ckpt downloaded
+model.safetensors converted
+
+# 0.94 / 0.994 from the converted files and from the .ckpt alone
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.9
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabpfn-v3') p JOIN t USING (row_id)
+----
+true
+
+query T
+SELECT corr(p.yhat, 2 * t.a + 0.5 * t.c) > 0.95
+FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabpfn-v3') p JOIN t USING (row_id)
 ----
 true

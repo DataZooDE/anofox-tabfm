@@ -215,7 +215,7 @@ TEST_CASE("manifest: built-in TabFM v1 manifests", "[tabfm][manifest]") {
 		REQUIRE(manifest.model == "tabfm-v1");
 		REQUIRE(manifest.task == TabFMTask::CLASSIFICATION);
 		REQUIRE(manifest.repo == "google/tabfm-1.0.0-pytorch");
-		REQUIRE(manifest.revision == "main");
+		REQUIRE(manifest.revision == "77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83");
 		REQUIRE(manifest.files.size() == 1);
 		REQUIRE(manifest.files[0].path == "classification/model.safetensors");
 		REQUIRE(manifest.files[0].bytes == 6557888408ULL);
@@ -225,15 +225,17 @@ TEST_CASE("manifest: built-in TabFM v1 manifests", "[tabfm][manifest]") {
 		REQUIRE(manifest.engine_profiles.at("cuda").dtype == "bf16");
 		REQUIRE(manifest.engine_profiles.at("rocm").dtype == "fp16");
 		REQUIRE(ResolveManifestFileUrl(manifest, manifest.files[0]) ==
-		        "https://huggingface.co/google/tabfm-1.0.0-pytorch/resolve/main/"
+		        "https://huggingface.co/google/tabfm-1.0.0-pytorch/resolve/77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83/"
 		        "classification/model.safetensors");
 	}
 	SECTION("regression") {
 		auto manifest = BuiltinTabFMManifest(TabFMTask::REGRESSION);
 		REQUIRE(manifest.model == "tabfm-v1");
 		REQUIRE(manifest.task == TabFMTask::REGRESSION);
+		REQUIRE(manifest.revision == "77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83");
 		REQUIRE(manifest.files.size() == 1);
 		REQUIRE(manifest.files[0].path == "regression/model.safetensors");
+		REQUIRE(manifest.files[0].bytes == 6591243724ULL);
 		REQUIRE(manifest.graph == "graph_regression");
 		REQUIRE(manifest.license == "tabfm-non-commercial-v1.0");
 	}

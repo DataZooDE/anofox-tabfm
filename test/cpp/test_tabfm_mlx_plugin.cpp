@@ -50,7 +50,7 @@ string HomeDir() {
 
 //! The registry's cache slug for mitra classification (repo '/'->'__', '@rev').
 string MitraCacheDir() {
-	return HomeDir() + "/.cache/anofox-tabfm/autogluon__mitra-classifier@main";
+	return HomeDir() + "/.cache/anofox-tabfm/autogluon__mitra-classifier@c425e9fa0910a6be1c494321792e7ba2a1367b1a";
 }
 
 //! Softmax over the last axis, in double, matching what the extension hands
@@ -138,7 +138,7 @@ TEST_CASE("mlx_plugin: CPU and MLX agree on the same real weights", "[tabfm][plu
 		     << "\"\n"
 		        "    curl -L -o \""
 		     << weights << "\" \\\n"
-		        "      https://huggingface.co/autogluon/mitra-classifier/resolve/main/model.safetensors\n"
+		        "      https://huggingface.co/autogluon/mitra-classifier/resolve/c425e9fa0910a6be1c494321792e7ba2a1367b1a/model.safetensors\n"
 		        "    ln -s \"$PWD/resources/graph_ext_mitra_classification.onnx\" \""
 		     << cpu_graph
 		     << "\"\n"

@@ -124,7 +124,7 @@ def test_frozen_scale_patch_is_algebraically_upstream():
     assert torch.allclose(upstream, patched, atol=1e-6), (upstream - patched).abs().max()
 
 
-WEIGHTS = pathlib.Path.home() / ".cache/anofox-tabfm/Layer6__TabDPT@main/model.safetensors"
+WEIGHTS = pathlib.Path.home() / ".cache/anofox-tabfm/Layer6__TabDPT@a5ca6e01c0fa09ec68c73e958e5199d1932abb3a/model.safetensors"
 
 
 def test_real_config_matches_published_checkpoint():

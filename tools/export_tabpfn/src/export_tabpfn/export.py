@@ -242,6 +242,15 @@ def write_tensor_map(map_path: pathlib.Path, tensor_map: dict, *, task: str,
         "initializers": tensor_map["initializers"],
         "transforms": tensor_map["transforms"],
     }
+    # Keep the hand-set keys that describe the published checkpoint rather than the graph: "complete"
+    # (the .ckpt holds tensors this graph does not use, e.g. TabPFN-3's classifier also stores
+    # `regression_borders`) and "ckpt_aliases" (TabPFN-2.6's regressor stores `criterion.borders`). A
+    # re-export would otherwise drop them and break the download-only path (test/sql/tabfm_fresh_download*).
+    if map_path.exists():
+        previous = json.loads(map_path.read_text())
+        for key in ("complete", "ckpt_aliases"):
+            if key in previous:
+                payload[key] = previous[key]
     map_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 

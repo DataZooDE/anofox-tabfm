@@ -1,0 +1,115 @@
+# name: test/sql/tabfm_fresh_download_convert.test
+# description: The TabPFN checkpoints that still need tools/export_tabpfn/convert_weights.py download from the
+#              pinned revision at the declared size, and then refuse with the actionable error, not an
+#              opaque ORT one. TabPFN v2, 2.5 and RealTabPFN-2.5 publish the legacy layout
+#              (transformer_encoder.layers.N.*): renames, which "ckpt_aliases" could express, but also each
+#              attention block's `_w_qkv` [3, H, D, E] split into q/k/v [H*D, E] and its `_w_out` [H, D, E]
+#              reshaped to [H*D, E] and TRANSPOSED into out_projection.weight. A transpose reorders values,
+#              so the download alone cannot serve them (docs/REAL_MODELS.md). About 240 MB, CPU.
+#
+#                TABFM_REAL_WEIGHTS=1 ./build/release/test/unittest test/sql/tabfm_fresh_download_convert.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_REAL_WEIGHTS
+
+# downloads need httpfs; the unittest binary does not link it, so load the installed one
+statement ok
+INSTALL httpfs;
+
+statement ok
+LOAD httpfs;
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/fresh_cache_convert';
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true;
+
+# The probe of tabfm_fresh_download.test: 3 classes, 150 context rows, 50 queries (chance 0.33); the
+# regression target is 2a + 0.5c with `a` withheld, so a misread checkpoint lands near 0 correlation.
+statement ok
+CREATE TABLE t AS SELECT i AS row_id, (i % 3)::VARCHAR AS y, sin(i * 0.37) + (i % 3) AS a, cos(i * 0.11) * (i % 3) AS b,
+  (i * 7 % 11)::DOUBLE AS c FROM range(200) r(i);
+
+statement ok
+CREATE TABLE ctx AS SELECT * FROM t WHERE row_id < 150;
+
+statement ok
+CREATE TABLE qry AS SELECT * EXCLUDE (y) FROM t WHERE row_id >= 150;
+
+statement ok
+CREATE TABLE rctx AS SELECT row_id, 2 * a + 0.5 * c AS target, b, c, (row_id % 3)::DOUBLE AS k FROM t WHERE row_id < 150;
+
+statement ok
+CREATE TABLE rqry AS SELECT row_id, b, c, (row_id % 3)::DOUBLE AS k FROM t WHERE row_id >= 150;
+
+# --- TabPFN v2: two repos ---
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('classification', model := 'tabpfn-v2') ORDER BY 1
+----
+model.ckpt 29016968 downloaded
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('regression', model := 'tabpfn-v2') ORDER BY 1
+----
+model.ckpt 44390977 downloaded
+
+statement error
+SELECT * FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabpfn-v2')
+----
+is missing 127 of the 129 tensors model 'tabpfn-v2' needs
+
+statement error
+SELECT * FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabpfn-v2')
+----
+is missing 128 of the 130 tensors model 'tabpfn-v2' needs
+
+# --- TabPFN-2.5 ---
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('classification', model := 'tabpfn-v2-5') ORDER BY 1
+----
+model.ckpt 42935499 downloaded
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('regression', model := 'tabpfn-v2-5') ORDER BY 1
+----
+model.ckpt 40831995 downloaded
+
+statement error
+SELECT * FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabpfn-v2-5')
+----
+is missing 248 of the 250 tensors model 'tabpfn-v2-5' needs
+
+statement error
+SELECT * FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabpfn-v2-5')
+----
+is missing 190 of the 192 tensors model 'tabpfn-v2-5' needs
+
+# --- RealTabPFN-2.5: same repo as 2.5, its own <task>-real/ directory ---
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('classification', model := 'tabpfn-v2-5-real') ORDER BY 1
+----
+model.ckpt 42929707 downloaded
+
+query T
+SELECT parse_filename(file) || ' ' || bytes || ' ' || status FROM tabfm_download('regression', model := 'tabpfn-v2-5-real') ORDER BY 1
+----
+model.ckpt 40831868 downloaded
+
+statement error
+SELECT * FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabpfn-v2-5-real')
+----
+is missing 248 of the 250 tensors model 'tabpfn-v2-5-real' needs
+
+statement error
+SELECT * FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabpfn-v2-5-real')
+----
+is missing 190 of the 192 tensors model 'tabpfn-v2-5-real' needs

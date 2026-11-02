@@ -49,7 +49,7 @@ string HomeDir() {
 
 TEST_CASE("cuda_plugin: CPU and the CUDA plugin agree on the same real weights", "[tabfm][plugin][gpu]") {
 	const string plugin_path = TABFM_CUDA_PLUGIN_PATH;
-	const string base = HomeDir() + "/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorch@main/classification";
+	const string base = HomeDir() + "/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorch@77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83/classification";
 	// Both backends read the same external-data graph: ORT resolves the weights
 	// itself on either side, so nothing but the execution provider differs.
 	const string graph = base + "/graph_ext_classification.onnx";

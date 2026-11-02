@@ -91,7 +91,7 @@ control off by 2.8 or more.
 
 ```bash
 uv run export_orion_bix --config real --contract mask --out ./mask
-W=~/.cache/anofox-tabfm/Lexsi__Orion-BiX@main/classification/model.safetensors   # written by tabfm_download
+W=~/.cache/anofox-tabfm/Lexsi__Orion-BiX@9504590d769648eeeb7ecfb0fead2a01c11fb12a/classification/model.safetensors   # written by tabfm_download
 uv run python ../make_migraphx_graph.py classification --weights $W \
     --graph ./mask/graph_mask_orion_bix_classification.onnx \
     --tensor-map ../../resources/tensor_map_orion_bix_classification.json \

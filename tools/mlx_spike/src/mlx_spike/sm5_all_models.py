@@ -36,17 +36,17 @@ from .onnx_mlx import OnnxMlxGraph, UnsupportedOp
 
 # Where a real checkpoint already lives, keyed by graph stem.
 REAL_WEIGHTS = {
-    "graph_ext_mitra_classification": CACHE_ROOT / "autogluon__mitra-classifier@main" / "model.safetensors",
-    "graph_ext_mitra_regression": CACHE_ROOT / "autogluon__mitra-regressor@main" / "model.safetensors",
-    "graph_ext_regression": CACHE_ROOT / "google__tabfm-1.0.0-pytorch@main" / "regression" / "model.safetensors",
-    "graph_ext_tabicl_classification": CACHE_ROOT / "jingang__TabICL@main" / "classification" / "model.safetensors",
-    "graph_ext_tabicl_regression": CACHE_ROOT / "jingang__TabICL@main" / "regression" / "model.safetensors",
-    "graph_ext_orion_bix_classification": CACHE_ROOT / "Lexsi__Orion-BiX@main" / "classification" / "model.safetensors",
-    "graph_ext_tabpfn_classification": CACHE_ROOT / "Prior-Labs__TabPFN-v2-clf@main" / "classification" / "model.safetensors",
-    "graph_ext_tabpfn_regression": CACHE_ROOT / "Prior-Labs__TabPFN-v2-reg@main" / "regression" / "model.safetensors",
-    "graph_ext_tabpfn25_classification": CACHE_ROOT / "Prior-Labs__tabpfn_2_5@main" / "classification" / "model.safetensors",
-    "graph_ext_tabpfn25_regression": CACHE_ROOT / "Prior-Labs__tabpfn_2_5@main" / "regression" / "model.safetensors",
-    "graph_ext_tabpfn3_classification": CACHE_ROOT / "Prior-Labs__tabpfn_3@main" / "classification" / "model.safetensors",
+    "graph_ext_mitra_classification": CACHE_ROOT / "autogluon__mitra-classifier@c425e9fa0910a6be1c494321792e7ba2a1367b1a" / "model.safetensors",
+    "graph_ext_mitra_regression": CACHE_ROOT / "autogluon__mitra-regressor@5f277aa8f69042d39d6ac3612aed18bb9279bd95" / "model.safetensors",
+    "graph_ext_regression": CACHE_ROOT / "google__tabfm-1.0.0-pytorch@77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83" / "regression" / "model.safetensors",
+    "graph_ext_tabicl_classification": CACHE_ROOT / "jingang__TabICL@4dcd344ece2c00be9e831fdd35bed57b5ad83e19" / "classification" / "model.safetensors",
+    "graph_ext_tabicl_regression": CACHE_ROOT / "jingang__TabICL@4dcd344ece2c00be9e831fdd35bed57b5ad83e19" / "regression" / "model.safetensors",
+    "graph_ext_orion_bix_classification": CACHE_ROOT / "Lexsi__Orion-BiX@9504590d769648eeeb7ecfb0fead2a01c11fb12a" / "classification" / "model.safetensors",
+    "graph_ext_tabpfn_classification": CACHE_ROOT / "Prior-Labs__TabPFN-v2-clf@275f19d2add9c2c0de38f9ebaded3856599fa2e7" / "classification" / "model.safetensors",
+    "graph_ext_tabpfn_regression": CACHE_ROOT / "Prior-Labs__TabPFN-v2-reg@02a44705ff7790b50cded404bc59adb94da456a1" / "regression" / "model.safetensors",
+    "graph_ext_tabpfn25_classification": CACHE_ROOT / "Prior-Labs__tabpfn_2_5@6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b" / "classification" / "model.safetensors",
+    "graph_ext_tabpfn25_regression": CACHE_ROOT / "Prior-Labs__tabpfn_2_5@6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b" / "regression" / "model.safetensors",
+    "graph_ext_tabpfn3_classification": CACHE_ROOT / "Prior-Labs__tabpfn_3@24a16a89d245878b846555110985634aa2e656d7" / "classification" / "model.safetensors",
     # tabpfn-v3 regression has no converted weights: the released checkpoint
     # carries no FullSupportBarDistribution criterion.borders, so
     # tools/export_tabpfn/convert_weights.py cannot build its point-estimate

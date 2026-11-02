@@ -54,19 +54,20 @@ which = {"classification": "classifier", "regression": "regressor"}[task]
 # The cache-relative directory the safetensors lands in. `real` gets its own so
 # it cannot collide with the default checkpoint of the same repo (see docstring).
 task_dir = f"{task}-real" if variant == "real" else task
-revision = "main"
 
 if arch == "v2.5":
     slug_name = "tabpfn25"
     repo_slug = "Prior-Labs__tabpfn_2_5"
+    # Every revision below is pinned like its registry entry (src/tabfm_registry.cpp), so the download
+    # and the cache dir match the engine's.
+    revision = "6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b"
     hf_file = f"tabpfn-v2.5-{which}-v2.5_{variant}.ckpt"
-    hf_url = f"https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/main/{hf_file}"
+    hf_url = f"https://huggingface.co/Prior-Labs/tabpfn_2_5/resolve/{revision}/{hf_file}"
 elif arch == "v2.6":
     # 2.6 is its own architecture (rmsnorm, deeper per-layer parameterisation)
     # but exports through the 2.5 patch surface — see tabpfn_patched.ARCHES.
     slug_name = "tabpfn26"
     repo_slug = "Prior-Labs__tabpfn_2_6"
-    # Pinned like the registry entry (src/tabfm_registry.cpp), so the cache dir matches the engine's.
     revision = "24148873a9a5992b429833d07363690dcffd02a8"
     hf_file = f"tabpfn-v2.6-{which}-v2.6_default.ckpt"
     hf_url = f"https://huggingface.co/Prior-Labs/tabpfn_2_6/resolve/{revision}/{hf_file}"
@@ -76,12 +77,17 @@ elif arch == "v3":
     # produced v2 weights while printing a v3-shaped success line.
     slug_name = "tabpfn3"
     repo_slug = "Prior-Labs__tabpfn_3"
+    revision = "24a16a89d245878b846555110985634aa2e656d7"
     hf_file = f"tabpfn-v3-{which}-v3_default.ckpt"
-    hf_url = f"https://huggingface.co/Prior-Labs/tabpfn_3/resolve/main/{hf_file}"
+    hf_url = f"https://huggingface.co/Prior-Labs/tabpfn_3/resolve/{revision}/{hf_file}"
 else:
     slug_name = "tabpfn"
     repo_slug = {"classification": "Prior-Labs__TabPFN-v2-clf",
                  "regression": "Prior-Labs__TabPFN-v2-reg"}[task]
+    revision = {"classification": "275f19d2add9c2c0de38f9ebaded3856599fa2e7",
+                "regression": "02a44705ff7790b50cded404bc59adb94da456a1"}[task]
+    hf_file = {"classification": "tabpfn-v2-classifier.ckpt", "regression": "tabpfn-v2-regressor.ckpt"}[task]
+    hf_url = f"https://huggingface.co/{repo_slug.replace('__', '/')}/resolve/{revision}/{hf_file}"
 
 tmap_path = (pathlib.Path(__file__).resolve().parents[2]
              / f"resources/tensor_map_{slug_name}_{task}.json")
@@ -90,20 +96,14 @@ inits = tmap.get("initializers", tmap)  # onnx-init-name -> checkpoint key
 want_keys = set(inits.values())  # checkpoint-namespace keys the graph references
 
 tmp = pathlib.Path(tempfile.mkdtemp())
-if arch in ("v2.5", "v2.6", "v3"):
-    # The tabpfn_2_5 repo carries `extra_gated_fields`, but the resolve endpoint
-    # serves anonymously; if that ever changes this download 401s and the user
-    # needs an HF token (see docs/REAL_MODELS.md).
-    import urllib.request
-    ckpt = tmp / hf_file
-    print(f"downloading {hf_file} (transient) ...", flush=True)
-    urllib.request.urlretrieve(hf_url, ckpt)
-else:
-    from tabpfn.model_loading import download_model, ModelVersion
-    ckpt = tmp / f"tabpfn-v2-{which}.ckpt"
-    print(f"downloading real TabPFN v2 {which} ckpt (transient) ...", flush=True)
-    download_model(to=ckpt, version=ModelVersion.V2, which=which, model_name=ckpt.name)
-    ckpt = next(tmp.rglob("*.ckpt"))
+# Fetched from the pinned revision for every arch (v2 used to go through tabpfn's download_model, which
+# follows the repo's main branch). The Prior Labs repos carry `extra_gated_fields`, but the resolve
+# endpoint serves anonymously; if that ever changes this download 401s and the user needs an HF token
+# (see docs/REAL_MODELS.md).
+import urllib.request
+ckpt = tmp / hf_file
+print(f"downloading {hf_file} @ {revision[:8]} (transient) ...", flush=True)
+urllib.request.urlretrieve(hf_url, ckpt)
 
 model = load_real_model(task, str(ckpt), arch=arch)
 sd = model.state_dict()

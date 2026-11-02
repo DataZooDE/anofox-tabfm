@@ -527,3 +527,37 @@ TEST_CASE("registry: Kumo-Tabular ships built in at three sizes, commercial and 
 	}
 	REQUIRE(paths.size() == 6);
 }
+
+TEST_CASE("registry: every built-in pins its weights to a Hugging Face commit, with the byte count it serves",
+          "[tabfm][registry]") {
+	// A moving "main" let an upstream re-upload refuse every fresh download (TabPFN-2.6's regressor was
+	// recorded at a size no revision ever served). Each built-in names one commit, fetches its files from
+	// that commit, and declares each file's size there, so a later upload can neither be refused nor be
+	// silently paired with graphs and tensor maps exported against another one.
+	auto is_commit = [](const string &rev) {
+		if (rev.size() != 40) {
+			return false;
+		}
+		for (auto c : rev) {
+			if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
+				return false;
+			}
+		}
+		return true;
+	};
+	for (auto &spec : BuiltinModelSpecs()) {
+		for (auto &entry : spec.tasks) {
+			auto &t = entry.second;
+			INFO(spec.id << " " << TabFMTaskName(entry.first) << " @ " << t.revision);
+			REQUIRE(is_commit(t.revision));
+			REQUIRE_FALSE(t.files.empty());
+			for (auto &f : t.files) {
+				INFO(f.path << " " << f.url);
+				REQUIRE(f.bytes > 0);
+				if (!f.url.empty()) {
+					REQUIRE_THAT(f.url, Contains("/resolve/" + t.revision + "/"));
+				}
+			}
+		}
+	}
+}

@@ -18,12 +18,12 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 |---|---|---|---|---|
 | **Google TabFM** (`tabfm-v1`) | non-commercial (gated) | ✅ shipped | yes | the original; 1.6 B params / 6.56 GB |
 | **Mitra** (`mitra`) | Apache-2.0 (commercial) | ✅ shipped | **yes — zero C++ changes** | 72 M / ~303 MB; iris 0.962 in ~2.4 s |
-| **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert |
-| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; one-time ckpt→safetensors convert; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
+| **TabPFN v2** (`tabpfn-v2`) | Prior Labs (Apache-2.0 + attribution) | ✅ shipped | **yes — classify + regress** | ~29 MB; iris **0.962**, wine MSE **0.482**; one-time ckpt→safetensors convert (legacy fused-QKV layout, see [TabPFN-2.5](#tabpfn-25--shipped-classify--regress)) |
+| **TabICL v2** (`tabicl-v2`) | BSD-3-Clause (commercial) | ✅ shipped | **yes — classify + regress** | ~110 MB; iris **0.962**, wine MSE **0.586**; the `.ckpt` is read natively, and `tabfm_download` writes the GPU `model.safetensors` (no conversion step); **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
 | **Orion-BiX** (`orion-bix`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M / ~315 MB; the `.ckpt` is read natively (no conversion step); upstream ships no regressor; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
-| **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required |
-| **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; ckpt→safetensors convert required |
-| **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes** |
+| **TabPFN-2.5** (`tabpfn-v2-5`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 10.7 M clf / 10.2 M reg; 24- and 18-layer heads; ckpt→safetensors convert required (the `.ckpt` splits and transposes attention weights, see below) |
+| **TabPFN-3** (`tabpfn-v3`) | tabpfn-3-license-v1.0 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | 53.2 M; export parity 2.4e-07 clf / 2.4e-06 reg; reads the downloaded `.ckpt` directly (no convert step since the classifier's map says `complete`) |
+| **RealTabPFN-2.5** (`tabpfn-v2-5-real`) | tabpfn-2.5-license-v1.1 (**non-commercial**) | ✅ shipped | **yes — classify + regress** | same architecture as 2.5, real-data continued pre-training; **reuses 2.5's graph, map and ext graph — zero new embedded bytes**; ckpt→safetensors convert required, like 2.5 |
 | **Orion-MSP** (`orion-msp`) | MIT (commercial) | ✅ shipped | **yes — classify only** | 27 M; frozen seeded attention mask (upstream redraws it per call); the `.ckpt` is read natively; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
 | **TabDPT** (`tabdpt`) | Apache-2.0 (commercial) | ✅ shipped | **yes — classify + regress** | 63.5 M; **no ckpt conversion — Layer 6 ship safetensors**; both tasks share one file; parity 3.7e-07 clf / 2.9e-06 reg |
 | **Causilo** (`causilo`) | Causilo License v1.0 (**non-commercial**; hosted/API/SaaS needs a separate license) | ✅ shipped | **yes — classify + regress** | 36.1 M clf / 37.1 M reg; **no conversion — Nums AI ship safetensors**, ungated; single-estimator parity with upstream 1e-5; CPU ~0.15 s at 150 rows, ~2.2 s at 1000x50; **ROCm served** (masked graph; 0/100 label diffs vs CPU, regression 3.6e-5) |
@@ -55,9 +55,16 @@ is no runtime `randn` column-embedding table to freeze.
 
 ```bash
 cd tools/export_tabpfn
-uv run python convert_weights.py classification   # writes model.safetensors
+uv run python convert_weights.py classification --arch=v3   # optional: tabfm_download writes the same file
 uv run python make_fixture.py --arch=v3           # regenerate the CI fixture
 ```
+
+Both tasks run from the downloaded `.ckpt` with no conversion. The classifier's checkpoint also stores
+`regression_borders`, a tensor its graph does not use: until the classification tensor map declared
+`"complete": true`, the CPU offered it to ORT under the `m.` fallback name and every prediction from a fresh
+download failed ("Failed to find existing initializer with name m.regression_borders"); only a cache that
+already held `convert_weights.py`'s output worked. `tabfm_download` now writes both GPU files, byte-identical to
+`convert_weights.py`'s. `test/sql/tabfm_fresh_download.test` covers both tasks from an empty cache.
 
 Offline fixture: `test/sql/tabfm_tabpfn3.test`.
 
@@ -241,7 +248,7 @@ for c in real35 real35fast; do for t in classification regression; do
   uv run export_tabpfn35 --task $t --config $c --out ../../resources
   uv run export_tabpfn35 --task $t --config $c --contract mask --out /tmp/mask35
 done; done
-uv run python parity_real.py ~/.cache/anofox-tabfm/Prior-Labs__tabpfn_3_5@main/v3.5/model.safetensors --onnx ../../resources
+uv run python parity_real.py ~/.cache/anofox-tabfm/Prior-Labs__tabpfn_3_5@06bf2ba35c80a92a3b9abb436b99cf49e7a0365e/v3.5/model.safetensors --onnx ../../resources
 # then tools/make_external_graph.py --pin-cuda-shapes (ext) and tools/make_migraphx_graph.py --dynamic
 # (masked) against the downloaded safetensors; header shas 8a237b22... (3.5), 733da85d... (Fast).
 # --pin-cuda-shapes is what lets the ext graphs run on CUDA (the CUDA paragraph above); CI checks it.
@@ -282,6 +289,18 @@ cd tools/export_tabpfn
 uv run python convert_weights.py classification --arch=v2.5 --variant=real
 uv run python convert_weights.py regression     --arch=v2.5 --variant=real
 ```
+
+**Still a Python step.** Like 2.5 (and v2), the released `.ckpt` is in Prior Labs' legacy layout, and the
+graphs were exported against the layout the current `tabpfn` package builds. Comparing every tensor of
+`convert_weights.py`'s output with the raw `state_dict` (both tasks, both 2.5 checkpoints, pinned revision
+`6c45f3a6`): 58 clf / 48 reg tensors are plain renames (`transformer_encoder.layers.N.mlp.linear1` →
+`blocks.N.mlp.0`, `encoder.5.layer` → `feature_group_embedder`, `decoder_dict.standard` → `output_projection`, ...),
+which `"ckpt_aliases"` could express; but each attention block's `_w_qkv` `[3, H, D, E]` becomes three
+`{q,k,v}_projection.weight` `[H*D, E]` (a split and reshape) and its `_w_out` `[H, D, E]` becomes
+`out_projection.weight` = `_w_out.reshape(H*D, E).T` (a **transpose**, 48 clf / 36 reg tensors). A transpose
+reorders values, so neither an alias nor `"complete"` covers it, and the engine refuses the raw `.ckpt` with
+the conversion hint (`test/sql/tabfm_fresh_download_convert.test`). Serving it natively needs a per-tensor
+view/transpose transform in the tensor map, applied on the CPU path and in `tabfm_download`'s GPU writer.
 
 Offline fixture: `test/sql/tabfm_tabpfn25_real.test` (shares the tabpfn25
 fixture — sharing is the point). Real-weight behaviour:
@@ -379,7 +398,7 @@ so a wider table would make that pad negative.
 ```bash
 cd tools/export_tabdpt
 uv run export_tabdpt --task classification --config real \
-    --weights ~/.cache/anofox-tabfm/Layer6__TabDPT@main/model.safetensors \
+    --weights ~/.cache/anofox-tabfm/Layer6__TabDPT@a5ca6e01c0fa09ec68c73e958e5199d1932abb3a/model.safetensors \
     --out ../../resources
 uv run make_tabdpt_fixture ../../test/fixtures/tabdpt
 ```
@@ -424,7 +443,7 @@ tensors under `unused_by_graph` and the engine skips exactly those (opt-in; a ma
 behaves as before; every other catalog map was checked to cover its checkpoint fully). This is
 the one engine change, covered by `test/sql/tabfm_tabdpt13.test`.
 
-**Cache path.** Same repo ⇒ same cache slug (`Layer6__TabDPT@main`) as v1.2, so the file lives
+**Cache path.** Same repo ⇒ same cache slug (`Layer6__TabDPT@a5ca6e01c0fa09ec68c73e958e5199d1932abb3a`) as v1.2, so the file lives
 at `tabdpt1_3/model.safetensors` — the `tabpfn-v2-5-real` rule. The bundled GPU graphs are
 staged beside it (stem `tabdpt13`), so v1.2's staged graphs are untouched too.
 
@@ -443,7 +462,7 @@ ROCm: served on `rocm:0`; numbers in the ROCm table of the Mitra-v2 section.
 
 ```bash
 cd tools/export_tabdpt
-W=~/.cache/anofox-tabfm/Layer6__TabDPT@main/tabdpt1_3/model.safetensors
+W=~/.cache/anofox-tabfm/Layer6__TabDPT@a5ca6e01c0fa09ec68c73e958e5199d1932abb3a/tabdpt1_3/model.safetensors
 for t in classification regression; do
   uv run export_tabdpt --task $t --config real13 --weights $W --out ../../resources
   uv run export_tabdpt --task $t --config real13 --contract mask --weights $W --out /tmp/mask13
@@ -555,6 +574,18 @@ each, so CI must not fetch them and the licence wall forbids committing them.
 ```bash
 TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
 ```
+
+It runs on a developer's cache, which can hold files a new user never has. The `tabfm_fresh_download*.test`
+trio downloads into an empty cache instead, from the Hugging Face commit each registry entry pins (every
+built-in names a commit, not `main`, and declares each file's size there; the registry test asserts both):
+`tabfm_fresh_download.test` for the checkpoint-shipped models that need no Python step (Orion-MSP, Orion-BiX,
+Kumo-Tabular small, TabPFN-2.6, TabICL v2, TabPFN-3), `tabfm_fresh_download_safetensors.test` for Mitra,
+Mitra-v2, TabDPT v1.2/v1.3 and TabPFN-3.5/3.5-Fast, and `tabfm_fresh_download_convert.test` for the TabPFN
+checkpoints that still refuse without `convert_weights.py` (v2, 2.5, RealTabPFN-2.5). Together about 4.7 GB.
+
+The cache directory is `<repo>@<commit>`, so a cache written under `@main` by an earlier release is not found
+again; `python3 tools/migrate_cache_revisions.py` (dry run; `--apply` to rename) moves each `@main` directory
+whose weights match the pinned sizes (`--sha256` to also hash them).
 
 Measured on that split (accuracy): `tabpfn-v2-5-real` 0.984, `tabpfn-v2-6`
 0.984, `tabpfn-v2-5` 0.969, `tabdpt-v1-3` 0.969, `mitra-v2` 0.953, `tabdpt` 0.953 (0.938 on the
@@ -706,7 +737,7 @@ so those numbers do not transfer. Measured in-context here instead.
 
 ```bash
 cd tools/export_mitra
-W=~/.cache/anofox-tabfm/autogluon__mitra-regressor-2@main/model.safetensors
+W=~/.cache/anofox-tabfm/autogluon__mitra-regressor-2@246c7d310fff04296a2388df5f448e3ffe809283/model.safetensors
 uv run export_mitra --task regression --config real2 --weights $W --out ../../resources
 uv run export_mitra --task regression --config fixture2 --out ../../test/fixtures/mitra2 \
     --emit-weights ../../test/fixtures/mitra2/model_regression.safetensors \
@@ -1546,9 +1577,10 @@ Three findings from the export:
 Export parity **1.45e-07** (classification). `convert_weights.py --arch=v2.5`
 confirms **250/250** and **192/192** tensor-map keys resolve against the real
 checkpoints. As for v2 the conversion step is *required*, not optional: the
-released `.ckpt` stores fused QKV projections, so only 2 of 250 map keys appear
-in it directly — the engine consumes the converted safetensors named by the
-tensor map's `safetensors` field.
+released `.ckpt` stores fused QKV projections and a transposed output projection
+in the legacy key layout, so only 2 of 250 map keys appear in it directly (the exact
+transform is under [RealTabPFN-2.5](#realtabpfn-25--done)) — the engine consumes the
+converted safetensors named by the tensor map's `safetensors` field.
 
 Note the `Prior-Labs/tabpfn_2_5` repo carries `extra_gated_fields`, but its
 `resolve` endpoint currently serves anonymously; if that changes, the download
