@@ -330,20 +330,15 @@ inline string GpuGraphKindFor(const string &backend) {
 	return (backend == "rocm" || backend == "migraphx") ? "migraphx_graph" : "ext_graph";
 }
 
-//! Why a bundled ext graph is refused on CUDA although the plugin loads it. Measured on an RTX 4090 with the
-//! released v2026.10.31 artefacts (tools/gpu_test/cuda_catalog.sh, 100-row tables): every other bundled ext
-//! graph agreed with the CPU there. Both TabPFN-3.5 graphs fail inside ONNX Runtime 1.29's CUDA execution
-//! provider on both tasks -- the same graphs run on ORT 1.29's CPU EP -- and reproduce outside this
-//! extension with plain onnxruntime-gpu 1.29.0 at every graph optimisation level, with or without the memory
-//! pattern. Refusing by name keeps 'auto' on the CPU instead of erroring after it chose CUDA. Remove an entry
-//! only with a cuda_catalog.sh run that shows the model agreeing with the CPU.
+//! Why a bundled ext graph is refused on CUDA although the plugin loads it. Empty today: every bundled ext
+//! graph agreed with the CPU on an RTX 4090 (tools/gpu_test/cuda_catalog.sh). TabPFN-3.5 and 3.5-Fast were
+//! listed here until their ext graphs gained the shape-tensor pins of tools/pin_cuda_shape_operands.py: ONNX
+//! Runtime 1.29's CUDA session reused the CPU buffer of a live shape tensor, so an Expand received a wrong
+//! shape (docs/UPSTREAM_ORT_ISSUES.md, Draft 3). Add an entry only with a cuda_catalog.sh run that shows the
+//! model disagreeing with (or failing where) the CPU does not; remove one only with a run that shows it agreeing.
 inline string CudaKnownWrong(const string &model, const string &task) {
-	(void)task; // both tasks fail
-	if (model == "tabpfn-v3-5" || model == "tabpfn-v3-5-fast") {
-		return "its graph fails inside ONNX Runtime 1.29's CUDA execution provider (an Expand/Where node "
-		       "receives a wrong shape operand: 'node_expand: left operand cannot broadcast', 'Shape mismatch "
-		       "attempting to re-use buffer'), measured on an RTX 4090 for both tasks";
-	}
+	(void)model;
+	(void)task;
 	return string();
 }
 

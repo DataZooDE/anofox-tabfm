@@ -193,14 +193,36 @@ row:
 | 3.5 | cls | 0/30 query, 0/70 context labels; max prob diff 1.1e-06 | 3724 s |
 | 3.5 | reg | max abs 1.3e-04, corr 1.000000, 100 distinct | ~3060 s (inferred from the .mxr timestamp: the timed run was interrupted) |
 
-**CUDA: refused by name.** Measured on an RTX 4090 (RunPod; released v2026.10.31 extension and CUDA plugin, `tools/gpu_test/cuda_catalog.sh`, 70 context / 30 query rows, 4 features, fp32), both graphs of both variants fail inside ONNX Runtime 1.29's
-CUDA execution provider, on both tasks: an `Expand` (`node_expand: left operand cannot broadcast on dim 2`)
-or a `Where` (`Shape mismatch attempting to re-use buffer {1,1,100} != {1,5,100}`) receives a wrong shape
-operand. The same graphs run on ORT 1.29's CPU EP. It reproduces outside the extension with plain
-`onnxruntime-gpu` 1.29.0 (the CUDA-12 wheel the plugin ships) at every graph optimisation level, with and
-without the memory pattern, and with the graph's `value_info` stripped, so it is not a tabfm session option.
-Until the cause is found the models are refused on `cuda` (`CudaKnownWrong`, `src/include/tabfm_model_spec.hpp`):
-`tabfm_backends()` names the reason, and `auto` serves them on the CPU instead of failing after it picked CUDA.
+**CUDA: served, after a graph-side workaround for an ONNX Runtime bug.** The v2026.11.01 catalog run (RTX 4090,
+`tools/gpu_test/cuda_catalog.sh`) found both graphs of both variants failing inside ONNX Runtime 1.29's CUDA
+execution provider: `node_expand: left operand cannot broadcast on dim 2` (regression) and
+`Shape mismatch attempting to re-use buffer {1,1,100} != {1,5,100}` at `node_where_88` (classification). The
+cause, measured with plain `onnxruntime-gpu` 1.29.0 (CUDA-12 build) on an RTX 4090: in a CUDA session the shape
+subgraph (`Shape -> Squeeze -> Add/Min -> Reshape -> Concat`) runs on the CPU and feeds host-side operands of CUDA
+kernels, and ORT hands the CPU buffer of one live shape tensor to another. `node_expand` gets the shape
+`{170, 1, 170}` where it should get `{170, 1, 5}`: the feature count is overwritten by the row-count
+expression. With the CPU arena off it reads freed memory (`{170, 1, 298762}`). The CPU EP runs the same
+graphs correctly. ORT 1.31.1 (the CUDA-13 PyPI build) fails the same way, so an ORT upgrade does not fix it.
+
+The workaround is the issue #21 one, applied more widely: `tools/pin_cuda_shape_operands.py` names every
+shape-computation tensor (the backward closure of every host-read operand: Expand's shape, Reshape, Range,
+Slice, ...) as a graph output (1122-2123 per graph). Graph outputs are never reused. The engine and the MLX
+interpreter both read only the first output (`logits`), so nothing else changes. The re-export command is
+`make_external_graph.py --pin-cuda-shapes`, which reproduces the shipped bytes. CI (`graph_invariants.yml`) and
+a unit test keep the pins in place. Verified with plain `onnxruntime-gpu` 1.29.0 on an RTX 4090, the runtime the
+CUDA plugin bundles:
+
+| check | result |
+|---|---|
+| pinned graphs, all 4, synthesized weights, 7 shapes (T 31-1100, H 1-50) in one session each | all run; regression max abs vs CPU ≤ 3e-8, classification logits ≤ 4.1e-4 (ORT's default TF32 on) |
+| 3.5-Fast, real weights, both tasks, fp32 (`use_tf32=0`, as the plugin sets it) | 0/160 query-label differences, max prob diff 8.8e-06; regression max abs 1.8e-05 |
+| 3.5, real weights, same check (RTX 3090) | 0/160 query-label differences, max prob diff 3.2e-06; regression max abs 4.0e-05 |
+| CPU, real weights, all 4 graphs, pinned vs the previous graph | bit-identical |
+| unpinned graphs, same pods | fail as above (ORT 1.29.0 and 1.31.1; RTX 4090 and RTX 3090) |
+
+**Not yet verified:** the full catalog run through the released extension and plugin (`cuda_catalog.sh`). The local build cannot be loaded on the pod images (glibc), so the
+graph was tested under the same ORT version the plugin bundles, not inside the extension. The `CudaKnownWrong`
+refusal is removed.
 
 The compiles are the longest in the catalog (v3: ~16 min). 3.5's ICL stack is
 1024 wide and 24 deep, and MIGraphX compiles per (rows, features) bucket.
@@ -220,8 +242,9 @@ for c in real35 real35fast; do for t in classification regression; do
   uv run export_tabpfn35 --task $t --config $c --contract mask --out /tmp/mask35
 done; done
 uv run python parity_real.py ~/.cache/anofox-tabfm/Prior-Labs__tabpfn_3_5@main/v3.5/model.safetensors --onnx ../../resources
-# then tools/make_external_graph.py (ext) and tools/make_migraphx_graph.py --dynamic (masked)
-# against the downloaded safetensors; header shas 8a237b22... (3.5), 733da85d... (Fast)
+# then tools/make_external_graph.py --pin-cuda-shapes (ext) and tools/make_migraphx_graph.py --dynamic
+# (masked) against the downloaded safetensors; header shas 8a237b22... (3.5), 733da85d... (Fast).
+# --pin-cuda-shapes is what lets the ext graphs run on CUDA (the CUDA paragraph above); CI checks it.
 ```
 
 Offline fixture: `test/sql/tabfm_tabpfn35.test`. ROCm scenario:
