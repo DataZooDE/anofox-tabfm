@@ -5,15 +5,6 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-- **`tabpfn-v3` classification works from a fresh download.** Its `.ckpt` also stores `regression_borders`, which
-  the classification graph does not use; the CPU offered it to ORT under the `m.` fallback name, so every
-  prediction failed ("Failed to find existing initializer with name m.regression_borders") unless the cache
-  already held `convert_weights.py`'s output, and `tabfm_download` wrote no GPU file. The classification tensor
-  map now declares `"complete": true`: the CPU reads the `.ckpt` with no Python step, and `tabfm_download` writes
-  the GPU `model.safetensors` byte-identical to `convert_weights.py`'s (the regressor already did).
-  `tools/export_tabpfn` keeps a map's `"complete"` and `"ckpt_aliases"` when it re-exports.
-
 ### Changed
 - **Every built-in model's weights are pinned to a fixed Hugging Face commit instead of `main`** (and so are the
   file URLs): mitra, mitra-v2, tabpfn-v2, tabpfn-v2-5, tabpfn-v2-5-real, tabpfn-v3, tabpfn-v3-5,
@@ -40,6 +31,20 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 - Fresh-download coverage (`TABFM_REAL_WEIGHTS=1`, empty cache, CPU): `tabfm_fresh_download.test` adds tabicl-v2
   and tabpfn-v3; new `tabfm_fresh_download_safetensors.test` covers mitra, mitra-v2, tabdpt, tabdpt-v1-3,
   tabpfn-v3-5 and tabpfn-v3-5-fast; new `tabfm_fresh_download_convert.test` covers the three above.
+- **`anofox_tabfm_context_cache`: a prepare graph may now emit `context_logits`**, the context rows' own
+  logits computed as the combined graph computes them. When it does, the split path takes the fitted values
+  from it instead of a second query pass over the support rows, so every output row equals the combined
+  graph's and a cache miss no longer pays that pass. No shipped model has a pair yet; the setting stays off by
+  default. Design and the tabicl-v2 spike behind it: docs/CONTEXT_CACHE_PLAN.md (#37).
+
+### Fixed
+- **`tabpfn-v3` classification works from a fresh download.** Its `.ckpt` also stores `regression_borders`, which
+  the classification graph does not use; the CPU offered it to ORT under the `m.` fallback name, so every
+  prediction failed ("Failed to find existing initializer with name m.regression_borders") unless the cache
+  already held `convert_weights.py`'s output, and `tabfm_download` wrote no GPU file. The classification tensor
+  map now declares `"complete": true`: the CPU reads the `.ckpt` with no Python step, and `tabfm_download` writes
+  the GPU `model.safetensors` byte-identical to `convert_weights.py`'s (the regressor already did).
+  `tools/export_tabpfn` keeps a map's `"complete"` and `"ckpt_aliases"` when it re-exports.
 
 ## [v2026.11.01] - 2026-11-01
 
