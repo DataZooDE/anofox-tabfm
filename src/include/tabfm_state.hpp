@@ -174,7 +174,9 @@ public:
 	//! Snapshot for a predict: the entry built for exactly this device and
 	//! precision ("" = a CPU session; the gpu_precision setting does not shape
 	//! those). nullptr if not loaded in that configuration.
-	shared_ptr<LoadedModel> Snapshot(const string &key, const string &device_id, const string &precision) const;
+	//! `split` selects the context-cache session, which has its own slot beside the combined one.
+	shared_ptr<LoadedModel> Snapshot(const string &key, const string &device_id, const string &precision,
+	                                 bool split = false) const;
 	//! Every loaded configuration of `key`, sorted by (device, precision) —
 	//! tabfm_models() reports one row per entry.
 	vector<shared_ptr<LoadedModel>> SnapshotsFor(const string &key) const;

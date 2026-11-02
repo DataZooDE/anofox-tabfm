@@ -302,6 +302,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_metrics_regression.cpp
     test/cpp/test_tabfm_crossval.cpp
     test/cpp/test_tabfm_scoring.cpp
+    test/cpp/test_tabfm_context_cache.cpp
 )
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     # Backend-plugin fixtures (docs/DYNAMIC_BACKENDS.md phase 1). The real GPU

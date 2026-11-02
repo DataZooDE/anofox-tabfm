@@ -58,12 +58,12 @@ FROM tabfm_classify('gc', 'label', features := ['f1','f2','f3','f4','f5','f6','f
                     model := 'tabicl-v2', opts := MAP{'query_batch': '32'})
 JOIN gc USING (f1,f2,f3,f4,f5,f6,f7,f8,f9,f10);
 
-# The cache really ran: one encode, then four query passes against it (100 rows in batches of 32).
+# The cache really ran: one encode, then one hit for the batched call (100 rows in passes of 32).
 query IIII
 SELECT context_entries, context_hits, context_misses, context_bytes > 10000000
-FROM tabfm_models() WHERE model = 'tabicl-v2' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-v2' AND task = 'classification' AND loaded AND context_cache
 ----
-1	4	1	true
+1	1	1	true
 
 # Every row, the 500 context rows included: same label, top-class probability within 1e-5.
 query IIII
@@ -120,9 +120,9 @@ JOIN gr USING (f1,f2,f3,f4,f5,f6,f7,f8,f9,f10);
 
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-v2' AND task = 'regression' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-v2' AND task = 'regression' AND loaded AND context_cache
 ----
-1	4	1
+1	1	1
 
 # Within 1e-5 of the target's spread (std ~3.9 here), every row.
 query III

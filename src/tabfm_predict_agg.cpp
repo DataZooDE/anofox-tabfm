@@ -448,17 +448,7 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, duckdb_comp
 	if (context.TryGetCurrentSetting("anofox_tabfm_context_cache", setting) && !setting.IsNull()) {
 		bind->context.context_cache = BooleanValue::Get(setting);
 	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_context_cache_memory", setting) && !setting.IsNull()) {
-		// Validated at SET time; a bare '0' (no unit) is the one form DuckDB's parser does not take.
-		auto raw = setting.ToString();
-		StringUtil::Trim(raw);
-		idx_t bytes = 0;
-		if (raw == "0") {
-			bind->context.context_cache_bytes = 0;
-		} else if (StringUtil::TryParseFormattedBytes(raw, bytes).empty()) {
-			bind->context.context_cache_bytes = bytes;
-		}
-	}
+	// anofox_tabfm_context_cache_memory is instance-wide and read at execution (tabfm_engine.cpp).
 	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
 		bind->context.mxr_source = setting.ToString();
 	}

@@ -1294,6 +1294,9 @@ struct ModelsRow {
 	int64_t context_entries = 0;
 	int64_t context_hits = 0;
 	int64_t context_misses = 0;
+	//! This loaded session is the context-cache (split) one. It coexists with the combined session of the
+	//! same device, which generation, imputation and connections with the kill switch on use.
+	bool context_cache = false;
 };
 
 struct ModelsBindData : public TableFunctionData {};
@@ -1309,11 +1312,13 @@ struct ModelsGlobalState : public GlobalTableFunctionState {
 unique_ptr<FunctionData> ModelsBind(ClientContext &context, TableFunctionBindInput &input,
                                     vector<LogicalType> &return_types, duckdb_compat::BindNames &names) {
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_models");
-	names = {"model",        "task",          "revision",     "path",          "bytes",         "loaded",
-	         "license",      "device",        "context_bytes", "context_entries", "context_hits", "context_misses"};
+	names = {"model",         "task",          "revision",        "path",         "bytes",
+	         "loaded",        "license",       "device",          "context_cache", "context_bytes",
+	         "context_entries", "context_hits", "context_misses"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                LogicalType::BIGINT,  LogicalType::BOOLEAN, LogicalType::VARCHAR, LogicalType::VARCHAR,
-	                LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT};
+	                LogicalType::BOOLEAN, LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,
+	                LogicalType::BIGINT};
 	return make_uniq<ModelsBindData>();
 }
 
@@ -1370,6 +1375,7 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 				ModelsRow loaded_row = row;
 				loaded_row.loaded = true;
 				loaded_row.device = snapshot->device_id;
+				loaded_row.context_cache = snapshot->split_context;
 				if (auto stats = snapshot->context_stats) {
 					loaded_row.context_bytes = NumericCast<int64_t>(stats->bytes.load());
 					loaded_row.context_entries = NumericCast<int64_t>(stats->entries.load());
@@ -1419,10 +1425,11 @@ void ModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 		output.SetValue(5, out, Value::BOOLEAN(row.loaded));
 		output.SetValue(6, out, Value(row.license));
 		output.SetValue(7, out, Value(row.device));
-		output.SetValue(8, out, Value::BIGINT(row.context_bytes));
-		output.SetValue(9, out, Value::BIGINT(row.context_entries));
-		output.SetValue(10, out, Value::BIGINT(row.context_hits));
-		output.SetValue(11, out, Value::BIGINT(row.context_misses));
+		output.SetValue(8, out, Value::BOOLEAN(row.context_cache));
+		output.SetValue(9, out, Value::BIGINT(row.context_bytes));
+		output.SetValue(10, out, Value::BIGINT(row.context_entries));
+		output.SetValue(11, out, Value::BIGINT(row.context_hits));
+		output.SetValue(12, out, Value::BIGINT(row.context_misses));
 		out++;
 	}
 	duckdb_compat::SetChildCardinality(output, out);
@@ -2032,6 +2039,12 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	// other GPU-capable bind. This function used to read them by hand and that
 	// is exactly how it ended up without an ep_path.
 	CaptureGpuDispatchSettings(context, ctx);
+	// Warm the session tabfm_classify/tabfm_regress will use: on the CPU, for a model with an exact pair,
+	// that is the context-cache session (on by default), not the combined one.
+	ctx.context_cache = true;
+	if (context.TryGetCurrentSetting("anofox_tabfm_context_cache", v) && !v.IsNull()) {
+		ctx.context_cache = BooleanValue::Get(v);
+	}
 	names = {"task", "rows", "features", "device", "status"};
 	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR,
 	                LogicalType::VARCHAR};

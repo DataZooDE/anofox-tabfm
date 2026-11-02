@@ -156,6 +156,15 @@ bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const stri
 //! The ops of a GPU graph that the 'mlx' backend cannot execute (sorted; empty = runnable): the bundled
 //! graph when `bundled_graph` is non-null, else the file at `graph_path`. Memoized per graph. Defined in
 //! tabfm_engine.cpp, for the same reason as WeightsHeaderMatches.
+//! Why a prepare/query graph pair cannot serve the context cache, or "" when it can. The pair is exact when
+//! the prepare graph takes exactly (x, y) and emits `context_logits` plus every state tensor the query graph
+//! reads; the query graph takes x (and optionally y) plus that state and emits `logits`; and the combined
+//! graph takes nothing beyond (x, y) -- an input such as cat_mask or d would not be part of the cache key.
+//! Graph I/O names only, so it is a pure function. The engine serves the combined graph for any other pair.
+string ContextCachePairProblem(const vector<string> &prepare_inputs, const vector<string> &prepare_outputs,
+                               const vector<string> &query_inputs, const vector<string> &query_outputs,
+                               const vector<string> &combined_inputs);
+
 vector<string> MlxUnsupportedOps(const char *bundled_graph, idx_t bundled_size, const string &graph_path);
 
 //! Lowercase hex SHA-256. Defined in tabfm_engine.cpp.
@@ -215,7 +224,7 @@ struct PredictContext {
 	bool context_cache = false;
 	//! SET anofox_tabfm_context_cache_memory, in bytes: the budget for cached
 	//! contexts per loaded model; least recently used are evicted beyond it.
-	idx_t context_cache_bytes = 1000000000; // '1GB', as DuckDB parses it (1000^3)
+	idx_t context_cache_bytes = 256000000; // '256MB', as DuckDB parses it (1000^2)
 	//! SET anofox_tabfm_cpu_prepack — ORT weight prepacking on the CPU EP: faster
 	//! matmuls at ~+16% RSS. On by default now that external-data keeps RSS low.
 	bool cpu_prepack = true;

@@ -205,11 +205,11 @@ SELECT current_setting('anofox_tabfm_mxr_source')
 # --- forward pass against the CI fixture lives in those suites (not here) so
 # --- this settings suite stays engine-free and portable to every CI platform.
 
-# The context cache (docs/CONTEXT_CACHE_PLAN.md): on by default, with a 1 GB budget per loaded model.
+# The context cache (docs/CONTEXT_CACHE_PLAN.md): on by default, with a 256 MB budget per loaded model.
 query TT
 SELECT current_setting('anofox_tabfm_context_cache'), current_setting('anofox_tabfm_context_cache_memory')
 ----
-true	1GB
+true	256MB
 
 statement ok
 SET anofox_tabfm_context_cache_memory = '256MB'
@@ -232,3 +232,9 @@ SET anofox_tabfm_context_cache_memory = '-1GB'
 
 statement ok
 SET anofox_tabfm_context_cache = false
+
+# The budget is instance-wide: a per-connection value is refused.
+statement error
+SET SESSION anofox_tabfm_context_cache_memory = '1GB'
+----
+<REGEX>:.*instance-wide.*

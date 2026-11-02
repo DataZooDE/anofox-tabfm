@@ -50,6 +50,7 @@
 #include <cmath>
 #include <cstring>
 #include <atomic>
+#include <algorithm>
 #include <fstream>
 #include <list>
 
@@ -614,21 +615,34 @@ struct SplitGraphs {
 	}
 };
 
-// Does this prepare graph declare a `context_logits` output? Read from the graph itself, without building
-// an ORT session: the answer decides whether a session is built at all. Memoized because the lookup runs
-// on every call with the cache on; a bundled graph is immutable for the life of the process, a file is
-// keyed by path and size like MlxUnsupportedOps.
-bool PrepareEmitsContextLogits(const SplitHalf &prepare) {
+// Does this pair follow the exact context-cache contract (ContextCachePairProblem)? Read from the graphs
+// themselves, without building an ORT session: the answer decides whether a session is built at all, and
+// a pair that does not qualify is simply not used -- the combined graph serves, rather than every call
+// failing. Memoized because the lookup runs on every call with the cache on. A bundled graph is immutable
+// for the life of the process; a file is keyed by path, size AND mtime, so a re-export in place that keeps
+// the size is re-read.
+string GraphIdentity(const char *bundle, const string &path) {
+	if (bundle) {
+		return "b:" + std::to_string(reinterpret_cast<uintptr_t>(bundle));
+	}
+	struct stat st;
+	if (stat(path.c_str(), &st) != 0) {
+		return "f:" + path + ":missing";
+	}
+	return "f:" + path + ":" + std::to_string(st.st_size) + ":" + std::to_string(static_cast<int64_t>(st.st_mtime));
+}
+
+::anofox::onnxread::Graph ParseGraph(const char *bundle, idx_t size, const string &path, const char *what) {
+	return bundle ? ::anofox::onnxread::ParseModelBytes(reinterpret_cast<const uint8_t *>(bundle), size, what)
+	              : ::anofox::onnxread::ParseModelFile(path);
+}
+
+bool SplitPairIsExact(const SplitGraphs &split, const ResolvedModel &resolved) {
 	static mutex memo_lock;
 	static map<string, bool> memo;
-	string key;
-	if (prepare.bundled()) {
-		key = "b:" + std::to_string(reinterpret_cast<uintptr_t>(prepare.graph_bundle.data));
-	} else {
-		struct stat st;
-		key = "f:" + prepare.graph_path + ":" +
-		      std::to_string(stat(prepare.graph_path.c_str(), &st) == 0 ? st.st_size : -1);
-	}
+	const auto key = GraphIdentity(split.prepare.graph_bundle.data, split.prepare.graph_path) + "|" +
+	                 GraphIdentity(split.query.graph_bundle.data, split.query.graph_path) + "|" +
+	                 GraphIdentity(resolved.graph_bundle.data, resolved.graph_path);
 	{
 		lock_guard<mutex> guard(memo_lock);
 		auto entry = memo.find(key);
@@ -638,14 +652,16 @@ bool PrepareEmitsContextLogits(const SplitHalf &prepare) {
 	}
 	bool exact = false;
 	try {
-		auto graph = prepare.bundled()
-		                 ? ::anofox::onnxread::ParseModelBytes(
-		                       reinterpret_cast<const uint8_t *>(prepare.graph_bundle.data), prepare.graph_bundle.size,
-		                       "bundled prepare graph")
-		                 : ::anofox::onnxread::ParseModelFile(prepare.graph_path);
-		for (auto &output : graph.outputs) {
-			exact = exact || output == "context_logits";
-		}
+		auto prepare = ParseGraph(split.prepare.graph_bundle.data, split.prepare.graph_bundle.size,
+		                          split.prepare.graph_path, "bundled prepare graph");
+		auto query = ParseGraph(split.query.graph_bundle.data, split.query.graph_bundle.size, split.query.graph_path,
+		                        "bundled query graph");
+		auto combined = ParseGraph(resolved.graph_bundle.data, resolved.graph_bundle.size, resolved.graph_path,
+		                           "bundled combined graph");
+		auto as_vec = [](const std::vector<std::string> &v) { return vector<string>(v.begin(), v.end()); };
+		exact = ContextCachePairProblem(as_vec(prepare.inputs), as_vec(prepare.outputs), as_vec(query.inputs),
+		                                as_vec(query.outputs), as_vec(combined.inputs))
+		            .empty();
 	} catch (const std::exception &) {
 		// Unreadable: not served from the cache. The combined graph still answers.
 	}
@@ -705,9 +721,9 @@ SplitGraphs FindSplitGraphs(FileSystem &fs, const ResolvedModel &resolved) {
 	if (!prepare.Available() || !query.Available()) {
 		return split;
 	}
-	split.exact = PrepareEmitsContextLogits(prepare);
 	split.prepare = std::move(prepare);
 	split.query = std::move(query);
+	split.exact = SplitPairIsExact(split, resolved);
 	return split;
 }
 
@@ -739,14 +755,11 @@ struct SplitOrtBackend : public TabFMBackend {
 	//! Counters shared with the LoadedModel, so tabfm_models() can report them.
 	shared_ptr<ContextCacheStats> stats = make_shared_ptr<ContextCacheStats>();
 
-	// The cached contexts, most recently used first. Guarded by the caller's per-device lock (HLD §6),
-	// which is held across the whole forward pass, so no locking is needed here.
-	//
-	// That is only true because the caller keys that lock on the RESOLVED device
-	// (`ResolvedDeviceCached`). It keyed on the raw `anofox_tabfm_device` setting until #42: a connection
-	// on 'auto' and one on 'cpu' resolve to the same backend but took different mutexes, so they did not
-	// exclude each other and could tear this list while one rebuilt it. Anything that re-keys that lock on
-	// the setting again reopens the hole, and nothing here would notice.
+	// The cached contexts, most recently used first, guarded by `cache_lock` (taken for every access).
+	// The caller's per-device lock (HLD §6, keyed on the RESOLVED device since #42) also serializes calls
+	// today, so the lock is uncontended; it is here so that the list stays safe if that lock is ever
+	// re-keyed again -- before #42 a connection on 'auto' and one on 'cpu' took different mutexes for the
+	// same backend.
 	//
 	// The key is the support rows and labels themselves. The 64-bit hash only FINDS a candidate; a hit is
 	// accepted after a full compare of the stored rows. A hash match alone would not fail on a collision,
@@ -763,6 +776,7 @@ struct SplitOrtBackend : public TabFMBackend {
 		idx_t bytes = 0;
 	};
 	std::list<Entry> entries;
+	mutex cache_lock;
 
 	TabFMSessionHandle prepare;
 	TabFMSessionHandle query;
@@ -774,6 +788,17 @@ struct SplitOrtBackend : public TabFMBackend {
 	}
 
 	TabFMRunOutput Run(const TabFMRunInput &input) override {
+		return RunBatched(input, 0);
+	}
+
+	// One lookup (or one encode) per call, whatever query_batch is: the support rows are hashed, compared
+	// and copied once, the context rows' outputs are emitted once, and the query rows go through the query
+	// graph in batches straight from the caller's buffer.
+	TabFMRunOutput RunBatched(const TabFMRunInput &input, int64_t query_batch) override {
+		// The cache's own lock. Every caller also holds the per-device lock across the whole call today,
+		// so this is uncontended; it makes the list's safety a property of this type rather than of a
+		// caller's lock keying, which once went wrong (#42).
+		lock_guard<mutex> guard(cache_lock);
 		const int64_t s = input.train_size;
 		const int64_t q = input.t - s;
 		if (s <= 0 || q < 0) {
@@ -786,12 +811,15 @@ struct SplitOrtBackend : public TabFMBackend {
 
 		const auto hash = KeyHash(input.x, input.y, s, input.h);
 		auto hit = Find(hash, input, s);
-		// Kept here for a context that is not cached (larger than the budget), so it lives for this call.
+		// Kept here for a context that is not cached (larger than the budget): it lives for this whole call,
+		// so every batch of the call uses it and it is encoded once.
 		Entry uncached;
 		const Entry *context;
 		if (hit != entries.end()) {
 			// Most recently used goes to the front; eviction takes from the back.
-			entries.splice(entries.begin(), entries, hit);
+			if (hit != entries.begin()) {
+				entries.splice(entries.begin(), entries, hit);
+			}
 			context = &entries.front();
 			stats->hits++;
 		} else {
@@ -828,17 +856,24 @@ struct SplitOrtBackend : public TabFMBackend {
 		out.logits.reserve(static_cast<size_t>(input.t) * static_cast<size_t>(c));
 		out.logits.insert(out.logits.end(), context->state.context_logits.begin(),
 		                  context->state.context_logits.end());
-		if (q > 0) {
-			auto scored = RunQuery(*query, input.x + s * input.h, q, input.h, input.y, s, context->state);
-			if (scored.shape.size() != 3 || scored.shape[1] != q || scored.shape.back() != c) {
+		const int64_t batch = query_batch > 0 ? query_batch : q;
+		for (int64_t offset = 0; offset < q; offset += batch) {
+			const int64_t n = MinValue<int64_t>(batch, q - offset);
+			auto scored = RunQuery(*query, input.x + (s + offset) * input.h, n, input.h, input.y, s, context->state);
+			if (scored.shape.size() != 3 || scored.shape[1] != n || scored.shape.back() != c) {
 				throw InvalidInputException(
 				    "anofox_tabfm: the query graph returned [%s] for %lld query rows; expected [1, %lld, %lld].",
-				    ShapeString(scored.shape), static_cast<long long>(q), static_cast<long long>(q),
+				    ShapeString(scored.shape), static_cast<long long>(n), static_cast<long long>(n),
 				    static_cast<long long>(c));
 			}
 			out.logits.insert(out.logits.end(), scored.logits.begin(), scored.logits.end());
 		}
 		return out;
+	}
+
+	void TrimContextCache(idx_t budget) override {
+		lock_guard<mutex> guard(cache_lock);
+		Trim(budget);
 	}
 
 private:
@@ -1604,14 +1639,17 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	// exact, so a device or precision switch is a cache MISS that builds a new
 	// entry beside the old one — not a replacement — and tabfm_unload(key)
 	// still frees every entry by one name (the two-level map guarantees it).
-	if (auto snapshot = state.Snapshot(resolved.cache_key, wanted_device, wanted_precision)) {
+	//
+	// The context-cache (split) session has its own slot beside the combined one, so the two coexist:
+	// generation and imputation (which do not use the cache) and a connection with the kill switch on
+	// get the combined session without evicting the split one and every context cached on it. They
+	// shared one slot until the default flipped on, a leftover of the opt-in, single-context design of
+	// #40 rather than a correctness requirement: the entries are independent, and tabfm_unload(key) frees
+	// both. anofox_tabfm_max_sessions still bounds the total.
+	if (auto snapshot = state.Snapshot(resolved.cache_key, wanted_device, wanted_precision, want_split)) {
 		if (CanReuseSession(*snapshot, want_split, wanted_device, wanted_precision)) {
 			return snapshot;
 		}
-		// anofox_tabfm_context_cache changed since this configuration was
-		// loaded. Fall through and rebuild the SAME (device, precision) entry —
-		// split and combined sessions of one configuration must not coexist,
-		// could not reach.
 	}
 
 	// Apple MLX first: a GPU device never takes the cache path (want_split is false for it), so this is
@@ -1938,6 +1976,26 @@ void SoftmaxInPlace(vector<double> &v, double temperature) {
 // The engine
 //===--------------------------------------------------------------------===//
 
+// The context cache's instance-level settings, read at execution. The budget is GLOBAL-scoped (one cache per
+// loaded model serves every connection, so one value bounds it), and the global kill switch applies to
+// statements prepared before it was set. Lookups that fail keep the defaults.
+void ApplyInstanceContextCacheSettings(DatabaseInstance &db, PredictContext &ctx) {
+	Value value;
+	if (duckdb_compat::TryGetContextSetting(db, "anofox_tabfm_context_cache", value) && !value.IsNull()) {
+		ctx.context_cache = ctx.context_cache && BooleanValue::Get(value);
+	}
+	if (duckdb_compat::TryGetContextSetting(db, "anofox_tabfm_context_cache_memory", value) && !value.IsNull()) {
+		auto raw = value.ToString();
+		StringUtil::Trim(raw);
+		idx_t bytes = 0;
+		if (raw == "0") {
+			ctx.context_cache_bytes = 0;
+		} else if (StringUtil::TryParseFormattedBytes(raw, bytes).empty()) {
+			ctx.context_cache_bytes = bytes;
+		}
+	}
+}
+
 class TabFMRealEngine : public PredictEngine {
 public:
 	TabFMPredictResult Predict(const PredictInput &in) override {
@@ -2027,15 +2085,32 @@ public:
 		run_input.train_size = NumericCast<int64_t>(batch.train_size);
 		run_input.d = NumericCast<int64_t>(batch.d);
 
+		// The context cache's settings as they are NOW, not as they were bound: the budget is instance-wide
+		// (one cache per loaded model serves every connection), and SET GLOBAL anofox_tabfm_context_cache =
+		// false must stop a statement prepared before it. A session-level SET of the kill switch applies to
+		// statements bound after it.
+		auto ctx = in.ctx;
+		ApplyInstanceContextCacheSettings(*ctx.db, ctx);
+
 		// 3. load + forward. Only the session load and the forward pass are
 		// serialized per device (the expensive, non-reentrant parts); the model was
 		// already resolved above.
-		auto state = TabFMState::Get(*in.ctx.db);
+		auto state = TabFMState::Get(*ctx.db);
 		TabFMRunOutput out;
 		{
-			lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(*fs, resolved, in.ctx)));
-			auto model = LoadOrGetSession(*fs, *state, resolved, in.ctx);
+			lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(*fs, resolved, ctx)));
+			auto model = LoadOrGetSession(*fs, *state, resolved, ctx);
 			auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
+			run_input.context_cache_bytes = ctx.context_cache_bytes;
+			// A lowered budget frees cached contexts before the memory check below, so following that
+			// check's advice (shrink the cache) can actually get a refused call through.
+			backend->TrimContextCache(ctx.context_cache_bytes);
+
+			const int64_t s = run_input.train_size;
+			const int64_t q = run_input.t - s;
+			const int64_t query_batch = NumericCast<int64_t>(in.opts.query_batch);
+			// The largest single pass: what anofox_tabfm_max_memory's measured cost is keyed on.
+			const int64_t pass_rows = s + (query_batch > 0 ? MinValue<int64_t>(query_batch, q) : q);
 
 			// anofox_tabfm_max_memory, second half. The bind-time check refuses when
 			// memory ALREADY held is over the ceiling; it cannot see a call that is
@@ -2046,88 +2121,53 @@ public:
 			// shape is measured the first time it runs and remembered, which is
 			// enough because the calls that hit this repeat: one per group, one per
 			// chunk, same T and H every time.
-			const auto ceiling = in.ctx.max_memory_bytes;
+			const auto ceiling = ctx.max_memory_bytes;
 			const auto model_key = model->model_key;
-			// The RESOLVED device, not in.ctx.device: that is the setting, and 'auto'
+			// The RESOLVED device, not ctx.device: that is the setting, and 'auto'
 			// would key the same physical device differently from an explicit 'cpu'.
 			const auto &cost_device = model->device_id;
-			auto forward = [&](const TabFMRunInput &input) {
-				idx_t before = 0;
-				if (ceiling > 0) {
-					before = CurrentProcessResidentBytes();
-					auto expected = state->ForwardCost(model_key, cost_device, input.t, input.h);
-					if (before > 0 && expected > 0 && before + expected >= ceiling) {
-						throw InvalidInputException(
-						    "anofox_tabfm: a forward pass of this shape (%lld rows x %lld features, model "
-						    "'%s') was measured to add %llu bytes, and resident memory is already %llu -- "
-						    "together that is at or above anofox_tabfm_max_memory (%llu bytes), so this call "
-						    "is refused rather than risking an OOM kill. Send fewer rows per call or score "
-						    "them in batches with opts := MAP{'query_batch': 'N'}, raise the ceiling with SET "
-						    "anofox_tabfm_max_memory = '<size>', shrink the context cache with SET "
-						    "anofox_tabfm_context_cache_memory = '<size>', unload unused models with "
-						    "tabfm_unload(...), or disable the check with SET anofox_tabfm_max_memory = ''",
-						    static_cast<long long>(input.t), static_cast<long long>(input.h), model_key.c_str(),
-						    static_cast<unsigned long long>(expected), static_cast<unsigned long long>(before),
-						    static_cast<unsigned long long>(ceiling));
-					}
+			const auto stats = model->context_stats;
+			idx_t before = 0;
+			idx_t cached_before = 0;
+			if (ceiling > 0) {
+				before = CurrentProcessResidentBytes();
+				cached_before = stats ? stats->bytes.load() : 0;
+				auto expected = state->ForwardCost(model_key, cost_device, pass_rows, run_input.h);
+				if (before > 0 && expected > 0 && before + expected >= ceiling) {
+					throw InvalidInputException(
+					    "anofox_tabfm: a forward pass of this shape (%lld rows x %lld features, model "
+					    "'%s') was measured to add %llu bytes, and resident memory is already %llu -- "
+					    "together that is at or above anofox_tabfm_max_memory (%llu bytes), so this call "
+					    "is refused rather than risking an OOM kill. Send fewer rows per call or score "
+					    "them in batches with opts := MAP{'query_batch': 'N'}, raise the ceiling with SET "
+					    "anofox_tabfm_max_memory = '<size>', shrink the context cache with SET "
+					    "anofox_tabfm_context_cache_memory = '<size>', unload unused models with "
+					    "tabfm_unload(...), or disable the check with SET anofox_tabfm_max_memory = ''",
+					    static_cast<long long>(pass_rows), static_cast<long long>(run_input.h), model_key.c_str(),
+					    static_cast<unsigned long long>(expected), static_cast<unsigned long long>(before),
+					    static_cast<unsigned long long>(ceiling));
 				}
+			}
 
-				auto result = backend->Run(input);
+			// opts.query_batch: the query rows go through at most N per pass. With the context cache the
+			// context is looked up or encoded once for the whole call; otherwise each pass re-runs it,
+			// which still bounds the peak (TabFMBackend::RunBatched).
+			out = backend->RunBatched(run_input, query_batch);
 
-				// Recorded only on the way out of a successful call, so a shape that has
-				// never completed never produces an estimate. The first call of a shape
-				// is therefore unguarded -- stated plainly because it is the limit of
-				// what measuring rather than modelling can do.
-				if (ceiling > 0 && before > 0) {
-					auto after = CurrentProcessResidentBytes();
-					if (after > before) {
-						state->RecordForwardCost(model_key, cost_device, input.t, input.h, after - before);
-					}
-				}
-				return result;
-			};
-
-			run_input.context_cache_bytes = in.ctx.context_cache_bytes;
-			const int64_t s = run_input.train_size;
-			const int64_t q = run_input.t - s;
-			const int64_t batch_rows = in.opts.query_batch > 0 ? NumericCast<int64_t>(in.opts.query_batch) : q;
-			if (q <= batch_rows) {
-				out = forward(run_input);
-			} else {
-				// opts.query_batch: the query rows go through in batches, each forward seeing the full
-				// context plus one batch. A query row's answer depends on the context only, never on the
-				// other query rows (the graph contract's row independence), so the result is the one
-				// unbatched call would give. With the context cache the context is encoded once, by the
-				// first batch, and every later batch is a hit; without it each batch re-encodes it, which
-				// still bounds the peak. The context rows' outputs come from the first batch.
-				const auto h = run_input.h;
-				vector<float> batch_x, batch_y;
-				for (int64_t offset = 0; offset < q; offset += batch_rows) {
-					const int64_t n = MinValue<int64_t>(batch_rows, q - offset);
-					batch_x.assign(x.begin(), x.begin() + s * h);
-					batch_x.insert(batch_x.end(), x.begin() + (s + offset) * h, x.begin() + (s + offset + n) * h);
-					batch_y.assign(y.begin(), y.begin() + s);
-					batch_y.insert(batch_y.end(), y.begin() + s + offset, y.begin() + s + offset + n);
-					TabFMRunInput part_input = run_input;
-					part_input.x = batch_x.data();
-					part_input.y = batch_y.data();
-					part_input.t = s + n;
-					auto part = forward(part_input);
-					if (part.shape.size() != 3 || part.shape[0] != 1 || part.shape[1] != s + n || part.shape[2] < 1 ||
-					    part.logits.size() != static_cast<size_t>((s + n) * part.shape[2]) ||
-					    (offset > 0 && part.shape[2] != out.shape[2])) {
-						// Let the contract check below name the problem on the assembled output.
-						out = std::move(part);
-						break;
-					}
-					const int64_t c = part.shape[2];
-					if (offset == 0) {
-						out.shape = {1, run_input.t, c};
-						out.logits.reserve(static_cast<size_t>(run_input.t * c));
-						out.logits.insert(out.logits.end(), part.logits.begin(), part.logits.end());
-					} else {
-						out.logits.insert(out.logits.end(), part.logits.begin() + s * c, part.logits.end());
-					}
+			// Recorded only on the way out of a successful call, so a shape that has
+			// never completed never produces an estimate. The first call of a shape
+			// is therefore unguarded -- stated plainly because it is the limit of
+			// what measuring rather than modelling can do. Bytes this call ADDED to
+			// the context cache are not the forward pass's cost: they are retained
+			// on purpose, bounded by their own budget, and counted in `before` next
+			// time.
+			if (ceiling > 0 && before > 0) {
+				auto after = CurrentProcessResidentBytes();
+				const idx_t cached_after = stats ? stats->bytes.load() : 0;
+				const idx_t retained = cached_after > cached_before ? cached_after - cached_before : 0;
+				if (after > before + retained) {
+					state->RecordForwardCost(model_key, cost_device, pass_rows, run_input.h,
+					                         after - before - retained);
 				}
 			}
 		}
@@ -2193,6 +2233,47 @@ private:
 };
 
 } // anonymous namespace
+
+string ContextCachePairProblem(const vector<string> &prepare_inputs, const vector<string> &prepare_outputs,
+                               const vector<string> &query_inputs, const vector<string> &query_outputs,
+                               const vector<string> &combined_inputs) {
+	auto has = [](const vector<string> &names, const string &name) {
+		return std::find(names.begin(), names.end(), name) != names.end();
+	};
+	for (auto &name : combined_inputs) {
+		if (name != "x" && name != "y") {
+			// cat_mask, d, train_size, ...: inputs the prepare graph does not take and the cache key does
+			// not cover, so two calls differing only there would share a context.
+			return "the combined graph takes '" + name + "', which the cache key does not cover";
+		}
+	}
+	if (prepare_inputs.size() != 2 || !has(prepare_inputs, "x") || !has(prepare_inputs, "y")) {
+		return "the prepare graph must take exactly x and y";
+	}
+	if (!has(prepare_outputs, "context_logits")) {
+		return "the prepare graph does not emit context_logits, so the context rows' outputs would differ";
+	}
+	if (!has(query_inputs, "x")) {
+		return "the query graph does not take x";
+	}
+	if (!has(query_outputs, "logits")) {
+		return "the query graph does not emit logits";
+	}
+	bool takes_state = false;
+	for (auto &name : query_inputs) {
+		if (name == "x" || name == "y") {
+			continue;
+		}
+		if (name == "context_logits" || !has(prepare_outputs, name)) {
+			return "the query graph takes '" + name + "', which the prepare graph does not emit";
+		}
+		takes_state = true;
+	}
+	if (!takes_state) {
+		return "the query graph takes no prepared state";
+	}
+	return string();
+}
 
 string Sha256Hex(const_data_ptr_t data, idx_t len) {
 	unsigned char digest[EVP_MAX_MD_SIZE];
@@ -2291,7 +2372,11 @@ PredictEngine &GetPredictEngine() {
 	return engine;
 }
 
-void TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows, int64_t features) {
+void TabFMGpuPrecompile(const PredictContext &bound_ctx, TabFMTask task, int64_t rows, int64_t features) {
+	auto ctx = bound_ctx;
+	if (ctx.db) {
+		ApplyInstanceContextCacheSettings(*ctx.db, ctx);
+	}
 	if (!ctx.db) {
 		throw InternalException("tabfm: precompile invoked without a database handle");
 	}

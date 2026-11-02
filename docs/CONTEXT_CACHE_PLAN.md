@@ -9,11 +9,12 @@ Background: [KV_CACHE_DESIGN.md](KV_CACHE_DESIGN.md), which records what shipped
 
 **Surface.** No new function.
 - `anofox_tabfm_context_cache` defaults to `true` and is the kill switch.
-- `anofox_tabfm_context_cache_memory` (default `'1GB'`, `'0'` keeps nothing) bounds the cached contexts per
-  loaded model (per backend, i.e. per model, task, revision, device, precision).
+- `anofox_tabfm_context_cache_memory` (default `'256MB'`, `'0'` keeps nothing) bounds the cached contexts per
+  loaded model (per backend, i.e. per model, task, revision, device, precision). It is instance-wide (GLOBAL
+  scope; `SET SESSION` is refused) and read when a statement runs.
 - `opts := MAP{'query_batch': 'N'}` scores a call's test rows N per forward pass against one encoded context.
-- `tabfm_models()` gains `context_bytes`, `context_entries`, `context_hits`, `context_misses`. Hits and misses
-  count forward passes, so a call with `query_batch` adds one per batch.
+- `tabfm_models()` gains `context_cache` (marks the cached session's row) and `context_bytes`,
+  `context_entries`, `context_hits`, `context_misses`. Hits and misses count lookups, one per call.
 
 **Graphs.** `export_tabicl --split-context` writes the kv pair (`kv.py`) for both tasks, and `resources/`
 bundles it for `tabicl-v2`. The regression pair z-scores `y` in prepare, carries `y_mean`/`y_std` as state and
@@ -56,6 +57,34 @@ call is cold; *off* re-encodes the context per batch, *on* encodes it once.
 | classification | 450 | 128 | 32 | 9.89 s / 39.0 | 2.24 s / 10.1 | **3.9x** | 4.4x |
 | classification | 1000 | 512 | 128 | 16.59 s / 80.7 | 5.72 s / 26.0 | **3.1x** | 2.9x |
 
+**Review round (#96).** The crew review's changes, all in this PR:
+- The cached (split) session has its own slot beside the combined one (`SessionKey` adds the split flag).
+  Before, generation/imputation (which never use the cache) and a connection with the kill switch on rebuilt
+  the shared slot as combined and emptied the cache on every alternation. "Split and combined must not
+  coexist" was a leftover of #40's opt-in, single-context design, not a correctness requirement.
+- `SplitOrtBackend` locks its own list; a multi-connection stress test ('auto' and 'cpu' connections, mixed
+  contexts, `query_batch`, budgets changing underneath including '0', unloads in flight) checks answers
+  against the sequential run and the counters' invariants. Not run under TSan.
+- A pair is served only if `ContextCachePairProblem` finds nothing: prepare takes `(x, y)` and emits
+  `context_logits` and every state tensor query reads, query emits `logits`, and the combined graph takes
+  nothing beyond `(x, y)` (so `cat_mask`/`d` can never be outside the key). Checked from the graphs before a
+  session is built; the memo is keyed by path, size and mtime. A failing pair falls back to the combined graph.
+- `query_batch` looks the context up once per call and runs the query graph on slices of the caller's buffer.
+- Memory: the cache is trimmed before the `anofox_tabfm_max_memory` check, and bytes retained by the cache are
+  not recorded as forward cost. Default budget 1 GB -> 256 MB (RSS numbers in the CHANGELOG).
+- The bundled pair is pinned by a default-CI C++ test (resolved by id, byte-equal to `resources/`, contract
+  holds).
+
+**Memory measured** (real `tabicl-v2`, CPU, RSS of the `duckdb` process): one call at S = 375, H = 100 is
+1.27 GB with the cache off and 1.58 GB with it on (two ORT sessions, +310 MB, of which 39 MB is the cached
+context). After three calls: 2.29 GB off, 1.69 GB on. A 500-group aggregate (64 support + 4 query rows per
+group, H = 20; each context about 7.9 MB): 0.58 GB off, 1.72 GB on at a 1 GB budget (127 contexts kept),
+1.15 GB at 256 MB (32 kept).
+
+**Small batches** (S = Q = 2000, H = 100, one call each; wall / CPU seconds): off, one pass 14.2 / 66.6; on, cold:
+one pass 14.5 / 69.7, `query_batch` 256 13.4 / 58.9, 16 17.7 / 87.0, 1 119 / 531. The per-call O(S x H) overhead is
+gone; what remains at tiny batches is the query graph's fixed cost per pass (about 60 ms at 2000 support rows).
+
 **Where it departs from the plan.**
 - *A pair without `context_logits` is no longer served*, rather than kept opt-in. With the setting default-on,
   "opt-in" would have needed a third state; the only such pair is the CI fixture's, and no released model
@@ -64,10 +93,11 @@ call is cold; *off* re-encodes the context per batch, *on* encodes it once.
   only ever considered when the resolved device is the CPU (`UseContextCache`, unit-tested without a GPU), so
   CUDA/ROCm/MLX sessions are built and served exactly as before.
 - *Eviction is LRU per backend*: a hit moves the context to the front; a lowered budget applies on the next call.
-- *Not done in this phase:* canonical row order (a reordered support table misses; safe), the two-connection
-  concurrency test (Tests item 6; the per-device lock keyed on the resolved device is unchanged from #42), and
-  a context larger than the budget is re-encoded per batch under `query_batch` rather than held for the call.
-- *Not run:* the reporter's 28-dataset harness (the external check), and anything on a GPU.
+- *Not done in this phase:* canonical row order (a reordered support table misses; safe, pinned by a test),
+  an admission rule for single-use contexts (e.g. cache on the second sighting of a hash), and real-weight
+  parity in CI (no real-weights CI job exists; `gate_context_cache` and `tabfm_context_cache_real.test` are a
+  manual gate).
+- *Not run:* the reporter's 28-dataset harness (the external check), TSan, and anything on a GPU.
 
 ## Summary
 

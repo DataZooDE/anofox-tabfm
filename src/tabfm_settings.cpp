@@ -90,6 +90,12 @@ void ValidateMaxMemory(ClientContext &context, SetScope scope, Value &parameter)
 }
 
 void ValidateContextCacheMemory(ClientContext &context, SetScope scope, Value &parameter) {
+	if (scope == SetScope::SESSION) {
+		// One cache per loaded model serves every connection, so one value bounds it; a per-connection
+		// value would let whichever connection called last evict everyone else's contexts.
+		throw InvalidInputException("anofox_tabfm_context_cache_memory is instance-wide: use SET or SET GLOBAL, "
+		                            "not SET SESSION");
+	}
 	if (parameter.IsNull()) {
 		throw InvalidInputException("anofox_tabfm_context_cache_memory cannot be NULL");
 	}
@@ -170,20 +176,21 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	    "On by default: a cached context is keyed by the exact preprocessed support rows and labels, so a hit "
 	    "can only ever answer for the same training data, and every output row, context rows included, "
 	    "equals the combined graph's. The first call against a new context costs the same as without the "
-	    "cache. false is the kill switch: every call runs the combined graph. Models without an exact pair, "
+	    "cache. false is the kill switch: every call runs the combined graph (a session SET applies to statements "
+	    "bound after it; SET GLOBAL also stops prepared statements). Models without an exact pair, "
 	    "and GPU sessions, always run the combined graph. Memory is bounded by "
 	    "anofox_tabfm_context_cache_memory; tabfm_models() shows what is cached.",
 	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_context_cache_memory",
-	    "Budget for the context cache (anofox_tabfm_context_cache), per loaded model, e.g. '1GB' (default) or "
+	    "Budget for the context cache (anofox_tabfm_context_cache), per loaded model and instance-wide (SET "
+	    "applies to every connection, read when a statement runs), e.g. '256MB' (default) or "
 	    "'0' to keep nothing. Least recently used contexts are evicted beyond it, and a context larger than the "
-	    "whole budget is used for one forward pass and dropped (with query_batch, each batch then re-encodes "
-	    "it). A tabicl-v2 context costs about 2 x 12 x S x 512 floats of attention keys and values plus about "
+	    "whole budget serves its own call and is dropped. A tabicl-v2 context costs about 2 x 12 x S x 512 floats of attention keys and values plus about "
 	    "0.2 MB per feature column: roughly 70 MB at 1000 support rows and 100 features. Cached contexts are "
 	    "resident memory, which anofox_tabfm_max_memory counts.",
-	    LogicalType::VARCHAR, Value("1GB"), ValidateContextCacheMemory);
+	    LogicalType::VARCHAR, Value("256MB"), ValidateContextCacheMemory, SetScope::GLOBAL);
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_cpu_prepack",

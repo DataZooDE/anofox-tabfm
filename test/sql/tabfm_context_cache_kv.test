@@ -38,11 +38,11 @@ CALL tabfm_register_model(
   preprocessing_profile := 'tabicl_v2_raw',
   max_rows := 4096, max_features := 64, max_classes := 3)
 
-# On by default: the setting is now the kill switch, and the budget defaults to 1 GB.
+# On by default: the setting is now the kill switch, and the budget defaults to 256 MB.
 query TT
 SELECT current_setting('anofox_tabfm_context_cache'), current_setting('anofox_tabfm_context_cache_memory')
 ----
-true	1GB
+true	256MB
 
 statement ok
 CREATE TABLE t AS SELECT * FROM (VALUES
@@ -65,7 +65,7 @@ FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture');
 
 query IIII
 SELECT context_bytes, context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND NOT context_cache
 ----
 0	0	0	0
 
@@ -95,7 +95,7 @@ WHERE c.yhat <> s.yhat OR abs(c.yhat_score - s.yhat_score) > 1e-6 OR c.is_traini
 
 query IIII
 SELECT context_bytes > 0, context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 true	1	0	1
 
@@ -113,7 +113,7 @@ WHERE s.yhat <> a.yhat OR s.yhat_score <> a.yhat_score
 
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 1	1	1
 
@@ -133,7 +133,7 @@ SELECT count(*) FROM tabfm_classify('(SELECT * FROM t WHERE label IS NOT NULL)',
 
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 1	3	1
 
@@ -151,7 +151,7 @@ SELECT count(*) FROM tabfm_classify('t_value', 'label', model := 'tabicl-kv-fixt
 
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 2	3	2
 
@@ -184,7 +184,7 @@ SELECT count(*) FROM tabfm_classify('t_more', 'label', model := 'tabicl-kv-fixtu
 
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 5	3	5
 
@@ -202,7 +202,7 @@ WHERE s.yhat <> b.yhat OR s.yhat_score <> b.yhat_score
 
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 5	4	5
 
@@ -237,15 +237,15 @@ SELECT (SELECT count(*) FROM q_whole), (SELECT count(*) FROM q_batched)
 ----
 70	70
 
-# The counters count forward passes. 40 query rows in batches of 7 is six passes, all against the one
-# context the unbatched call encoded: six hits, no further miss.
+# The counters count lookups, one per call: 40 query rows in batches of 7 is six query passes, all
+# against the one context the unbatched call encoded, and one hit.
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
-1	6	1
+1	1	1
 
-# A fresh context with query_batch: ten passes, of which only the first encodes the context.
+# A fresh context with query_batch: one encode for the whole call.
 statement ok
 CREATE TABLE q2 AS SELECT * REPLACE (f1 + 0.01 AS f1) FROM q;
 
@@ -256,9 +256,9 @@ SELECT count(*) FROM tabfm_classify('q2', 'label', features := ['f1', 'f2', 'f3'
 
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
-2	15	2
+2	1	2
 
 # query_batch also bounds the combined graph's forward with the cache off (one pass per batch, each
 # re-encoding the context), and gives the same answers.
@@ -310,7 +310,7 @@ SELECT count(*) FROM tabfm_classify('a', 'label', features := ['f1', 'f2', 'f3']
 40
 
 query I
-SELECT context_bytes FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+SELECT context_bytes FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 11080
 
@@ -328,7 +328,7 @@ SELECT count(*) FROM tabfm_classify('a', 'label', features := ['f1', 'f2', 'f3']
 
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 1	0	1
 
@@ -345,7 +345,7 @@ SELECT count(*) FROM tabfm_classify('a', 'label', features := ['f1', 'f2', 'f3']
 
 query IIII
 SELECT context_entries, context_hits, context_misses, context_bytes
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 1	0	3	11080
 
@@ -370,7 +370,7 @@ SELECT count(*) FROM tabfm_classify('a', 'label', features := ['f1', 'f2', 'f3']
 
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 3	1	5
 
@@ -396,7 +396,7 @@ SELECT count(*) FROM tabfm_classify('b', 'label', features := ['f1', 'f2', 'f3']
 
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 2	3	6
 
@@ -416,7 +416,7 @@ WHERE c.yhat <> s.yhat OR abs(c.yhat_score - s.yhat_score) > 1e-6
 
 query II
 SELECT context_entries, context_bytes
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 0	0
 
@@ -484,9 +484,379 @@ SELECT count(*) FROM r_cached WHERE yhat < 5 OR yhat > 40
 ----
 0
 
-# One miss (the first call), then two hits: the second call's two query rows, one per pass.
+# One miss (the first call), then one hit: the second call, whose two query rows went through one at a
+# time against the one context.
 query III
 SELECT context_entries, context_hits, context_misses
-FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'regression' AND loaded
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'regression' AND loaded AND context_cache
+----
+1	1	1
+
+# ===========================================================================
+# Sessions: the cached (split) session and the combined one coexist, so a caller that wants the
+# combined graph -- generation and imputation, which do not use the cache, or a connection with the kill
+# switch on -- does not evict the split session and empty its cache.
+
+statement ok
+CALL tabfm_unload()
+
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture')
+----
+10
+
+# tabfm_impute on the same model and task runs the combined graph
+query I
+SELECT count(*) FROM tabfm_impute('t', columns := ['label'], model := 'tabicl-kv-fixture')
+----
+10
+
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture')
+----
+10
+
+query I
+SELECT count(*) FROM tabfm_impute('t', columns := ['label'], model := 'tabicl-kv-fixture')
+----
+10
+
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture')
+----
+10
+
+# One encode, two hits: the impute calls in between did not touch the cache.
+query III
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
 ----
 1	2	1
+
+query II
+SELECT count(*) FILTER (WHERE context_cache), count(*) FILTER (WHERE NOT context_cache)
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded
+----
+1	1
+
+# A second connection with the kill switch on runs the combined graph, and the first connection's cache
+# survives it.
+statement ok con2
+SET anofox_tabfm_context_cache = false
+
+query I con2
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture')
+----
+10
+
+query I con1
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture')
+----
+10
+
+query I con2
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture')
+----
+10
+
+query III con1
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	3	1
+
+# ---------------------------------------------------------------------------
+# The budget is instance-wide: one cache per loaded model serves every connection, so one setting bounds
+# it (SET writes it globally). A connection's own value cannot evict another connection's contexts.
+
+statement ok con2
+SET anofox_tabfm_context_cache_memory = '512MB'
+
+query T con1
+SELECT current_setting('anofox_tabfm_context_cache_memory')
+----
+512MB
+
+statement ok con1
+RESET anofox_tabfm_context_cache_memory
+
+query T con2
+SELECT current_setting('anofox_tabfm_context_cache_memory')
+----
+256MB
+
+# ---------------------------------------------------------------------------
+# Prepared statements. SET GLOBAL anofox_tabfm_context_cache = false is read when a statement EXECUTES, so it
+# also stops a statement prepared while the cache was on. A session-level SET is read when a statement is
+# BOUND: DuckDB does not re-bind a prepared statement after a SET, so it keeps the value it was prepared
+# with (pinned at the end of this block). Re-prepare, or use SET GLOBAL.
+
+statement ok con1
+PREPARE p AS SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture');
+
+query I con1
+EXECUTE p
+----
+10
+
+statement ok con1
+SET GLOBAL anofox_tabfm_context_cache = false
+
+query I con1
+EXECUTE p
+----
+10
+
+# unchanged: the second EXECUTE did not use the cache
+query III con1
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	4	1
+
+statement ok con1
+SET GLOBAL anofox_tabfm_context_cache = true
+
+query I con1
+EXECUTE p
+----
+10
+
+query III con1
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	5	1
+
+# a session-level SET after PREPARE: the prepared statement keeps the value it was bound with (a hit) ...
+statement ok con1
+SET anofox_tabfm_context_cache = false
+
+query I con1
+EXECUTE p
+----
+10
+
+query III con1
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	6	1
+
+# ... and a statement prepared after the SET does not use the cache.
+statement ok con1
+PREPARE p2 AS SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture');
+
+query I con1
+EXECUTE p2
+----
+10
+
+query III con1
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	6	1
+
+statement ok con1
+DEALLOCATE p2
+
+statement ok con1
+RESET anofox_tabfm_context_cache
+
+statement ok con1
+DEALLOCATE p
+
+# ===========================================================================
+# Edge cases.
+
+# q = 0: every row labelled, so only the context rows' outputs come back, from the cache. Same support
+# rows as t, so a hit.
+query I
+SELECT count(*) FROM tabfm_classify('(SELECT * FROM t WHERE label IS NOT NULL)', 'label', model := 'tabicl-kv-fixture')
+----
+8
+
+query III
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	7	1
+
+# Reordered support rows are a different key: a miss, never a hit on the wrong row order. The answers
+# per row are the same (TabICL attends over the rows without a positional term).
+statement ok
+CREATE TABLE reordered AS SELECT f1, yhat, yhat_score
+FROM tabfm_classify('(SELECT * FROM t ORDER BY f1 DESC)', 'label', model := 'tabicl-kv-fixture');
+
+query III
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+2	7	2
+
+query I
+SELECT count(*) FROM combined c JOIN reordered r USING (f1) WHERE c.yhat <> r.yhat OR abs(c.yhat_score - r.yhat_score) > 1e-6
+----
+0
+
+# A one-row context (regression; one labelled row and one to score), cache vs kill switch.
+statement ok
+CREATE TABLE one_row AS SELECT * FROM (VALUES (0.5, 1.0, 0.1, 3.0), (1.5, 0.2, 0.3, NULL)) v(f1, f2, f3, target);
+
+statement ok
+SET anofox_tabfm_context_cache = false
+
+statement ok
+CREATE TABLE one_off AS SELECT f1, yhat FROM tabfm_regress('one_row', 'target', model := 'tabicl-kv-fixture');
+
+statement ok
+RESET anofox_tabfm_context_cache
+
+query I
+SELECT count(*) FROM one_off o JOIN (SELECT f1, yhat FROM tabfm_regress('one_row', 'target', model := 'tabicl-kv-fixture')) c USING (f1)
+WHERE abs(o.yhat - c.yhat) > 1e-4
+----
+0
+
+# Categorical and NULL features go through the same preprocessing as without the cache: cache vs kill
+# switch on every row, then a hit on the repeat.
+statement ok
+CREATE TABLE mixed AS SELECT * FROM (VALUES
+  (0.5, 'red',   NULL, 'c0'), (1.5, 'blue',  0.3, 'c1'), (2.5, 'red',   0.5, 'c2'),
+  (0.2, NULL,    0.7, 'c0'), (1.1, 'green', 0.2, 'c1'), (3.0, 'blue',  NULL, 'c2'),
+  (0.9, 'red',   0.6, 'c0'), (2.1, 'green', 0.4, 'c1'),
+  (1.3, 'blue',  0.35, NULL), (2.4, NULL,  NULL, NULL))
+  v(f1, colour, f3, label);
+
+statement ok
+SET anofox_tabfm_context_cache = false
+
+statement ok
+CREATE TABLE mixed_off AS SELECT f1, yhat, yhat_score FROM tabfm_classify('mixed', 'label', model := 'tabicl-kv-fixture');
+
+statement ok
+RESET anofox_tabfm_context_cache
+
+statement ok
+CREATE TABLE mixed_on AS SELECT f1, yhat, yhat_score FROM tabfm_classify('mixed', 'label', model := 'tabicl-kv-fixture');
+
+query II
+SELECT count(*), count(*) FILTER (WHERE o.yhat <> c.yhat OR abs(o.yhat_score - c.yhat_score) > 1e-6)
+FROM mixed_off o JOIN mixed_on c USING (f1)
+----
+10	0
+
+query I
+SELECT count(*) FROM mixed_on a JOIN (SELECT f1, yhat, yhat_score FROM tabfm_classify('mixed', 'label', model := 'tabicl-kv-fixture')) b USING (f1)
+WHERE a.yhat <> b.yhat OR a.yhat_score <> b.yhat_score
+----
+0
+
+query III
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+3	8	3
+
+# A budget of '0' keeps nothing, end to end; a context over the budget is encoded ONCE per call even with
+# query_batch (one miss for the whole call), and the answers are unchanged.
+statement ok
+CALL tabfm_unload()
+
+statement ok
+SET anofox_tabfm_context_cache_memory = '0'
+
+query I
+SELECT count(*) FROM q_whole w
+JOIN (SELECT id, yhat, yhat_score FROM tabfm_classify('q', 'label', features := ['f1', 'f2', 'f3'], model := 'tabicl-kv-fixture',
+      opts := MAP{'query_batch': '4'}) JOIN q USING (f1, f2, f3)) b USING (id)
+WHERE w.yhat <> b.yhat OR w.yhat_score <> b.yhat_score
+----
+0
+
+query IIII
+SELECT context_entries, context_bytes, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+0	0	0	1
+
+statement ok
+RESET anofox_tabfm_context_cache_memory
+
+# query_batch larger than the number of query rows is one pass.
+query I
+SELECT count(*) FROM q_whole w
+JOIN (SELECT id, yhat, yhat_score FROM tabfm_classify('q', 'label', features := ['f1', 'f2', 'f3'], model := 'tabicl-kv-fixture',
+      opts := MAP{'query_batch': '100000'}) JOIN q USING (f1, f2, f3)) b USING (id)
+WHERE w.yhat <> b.yhat OR w.yhat_score <> b.yhat_score
+----
+0
+
+statement error
+SELECT count(*) FROM tabfm_classify('q', 'label', model := 'tabicl-kv-fixture', opts := MAP{'query_batch': '-1'})
+----
+query_batch must be a positive integer
+
+statement error
+SELECT count(*) FROM tabfm_classify('q', 'label', model := 'tabicl-kv-fixture', opts := MAP{'query_batch': '1.5'})
+----
+query_batch must be a positive integer
+
+statement error
+SELECT count(*) FROM tabfm_classify('q', 'label', model := 'tabicl-kv-fixture', opts := MAP{'query_batch': ''})
+----
+query_batch must be a positive integer
+
+statement error
+SELECT count(*) FROM tabfm_classify('q', 'label', model := 'tabicl-kv-fixture', opts := MAP{'query_batch': '99999999999999999999999'})
+----
+query_batch must be a positive integer
+
+# ---------------------------------------------------------------------------
+# Parallel groups: one context per group, scored by the predict aggregate in parallel finalize threads.
+# threads = 4 must give exactly what threads = 1 gives -- first on a cold cache, then warm.
+
+statement ok
+CALL tabfm_unload()
+
+statement ok
+CREATE TABLE segs AS SELECT i % 12 AS seg, (i % 7) * 0.3 + (i % 12) * 0.05 AS f1, (i % 5) * 0.2 AS f2,
+  (i % 3) * 0.25 AS f3, CASE WHEN i < 480 THEN 'c' || ((i // 12) % 3) END AS label
+FROM range(600) r(i);
+
+statement ok
+SET threads = 1
+
+statement ok
+CREATE TABLE seq AS SELECT seg, __anofox_tabfm_predict_agg({'f1': f1, 'f2': f2, 'f3': f3, 'label': label}, 'label',
+  MAP{'model': 'tabicl-kv-fixture', 'task': 'classification'}) AS res FROM segs GROUP BY seg;
+
+statement ok
+CALL tabfm_unload()
+
+statement ok
+SET threads = 4
+
+statement ok
+CREATE TABLE par_cold AS SELECT seg, __anofox_tabfm_predict_agg({'f1': f1, 'f2': f2, 'f3': f3, 'label': label}, 'label',
+  MAP{'model': 'tabicl-kv-fixture', 'task': 'classification'}) AS res FROM segs GROUP BY seg;
+
+statement ok
+CREATE TABLE par_warm AS SELECT seg, __anofox_tabfm_predict_agg({'f1': f1, 'f2': f2, 'f3': f3, 'label': label}, 'label',
+  MAP{'model': 'tabicl-kv-fixture', 'task': 'classification'}) AS res FROM segs GROUP BY seg;
+
+query III
+SELECT count(*), count(*) FILTER (WHERE s.res IS DISTINCT FROM c.res), count(*) FILTER (WHERE s.res IS DISTINCT FROM w.res)
+FROM seq s JOIN par_cold c USING (seg) JOIN par_warm w USING (seg)
+----
+12	0	0
+
+query IIII
+SELECT context_entries, context_hits, context_misses, context_hits + context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+12	12	12	24
+
+statement ok
+RESET threads
