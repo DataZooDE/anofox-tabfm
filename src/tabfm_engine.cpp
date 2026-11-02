@@ -690,6 +690,12 @@ struct SplitOrtBackend : public TabFMBackend {
 	F32Arena arena;
 	//! The query graph's non-(x,y) inputs — what prepare has to supply.
 	vector<string> context_inputs;
+	//! The prepare graph also emits `context_logits` [1,S,C]: the context rows'
+	//! fitted values computed the way the combined graph computes them (each
+	//! context row with its own label). Without it they come from a query pass
+	//! over the support rows, which costs a pass over S per miss and drops the
+	//! row's own label (docs/CONTEXT_CACHE_PLAN.md).
+	bool prepare_emits_fitted = false;
 
 	// The one cached context. Guarded by the caller's per-device lock (HLD §6),
 	// which is held across the whole forward pass, so no locking is needed here.
@@ -744,24 +750,16 @@ struct SplitOrtBackend : public TabFMBackend {
 			context_y.clear();
 			context_h = 0;
 
-			auto prepared = RunPrepare(*prepare, input.x, input.y, s, input.h, context_inputs);
-
-			// The context rows' own fitted values. Every row the engine returns needs
-			// one, including the labelled ones, and the combined graph produces them
-			// in the same pass. Here they are a query pass over the support rows —
-			// which is exact for a cache, because a query row's answer depends only
-			// on the context, never on which other rows shared its batch.
-			auto fitted = RunQuery(*query, input.x, s, input.h, input.y, s, prepared);
-			if (fitted.shape.size() != 3 || fitted.shape[1] != s) {
-				throw InvalidInputException(
-				    "anofox_tabfm: the query graph returned %llu values shaped [%s] for %lld context rows; expected "
-				    "[1, %lld, C]. The prepare/query pair does not match this model.",
-				    static_cast<unsigned long long>(fitted.logits.size()), ShapeString(fitted.shape),
-				    static_cast<long long>(s), static_cast<long long>(s));
+			auto wanted = context_inputs;
+			if (prepare_emits_fitted) {
+				wanted.push_back("context_logits");
 			}
-			prepared.context_classes = fitted.shape.back();
-			prepared.context_logits = std::move(fitted.logits);
-			prepared.bytes += prepared.context_logits.size() * sizeof(float);
+			auto prepared = RunPrepare(*prepare, input.x, input.y, s, input.h, wanted);
+			if (prepare_emits_fitted) {
+				TakeContextLogits(prepared, s);
+			} else {
+				FittedFromQueryPass(input, s, prepared);
+			}
 
 			const auto x_count = static_cast<size_t>(s) * static_cast<size_t>(input.h);
 			context = std::move(prepared);
@@ -786,6 +784,50 @@ struct SplitOrtBackend : public TabFMBackend {
 			out.logits.insert(out.logits.end(), scored.logits.begin(), scored.logits.end());
 		}
 		return out;
+	}
+
+private:
+	// Move the prepare graph's `context_logits` out of the cached tensors into the
+	// fitted values. It is not a query input, so keeping it among the named
+	// tensors would only double its resident cost.
+	static void TakeContextLogits(TabFMPreparedContext &prepared, int64_t s) {
+		for (idx_t i = 0; i < prepared.names.size(); i++) {
+			if (prepared.names[i] != "context_logits") {
+				continue;
+			}
+			const auto &shape = prepared.shapes[i];
+			if (shape.size() != 3 || shape[0] != 1 || shape[1] != s) {
+				throw InvalidInputException("anofox_tabfm: the prepare graph's context_logits is shaped [%s] for %lld "
+				                            "context rows; expected [1, %lld, C].",
+				                            ShapeString(shape), static_cast<long long>(s), static_cast<long long>(s));
+			}
+			prepared.context_classes = shape[2];
+			prepared.context_logits = std::move(prepared.data[i]);
+			prepared.names.erase(prepared.names.begin() + NumericCast<int64_t>(i));
+			prepared.shapes.erase(prepared.shapes.begin() + NumericCast<int64_t>(i));
+			prepared.data.erase(prepared.data.begin() + NumericCast<int64_t>(i));
+			return;
+		}
+		throw InternalException("anofox_tabfm: the prepare graph declared context_logits but did not return it");
+	}
+
+	void FittedFromQueryPass(const TabFMRunInput &input, int64_t s, TabFMPreparedContext &prepared) {
+		// The context rows' own fitted values. Every row the engine returns needs
+		// one, including the labelled ones, and the combined graph produces them
+		// in the same pass. Here they are a query pass over the support rows —
+		// which is exact for a cache, because a query row's answer depends only
+		// on the context, never on which other rows shared its batch.
+		auto fitted = RunQuery(*query, input.x, s, input.h, input.y, s, prepared);
+		if (fitted.shape.size() != 3 || fitted.shape[1] != s) {
+			throw InvalidInputException(
+			    "anofox_tabfm: the query graph returned %llu values shaped [%s] for %lld context rows; expected "
+			    "[1, %lld, C]. The prepare/query pair does not match this model.",
+			    static_cast<unsigned long long>(fitted.logits.size()), ShapeString(fitted.shape),
+			    static_cast<long long>(s), static_cast<long long>(s));
+		}
+		prepared.context_classes = fitted.shape.back();
+		prepared.context_logits = std::move(fitted.logits);
+		prepared.bytes += prepared.context_logits.size() * sizeof(float);
 	}
 };
 
@@ -1760,6 +1802,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		config.model_tag = task_name + " (query)";
 		backend->query = session_for(split.query, "query");
 		backend->context_inputs = SplitContextInputs(*backend->query);
+		backend->prepare_emits_fitted = SessionHasOutput(*backend->prepare, "context_logits");
 		if (backend->context_inputs.empty()) {
 			throw InvalidInputException(
 			    "tabfm: the query half of '%s' takes only x and y, so it is not a query graph. Re-export the pair with "

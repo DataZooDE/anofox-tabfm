@@ -32,8 +32,10 @@ emits two extra weight-free graphs and their tensor maps:
 | `graph_query_tabicl_*.onnx` | `x[1,Q,H]`, `y[1,S]`, `support_reps`, `hidden_*` | `logits[1,Q,C]` |
 
 `K` is `col_num_blocks` (3 on the v2 architecture). A caller runs `prepare` once per support set and
-`query` per batch; the support rows never pass through `multihead_attn2`, the row interactor or the
-ICL stage again.
+`query` per batch; the support rows never pass through `multihead_attn2` or the row interactor again.
+They do still pass through the ICL stage: `QueryWrapper` concatenates `support_reps` with the query rows
+and runs the 12-layer ICL over S+Q rows on every call. `spike_context_cache` (below) measures a pair
+that caches each ICL layer's support keys/values instead.
 
 Each half also gets its own tensor map — `tensor_map_prepare_tabicl_*.json`,
 `tensor_map_query_tabicl_*.json`, named from its own graph by the rule the combined pair already
@@ -59,6 +61,23 @@ these speedups per query batch (CPU, 500 features per call):
 | 64 | 14 | 5.0x |
 
 Biggest where a small batch meets a large context, which is the escalation case in #37.
+
+### Spike: `spike_context_cache`, the per-layer key/value contract (#37)
+
+```bash
+uv run spike_context_cache --graphs DIR --out DIR   # DIR: combined graph + map, and the --split-context pair
+```
+
+Exports two more pairs (weight-free, at real and fixture scale) and checks them against the shipped
+combined graph on the real `tabicl-classifier-v2` weights, injected through the tensor maps:
+
+- `prepare_fitted`: today's prepare, plus `context_logits`, the context rows' logits as the combined
+  graph computes them;
+- `prepare_kv` / `query_kv`: prepare also emits each ICL layer's support keys/values; query runs the
+  query rows only and takes no `y`.
+
+Results, and what they imply for the engine and the other models: `docs/CONTEXT_CACHE_PLAN.md`.
+`test/fixtures/tabicl_kv` is the fixture-scale kv pair this command writes.
 
 ### Why the split is exact
 

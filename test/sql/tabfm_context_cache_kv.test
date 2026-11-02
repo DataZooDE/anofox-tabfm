@@ -1,0 +1,91 @@
+# name: test/sql/tabfm_context_cache_kv.test
+# description: anofox_tabfm_context_cache with a pair whose prepare graph also
+#              emits `context_logits` and whose query graph reads the per-layer
+#              ICL key/values instead of re-running the context rows
+#              (docs/CONTEXT_CACHE_PLAN.md, the "kv" contract). Graphs:
+#              test/fixtures/tabicl_kv, exported by
+#              tools/export_tabicl `spike_context_cache` from the same fixture
+#              architecture as test/fixtures/tabicl, whose weights they share.
+#
+#              What changes against tabfm_context_cache.test: the context rows'
+#              fitted values. That file asserts they MOVE under the old pair (its
+#              query half never sees a row's own label); with context_logits they
+#              must be the combined graph's. The fixture is near-constant (a
+#              different context moves its logits by ~2e-08), so the bound below
+#              is tight enough to fail the old path (it moves them by >1e-6) and
+#              is not evidence of numeric parity on a real model — that is in
+#              docs/CONTEXT_CACHE_PLAN.md, measured on the real weights.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'tabicl-kv-fixture', base_dir := 'test/fixtures/tabicl_kv',
+  classification_graph := 'graph_tabicl_classification.onnx',
+  classification_weights := '../tabicl/model_classification.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json',
+  license := 'bsd-3-clause', commercial := true,
+  weights_repo := 'local:test/fixtures/tabicl_kv', weights_revision := 'fixture-kv-v1',
+  preprocessing_profile := 'tabicl_v2_raw',
+  max_rows := 4096, max_features := 64, max_classes := 3)
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (0.5,1.0,0.1,'c0'),(1.5,0.2,0.3,'c1'),(2.5,-1.0,0.5,'c2'),
+  (0.2,0.8,0.7,'c0'),(1.1,0.4,0.2,'c1'),(3.0,-0.5,0.9,'c2'),
+  (0.9,1.2,0.6,'c0'),(2.1,0.1,0.4,'c1'),
+  (1.3,0.3,0.35,NULL),(2.4,-0.2,0.55,NULL))
+  v(f1,f2,f3,label);
+
+statement ok
+CREATE TABLE combined AS
+SELECT f1, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture');
+
+statement ok
+SET anofox_tabfm_context_cache = true
+
+statement ok
+CREATE TABLE split AS
+SELECT f1, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture');
+
+query III
+SELECT count(*), count(*) FILTER (WHERE yhat NOT IN ('c0','c1','c2')),
+       count(*) FILTER (WHERE yhat IS NULL)
+FROM split
+----
+10	0	0
+
+# Every row, context rows included, is the combined graph's answer.
+query I
+SELECT count(*) FROM combined c JOIN split s USING (f1)
+WHERE c.yhat <> s.yhat OR abs(c.yhat_score - s.yhat_score) > 1e-6
+----
+0
+
+# The second call answers from the cached context (a query pass over the two
+# test rows only) and must not change anything.
+statement ok
+CREATE TABLE split_again AS
+SELECT f1, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture');
+
+query I
+SELECT count(*) FROM split s JOIN split_again a USING (f1)
+WHERE s.yhat <> a.yhat OR abs(s.yhat_score - a.yhat_score) > 1e-12
+----
+0
+
+# The explicit train/test form: the test rows come back alone, from the cache.
+query I
+SELECT count(*) FROM tabfm_classify('(SELECT * FROM t WHERE label IS NOT NULL)', 'label',
+  test := '(SELECT * EXCLUDE (label) FROM t WHERE label IS NULL)', model := 'tabicl-kv-fixture')
+----
+2

@@ -696,6 +696,15 @@ vector<string> SplitContextInputs(const TabFMSession &query_session) {
 	return wanted;
 }
 
+bool SessionHasOutput(const TabFMSession &session, const string &name) {
+	for (auto &output : session.output_names) {
+		if (output == name) {
+			return true;
+		}
+	}
+	return false;
+}
+
 TabFMPreparedContext RunPrepare(TabFMSession &session, const float *x, const float *y, int64_t s, int64_t h,
                                 const vector<string> &wanted) {
 	if (!x || !y) {
