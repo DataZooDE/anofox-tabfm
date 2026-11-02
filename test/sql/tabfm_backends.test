@@ -97,8 +97,10 @@ true
 # structural "positional context split" reason — that reason means "no fixed
 # shape can be bucketed for this architecture", which is false for every one of
 # these: tabfm-v1, tabfm-v1-1, mitra, mitra-v2 and kumo-tabular-* (train_size-scalar family), and tabdpt, tabdpt-v1-3, tabpfn-v2,
-# tabpfn-v2-5, tabpfn-v2-6, tabpfn-v3, tabpfn-v3-5(-fast), exaone-tabular and nori-30m, whose split was converted to a value (see
-# docs/ROCM_TABDPT_SPIKE.md, docs/ROCM_TABPFN_PLAN.md, tools/export_exaone and tools/export_nori: *_mask.py). They may still be
+# tabpfn-v2-5, tabpfn-v2-6, tabpfn-v3, tabpfn-v3-5(-fast), exaone-tabular, nori-30m, tabicl-v2, limix-2m, orion-bix,
+# orion-msp and causilo, whose split was converted to a value (see docs/ROCM_TABDPT_SPIKE.md, docs/ROCM_TABPFN_PLAN.md,
+# tools/export_exaone, tools/export_nori, tools/export_tabicl, tools/export_limix, tools/export_orion_* and
+# tools/export_causilo: *_mask.py). They may still be
 # unsupported for a situational cause (weights not downloaded), so this asserts
 # the REASON rather than the verdict.
 #
@@ -111,26 +113,21 @@ SELECT count(*) FROM tabfm_backends()
 WHERE backend = 'rocm'
   AND model IN ('tabfm-v1', 'tabfm-v1-1', 'mitra', 'tabdpt', 'tabpfn-v2', 'tabpfn-v2-5', 'tabpfn-v2-6', 'tabpfn-v3',
                 'mitra-v2', 'tabdpt-v1-3', 'tabpfn-v3-5', 'tabpfn-v3-5-fast', 'exaone-tabular', 'nori-30m',
+                'tabicl-v2', 'limix-2m', 'orion-bix', 'orion-msp', 'causilo',
                 'kumo-tabular-small', 'kumo-tabular-medium', 'kumo-tabular-large')
   AND reason IS NOT NULL AND reason LIKE '%ROCM_SINGLE_EVAL_POS%';
 ----
 0
 
-# ...and conversely the ones that genuinely cannot be bucketed must say so
-# rather than leaving the user to guess, whenever a rocm device is present.
-#
-# This list used to include tabdpt and the whole TabPFN family (v3 was the last). Each left it when
-# its split was converted, and the assertion would have started failing on any
-# ROCm machine with an undownloaded weight -- it only passed elsewhere because
-# CI has no rocm device and so the set is empty. Whoever converts the next model
-# must move it out of this list too.
+# ...and since 2026-11-01 no built-in model is left that cannot be bucketed: tabicl-v2, limix-2m, orion-bix,
+# orion-msp and causilo were the last, and each now ships a masked graph. So no rocm row may cite the
+# positional-split reason. A NEW positional model would fail this until it is converted or listed here
+# explicitly as refused (with that reason asserted, as this test did for the TabPFN family before it moved).
 query I
-SELECT count(*) = 0 OR bool_and(reason LIKE '%ROCM_SINGLE_EVAL_POS%')
-FROM tabfm_backends()
-WHERE backend = 'rocm' AND model IN ('tabicl-v2', 'orion-bix', 'orion-msp', 'causilo', 'limix-2m')
-  AND NOT supported;
+SELECT count(*) FROM tabfm_backends()
+WHERE backend = 'rocm' AND reason LIKE '%cannot be bucketed%';
 ----
-true
+0
 
 # A precision the backend cannot run is a knowable, permanent NO — downloading
 # weights will not change it — so it must never be reported as the unknown

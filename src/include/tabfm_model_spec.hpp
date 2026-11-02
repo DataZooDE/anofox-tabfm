@@ -17,6 +17,7 @@
 #pragma once
 
 #include "tabfm_manifest.hpp" // ManifestFile, EngineProfile, TabFMTask
+#include "tabfm_mlx_ops.hpp"  // MlxKnownWrong
 
 #include "duckdb/common/common.hpp"
 #include "duckdb/common/map.hpp"
@@ -287,7 +288,7 @@ struct GpuServabilityInputs {
 	//! Ops the graph that would be served uses and this backend cannot execute. Only MLX interprets
 	//! graphs op by op (tabfm_mlx_ops.hpp); the other backends hand the whole graph to a runtime.
 	vector<string> unsupported_ops;
-	//! Non-empty when the backend executes this graph but is known to get it wrong (MlxKnownWrong).
+	//! Non-empty when the backend executes this graph but is known to get it wrong (GpuKnownWrong).
 	string known_wrong;
 };
 
@@ -329,6 +330,34 @@ inline string GpuGraphKindFor(const string &backend) {
 	return (backend == "rocm" || backend == "migraphx") ? "migraphx_graph" : "ext_graph";
 }
 
+//! Why a bundled ext graph is refused on CUDA although the plugin loads it. Measured on an RTX 4090 with the
+//! released v2026.10.31 artefacts (tools/gpu_test/cuda_catalog.sh, 100-row tables): every other bundled ext
+//! graph agreed with the CPU there. Both TabPFN-3.5 graphs fail inside ONNX Runtime 1.29's CUDA execution
+//! provider on both tasks -- the same graphs run on ORT 1.29's CPU EP -- and reproduce outside this
+//! extension with plain onnxruntime-gpu 1.29.0 at every graph optimisation level, with or without the memory
+//! pattern. Refusing by name keeps 'auto' on the CPU instead of erroring after it chose CUDA. Remove an entry
+//! only with a cuda_catalog.sh run that shows the model agreeing with the CPU.
+inline string CudaKnownWrong(const string &model, const string &task) {
+	(void)task; // both tasks fail
+	if (model == "tabpfn-v3-5" || model == "tabpfn-v3-5-fast") {
+		return "its graph fails inside ONNX Runtime 1.29's CUDA execution provider (an Expand/Where node "
+		       "receives a wrong shape operand: 'node_expand: left operand cannot broadcast', 'Shape mismatch "
+		       "attempting to re-use buffer'), measured on an RTX 4090 for both tasks";
+	}
+	return string();
+}
+
+//! The per-backend known-wrong list: non-empty refuses the model on that backend even though a graph exists.
+inline string GpuKnownWrong(const string &backend, const string &model, const string &task) {
+	if (backend == "mlx") {
+		return MlxKnownWrong(model, task);
+	}
+	if (backend == "cuda") {
+		return CudaKnownWrong(model, task);
+	}
+	return string();
+}
+
 inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &in) {
 	GpuServabilityResult out;
 	if (!BackendSupportsPrecision(in.backend, in.precision)) {
@@ -368,9 +397,9 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		// The case worth being precise about: a model whose context split is
 		// positional (it reads the split from y's length), which a fixed-shape
 		// compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). tabdpt and the
-		// whole TabPFN family (v2, v2.5, v2.6, v3) have had that split converted to
-		// a value and so no longer land here; tabicl-v2 and the orion models still
-		// do, and tabfm_backends() is the source of truth for which.
+		// whole TabPFN family (v2, v2.5, v2.6, v3), tabicl-v2 and limix-2m have had
+		// that split converted to a value and so no longer land here; the orion
+		// models and causilo still do, and tabfm_backends() is the source of truth.
 		out.reason = "model '" + in.model + "' has no " + in.backend + "-servable graph for task '" + in.task_name +
 		             "': it declares no " + GpuGraphKindFor(in.backend) +
 		             (in.bundled_graph_exists ? " and the bundled GPU graph does not match its weights"
@@ -508,6 +537,8 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 			return "ca4435a405cbd17afc8cf08346954705d7cc01fc6d08bdcf9c06363faed867a9";
 		}
 	}
+	// TabICL v2: also pins the masked ROCm graphs (tools/export_tabicl --contract mask), which reuse every
+	// initializer and the tensor-map keys of the positional pair, so the header is unchanged.
 	if (model == "tabicl-v2") {
 		if (task_name == "classification") {
 			return "085731de6a7b33e6fcbda7e1b3cba725d798d30f93ec3cdc91c3ac2c2c762d3f";
@@ -550,7 +581,8 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	}
 	// Causilo (Nums AI). The graphs bake absolute offsets into the checkpoint at the revision the
 	// registry pins (94f2bd91...); HF main has moved past it, which is exactly the situation this
-	// hash exists to catch: a mismatch falls back to the layout-independent injection path.
+	// hash exists to catch: a mismatch falls back to the layout-independent injection path. The masked
+	// ROCm graphs (tools/export_causilo --contract mask) reuse the same tensor map, so the same header.
 	if (model == "causilo") {
 		if (task_name == "classification") {
 			return "85fb120c90878b69b0d34ff32fcfbdcf457ffd4d2ed7af2a102fe7c2d417d742";
@@ -561,8 +593,9 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	}
 	// LimiX-2M: ONE checkpoint serves both tasks, so both share a header sha. It pins the header of the
 	// safetensors that tools/export_limix's convert_limix_weights writes from LimiX-2M.ckpt (137 tensors,
-	// byte-deterministic). The ext graphs bake offsets into THAT file; without it, the loader falls back to
-	// the layout-independent injection path, which reads the checkpoint natively.
+	// byte-deterministic). The ext graphs and the masked ROCm graphs (tools/export_limix --contract mask) bake
+	// offsets into THAT file; without it, the CPU loader falls back to the layout-independent injection path,
+	// which reads the checkpoint natively, and ROCm reports the bundled graph as not matching.
 	if (model == "limix-2m") {
 		if (task_name == "classification" || task_name == "regression") {
 			return "0c6a868493ea16aaa88bd604b7f769b34018e82941eae90abd9d16072cf283eb";

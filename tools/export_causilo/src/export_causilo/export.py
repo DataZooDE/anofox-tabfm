@@ -96,6 +96,79 @@ def export_graph(model, graph_path: pathlib.Path, *, example, classes: int,
     return wrapper
 
 
+def export_mask_graph(model, graph_path: pathlib.Path, *, example, classes: int, opset: int = OPSET):
+    """Export under the MASKED contract: (x, y, train_size, n_rows, d). See causilo_mask_export.
+
+    The difference from export_graph is the point of the conversion: `y` is as long as `x`, and the split, the
+    real row count and the real feature count arrive as VALUES, so no shape depends on the split and the only
+    dynamic axes are rows and features.
+    """
+    from export_causilo.causilo_mask_export import MaskExportWrapper
+
+    wrapper = MaskExportWrapper(model).eval()
+    A = torch.export.Dim.AUTO
+    S = torch.export.Dim.STATIC
+    dyn = ({0: S, 1: A, 2: A}, {0: S, 1: A}, None, None, None)
+    t, h, n_train = example
+    torch.manual_seed(0)
+    x = torch.randn(1, t, h)
+    y = torch.randint(0, max(classes, 1), (1, t)).float() if classes else torch.randn(1, t)
+    ex = (x, y, torch.tensor([n_train], dtype=torch.int64), torch.tensor([t], dtype=torch.int64),
+          torch.tensor([h], dtype=torch.int64))
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    with torch.no_grad():
+        torch.onnx.export(
+            wrapper, ex, str(graph_path),
+            dynamo=True, dynamic_shapes=dyn, opset_version=opset,
+            input_names=["x", "y", "train_size", "n_rows", "d"], output_names=["logits"],
+            external_data=True, optimize=False,
+        )
+    return wrapper
+
+
+def padded_feed(x, y, bucket):
+    """The masked graph's inputs for real data x [n, d], y [N], padded to bucket (T, H)."""
+    n, d = x.shape
+    T, H = bucket
+    xp = np.zeros((1, T, H), np.float32)
+    xp[0, :n, :d] = np.asarray(x, np.float32)
+    yp = np.full((1, T), -100.0, np.float32)
+    yp[0, :len(y)] = np.asarray(y, np.float32)
+    return {"x": xp, "y": yp, "train_size": np.array([len(y)], np.int64),
+            "n_rows": np.array([n], np.int64), "d": np.array([d], np.int64)}
+
+
+def check_mask_parity(graph_path: pathlib.Path, reference, cases, classes: int, tol: float = PARITY_TOL) -> dict:
+    """ORT on the masked graph, padded, vs the UNPADDED positional wrapper, over EVERY real row.
+
+    `cases` = ((n, N, d, T, H), ...), all with train size, feature count and bucket different from the
+    export example, so the dynamic axes and the value inputs are genuinely exercised. Context rows (< N) and
+    query rows are reported separately. `reference` is the positional ExportWrapper on the same model.
+    """
+    import onnxruntime as ort
+
+    sess = ort.InferenceSession(str(graph_path), providers=["CPUExecutionProvider"])
+    results, worst = [], 0.0
+    for n, N, d, T, H in cases:
+        rng = np.random.default_rng(n * 1000 + N * 10 + d)
+        x = rng.standard_normal((n, d)).astype(np.float32)
+        y = (rng.integers(0, max(classes, 1), N) if classes else rng.standard_normal(N) * 3 + 1).astype(np.float32)
+        t0 = time.time()
+        (out,) = sess.run(["logits"], padded_feed(x, y, (T, H)))
+        ort_ms = (time.time() - t0) * 1e3
+        with torch.no_grad():
+            want = reference(torch.from_numpy(x)[None], torch.from_numpy(y)[None])[0].numpy()
+        got = out[0, :n]
+        if got.shape != want.shape:
+            raise RuntimeError(f"shape mismatch at (n,N,d,T,H)=({n},{N},{d},{T},{H}): ORT {got.shape} vs {want.shape}")
+        ctx = float(np.abs(got[:N] - want[:N]).max())
+        qry = float(np.abs(got[N:] - want[N:]).max()) if n > N else 0.0
+        worst = max(worst, ctx, qry)
+        results.append({"n": n, "N": N, "d": d, "T": T, "H": H, "max_abs_delta_context_rows": ctx,
+                        "max_abs_delta_query_rows": qry, "ort_ms": ort_ms})
+    return {"ok": worst < tol, "worst": worst, "tol": tol, "shapes": results}
+
+
 def _norm_name(name: str) -> str:
     # dynamo emits the wrapper attribute ('m.') as prefix; strip to the bare checkpoint key.
     for pre in ("m.", "p_m_", "b_m_", "p_", "b_"):

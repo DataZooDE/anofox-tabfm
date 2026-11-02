@@ -1,0 +1,173 @@
+{
+  "command": [
+    "export_limix",
+    "--task",
+    "classification",
+    "--config",
+    "real",
+    "--contract",
+    "mask",
+    "--out",
+    "./mask"
+  ],
+  "task": "classification",
+  "config": "real",
+  "model_config": {
+    "preprocess_config_x": {
+      "num_features": 2,
+      "nan_handling_enabled": true,
+      "normalize_on_train_only": true,
+      "normalize_x": true,
+      "remove_outliers": false,
+      "normalize_by_used_features": true
+    },
+    "encoder_config_x": {
+      "num_features": 2,
+      "embedding_size": 96,
+      "mask_embedding_size": 96,
+      "encoder_use_bias": true,
+      "numeric_embed_type": "RBF",
+      "RBF_config": {
+        "token_embed_dim": 16,
+        "n_kernels": 64,
+        "sigma": 0.5,
+        "use_learn_sigma": false,
+        "use_learn_embeddings": false,
+        "use_random_kernels": false,
+        "use_original_features": false
+      }
+    },
+    "encoder_config_y": {
+      "num_inputs": 1,
+      "embedding_size": 96,
+      "nan_handling_y_encoder": true,
+      "max_num_classes": 10
+    },
+    "decoder_config": {
+      "num_classes": 10
+    },
+    "feature_positional_embedding_type": "none",
+    "nlayers": 12,
+    "nhead": 6,
+    "embed_dim": 96,
+    "hid_dim": 384,
+    "features_per_group": 2,
+    "dropout": 0,
+    "pre_norm": false,
+    "activation": "gelu",
+    "recompute_attn": false,
+    "layer_arch": "smf",
+    "self_share_all_kv_heads": false,
+    "cross_share_all_kv_heads": false,
+    "seq_attn_isolated": true,
+    "seq_attn_serial": false,
+    "mask_prediction": false
+  },
+  "n_params": 2377837,
+  "seed": 0,
+  "opset": 18,
+  "upstream": {
+    "repo": "https://github.com/limix-ldm-ai/LimiX",
+    "rev": "61ede97e37d3eaae9e4500c0bba02965a2370eba",
+    "code_license": "Apache-2.0",
+    "weights_license": "Stable AI Technology Co., Ltd. License v1.0 (Apache-2.0 + Section 10: 'Built with StableAI LimiX' attribution; 'LimiX' name prefix for derived models)",
+    "checkpoint": "stable-ai/LimiX-2M :: LimiX-2M.ckpt"
+  },
+  "input_signature": {
+    "x": "[1,T,H] f32 (padded)",
+    "y": "[1,T] f32 FULL length (-100 off-context)",
+    "train_size": "[1] i64",
+    "d": "[1] i64 (real feature count)",
+    "n_rows": "[1] i64 (real row count: the valid-feature test)"
+  },
+  "output": {
+    "logits": "[1,T,C] class logits, C=num_classes"
+  },
+  "H_dynamic": true,
+  "train_size": "input (a value: the context is a mask, not a slice)",
+  "dim_rows": [
+    "rows",
+    4,
+    100000
+  ],
+  "dim_train": [
+    "train",
+    2,
+    100000
+  ],
+  "dim_features": [
+    "features",
+    2,
+    512
+  ],
+  "example_THS": [
+    20,
+    8,
+    12
+  ],
+  "graph_bytes": 477555,
+  "n_initializers_mapped": 137,
+  "unmatched_small_inline": [
+    "m.encoder_x.0.numeric_mlp.centers"
+  ],
+  "parity": {
+    "worst": 8.046627044677734e-07,
+    "ok": true,
+    "cases": [
+      [
+        50,
+        7,
+        30,
+        128,
+        16,
+        2
+      ],
+      [
+        31,
+        1,
+        30,
+        64,
+        16,
+        null
+      ],
+      [
+        12,
+        5,
+        2,
+        128,
+        16,
+        null
+      ],
+      [
+        20,
+        16,
+        12,
+        20,
+        16,
+        0
+      ],
+      [
+        40,
+        8,
+        25,
+        128,
+        16,
+        null
+      ],
+      [
+        100,
+        8,
+        70,
+        128,
+        16,
+        5
+      ]
+    ]
+  },
+  "versions": {
+    "torch": "2.12.1+cpu",
+    "onnx": "1.23.1",
+    "onnxruntime": "1.30.0",
+    "onnxscript": "0.7.2"
+  }
+}

@@ -1,0 +1,322 @@
+# Causilo on ROCm: what the masked graph has to reproduce
+
+Status: **shipped. Causilo serves on ROCm (gfx1201) for both tasks** through the bundled
+`graph_migraphx_causilo_<task>.onnx` (masked contract, below). Measured on an RX 9070 XT with the real weights, 100 rows
+x 8 features (bucket 128 x 16), served by `rocm:0` (read from `tabfm_models()`): **0/100 label differences** from the
+CPU for classification; regression max |diff| **3.6e-5**, corr 0.9999999999998; warm calls 0.049 s / 0.047 s against
+0.22 s / 0.18 s on the CPU. `migraphx-driver compile --gpu` at that bucket: classification 791 s, regression 937 s.
+Tests: `test/sql/tabfm_rocm_causilo.test` (TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1), `tools/gpu_test/scenarios/causilo_rocm.sql`.
+The sections below are the history of how it got there; "What is not done" at the end is superseded by this line. This is the Causilo counterpart of `docs/ROCM_TABPFN_PLAN.md`; read that for why the
+split must become a value (MIGraphX compiles one program per fixed `(T, H)` bucket, so a split read from
+`y`'s length would need one compile per distinct training size).
+
+Every claim below was checked against `causilo` 1.0.3 (the pinned release `94f2bd91`) rather than
+inherited from the plan; line numbers are in `causilo/` unless noted.
+
+## The contract
+
+```
+x          [1, T, H] f32   engine-preprocessed, real data in [:n_rows, :d], zeros elsewhere
+y          [1, T]    f32   training targets in [:train_size], -100 elsewhere
+train_size [1] int64       rows [0, train_size) are the context
+n_rows     [1] int64       rows [0, n_rows) are real (accepted for plugin parity; see "not needed")
+d          [1] int64       columns [0, d) are real
+```
+
+Output `[1, T, C]` is the same as the positional graph's: every row is a prediction, rows `< train_size`
+are in-context fitted values (the context presented a second time as queries; see `causilo_patches.py`).
+
+## Are padded features inert? Measured: no, once the padding spans a whole group
+
+`FeatureEmbedding` (nn/embeddings.py:24) pads the feature axis to a multiple of 3 with **numeric zero**,
+turns each cell into `sin/cos` of `2*pi*freq*value`, and sums the three cells of a group. A bucket wider
+than the real feature count therefore adds either (a) zero cells inside the last real group, or (b) whole
+extra groups. Measured on the shipped positional wrapper with a responsive random-weight model, `d=5`,
+against the unpadded run (max abs difference, `|logit|` up to 1.48):
+
+| padding | classification | regression |
+|---|---|---|
+| H=6: one zero column inside the partial group | **0.0** | **0.0** |
+| H=9: one all-zero group | 1.10 | 0.22 |
+| H=16: four all-zero groups | 1.51 | 0.30 |
+| T=48: 28 zero rows appended as extra query rows | **0.0** | **0.0** |
+
+(a) is inert **by construction**: upstream's own padding is a numeric zero too, and the in-graph
+normaliser maps an all-zero column to exactly zero (`spread -> 1`, bounds `+-4e-6`). (b) is not: an
+all-zero group is a real token (`cos(0) = 1` for every frequency, so it is not even a zero vector), and the
+row stages read every group. Extra query rows are inert because query rows never influence anything
+(they are only ever queries).
+
+## Sites that consume the split or a real count
+
+Numbering follows the data flow of `ModelRunner.predict` (execution/runner.py:86).
+
+| # | where | what it does with the split / count | masked form |
+|---|---|---|---|
+| 1 | `normalise_features` (ours, `causilo_patches.py`; mirrors data/normalization.py) | fill mean, z-score centre/spread, 4-sigma bounds, all over the **first S rows**; `ddof = (S > 1)`; counts `S` | statistics over `train` mask, counts as values |
+| 2 | `inject_targets` (runner.py:33), feature-level | `rows[:, :S] + target_embedding`, `S = targets.shape[1]` | add `where(train, emb, 0)`; non-train targets zeroed first (class id -100) |
+| 3 | `ColumnBlock.forward` (nn/column.py:33-36) | `layer.prepare(rows[..., :S, :])`: the gather attention's keys are the first S rows | key mask `train` over all T rows |
+| 3b | `QueryScale` in that gather (nn/layers/scaling.py:25-27) | `log(key_count)`, `key_count = S` | `log(clamp(n_train))` as a **value** |
+| 4 | `ColumnLayer.broadcast` | all rows query the 128 latents; no scaling | none (rows independent, keys fixed) |
+| 5 | `RowBlock` / `RowLayer.update_latents` / `RowPool` (nn/row.py:26-27, 53) | `LatentUpdate` reads `cat(latents, features)`: **keys include every feature group** | group key mask `j*3 < d`; `key_count = L + n_real_groups` |
+| 5b | `FeatureUpdate` (nn/row.py:40, 53) | queries = latents + groups, keys = the L latents only | none (keys fixed; padded query tokens are independent garbage nobody reads) |
+| 6 | `inject_targets`, row-level | the same prefix add on the pooled `[L*D]` rows | same mask as #2 |
+| 7 | `PredictionBlock.forward` (nn/prediction.py:20-26) | `layer.prepare(rows[..., :S, :])` keys = first S rows, in **every** of the 12 layers; the last layer takes `rows[..., S:, :]` | key mask `train` per layer; all rows run, the answer rows are selected after |
+| 7b | `QueryScale` in the prediction attention | `key_count = S` | value |
+| 8 | regression target scaler | mean / population std over the S targets (`causilo_patches.ExportWrapper`) | masked sums, counts as values |
+| 9 | `FeatureEmbedding` grouping (nn/embeddings.py:24) | pad to a multiple of 3, group, sum | unchanged; group count `G = ceil(H/3)` is shape-derived, **real** groups from `d` |
+
+### Not needed
+
+* **`n_rows`.** Nothing in Causilo looks at all rows: statistics use the training rows only and every
+  other attention uses a key mask. (TabPFN needed it because constant-feature detection compares every row
+  with row 0.) The graph still declares the input so the plugin binds it uniformly, exactly as the TabPFN-3
+  masked forward does.
+* **Constant-column removal.** Upstream's `FeatureEncoder` drops constant columns, but so does the engine
+  before the graph, so the graph never sees them. The in-graph normaliser still handles one (spread -> 1).
+
+### The key counts are values, and one of them is the padded-feature trap
+
+`QueryScale` scales the query by `log(key_count)`. Upstream reads `key_count` off `key.shape[-2]`, which under
+a bucket is the **padded** length. Three different counts are involved and they must not be confused:
+
+* gather and prediction attention: keys are the training rows -> `N = train_size`;
+* `LatentUpdate` (row stage and pool): keys are `L` latents plus the real groups -> `L + ceil(d/3)`;
+* `FeatureUpdate`: keys are the latents only -> `L`, an architectural constant.
+
+The second is the one that depends on `d`: using the padded group count there would be a bug that padding
+alone (inert for the partial group) never exposes.
+
+## Design decisions
+
+1. **Nothing upstream is monkeypatched in the masked path.** Every block is re-driven from its own weights,
+   like `tabpfn_mask_v3.py`. The module-level patches in `causilo_patches.apply()` (which exist for the
+   positional export) are not called, so the masked graph cannot depend on whether the process happened to
+   patch the right module; `tests/test_mask_export_isolated.py` proves it by exporting in a fresh process.
+2. **No integer division or modulo on runtime data.** Real groups are `arange(G) * 3 < d`; their count is
+   a `sum`. (MIGraphX's GPU target miscomputes integer floor-division; see `ROCM_TABPFN_PLAN.md`.)
+3. **The duplicate route stays.** The context rows are presented a second time as queries
+   (`[x ; x]` with `train = idx < N`), so the answer for row `i` is `out[T + i]`. Statistics are computed once
+   on the original `x`, before duplicating, as in the positional wrapper.
+4. **Five MIGraphX failures are guarded structurally from the start.** Four are GPU-pipeline-only and invisible
+   to ORT and to MIGraphX's reference target: integer division on runtime data, `Reshape` to `[]`, a `Concat`
+   whose inputs are all `Transpose`s, and a matmul with contraction dimension 1. The fifth is new, found on
+   Causilo, and fails at PARSE time: ONNX Sequence operators (see "What parsing found" below). Causilo has the last one in
+   **two places per attention layer**: `QueryScale.length` and `QueryScale.correction` both start with
+   `Linear(1, n)` on a `[1, 1]` input, plus the regression `TargetEmbedding` (`Linear(1, width)`).
+   Each is written elementwise (`causilo_mask_forward._linear_k1`).
+
+## The gate
+
+`export_causilo.mask_parity_full`: the reference is the **unpadded** `ExportWrapper` (itself validated against
+upstream's `ModelRunner` and `Normalizer` in `tests/test_export.py`); the candidate is the masked wrapper on the
+same data padded to a bucket. They must agree on every real row, context and query reported separately.
+
+A gate that cannot fail is worse than none, and this codebase has been blinded by it repeatedly, so:
+
+* the model is `fixture.sensitive()`: a default-initialised Causilo ignores its input, so every comparison
+  against it passes vacuously (measured earlier: logits vary by 0.008 across rows);
+* a "real-like" fixture runs every loop the released model runs (depths 3/3/3/3, 4 row latents, more than one
+  head) at small width, so no branch is unexercised;
+* each mechanism has a negative control that must be **caught** (see the table the gate prints).
+
+## Results (CPU only)
+
+Gate (`mask_parity_full`, 11 cases x {fixture, fixture_r} x {classification, regression}, reference = the unpadded
+positional wrapper): worst **7.0e-6** classification, **1.7e-5** regression, against a 1e-4 budget. All 28 negative
+controls caught (7 mechanisms x 2 configs x 2 tasks), relative errors 0.54 to 2.2 against a 1e-3 threshold.
+
+Exported masked ONNX under ORT at padded shapes, every row, against the unpadded reference: fixture classification
+1.1e-5, regression 9.5e-7; **real dimensions** classification **4.5e-6**, regression **9.5e-7**. Every case differs
+from the trace in train size, feature count and bucket; includes d = 2, one query row and one training row.
+
+`pytest`: 110 passed, 6 skipped (the real-weights tests, gated on `TABFM_REAL_WEIGHTS`; run separately below).
+
+**Real weights, padded, against upstream's own estimators** (`tests/test_real_weights.py`, gated on
+`TABFM_REAL_WEIGHTS`; the weights are exported into a pytest tmp dir and never into the repo). The masked graph
+with the actual Nums AI checkpoints, run in ORT with the table padded in BOTH axes, the bucket adding whole padded
+feature groups (asserted), against `CausiloClassifier` / `CausiloRegressor` with `n_estimators=1`: iris, wine and a
+5-class table agree to within 1e-4 in probability with identical labels; diabetes regression within 1e-4 of the
+prediction scale. Random weights cannot tell a scrambled weight mapping from a right one; this can.
+
+### A parity budget that was not loosened, and why it nearly was
+
+The first real-dimension export FAILED parity at 1.42e-4 against 1e-4. Separating the sources at real dims showed
+all three comparisons (masked-PyTorch vs unpadded, ORT vs masked-PyTorch, ORT vs unpadded) at 1e-5 to 1.7e-4, i.e.
+**ORT and PyTorch disagreed with each other by 1.1e-4 on the same masked model**: float32 noise amplified through
+a deep, sharply-attending network, not a mask error. The fix was to the TEST MODEL, not the budget:
+`fixture.sensitive()` scales projections by 2, which at the released depth (12 prediction layers) amplifies 1e-6
+relative input noise to 1.2e-4; a gain of 1.5 is still responsive (classification row spread 0.245, label
+sensitivity 0.20) and amplifies it to 8.8e-6. `ExportConfig.weight_gain` carries the measured value (1.5 for
+`real`). Regression at real dims is much less responsive in absolute terms (row spread 0.0105, outputs ~0.05); a
+masking bug would still move it by orders of magnitude more than 1e-4.
+
+### What parsing found: ONNX Sequence operators
+
+Parsing the real masked graph with `migraphx-driver` failed in 3 seconds: **`Unknown operator: SplitToSequence`**.
+Upstream's `Attention.prepare_context` does `packed.chunk(2, dim=-1)`, which exports to `SplitToSequence` +
+`SequenceAt` (verified on a tiny module, static and dynamic shapes), and MIGraphX's ONNX parser has neither: the
+masked graph could not even be LOADED on ROCm. ORT, the PyTorch gate and the MLX op-table check all accept it.
+`_prepare_context` now takes the K and V halves as two slices (`Slice` is supported); the gate numbers are identical
+to the digit. After the fix MIGraphX parses and reference-compiles both real graphs (rc 0, 38-43 s, bucket
+T=128 H=16, CPU). The positional graphs that already ship on CPU/CUDA still contain `SplitToSequence`; that is
+fine for ORT and for MLX (its interpreter implements both ops) and is not touched.
+
+### What the MIGraphX checks CANNOT see (measured, not assumed)
+
+* The reference target does **not** reproduce the GPU-pipeline failures: the known-bad TabPFN-3 K=1 repro compiles
+  on `--ref`.
+* There is no GPU-free target to substitute: `--cpu` fails here with `libmigraphx_cpu.so: cannot open shared
+  object file`.
+* So parse + reference compile is **necessary, not sufficient**. The structural guards (1-5) are the only
+  pre-GPU evidence for the four pipeline failures, and each was shown to flag a deliberately bad graph. Whether the
+  real graph has a sixth, unknown failure is exactly what the GPU run is for.
+
+### Size, as a compile-time proxy
+
+Masked real graphs: 9,398 (classification) / 9,436 (regression) nodes, against 8,573 / 8,585 positional and 10,480
+for TabPFN-3, which took about 16 min per (T, H) bucket (Causilo's compile time is NOT measured). The duplicate
+route processes `2T` rows, so run time (not node count) roughly doubles against the positional graph.
+
+### The masked graph reuses the shipped tensor map
+
+`tensor_map_causilo_<task>.json` from the masked export is byte-identical to the one already bundled, so the
+weights-header hash (`ExpectedWeightsHeaderShaFor("causilo", ...)`) and the tensor map need no change.
+
+## GPU compile (gfx1201, `migraphx-driver compile --gpu`): compiles for classification at one bucket; nothing has run
+
+No GPU compile of any Causilo masked graph has succeeded. Failures, in the order they were met. `--ref` compiles
+every one of these graphs; only `--gpu` reproduces them (`--cpu` is unavailable here: no `libmigraphx_cpu.so`).
+
+### 1. `fuse_concat` assertion (fixture 1m42s, fixture_r 4m30s, real classification 682 s)
+
+```
+program.cpp:1211 create_module: Assertion 'not contains(impl->modules, name)' failed
+```
+
+Last pass printed by `MIGRAPHX_TRACE_COMPILE=1`: `fuse_concat`. Ancestor-set bisection over the graph (compile the
+sub-graph that produces node N, find the first N that fails) gives **first failing node #3984**, a `MatMul`
+(`div_40 [1,2,2*s27,16] x [16,64]`): the first `Linear` of `QueryScale.content` in the LAST prediction layer. The
+nearest passing cut is node 3887; the cut at 3976 (`tanh_37`) passes but has a tiny ancestor set, so it says
+nothing. The program entering `fuse_concat` has 10 Concats, four of which list the same operand twice: bool
+`concat[axis=1](@15,@15)`, float `concat[axis=1](@40,@40)`, bool `concat[axis=0](@22,@22)`, `concat[axis=1](y,y)`.
+Those come from the duplicate route (`torch.cat([table, table])`, `torch.cat([y, y])`).
+
+**Eight tiny standalone Concat graphs compiled FINE on `--gpu`**: same operand twice (from an op, from a graph input,
+through an add), distinct operands, a bool same-operand Concat, `isnan` through a Concat with and without
+`where`-fill, and a bool Concat of the train mask. **So the same-operand Concat is NOT shown to be the trigger, and
+no minimal reproducer exists.** What is established: with the duplicate route spelled by `expand + reshape`
+instead of `Concat` (`_twice`; values identical), the fixture graph gets PAST `fuse_concat`. That is a correlation
+on one graph, not a mechanism.
+
+Guard 6 in `tests/migraphx_guards.py` ("concat of the same tensor") encodes that context. It flags repeated
+**computed** inputs only (shape vectors of `Constant`s repeat legitimately and compile). It is shown failing on a
+`cat([a, a])` module and on the real graph with the old spelling, and clean on the current export. Evidence for it
+is weaker than for guards 1 to 5.
+
+### 2. After the Concat change: a HIP kernel compile error in `gpu::compile_ops` (fixture, 2m34s)
+
+```
+main.cpp:99:40: error: invalid operands to binary expression ('float' and
+  'migraphx::reduce::block::reducer<...>::inner_storage<float, 1, integral_constant<unsigned int, 1>>')
+auto zz2 = migraphx::convert<float>(x0 / x1);
+... no matching function for call to 'invoke_loop' ... optional<gpu::tuning_config>::operator->: Assertion
+'this->_M_is_engaged()' failed.   (3 errors generated when compiling for gfx1201)
+```
+
+A `fused_reduce` kernel (`reduce::block`, `[1,16]`) divides a float by a reduction result held as `inner_storage`.
+It was hidden behind failure 1 (`fuse_concat` runs before `compile_ops`). **Minimal reproducer, 16 lines**: sum a
+masked tensor over axis 1, divide by the masked count (itself a reduction), then compute a masked variance divided
+by the same count:
+
+```python
+m  = (torch.arange(x.shape[1]) < n[0]).reshape(1, -1, 1)
+nr = m.to(x.dtype).sum(1, keepdim=True)
+mu = torch.where(m, x, torch.zeros_like(x)).sum(1, keepdim=True) / nr
+var = (torch.where(m, (x - mu) ** 2, torch.zeros_like(x)).sum(1, keepdim=True) / nr).sqrt()
+out = (x - mu) / var            # x [1,128,16], n [1]
+```
+
+`--gpu` fails with the error above; `--ref` passes. The two simpler variants (a masked mean alone, and the same on a
+2-D bool mask) compile on `--gpu`, so the trigger is the second reduction dividing by the first.
+The failing kernel's shapes (`[128,16]` bool inputs reduced to `[1,16]`) match the masked normaliser's per-feature
+mean/variance over the real rows, but that match was NOT confirmed by mapping the kernel to a node. Whether the
+positional graph has the same construct was not checked (it failed earlier, section 3). **Fix, shown on the reproducer first.** On `--gpu`, with the reproducer's exact inputs (`x[1,128,16]`, `n[1]`):
+
+| form of the statistics | `--gpu` |
+|---|---|
+| old: `sum / count`, `sum / count` (the reproducer) | abort, rc=134, 3 kernel errors |
+| `* (1/count)` (reciprocal computed once) | abort, same 3 errors |
+| count as a `[1,1,1]` scalar from the 1-D mask | abort, same 3 errors |
+| `ReduceMean * (R/count)` | abort, same 3 errors |
+| sums as `ones[1,1,T] @ v` (matmul), count too | compiles, rc=0, 0 errors |
+| only the second reduction as a matmul | compiles, rc=0, 0 errors |
+
+So the division was not the trigger; the chain reduce -> pointwise -> reduce is, and a matmul is not a reduction to the
+fuser. `normalise_masked` now writes all ten of its row sums through `_row_sum` (`ones @ v`). Values are the same up
+to summation order (gate numbers below). No structural guard: reduction chains are everywhere in the graph (softmax
+is one) and compile, so a graph-shape check cannot tell the bad ones apart; the compile of the fixture is the check.
+
+**Compile results with the matmul sums** (`migraphx-driver compile --gpu`, bucket x[1,128,16], rebased code):
+
+| graph | nodes | rc | time | kernel errors | assertions |
+|---|---|---|---|---|---|
+| fixture | 4,235 | 0 | 2m36s | 0 | 0 |
+| fixture_r | 7,018 | 0 | 375 s | 0 | 0 |
+| real classification (MIGraphX variant, `--dynamic`) | n/a | 0 | 791 s | 0 | 0 |
+
+Not compiled: real REGRESSION, any other bucket, any other MIGraphX version. Nothing was RUN on the GPU, so there are
+no GPU numerics; a compile says the pipeline accepts the program, not that it computes the right numbers.
+The `fuse_concat` assertion did not reappear on these graphs (they all use the `expand + reshape` duplicate route); its
+cause remains unestablished.
+
+Full gate after the rewrite (4 configs x 11 cases, plus controls; file read in full): worst `all` error
+9.5e-06 (fixture classification), 2.2e-05 (fixture regression), 6.1e-06 (fixture_r classification), 2.3e-05
+(fixture_r regression), budget 1e-4; all 28 negative controls caught (7 controls x 4 configs, relative error 0.54 to
+2.2). Re-run after rebasing onto origin/main (eb472a6): same worst errors, 28 of 28 controls caught (two detail rows moved
+at the 1e-7 level).
+
+### The 1.08e-04 `qry` cell is float32 noise against a near-zero output, not a defect
+
+The `qry` column is the error of the query rows divided by THEIR OWN max |output|. fixture_r regression n=16, N=15
+has one query row, so a small output inflates it. Measured (fixture_r regression, one query row, masked model in
+float64 as truth; `$S/drift.py`):
+
+* The formulation is exact: float64 matmul-sum vs float64 plain-sum differ by at most 1.3e-14.
+* Absolute error of the query row against float64, matmul form: n=16 2.7e-5, n=32 9.4e-7, n=64 7.5e-6, n=128 1.1e-5.
+  No growth with n (one seed each).
+* Eight seeds at n=16 and n=64, error relative to the query magnitude: median 1.7e-06 (plain sum) vs 1.4e-06
+  (matmul) at n=16, 2.9e-06 vs 2.2e-06 at n=64. The matmul did not move the typical case. Both forms have a heavy
+  tail: max 1.1e-5 (sum) vs 1.1e-4 (matmul) at n=16, 3.3e-3 vs 5.8e-3 at n=64.
+* The n=64 outlier (seed 4) has a true query output of 0.009; the UNPADDED POSITIONAL f32 reference shows the same
+  2.5e-3 relative error against float64 there, i.e. 2.3e-5 absolute. The tail is the model's own float32 noise measured
+  against a near-zero output, shared by the reference.
+
+Limits: one query row, 8 seeds, two n values, a random-weight model, not the real weights. "Does not grow with n" rests
+on the absolute errors above and on medians; the maxima of 8 samples are too noisy to show a trend either way. Also
+worth knowing: the positional float32 reference is itself up to 1.0e-04 (all rows, n=128) from float64, the same
+order as the 1e-4 budget, so that budget cannot resolve differences much finer than float32 noise at that size.
+
+### 3. The shipped POSITIONAL graph also fails on `--gpu`, differently
+
+`resources/graph_causilo_classification.onnx` cannot even be parsed by MIGraphX (`Unknown operator:
+SplitToSequence`, from `Tensor.chunk`). With that one change (K/V as slices, exported by a scratch script; 9,181
+nodes), `--gpu` aborts in **54 s in `simplify_reshapes`** with `std::length_error: cannot create std::vector larger
+than max_size()`, at `x[1,128,16]`/`y[1,70]`, `x[1,256,16]`/`y[1,128]` and `x[1,192,8]`/`y[1,100]` alike. `--ref`
+compiles it. So the failure in section 1 is not inherited from the positional graph (it never gets that far), but
+the positional graph is NOT a known-good GPU baseline either: no Causilo graph, positional or masked, has compiled
+on this GPU.
+
+### Limits of what this shows
+
+* One GPU (gfx1201), one MIGraphX build, `migraphx-driver compile`; no run, no numerics on the GPU.
+* The `fuse_concat` cause is unestablished (section 1). The Concat-free variant is a workaround for one graph
+  that moved the failure to section 2, which the matmul sums resolve for the fixture only.
+* Section 2 was reproduced on a 16-line graph; section 1 and section 3 were not reduced.
+
+## What is not done (superseded: see the status line at the top)
+
+At the time of writing, only the fixture graph compiled on the GPU target, nothing else does (see the section above), no bundling (nothing under `resources/`, no `cmake/embed_resources.cmake` entry), no
+`tabfm_backends()` or test-list change, no timing on any device, no plugin involvement. `make_migraphx_graph.py` was
+run only into a scratch directory to feed the parser. The GPU pipeline does not accept the graph yet; the
+TabPFN conversion found four such failures only on the GPU.

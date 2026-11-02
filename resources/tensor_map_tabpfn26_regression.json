@@ -325,6 +325,10 @@
     "m.target_embedder.bias": "target_embedder.bias",
     "m.target_embedder.weight": "target_embedder.weight"
   },
+  "complete": true,
+  "ckpt_aliases": {
+    "regression_borders": "criterion.borders"
+  },
   "opset": 18,
   "safetensors": "regression/model.safetensors",
   "task": "regression",

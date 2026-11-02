@@ -8,9 +8,12 @@
 #              for device 'mlx' explicitly (a silent CPU fallback would also "agree with the CPU") and
 #              reads the serving device from tabfm_models().
 #
-#              Needs Apple silicon and the weights downloaded (see tabfm_real_models.test for the CALL
-#              tabfm_download lines; mitra-v2, tabdpt, tabdpt-v1-3, tabfm-v1-1, tabpfn-v3-5,
-#              tabpfn-v3-5-fast, kumo-tabular-small/-medium/-large, orion-msp):
+#              It covers EVERY built-in model x task (43 pairs: 40 served and compared, 3 refused because
+#              no ext graph ships for them). Needs Apple silicon and every model's weights downloaded (see
+#              tabfm_real_models.test for the CALL tabfm_download lines). tabfm_download writes the
+#              model.safetensors a .ckpt model's GPU graph needs, except for tabpfn-v2-5-real, whose
+#              checkpoint needs tools/export_tabpfn's convert_weights.py --arch=v2.5 --variant=real.
+#              tabfm-v1 alone is 2 x 6.6 GB:
 #
 #                TABFM_REAL_WEIGHTS=1 TABFM_MLX=1 ./build/release/test/unittest test/sql/tabfm_mlx_real_models.test
 # group: [anofox_tabfm]
@@ -282,44 +285,91 @@ SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM 
 true
 
 # ---------------------------------------------------------------------------
-# Executable is not the same as right: TabDPT classification (v1.2 and v1.3) runs on mlx and disagrees with
-# the CPU (63-66 of 100 labels; context rows scored near-uniform where the CPU is near-certain), and so does
-# orion-msp (9 of 100). They are refused by name (MlxKnownWrong) until the misinterpreted op is found, and
-# the refusal says why and names the way out.
+# TabDPT classification (v1.2 and v1.3) and orion-msp used to disagree with the CPU on mlx (63-66 and 9 of
+# 100 labels) and were refused by name. No op was misinterpreted: tabdpt's graph ENDS in Slice(Transpose(...)),
+# a strided view MLX copied out in storage order, and orion-msp read a strided integer operand the same way.
+# With every read to host made contiguous they agree, and nothing is refused.
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabdpt_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
 
 statement ok
 SET anofox_tabfm_device = 'mlx';
 
-statement error
-SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt-v1-3')
-----
-<REGEX>:.*disagrees with the CPU.*anofox_tabfm_device='cpu'.*
+statement ok
+CREATE TABLE tabdpt_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
 
-statement error
-SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt')
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabdpt' AND task = 'classification'
 ----
-<REGEX>:.*disagrees with the CPU.*anofox_tabfm_device='cpu'.*
+true
 
-statement error
-SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'orion-msp')
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabdpt_cc c JOIN tabdpt_gc g USING (rid)
 ----
-<REGEX>:.*disagrees with the CPU.*anofox_tabfm_device='cpu'.*
+0
 
-# ...and the capability relation says so up front, per task.
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabdpt_v1_3_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt-v1-3') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabdpt_v1_3_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabdpt-v1-3') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabdpt-v1-3' AND task = 'classification'
+----
+true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabdpt_v1_3_cc c JOIN tabdpt_v1_3_gc g USING (rid)
+----
+0
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE orion_msp_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'orion-msp') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE orion_msp_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'orion-msp') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'orion-msp' AND task = 'classification'
+----
+true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM orion_msp_cc c JOIN orion_msp_gc g USING (rid)
+----
+0
+
+# ...and the capability relation says so, per task.
 query TTTT
-SELECT model, task, supported, coalesce(reason LIKE '%disagrees with the CPU%', false) FROM tabfm_backends()
+SELECT model, task, supported, reason IS NULL FROM tabfm_backends()
 WHERE backend = 'mlx' AND model IN ('tabdpt', 'tabdpt-v1-3', 'orion-msp', 'kumo-tabular-small') ORDER BY model, task
 ----
-kumo-tabular-small	classification	true	false
-kumo-tabular-small	regression	true	false
-orion-msp	classification	false	true
-tabdpt	classification	false	true
-tabdpt	regression	true	false
-tabdpt-v1-3	classification	false	true
-tabdpt-v1-3	regression	true	false
+kumo-tabular-small	classification	true	true
+kumo-tabular-small	regression	true	true
+orion-msp	classification	true	true
+tabdpt	classification	true	true
+tabdpt	regression	true	true
+tabdpt-v1-3	classification	true	true
+tabdpt-v1-3	regression	true	true
 
-# Under 'auto' an Apple-silicon machine must not pick mlx for a graph mlx gets wrong: tabdpt classification
-# is served, on the CPU, without a word.
+# Under 'auto' an Apple-silicon machine picks mlx for tabdpt classification now that it agrees.
 statement ok
 SET anofox_tabfm_device = 'auto';
 
@@ -334,7 +384,7 @@ SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3'
 query T
 SELECT string_agg(DISTINCT device, ',') FROM tabfm_models() WHERE loaded AND model = 'tabdpt' AND task = 'classification'
 ----
-cpu
+mlx:0
 
 # ---------------------------------------------------------------------------
 # tabpfn-v3-5-fast
@@ -411,3 +461,510 @@ query I
 SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabpfn_v3_5_cr c JOIN tabpfn_v3_5_gr g USING (rid)
 ----
 true
+
+# ===========================================================================
+# The rest of the catalogue (sweep of 2026-11-01, Apple M3, 100 rows, against the CPU). Each block
+# unloads first so the file stays inside 16 GB; tabfm-v1 (6.6 GB per task) holds one session at a time.
+
+# ---------------------------------------------------------------------------
+# limix-2m
+# LimiX-2M had never been run on a Mac. It exposed two interpreter bugs, both fixed with a weight-free
+# fixture in test/cpp/test_tabfm_mlx_plugin.cpp: integer Div was a true division (a Slice end of
+# 2 * ((H + 1) / 2) came out H + 1 and the next Reshape failed, so neither task ran), and float64
+# initializers/constants were reinterpreted as float32 (regression then ran but disagreed: max |diff|
+# 1.74, corr 0.9938). Measured after the fixes: 0/100 labels, regression max |diff| 1.1e-5.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE limix_2m_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'limix-2m') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE limix_2m_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'limix-2m') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE limix_2m_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'limix-2m') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE limix_2m_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'limix-2m') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'limix-2m' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM limix_2m_cc c JOIN limix_2m_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM limix_2m_cr c JOIN limix_2m_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# causilo
+# Measured: 0/100 labels; regression max |diff| 1.6e-5.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE causilo_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'causilo') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE causilo_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'causilo') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE causilo_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'causilo') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE causilo_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'causilo') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'causilo' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM causilo_cc c JOIN causilo_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM causilo_cr c JOIN causilo_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# mitra
+# mitra runs the hand-ported forward on mlx, not the interpreter. Measured: 0/100 labels; regression max |diff| 3.9e-5.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE mitra_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'mitra') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE mitra_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'mitra') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE mitra_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'mitra') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE mitra_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'mitra') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'mitra' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM mitra_cc c JOIN mitra_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM mitra_cr c JOIN mitra_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# orion-bix
+# Measured: 0/100 labels.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE orion_bix_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'orion-bix') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE orion_bix_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'orion-bix') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'orion-bix' GROUP BY task ORDER BY task
+----
+classification	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM orion_bix_cc c JOIN orion_bix_gc g USING (rid)
+----
+0
+
+# ---------------------------------------------------------------------------
+# tabicl-v2
+# Measured: 0/100 labels; regression max |diff| 2.4e-5.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabicl_v2_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabicl-v2') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabicl_v2_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabicl-v2') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabicl_v2_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabicl-v2') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabicl_v2_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabicl-v2') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabicl-v2' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabicl_v2_cc c JOIN tabicl_v2_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabicl_v2_cr c JOIN tabicl_v2_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# tabpfn-v2
+# Measured: 0/100 labels; regression max |diff| 1.1e-4.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabpfn_v2_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v2_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabpfn_v2_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v2_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v2' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabpfn_v2_cc c JOIN tabpfn_v2_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabpfn_v2_cr c JOIN tabpfn_v2_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# tabpfn-v2-5
+# Measured: 0/100 labels; regression max |diff| 4.8e-5.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabpfn_v2_5_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-5') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v2_5_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-5') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabpfn_v2_5_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-5') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v2_5_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-5') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v2-5' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabpfn_v2_5_cc c JOIN tabpfn_v2_5_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabpfn_v2_5_cr c JOIN tabpfn_v2_5_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# tabpfn-v2-5-real
+# Needs the converted weights (tools/export_tabpfn convert_weights.py --arch=v2.5 --variant=real).
+# Measured: 0/100 labels; regression max |diff| 5.7e-5.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabpfn_v2_5_real_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-5-real') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v2_5_real_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-5-real') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabpfn_v2_5_real_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-5-real') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v2_5_real_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-5-real') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v2-5-real' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabpfn_v2_5_real_cc c JOIN tabpfn_v2_5_real_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabpfn_v2_5_real_cr c JOIN tabpfn_v2_5_real_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# tabpfn-v2-6
+# Measured: 0/100 labels; regression max |diff| 8.0e-5.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabpfn_v2_6_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-6') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v2_6_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-6') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabpfn_v2_6_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-6') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v2_6_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v2-6') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v2-6' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabpfn_v2_6_cc c JOIN tabpfn_v2_6_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabpfn_v2_6_cr c JOIN tabpfn_v2_6_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# tabpfn-v3
+# Measured: 0/100 labels; regression max |diff| 1.1e-4.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabpfn_v3_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v3_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabpfn_v3_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE tabpfn_v3_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabpfn-v3') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabpfn-v3' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabpfn_v3_cc c JOIN tabpfn_v3_gc g USING (rid)
+----
+0
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabpfn_v3_cr c JOIN tabpfn_v3_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# tabfm-v1
+# 6.6 GB per task, so ONE session at a time: each task runs on the CPU, unloads, runs on mlx, unloads.
+# Measured: 0/100 labels; regression max |diff| 1.1e-5.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabfm_v1_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabfm_v1_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabfm-v1' AND task = 'classification'
+----
+true
+
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM tabfm_v1_cc c JOIN tabfm_v1_gc g USING (rid)
+----
+0
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE tabfm_v1_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE tabfm_v1_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'tabfm-v1') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'tabfm-v1' AND task = 'regression'
+----
+true
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM tabfm_v1_cr c JOIN tabfm_v1_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
+# exaone-tabular and nori-30m ship no ext graph, so mlx refuses them: an explicit request errors
+# rather than serving the CPU.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement error
+SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'exaone-tabular')
+----
+no runnable graph for task 'classification'
+
+statement error
+SELECT count(*) FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'exaone-tabular')
+----
+no runnable graph for task 'regression'
+
+statement error
+SELECT count(*) FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'nori-30m')
+----
+no runnable graph for task 'regression'
+
+# The whole catalogue in one relation: with every model's weights present, these three pairs are the
+# only ones mlx does not serve, and nothing is refused as known wrong.
+query TTT
+SELECT model, task, supported FROM tabfm_backends() WHERE backend = 'mlx' AND supported IS DISTINCT FROM true ORDER BY model, task
+----
+exaone-tabular	classification	false
+exaone-tabular	regression	false
+nori-30m	regression	false
+
+query I
+SELECT count(*) FROM tabfm_backends() WHERE backend = 'mlx' AND supported
+----
+40

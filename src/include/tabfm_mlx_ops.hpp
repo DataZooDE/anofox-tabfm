@@ -47,21 +47,18 @@ inline std::vector<std::string> MlxMissingOps(const std::vector<std::string> &op
 	return std::vector<std::string>(missing.begin(), missing.end());
 }
 
-//! Why a graph that MLX can EXECUTE is still refused there: it runs, and disagrees with the CPU. Measured on
-//! an Apple M3 with the real weights, 100 rows against ONNX Runtime on the CPU; every other bundled ext graph
-//! agrees (labels 0/100, regression within 1e-4). Empty = no known problem. Remove an entry only with a run
-//! of test/sql/tabfm_mlx_real_models.test that shows the model agreeing.
+//! Why a graph that MLX can EXECUTE is still refused there: it runs, and disagrees with the CPU. Empty = no
+//! known problem, which is every bundled ext graph today (Apple M3, real weights, 100 rows against ONNX
+//! Runtime on the CPU: labels 0/100, regression within 1e-4). Add an entry only with a run of
+//! test/sql/tabfm_mlx_real_models.test that shows the model disagreeing; remove one only with a run that
+//! shows it agreeing.
+//!
+//! The last three entries -- tabdpt and tabdpt-v1-3 classification (63-66 of 100 labels) and orion-msp
+//! (9 of 100) -- were no misinterpreted op: the interpreter read strided VIEWS to host in storage order
+//! (Contiguous() in tabfm_mlx_graph.cpp).
 inline std::string MlxKnownWrong(const std::string &model, const std::string &task) {
-	if (task != "classification") {
-		return std::string(); // tabdpt's and tabdpt-v1-3's regression graphs agree (max abs 3e-5)
-	}
-	if (model == "tabdpt" || model == "tabdpt-v1-3") {
-		return "its classification graph runs on mlx but disagrees with the CPU (63-66 of 100 labels; context "
-		       "rows scored near-uniform where the CPU is near-certain), so an op it uses is misinterpreted";
-	}
-	if (model == "orion-msp") {
-		return "its graph runs on mlx but disagrees with the CPU (9 of 100 labels)";
-	}
+	(void)model;
+	(void)task;
 	return std::string();
 }
 

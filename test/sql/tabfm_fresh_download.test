@@ -77,3 +77,41 @@ SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.9
 FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'kumo-tabular-small') p JOIN t USING (row_id)
 ----
 true
+
+# --- TabPFN-2.6: the manifest pinned a byte count no upstream revision ever served -----------------
+# (51955328; the regressor is 51576286 since Prior Labs' 2026-04-01 config update), so the download was
+# refused on every fresh machine. The weights are now pinned to that revision. The regressor also stores
+# its borders as `criterion.borders` where the graph reads `regression_borders`: the tensor map's
+# "ckpt_aliases" lets the CPU read the .ckpt, and tabfm_download write the GPU file, with no Python step.
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true;
+
+statement ok
+CREATE TABLE rctx AS SELECT row_id, 2 * a + 0.5 * c AS target, b, c, (row_id % 3)::DOUBLE AS k FROM t WHERE row_id < 150;
+
+statement ok
+CREATE TABLE rqry AS SELECT row_id, b, c, (row_id % 3)::DOUBLE AS k FROM t WHERE row_id >= 150;
+
+query T
+SELECT parse_filename(file) || ' ' || status FROM tabfm_download('regression', model := 'tabpfn-v2-6') ORDER BY 1
+----
+model.ckpt downloaded
+model.safetensors converted
+
+# 0.885 from the Python-converted file too (byte-identical GPU file, identical predictions); `a` is not a
+# feature, so this is the model's real fit, and a misread checkpoint lands near 0.
+query T
+SELECT corr(p.yhat, 2 * t.a + 0.5 * t.c) > 0.8
+FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabpfn-v2-6') p JOIN t USING (row_id)
+----
+true
+
+statement ok
+CALL tabfm_download('classification', model := 'tabpfn-v2-6');
+
+query T
+SELECT avg(CASE WHEN p.yhat = t.y THEN 1 ELSE 0 END) >= 0.75
+FROM tabfm_classify('ctx', 'y', test := 'qry', model := 'tabpfn-v2-6') p JOIN t USING (row_id)
+----
+true

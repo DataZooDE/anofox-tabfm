@@ -191,6 +191,16 @@ tools/gpu_test/runpod_run.py --upload tools/gpu_test/cuda_plugin_verify.sh \
     --command 'bash /workspace/cuda_plugin_verify.sh'
 ```
 
+## `cuda_catalog.sh` — the catalog on CUDA, from release artefacts
+
+Runs `scenarios/cuda_catalog*.sql` for a list of models on a pod, CPU vs CUDA on the same 100-row tables,
+without building anything there: the DuckDB CLI from duckdb/duckdb, the extension from get.anofox.com
+(manylinux, so the pod's glibc loads it; pinned by `EXT_SHA256`), and the plugin + ORT GPU runtime that
+`CALL tabfm_accelerate()` fetches. Weights come from HuggingFace on the pod, except the ones that need a
+Python conversion (TabPFN v2/2.5/2.6/3, TabICL, LimiX's optional safetensors), which are uploaded
+pre-converted as `weights_*.tar` in the cache layout. Usage and knobs (`MODELS`, `DEADLINE_S`) are in the
+script header. Use `--secure` (see below).
+
 ## `runpod_run.py` — rent a GPU, run, destroy
 
 ```bash

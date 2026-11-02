@@ -15,7 +15,9 @@ run as dlopen'd plugins carrying their own runtimes — ROCm over MIGraphX
 directly (phase 1), CUDA over its own shared ORT-GPU distribution (phase 3).
 Each phase is independently shippable and none silently changes results.
 
-What is verified, and how far:
+What is verified, and how far (as of the phases above; for the current per-model matrix see
+[docs/api/04-gpu.md](api/04-gpu.md#backend-support-matrix), which since v2026.11.01 covers every built-in
+model on CUDA, ROCm and MLX):
 
 | | plugin, on hardware | via SQL, real weights | at scale |
 |---|---|---|---|

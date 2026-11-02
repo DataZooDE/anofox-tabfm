@@ -1,0 +1,85 @@
+# name: test/sql/tabfm_rocm_causilo.test
+# description: Causilo (classify + regress) on ROCm/MIGraphX with the real weights: served by rocm:0, and
+#              the GPU agrees with the CPU on every row, context and query.
+#
+#              Causilo's CPU graph reads the train/test split from len(y), which a fixed-shape MIGraphX
+#              compile cannot bucket. The ROCm graph is the MASKED contract (x, y_full, train_size, d,
+#              n_rows; tools/export_causilo --contract mask). This file asks for device 'rocm' explicitly
+#              (a silent CPU fallback would also "agree with the CPU") and reads the serving device from
+#              tabfm_models().
+#
+#              Needs an AMD GPU with ROCm + MIGraphX, the freshly built MIGraphX plugin
+#              (build/release/extension/anofox_tabfm) and the weights downloaded
+#              (CALL tabfm_download('causilo', task := ...)). The first call per (rows, features) bucket
+#              compiles the graph, which takes minutes (docs/REAL_MODELS.md); later calls hit the .mxr cache.
+#
+#                TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1 ./build/release/test/unittest test/sql/tabfm_rocm_causilo.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_REAL_WEIGHTS
+
+require-env TABFM_ROCM
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true;
+
+statement ok
+SET anofox_tabfm_ep_path = 'build/release/extension/anofox_tabfm';
+
+query TTT
+SELECT model, task, supported FROM tabfm_backends() WHERE backend = 'rocm' AND model = 'causilo' ORDER BY task
+----
+causilo	classification	true
+causilo	regression	true
+
+# 100 rows x 8 features -> the 128 x 16 bucket; 70 context rows and 30 queries; three classes and a smooth
+# target.
+statement ok
+CREATE TABLE g AS SELECT i AS rid, sin(i * 0.11) f1, cos(i * 0.07) f2, (i % 13) / 13.0 f3, ln(1 + (i % 31)) f4,
+  (i % 5)::DOUBLE f5, sin(i * 0.3) * cos(i * 0.05) f6, (i * 7 % 11)::DOUBLE f7, i / 100.0 f8,
+  CASE WHEN i < 70 THEN (CASE WHEN sin(i * 0.11) + 0.5 * cos(i * 0.07) > 0.3 THEN 'a'
+                              WHEN sin(i * 0.11) + 0.5 * cos(i * 0.07) > -0.3 THEN 'b' ELSE 'c' END) END AS label,
+  CASE WHEN i < 70 THEN sin(i * 0.11) * 5 + cos(i * 0.07) * 2 + (i * 7 % 11) * 0.1 END AS target
+FROM range(100) t(i);
+
+statement ok
+CREATE TABLE gc AS SELECT * EXCLUDE (target) FROM g;
+
+statement ok
+CREATE TABLE gr AS SELECT * EXCLUDE (label) FROM g;
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'causilo') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'causilo') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'rocm';
+
+statement ok
+CREATE TABLE gpc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'causilo') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+CREATE TABLE gpr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'causilo') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query TT
+SELECT task, bool_or(device = 'rocm:0') FROM tabfm_models() WHERE loaded AND model = 'causilo' GROUP BY task ORDER BY task
+----
+classification	true
+regression	true
+
+query II
+SELECT count(*), count(*) FILTER (WHERE c.yhat <> g.yhat) FROM cc c JOIN gpc g USING (rid)
+----
+100	0
+
+query IT
+SELECT count(*), max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM cr c JOIN gpr g USING (rid)
+----
+100	true

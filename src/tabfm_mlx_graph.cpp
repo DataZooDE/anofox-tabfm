@@ -107,6 +107,18 @@ private:
 	mlx_array a_;
 };
 
+//! A row-major copy of `a`, or `a` itself when it already is one. MLX's
+//! Transpose, Slice and friends return VIEWS -- strides over the input's
+//! buffer -- and mlx_array_data_* hands back that buffer as stored, not in
+//! index order. A same-dtype astype is a no-op that keeps the view, so every
+//! read to host goes through this first. Skipping it scrambled the tabdpt
+//! classification logits, whose graph ends in Slice(Transpose(...)).
+Arr Contiguous(const Arr &a, mlx_stream s) {
+	Arr c;
+	Ok(mlx_contiguous(c.out(), a.get(), /*allow_col_major=*/false, s), "contiguous");
+	return c;
+}
+
 //! Read a small integer tensor to host. Used for shapes, axes and indices --
 //! never for weights, which stay on device.
 //!
@@ -117,8 +129,9 @@ private:
 //! mlx_array_data_int64 comes back null -- which surfaces as the misleading
 //! "expected an integer tensor" rather than as a stream error.
 std::vector<int64_t> ToInts(const Arr &a, mlx_stream s) {
-	Arr i64;
-	Ok(mlx_astype(i64.out(), a.get(), MLX_INT64, s), "astype int64");
+	Arr cast;
+	Ok(mlx_astype(cast.out(), a.get(), MLX_INT64, s), "astype int64");
+	Arr i64 = Contiguous(cast, s);
 	Ok(mlx_array_eval(i64.get()), "eval ints");
 	if (i64.size() == 0) {
 		return {}; // a legitimately empty shape/axes operand
@@ -156,7 +169,7 @@ mlx_dtype OnnxDtype(int elem_type) {
 	case 1:
 		return MLX_FLOAT32;
 	case 11:
-		return MLX_FLOAT32; // DOUBLE: MLX has no float64; used only for constants
+		return MLX_FLOAT32; // DOUBLE: MLX has no float64; TensorArray narrows the bytes
 	case 10:
 		return MLX_FLOAT16;
 	case 16:
@@ -174,6 +187,27 @@ mlx_dtype OnnxDtype(int elem_type) {
 	default:
 		Fail("unhandled ONNX dtype " + std::to_string(elem_type));
 	}
+}
+
+//! An mlx array holding an ONNX tensor's bytes (copied). MLX has no float64, so a DOUBLE
+//! tensor is narrowed to float32 here; passing its bytes through as float32 reads every
+//! double as two garbage floats. LimiX-2M keeps its numeric encoder's RBF centers and a
+//! Pow exponent in float64, and its regression disagreed with the CPU by up to 1.7 until
+//! this narrowed them.
+Arr TensorArray(const void *bytes, const std::vector<int> &shape, int elem_type) {
+	if (elem_type == 11) {
+		size_t count = 1;
+		for (int d : shape) {
+			count *= static_cast<size_t>(d);
+		}
+		if (count > 0) {
+			std::vector<double> wide(count);
+			std::memcpy(wide.data(), bytes, count * sizeof(double)); // the bytes may be unaligned
+			std::vector<float> narrow(wide.begin(), wide.end());
+			return Arr(mlx_array_new_data(narrow.data(), shape.data(), static_cast<int>(shape.size()), MLX_FLOAT32));
+		}
+	}
+	return Arr(mlx_array_new_data(bytes, shape.data(), static_cast<int>(shape.size()), OnnxDtype(elem_type)));
 }
 
 //! A read-only mapping of the safetensors blob the graph's initializers index.

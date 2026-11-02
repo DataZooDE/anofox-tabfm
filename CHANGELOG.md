@@ -12,6 +12,66 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   graph's and a cache miss no longer pays that pass. No shipped model has a pair yet; the setting stays off by
   default. Design and the tabicl-v2 spike behind it: docs/CONTEXT_CACHE_PLAN.md (#37).
 
+## [v2026.11.01] - 2026-11-01
+
+### Added
+- **ROCm serves `tabicl-v2` and `limix-2m`** (classification and regression) through a second, masked graph per
+  task (`x, y_full, train_size, d, n_rows`; tools/export_tabicl and tools/export_limix `--contract mask`),
+  bundled beside the positional CPU/CUDA graphs and keyed to the same weights. On a gfx1201 (100 x 8, fp32):
+  0/100 label differences from the CPU for both models; regression max |diff| 4.4e-5 (TabICL) and 3.5e-4
+  (LimiX, scale 7.9); warm calls 0.02 s against 0.11-0.14 s on the CPU; cold compile 3-4 min per task and
+  bucket. LimiX's graph reads the `model.safetensors` that `tabfm_download` writes beside the checkpoint.
+- **ROCm serves `orion-bix` and `orion-msp`** (classification). Both read the train/test split from `len(y)`,
+  which a fixed-shape MIGraphX compile cannot bucket, so each now bundles a second, masked graph
+  (`tools/export_orion_bix`, `tools/export_orion_msp`: `--contract mask`) that takes the split and the feature
+  count as values. On a gfx1201 with the real weights: 0/100 label differences against the CPU for both; first
+  compile per bucket 2.2 / 4.3 minutes; warm 0.017 s / 0.023 s against 0.12 s / 0.31 s on the CPU. They read the
+  same `model.safetensors` as the CUDA graphs, which `tabfm_download` already writes.
+- **`causilo` on ROCm (MIGraphX)**, classification and regression: a second, masked graph per task
+  (`x, y_full, train_size, n_rows, d`; `tools/export_causilo --contract mask`) replaces the positional split, so
+  MIGraphX can compile it per shape bucket. On gfx1201 with the real weights: 0/100 label differences from the CPU,
+  regression max |diff| 3.6e-5; ~13-16 min first compile per task and bucket; warm ~0.05 s vs ~0.2 s on the CPU.
+  See docs/ROCM_CAUSILO_PLAN.md.
+- **The whole built-in catalog is checked on `mlx` against the CPU with the real weights**
+  (`test/sql/tabfm_mlx_real_models.test`, Apple M3, 100 rows). All 40 model x task pairs that ship an ext graph agree:
+  0/100 label differences for every classifier, regression max |diff| at most 1.3e-4 (mitra-v2: 1.0e-3) and corr
+  > 0.9999999. `exaone-tabular` and `nori-30m` ship no ext graph, so `mlx` refuses them (the test asserts it). No
+  model is refused as known wrong.
+
+### Fixed
+- **`tabpfn-v2-6` downloads and runs on a fresh machine, with no Python step.** The regressor's manifest byte
+  count (51955328) matched no Hugging Face revision, so `tabfm_download` refused it everywhere; both tasks are
+  now pinned to revision `24148873` (the 2026-04-02 config update), so an upstream re-upload cannot break it
+  again. The cache directory moves from `Prior-Labs__tabpfn_2_6@main` to `...@24148873...`, so existing
+  caches download once more. The regressor's `.ckpt` also stores its borders as `criterion.borders`, where
+  the graph reads `regression_borders`: tensor maps gain an optional `"ckpt_aliases"` object, which the CPU
+  path and `tabfm_download` apply, so the CPU reads the `.ckpt` directly and the GPU `model.safetensors` is
+  written natively (byte-identical to `convert_weights.py`'s).
+- **MLX: TabDPT classification (v1.2 and v1.3) and orion-msp now agree with the CPU, and are no longer refused
+  on `mlx`.** No op was misinterpreted. MLX's Transpose and Slice return strided views, and the graph
+  interpreter copied its output, and the integer operands it reads to host (shapes, axes, indices), in
+  storage order rather than index order. tabdpt's classification graph ends in `Slice(Transpose(...))`, so
+  every probability was a scrambled one (63-66 of 100 labels differed); orion-msp read a strided integer
+  operand (9 of 100). Both reads are now made contiguous first. On an Apple M3 with the real weights all three
+  give 0/100 label differences, and `auto` serves them on `mlx`.
+- **MLX: `limix-2m` runs on `mlx` and agrees with the CPU; it had never been run on a Mac.** Two graph-interpreter
+  bugs, each with a weight-free fixture test: integer `Div` was a true division (ONNX Runtime truncates), so a Slice
+  end computed as `2 * ((H + 1) / 2)` came out `H + 1` and neither task ran; and float64 initializers and constants
+  were handed to MLX as float32, reading each double as two garbage floats, so regression disagreed (max |diff|
+  1.74, corr 0.9938 over 100 rows). With both fixed: 0/100 labels, regression max |diff| 1.1e-5.
+- **TabPFN-3.5 and TabPFN-3.5-Fast are refused on CUDA by name** (`CudaKnownWrong`). Measured on an RTX 4090,
+  both graphs fail inside ONNX Runtime 1.29's CUDA execution provider on both tasks (it reproduces with plain
+  `onnxruntime-gpu` 1.29.0 at every optimisation level), so `device := 'auto'` picked CUDA and then errored.
+  `auto` now serves them on the CPU and `tabfm_backends()` gives the reason.
+
+### Verified
+- **The whole catalog on CUDA** (RTX 4090, the released v2026.10.31 extension and CUDA plugin): every model
+  CUDA serves agrees with the CPU on 100-row tables (36 model×task pairs, 0 label differences, regression max
+  abs diff ≤ 6e-5), including the 12 never run on CUDA before (`limix-2m`, `causilo`, `tabpfn-v2-5-real`,
+  `tabpfn-v2-6`, `tabdpt`, `orion-msp`, `mitra-v2`, `tabdpt-v1-3`, `tabfm-v1-1`, the three Kumo sizes).
+  `nori-30m` and `exaone-tabular` are refused (no ext graph). Reproduce with `tools/gpu_test/cuda_catalog.sh`
+  (`scenarios/cuda_catalog*.sql`).
+
 ## [v2026.10.31] - 2026-10-31
 
 ### Added

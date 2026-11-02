@@ -255,3 +255,30 @@ def assert_weight_free(graph_path: pathlib.Path, tensor_map: dict) -> None:
         external = (init.data_location == onnx.TensorProto.EXTERNAL)
         if init.name in mapped and not external:
             raise RuntimeError(f"mapped initializer {init.name} is INLINE — weight bytes in graph")
+
+
+MASK_INPUTS = ["x", "y", "train_size", "d"]
+
+
+def export_mask_graph(model, graph_path: pathlib.Path, *, dim_rows=("rows", 4, 100_000),
+                      dim_features=("features", 2, 512), example=(20, 5, 12), opset: int = OPSET):
+    """The ROCm / MIGraphX contract (orion_mask.MaskExportWrapper): x[1,T,H], y[1,T] full length,
+    train_size[1], d[1] -> logits[1,T,C]. Only T and H are dynamic; the plugin pins them per shape bucket at
+    compile time."""
+    from export_orion_bix.orion_mask import MaskExportWrapper
+
+    wrapper = MaskExportWrapper(model).train()
+    T = torch.export.Dim(dim_rows[0], min=dim_rows[1], max=dim_rows[2])
+    H = torch.export.Dim(dim_features[0], min=dim_features[1], max=dim_features[2])
+    t, h, s = example
+    torch.manual_seed(0)
+    x = torch.randn(1, t, h)
+    y = torch.full((1, t), -100.0)
+    y[0, :s] = (torch.arange(s) % 3).float()
+    ex = (x, y, torch.tensor([s]), torch.tensor([h]))
+    dyn = ({1: T, 2: H}, {1: T}, None, None)
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    with torch.no_grad():
+        torch.onnx.export(wrapper, ex, str(graph_path), dynamo=True, dynamic_shapes=dyn, opset_version=opset,
+                          input_names=MASK_INPUTS, output_names=["logits"], external_data=True, optimize=False)
+    return wrapper

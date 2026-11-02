@@ -166,3 +166,31 @@ TEST_CASE("tabfm_ckpt: lists beside the state_dict (APPEND, APPENDS) are read pa
 	REQUIRE(b[0] == 1.5f);
 	REQUIRE(b[1] == -2.5f);
 }
+
+// A tensor map can name a graph tensor that the checkpoint stores under another key. TabPFN-2.6's
+// regressor keeps its bar-distribution borders as `criterion.borders`; the graph reads `regression_borders`,
+// and the Python converter only renamed it. The map's "ckpt_aliases" ({graph key: checkpoint key}) lets
+// the engine and tabfm_download read the checkpoint as-is.
+TEST_CASE("tabfm_ckpt: tensor-map aliases rename checkpoint keys", "[tabfm][ckpt]") {
+	const string json = R"({"initializers": {"m.regression_borders": "regression_borders"},
+	                        "ckpt_aliases": {"regression_borders": "criterion.borders", "absent": "nowhere"}})";
+	auto aliases = ParseCkptAliases(json.data(), json.size());
+	REQUIRE(aliases.size() == 2);
+	REQUIRE(aliases.at("regression_borders") == "criterion.borders");
+	REQUIRE(ParseCkptAliases("{}", 2).empty());
+	REQUIRE(ParseCkptAliases("not json", 8).empty());
+
+	auto buf = ReadFile("test/fixtures/ckpt/tiny.ckpt");
+	auto sd = ReadTorchCkpt(buf.data(), buf.size());
+	const auto before = sd.size();
+	REQUIRE(sd.count("layer.bias"));
+	ApplyCkptAliases({{"bias_alias", "layer.bias"}, {"absent", "nowhere"}}, sd);
+	REQUIRE(sd.size() == before); // renamed, not copied; an alias whose source is missing is ignored
+	REQUIRE(sd.count("bias_alias"));
+	REQUIRE_FALSE(sd.count("layer.bias"));
+	REQUIRE_FALSE(sd.count("absent"));
+	// a key the checkpoint already has is never overwritten
+	ApplyCkptAliases({{"bias_alias", "layer.weight"}}, sd);
+	REQUIRE(sd.count("layer.weight"));
+	REQUIRE(sd.at("bias_alias").shape == vector<int64_t> {2});
+}
