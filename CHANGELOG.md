@@ -11,6 +11,13 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   from it instead of a second query pass over the support rows, so every output row equals the combined
   graph's and a cache miss no longer pays that pass. No shipped model has a pair yet; the setting stays off by
   default. Design and the tabicl-v2 spike behind it: docs/CONTEXT_CACHE_PLAN.md (#37).
+- **`tabfm_gpu_precompile` says what it did.** Four columns join the original five: `model` (the model the
+  call resolved), `bucket_rows` and `bucket_features` (the padded MIGraphX bucket the shape lands in; `NULL` on a
+  device without buckets) and `seconds`. `status` is now `compiled` (a new `.mxr` was written), `cached` (the
+  bucket was already built, in memory or on disk) or `not needed` (CPU, CUDA, MLX: nothing compiles per shape);
+  it used to be `compiled` everywhere, including the CPU. `device` is the device that serves the model
+  (`rocm:0`), not the setting (`auto`). `test/sql/tabfm_rocm_precompile.test` (`TABFM_ROCM=1`, weight-free)
+  pins the ROCm side.
 
 ### Fixed
 - **TabPFN-3.5 and TabPFN-3.5-Fast now run on CUDA, and are no longer refused there.** Their ext graphs failed
@@ -24,6 +31,11 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   1.8e-05 / 4.0e-05. CPU results are bit-identical; weights layout and header shas are unchanged.
   `CudaKnownWrong` now lists nothing. Not yet re-run through the extension with `cuda_catalog.sh`. Draft
   upstream issue: docs/UPSTREAM_ORT_ISSUES.md, Draft 3.
+
+### Documentation
+- docs/api/04-gpu.md "ROCm compile time": cold-compile time, warm call against the CPU, VRAM and CPU agreement
+  per shape bucket for the five newest masked ROCm graphs (`tabicl-v2`, `limix-2m`, `orion-bix`, `orion-msp`,
+  `causilo`), measured on a gfx1201 with the real weights, and how to precompile the buckets you use.
 
 ## [v2026.11.01] - 2026-11-01
 

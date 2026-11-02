@@ -31,6 +31,7 @@
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_plugin_artifacts.hpp"
 #include "tabfm_mxr_cache_key.hpp"
+#include "tabfm_shape_bucket.hpp"
 #include "tabfm_mlx_ops.hpp"
 #include "tabfm_onnx_reader.hpp"
 #include "tabfm_state.hpp"
@@ -46,6 +47,7 @@
 
 #include <openssl/evp.h>
 
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <atomic>
@@ -2203,20 +2205,75 @@ PredictEngine &GetPredictEngine() {
 	return engine;
 }
 
-void TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows, int64_t features) {
+namespace {
+
+//! The newest modification time among the .mxr programs for one padded bucket
+//! in the MIGraphX cache directory (0 when there are none). The plugin names
+//! each program <stem>_<arch>_<precision>_T<t>_H<h>.mxr, so a bucket suffix
+//! match finds every model's program for it; the caller compares the value
+//! before and after a precompile, which isolates the one it wrote.
+int64_t NewestBucketMxr(FileSystem &fs, const string &mxr_dir, int64_t padded_t, int64_t padded_h) {
+	const string suffix = "_T" + std::to_string(padded_t) + "_H" + std::to_string(padded_h) + ".mxr";
+	int64_t newest = 0;
+	if (!fs.DirectoryExists(mxr_dir)) {
+		return newest;
+	}
+	fs.ListFiles(mxr_dir, [&](const string &name, bool is_dir) {
+		if (is_dir || !StringUtil::EndsWith(name, suffix)) {
+			return;
+		}
+		try {
+			auto handle = fs.OpenFile(fs.JoinPath(mxr_dir, name), FileFlags::FILE_FLAGS_READ);
+			newest = MaxValue<int64_t>(newest, fs.GetLastModifiedTime(*handle).value);
+		} catch (std::exception &) {
+			// A program being written or removed concurrently: not ours to report.
+		}
+	});
+	return newest;
+}
+
+} // namespace
+
+TabFMPrecompileResult TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows, int64_t features) {
 	if (!ctx.db) {
 		throw InternalException("tabfm: precompile invoked without a database handle");
 	}
+	const auto started = std::chrono::steady_clock::now();
 	auto fs = FileSystem::CreateLocal();
 	auto resolved = ResolveModel(*fs, ctx, task, string());
 	auto state = TabFMState::Get(*ctx.db);
+	TabFMPrecompileResult result;
+	result.model = resolved.manifest.model;
 	// Loads/caches the backend (registered in state) and warms the shape-bucket:
-	// on ROCm this is the expensive MIGraphX compile + .mxr cache; on CPU/CUDA the
-	// no-op default just leaves the freshly-built ORT session warm.
-	lock_guard<mutex> device_guard(state->DeviceMutex(ResolvedDeviceCached(*fs, resolved, ctx)));
+	// on ROCm this is the expensive MIGraphX compile + .mxr cache; on CPU/CUDA/MLX
+	// the backend has no per-shape compile and the call just leaves the session warm.
+	const string &device = ResolvedDeviceCached(*fs, resolved, ctx);
+	result.device = device;
+	lock_guard<mutex> device_guard(state->DeviceMutex(device));
 	auto model = LoadOrGetSession(*fs, *state, resolved, ctx);
 	auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
+	// Only the MIGraphX backend pads to a bucket and compiles per bucket. Same
+	// table as the plugin (tabfm_shape_bucket.hpp), so the reported bucket is
+	// the one the .mxr is keyed on.
+	result.bucketed = StringUtil::StartsWith(model->device_id, "rocm");
+	int64_t before = 0;
+	string mxr_dir;
+	if (result.bucketed) {
+		auto bucket = PadToShapeBucket(rows, features);
+		result.bucket_rows = bucket.padded_t;
+		result.bucket_features = bucket.padded_h;
+		mxr_dir = fs->JoinPath(ctx.cache_dir, "migraphx");
+		before = NewestBucketMxr(*fs, mxr_dir, bucket.padded_t, bucket.padded_h);
+	}
 	backend->Precompile(rows, features);
+	if (result.bucketed) {
+		result.status =
+		    NewestBucketMxr(*fs, mxr_dir, result.bucket_rows, result.bucket_features) > before ? "compiled" : "cached";
+	} else {
+		result.status = "not needed";
+	}
+	result.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+	return result;
 }
 
 } // namespace anofox

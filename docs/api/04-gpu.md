@@ -42,7 +42,7 @@ the file and `CALL tabfm_accelerate()` as the fix). They land in the `runtime` s
 | `CALL tabfm_download_runtime(backend)` | `file, bytes, status` | fetch one plugin: `'cuda'`, `'rocm'` or `'mlx'` |
 | `SELECT * FROM tabfm_devices()` | `device_id, ep, name, arch, vram_total, vram_free, driver, usable` | the devices found: always `cpu`, plus any CUDA, ROCm or MLX device, `usable = false` when present but unsupported |
 | `SELECT * FROM tabfm_backends()` | `model, task, device, backend, supported, reason` | which device can serve which model, and why not; `supported` is `NULL` while the weights are not downloaded |
-| `CALL tabfm_gpu_precompile(task [, rows, features], model := '<id>')` | `task, rows, features, device, status` | compile a shape bucket ahead of the first predict (ROCm); a no-op cost on CPU and CUDA |
+| `CALL tabfm_gpu_precompile(task [, rows, features], model := '<id>')` | `task, rows, features, device, status, model, bucket_rows, bucket_features, seconds` | compile a shape bucket ahead of the first predict (ROCm); `status` is `compiled`, `cached` or `not needed` (CPU, CUDA, MLX) |
 | `SELECT model, device FROM tabfm_models()` | | which device serves each loaded model right now |
 
 ## Choosing the device
