@@ -5,6 +5,13 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **`anofox_tabfm_context_cache`: a prepare graph may now emit `context_logits`**, the context rows' own
+  logits computed as the combined graph computes them. When it does, the split path takes the fitted values
+  from it instead of a second query pass over the support rows, so every output row equals the combined
+  graph's and a cache miss no longer pays that pass. No shipped model has a pair yet; the setting stays off by
+  default. Design and the tabicl-v2 spike behind it: docs/CONTEXT_CACHE_PLAN.md (#37).
+
 ### Fixed
 - **TabPFN-3.5 and TabPFN-3.5-Fast now run on CUDA, and are no longer refused there.** Their ext graphs failed
   inside ONNX Runtime 1.29's CUDA execution provider: in a CUDA session ORT gives the CPU buffer of one live
