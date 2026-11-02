@@ -71,11 +71,11 @@ CALL tabfm_remove('regression', model := 'mitra');        -- delete from the cac
 SELECT * FROM tabfm_models();
 ```
 ```
-┌─────────┬────────────────┬──────────┬──────────────┬───────────┬─────────┬────────────┬─────────┬───────────────┬───────────────┬─────────────────┬──────────────┬────────────────┐
-│  model  │      task      │ revision │     path     │   bytes   │ loaded  │  license   │ device  │ context_cache │ context_bytes │ context_entries │ context_hits │ context_misses │
-├─────────┼────────────────┼──────────┼──────────────┼───────────┼─────────┼────────────┼─────────┼───────────────┼───────────────┼─────────────────┼──────────────┼────────────────┤
-│ mitra   │ classification │ main     │ …/model.saf… │ 302717904 │ false   │ apache-2.0 │         │ false         │             0 │               0 │            0 │              0 │
-└─────────┴────────────────┴──────────┴──────────────┴───────────┴─────────┴────────────┴─────────┴───────────────┴───────────────┴─────────────────┴──────────────┴────────────────┘
+┌─────────┬────────────────┬──────────┬──────────────┬───────────┬─────────┬────────────┬─────────┬───────────────┬───────────────┬─────────────────┬──────────────┬────────────────┬────────────────────┐
+│  model  │      task      │ revision │     path     │   bytes   │ loaded  │  license   │ device  │ context_cache │ context_bytes │ context_entries │ context_hits │ context_misses │ context_first_seen │
+├─────────┼────────────────┼──────────┼──────────────┼───────────┼─────────┼────────────┼─────────┼───────────────┼───────────────┼─────────────────┼──────────────┼────────────────┼────────────────────┤
+│ mitra   │ classification │ main     │ …/model.saf… │ 302717904 │ false   │ apache-2.0 │         │ false         │             0 │               0 │            0 │              0 │                  0 │
+└─────────┴────────────────┴──────────┴──────────────┴───────────┴─────────┴────────────┴─────────┴───────────────┴───────────────┴─────────────────┴──────────────┴────────────────┴────────────────────┘
 ```
 
 (Illustrative. After a predict the row shows `loaded = true` and the serving device, e.g. `cpu` or `rocm:0`.
@@ -104,8 +104,20 @@ against a fixed training table, cross-validation folds and per-segment `UNION AL
   finds a candidate, and a full compare accepts it. A changed value, label, row or column is a different key,
   so it is a miss, never a stale answer. Every output row, the context rows' fitted values included, equals the
   combined graph's (on the real `tabicl-v2` weights: identical labels, |Δlogit| ≤ 1.9e-5).
-- **Cost.** The first call against a new context costs about what it costs without the cache. Later calls
-  run the query rows only.
+- **Row order is part of the key.** The same rows in another order are a different context: a miss, never
+  an answer computed for another order. TabICL has no positional term, but its arithmetic is not exactly
+  order-invariant: on the real weights, shuffling the support rows moves the combined graph's own answers by
+  up to 1.6e-4 in log-probability (5e-5 x std(y) for regression), more than the cache's exactness bound, so a
+  hit in another order would not equal what the kill switch returns for your order
+  ([CONTEXT_CACHE_PLAN.md](../CONTEXT_CACHE_PLAN.md#phase-1b-admission-on-the-second-sighting)). Keep the
+  support table's order stable (e.g. `ORDER BY` a key) to reuse a context.
+- **Kept on the second sighting.** `anofox_tabfm_context_cache_admit = 'second'` (default) keeps a context the
+  second time its support rows are seen within the last 4096 contexts; the first call encodes it, answers, and
+  drops it. A `GROUP BY` of single-use contexts therefore leaves nothing resident. `'first'` keeps every
+  context at once (instance-wide, like the budget).
+- **Cost.** A call against a new context costs about what it costs without the cache, and so does the second
+  sighting (it encodes again, then keeps the context). From the third call on, calls run the query rows
+  only.
 - **Memory.** `anofox_tabfm_context_cache_memory` (default `256MB`) bounds the cached contexts per loaded model;
   the least recently used goes first. The budget is instance-wide (one cache per loaded model serves every
   connection) and read when a statement runs. `tabfm_unload()` drops the contexts with the session. With the
@@ -122,16 +134,19 @@ against a fixed training table, cross-validation folds and per-segment `UNION AL
 ```sql
 SELECT * FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'tabicl-v2',
                              opts := MAP{'query_batch': '128'});
-SELECT model, task, context_cache, context_bytes, context_entries, context_hits, context_misses
+SELECT model, task, context_cache, context_bytes, context_entries, context_hits, context_misses,
+       context_first_seen
 FROM tabfm_models() WHERE loaded;
 ```
 
 `context_cache` marks the cached session's row. `context_hits` and `context_misses` count lookups, one per
-call (or per group of an aggregate), however many `query_batch` passes the call makes. `context_bytes` is the
-payload (state tensors, the context rows' outputs and the verbatim key), not allocator overhead. The four
-counters are read without a common snapshot, so a row read while a call is running can be momentarily
-inconsistent. The support rows have to arrive in the same order to hit; a different order is a miss (safe,
-just slower).
+call (or per group of an aggregate), however many `query_batch` passes the call makes; each miss encodes the
+context once. `context_first_seen` counts the misses whose support rows had not been seen recently: under the
+default admission those contexts answered their call and were not kept, so `context_misses -
+context_first_seen` is the number of contexts kept (or, larger than the budget, dropped). `context_bytes` is
+the payload (state tensors, the context rows' outputs and the verbatim key), not
+allocator overhead. The counters are read without a common snapshot, so a row read while a call is running
+can be momentarily inconsistent.
 
 ## Registering your own model
 

@@ -225,6 +225,9 @@ struct PredictContext {
 	//! SET anofox_tabfm_context_cache_memory, in bytes: the budget for cached
 	//! contexts per loaded model; least recently used are evicted beyond it.
 	idx_t context_cache_bytes = 256000000; // '256MB', as DuckDB parses it (1000^2)
+	//! SET anofox_tabfm_context_cache_admit = 'first': keep a context on its first
+	//! sighting. Default ('second'): keep it the second time its key is seen.
+	bool context_cache_admit_first = false;
 	//! SET anofox_tabfm_cpu_prepack — ORT weight prepacking on the CPU EP: faster
 	//! matmuls at ~+16% RSS. On by default now that external-data keeps RSS low.
 	bool cpu_prepack = true;

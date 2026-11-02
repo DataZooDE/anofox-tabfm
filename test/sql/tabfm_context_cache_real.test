@@ -17,6 +17,11 @@ require-env TABFM_REAL_WEIGHTS
 statement ok
 SET anofox_tabfm_device = 'cpu'
 
+# Keep a context on its first sighting, so the second call below is a hit (the default keeps it on the
+# second sighting; tabfm_context_cache_admission.test).
+statement ok
+SET anofox_tabfm_context_cache_admit = 'first'
+
 # 600 rows x 10 features: 500 context rows and 100 to score; three classes and a smooth target.
 statement ok
 CREATE TABLE g AS SELECT i AS rid, sin(i * 0.11) f1, cos(i * 0.07) f2, (i % 13) / 13.0 f3, ln(1 + (i % 31)) f4,

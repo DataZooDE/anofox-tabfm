@@ -242,6 +242,9 @@ struct TabFMRunInput {
 	//! anofox_tabfm_context_cache_memory, in bytes: how much a split backend may
 	//! keep in cached contexts. Ignored by every other backend.
 	idx_t context_cache_bytes = 0;
+	//! anofox_tabfm_context_cache_admit = 'first': keep a context the first time it is seen, rather than
+	//! the second. Ignored by every other backend.
+	bool context_cache_admit_first = false;
 };
 
 struct TabFMRunOutput {

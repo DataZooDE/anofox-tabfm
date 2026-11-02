@@ -7,10 +7,10 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ### Added
 - **Context cache for `tabicl-v2`, on by default (#37, docs/CONTEXT_CACHE_PLAN.md Phase 1).** The labelled
-  context is encoded once and reused across calls: a later call against the same support rows runs the query
-  rows only. Through `tabfm_classify` / `tabfm_regress` on the CPU (H = 100, medians of 10, shared machine) a
-  warm call costs 5.3-26x less CPU time than the combined graph, and the first call against a new context
-  costs about the same as before (0.79-1.15x). Exact: every output row, context rows included, equals the
+  context is encoded once and reused across calls: once a context is kept (on its second sighting), later
+  calls against the same support rows run the query rows only. Through `tabfm_classify` / `tabfm_regress` on
+  the CPU (H = 100, medians of 10, shared machine) a warm call costs 5.3-26x less CPU time than the combined
+  graph, and a call against a new context costs about the same as before (0.79-1.15x). Exact: every output row, context rows included, equals the
   combined graph's (real weights: 0 label differences, |Δlogit| ≤ 1.9e-05; regression |Δ| ≤ 2.8e-06 x std(y)).
   - The key is the preprocessed support rows and labels themselves: a 64-bit hash finds a candidate, a full
     compare accepts it, so a changed table misses rather than answering stale.
@@ -19,8 +19,21 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
     its own call and is dropped. 256 MB rather than 1 GB: a 500-group aggregate of single-use 64-row contexts
     left 1.0 GB of contexts resident at 1 GB (RSS 1.72 GB vs 0.58 GB with the cache off) and 0.25 GB at 256 MB
     (RSS 1.15 GB).
+  - **A context is kept the second time it is seen** (`anofox_tabfm_context_cache_admit`, default `'second'`;
+    docs/CONTEXT_CACHE_PLAN.md Phase 1b). The first sighting encodes it, answers identically, serves every
+    `query_batch` pass of its call from that one encode, and drops it. Sightings are a bounded LRU of 4096 key
+    hashes per loaded model, never the rows. A 500-group aggregate of single-use contexts now leaves none
+    resident: RSS 0.97 GB, against 1.18 GB when every context is kept and 0.73 GB with the cache off; the rest
+    is the second ORT session. The warm call is unchanged (10-32x less CPU than the combined graph) but now
+    comes on the third call. `'first'` keeps every context at once, for a context you know you will reuse.
+    The setting is instance-wide like the budget.
   - `tabfm_models()` gains `context_cache` (the cached session's row) and `context_bytes`, `context_entries`,
-    `context_hits`, `context_misses` (lookups, one per call).
+    `context_hits`, `context_misses` (lookups, one per call), and `context_first_seen` (misses whose key had
+    not been seen recently; under `'second'` they were not kept).
+  - The key stays the support rows *in order*: a reordered table misses. An order-independent key was built
+    and measured, and not shipped. On the real weights the combined graph's own answers move by up to 1.6e-4
+    in log-probability (5e-5 x std(y)) when the support rows are shuffled, which is above the cache's
+    exactness bound, so a cross-order hit would not equal the kill switch's answer for the caller's order.
   - `opts := MAP{'query_batch': 'N'}` scores a call's test rows N at a time against one encoded context, looked
     up once per call, so bounding peak memory no longer costs a re-encode per chunk (for models without the
     cache each batch still re-runs the context). Keep N in the hundreds: each pass has a fixed cost.

@@ -111,6 +111,25 @@ void ValidateContextCacheMemory(ClientContext &context, SetScope scope, Value &p
 	}
 }
 
+void ValidateContextCacheAdmit(ClientContext &context, SetScope scope, Value &parameter) {
+	if (scope == SetScope::SESSION) {
+		// Same reason as the budget: one cache per loaded model serves every connection.
+		throw InvalidInputException("anofox_tabfm_context_cache_admit is instance-wide: use SET or SET GLOBAL, "
+		                            "not SET SESSION");
+	}
+	if (parameter.IsNull()) {
+		throw InvalidInputException("anofox_tabfm_context_cache_admit cannot be NULL; use 'second' or 'first'");
+	}
+	auto value = StringUtil::Lower(StringValue::Get(parameter.DefaultCastAs(LogicalType::VARCHAR)));
+	StringUtil::Trim(value);
+	if (value != "first" && value != "second") {
+		throw InvalidInputException("anofox_tabfm_context_cache_admit must be 'second' (keep a context the second "
+		                            "time it is seen) or 'first' (keep it at once), got '%s'",
+		                            StringValue::Get(parameter.DefaultCastAs(LogicalType::VARCHAR)));
+	}
+	parameter = Value(value);
+}
+
 } // anonymous namespace
 
 void RegisterTabfmSettings(ExtensionLoader &loader) {
@@ -173,10 +192,11 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	    "anofox_tabfm_context_cache",
 	    "Reuse the encoded labelled context across calls (and across the batches of one call, see opts "
 	    "query_batch), for models that ship an exact prepare/query graph pair -- today tabicl-v2, on the CPU. "
-	    "On by default: a cached context is keyed by the exact preprocessed support rows and labels, so a hit "
-	    "can only ever answer for the same training data, and every output row, context rows included, "
-	    "equals the combined graph's. The first call against a new context costs the same as without the "
-	    "cache. false is the kill switch: every call runs the combined graph (a session SET applies to statements "
+	    "On by default: a cached context is keyed by the exact preprocessed support rows and labels, in "
+	    "order, so a hit can only ever answer for the same training data, and every output row, context "
+	    "rows included, equals the combined graph's. A context is kept the second time it is seen "
+	    "(anofox_tabfm_context_cache_admit); until then a call costs the same as without the cache. "
+	    "false is the kill switch: every call runs the combined graph (a session SET applies to statements "
 	    "bound after it; SET GLOBAL also stops prepared statements). Models without an exact pair, "
 	    "and GPU sessions, always run the combined graph. Memory is bounded by "
 	    "anofox_tabfm_context_cache_memory; tabfm_models() shows what is cached.",
@@ -191,6 +211,17 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	    "0.2 MB per feature column: roughly 70 MB at 1000 support rows and 100 features. Cached contexts are "
 	    "resident memory, which anofox_tabfm_max_memory counts.",
 	    LogicalType::VARCHAR, Value("256MB"), ValidateContextCacheMemory, SetScope::GLOBAL);
+
+	config.AddExtensionOption(
+	    "anofox_tabfm_context_cache_admit",
+	    "When the context cache (anofox_tabfm_context_cache) keeps an encoded context: 'second' (default) "
+	    "keeps it the second time its support rows are seen within the last 4096 contexts, so single-use "
+	    "contexts (one per group of a GROUP BY, say) never take memory; the first call encodes and answers "
+	    "the same, and the third is the first warm one. 'first' keeps every context at once (the cache's "
+	    "behaviour before this setting): one warm call sooner for a context you know you will reuse, at "
+	    "the cost of filling the budget with contexts used once. Instance-wide, like "
+	    "anofox_tabfm_context_cache_memory (SET SESSION is refused); read when a statement runs.",
+	    LogicalType::VARCHAR, Value("second"), ValidateContextCacheAdmit, SetScope::GLOBAL);
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_cpu_prepack",
