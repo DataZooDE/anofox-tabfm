@@ -12,6 +12,19 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   graph's and a cache miss no longer pays that pass. No shipped model has a pair yet; the setting stays off by
   default. Design and the tabicl-v2 spike behind it: docs/CONTEXT_CACHE_PLAN.md (#37).
 
+### Fixed
+- **TabPFN-3.5 and TabPFN-3.5-Fast now run on CUDA, and are no longer refused there.** Their ext graphs failed
+  inside ONNX Runtime 1.29's CUDA execution provider: in a CUDA session ORT gives the CPU buffer of one live
+  shape tensor to another, so `node_expand` received `{170, 1, 170}` instead of `{170, 1, 5}`. ORT 1.31.1 fails
+  the same way. The workaround is the same kind as issue #21: `tools/pin_cuda_shape_operands.py` names every
+  shape-computation tensor as a graph output, so its buffer is never reused (`make_external_graph.py
+  --pin-cuda-shapes`; CI checks it). Tested with plain `onnxruntime-gpu` 1.29.0 (the runtime the plugin bundles)
+  on an RTX 4090 and an RTX 3090: all four graphs run at 7 shapes. With the real weights in fp32, 3.5-Fast and
+  3.5 both give 0/160 query-label differences, max prob diff 8.8e-06 / 3.2e-06, and regression max abs
+  1.8e-05 / 4.0e-05. CPU results are bit-identical; weights layout and header shas are unchanged.
+  `CudaKnownWrong` now lists nothing. Not yet re-run through the extension with `cuda_catalog.sh`. Draft
+  upstream issue: docs/UPSTREAM_ORT_ISSUES.md, Draft 3.
+
 ## [v2026.11.01] - 2026-11-01
 
 ### Added
