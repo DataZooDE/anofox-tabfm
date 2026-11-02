@@ -19,7 +19,13 @@ correct; any mismatch falls back to the (layout-independent) injection path.
 
 Usage:
   tools/make_external_graph.py <task> [--weights PATH] [--out resources/graph_ext_<task>.onnx]
+                               [--pin-cuda-shapes]
   task = classification | regression
+
+--pin-cuda-shapes names every shape-computation tensor as a graph output
+(tools/pin_cuda_shape_operands.py), the workaround for the ONNX Runtime CUDA
+buffer-reuse bug in docs/UPSTREAM_ORT_ISSUES.md (Draft 3). The TabPFN-3.5 /
+3.5-Fast ext graphs need it to run on CUDA; graph_invariants.yml checks it.
 """
 import argparse, hashlib, json, os, struct, sys
 import onnx
@@ -35,6 +41,8 @@ def main():
     ap.add_argument("--graph")
     ap.add_argument("--tensor-map")
     ap.add_argument("--out")
+    ap.add_argument("--pin-cuda-shapes", action="store_true",
+                    help="pin shape tensors as graph outputs (CUDA EP workaround, TabPFN-3.5)")
     a = ap.parse_args()
     task = a.task
     weights = a.weights or os.path.join(DEF_CACHE, task, "model.safetensors")
@@ -73,9 +81,13 @@ def main():
     from make_migraphx_graph import retype_external
     st_for = lambda name: onnx2st.get(name) or (name[2:] if name.startswith("m.") else name)
     n_cast = retype_external(m, {k: v for k, v in header.items() if k != "__metadata__"}, st_for)
+    n_pins = 0
+    if a.pin_cuda_shapes:
+        from pin_cuda_shape_operands import apply as pin_shapes
+        n_pins = pin_shapes(m)
     onnx.save(m, out)
     print(f"task={task}  initializers={len(m.graph.initializer)}  externalized={n}  inline_left={len(missing)}"
-          f"  bf16_upcasts={n_cast}")
+          f"  bf16_upcasts={n_cast}  cuda_shape_pins={n_pins}")
     print(f"header_sha256={header_sha}")
     print(f"wrote {out} ({os.path.getsize(out)} bytes, weight-free)")
 
