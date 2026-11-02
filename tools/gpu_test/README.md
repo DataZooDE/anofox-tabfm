@@ -60,6 +60,23 @@ python ort_repro.py --pinned   # bounds pinned as outputs: both providers ok
 Keep the URLs in it working: the upstream issue tells maintainers to `curl`
 this file from `main`.
 
+## `ort_repro_tabpfn35.py` — the TabPFN-3.5 CUDA reproducer
+
+The draft upstream issue in `docs/UPSTREAM_ORT_ISSUES.md` (Draft 3, not filed) uses this script. It fetches
+the v2026.11.01 TabPFN-3.5-Fast regression ext graph (before the workaround), synthesizes its initializers
+and runs it on both providers. CUDA fails at `node_expand`, which receives `{T+S, 1, T+S}` instead of
+`{T+S, 1, H}`. `--no-arena` makes it read freed memory instead. `--pinned` applies the
+`tools/pin_cuda_shape_operands.py` workaround inline, and both providers then run.
+
+```bash
+pip install onnx numpy
+pip install --no-deps onnxruntime-gpu==1.29.0 \
+  --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
+python ort_repro_tabpfn35.py [--no-arena | --pinned]
+```
+
+The pinned tag in the URL keeps it reproducible after `main` moves on.
+
 ## `equivalence.py` — a device switch must not change the answer
 
 The contract behind `docs/DYNAMIC_BACKENDS.md`. Runs the same graph on several

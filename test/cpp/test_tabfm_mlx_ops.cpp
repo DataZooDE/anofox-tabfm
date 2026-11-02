@@ -68,6 +68,22 @@ TEST_CASE("mlx ops: which bundled ext graphs MLX can run", "[tabfm][mlx_ops]") {
 	REQUIRE(missing_for("graph_ext_orion_msp_classification") == V {});
 }
 
+// The TabPFN-3.5 ext graphs run on CUDA only because their shape tensors are pinned as extra graph outputs
+// (tools/pin_cuda_shape_operands.py; docs/UPSTREAM_ORT_ISSUES.md, Draft 3). Both executors read the first
+// output, so 'logits' must stay first; and a re-export that drops the pins would bring the CUDA failure back
+// with nothing local to notice (CI's graph_invariants.yml runs the structural --check too).
+TEST_CASE("mlx ops: TabPFN-3.5 ext graphs keep logits first and their CUDA shape pins", "[tabfm][mlx_ops]") {
+	for (auto *id : {"graph_ext_tabpfn35_classification", "graph_ext_tabpfn35_regression",
+	                 "graph_ext_tabpfn35fast_classification", "graph_ext_tabpfn35fast_regression"}) {
+		auto res = GetBundledResource(id);
+		REQUIRE(res.data != nullptr);
+		auto graph = ::anofox::onnxread::ParseModelBytes(reinterpret_cast<const uint8_t *>(res.data), res.size, id);
+		REQUIRE(!graph.outputs.empty());
+		REQUIRE(graph.outputs[0] == "logits");
+		REQUIRE(graph.outputs.size() > 1000); // 1122..2123 pinned shape tensors per graph
+	}
+}
+
 // Executable is not the same as right, so a graph can be refused by name (MlxKnownWrong). None is today:
 // tabdpt and tabdpt-v1-3 classification and orion-msp used to be, until the strided-view reads that made
 // them disagree with the CPU were fixed (test_tabfm_mlx_plugin.cpp pins that).

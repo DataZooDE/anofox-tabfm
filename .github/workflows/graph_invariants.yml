@@ -60,6 +60,14 @@ jobs:
             test/fixtures/graph_*.onnx \
             test/fixtures/*/graph_*.onnx
 
+      # Same failure class, different construct: ORT 1.29's CUDA session reuses
+      # the CPU buffer of a live shape tensor, so an Expand in the TabPFN-3.5
+      # graphs receives a wrong shape (docs/UPSTREAM_ORT_ISSUES.md, Draft 3).
+      # Only the graphs that were measured failing are pinned; a re-export via
+      # make_external_graph.py without --pin-cuda-shapes would drop the pins.
+      - name: TabPFN-3.5 ext graphs keep their CUDA shape pins
+        run: python tools/pin_cuda_shape_operands.py --check resources/graph_ext_tabpfn35*_*.onnx
+
   migraphx-no-int-div:
     name: MIGraphX graphs do no integer division on runtime data
     timeout-minutes: 15
