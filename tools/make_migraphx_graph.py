@@ -36,7 +36,7 @@ import onnx
 from onnx import TensorProto, helper, numpy_helper
 import numpy as np
 
-DEF_CACHE = os.path.expanduser("~/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorch@main")
+DEF_CACHE = os.path.expanduser("~/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorch@77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83")
 INTMAX = 2**63 - 1
 
 

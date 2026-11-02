@@ -26,7 +26,7 @@ import pathlib
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
-CACHE = pathlib.Path.home() / ".cache/anofox-tabfm/Prior-Labs__tabpfn_2_5@main"
+CACHE = pathlib.Path.home() / ".cache/anofox-tabfm/Prior-Labs__tabpfn_2_5@6c45f3a6d0d07c6c5f62572e04a0c2929de91b8b"
 
 # (task, expected header sha) — the values baked into
 # ExpectedWeightsHeaderShaFor() in src/include/tabfm_model_spec.hpp.

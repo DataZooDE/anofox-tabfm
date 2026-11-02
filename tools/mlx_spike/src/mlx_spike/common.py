@@ -24,8 +24,8 @@ CACHE_ROOT = Path(os.environ.get("ANOFOX_TABFM_CACHE", Path.home() / ".cache" / 
 
 # The registry's cache slug for mitra (repo '/'->'__', then '@' + revision).
 MITRA_CACHE = {
-    "classification": CACHE_ROOT / "autogluon__mitra-classifier@main",
-    "regression": CACHE_ROOT / "autogluon__mitra-regressor@main",
+    "classification": CACHE_ROOT / "autogluon__mitra-classifier@c425e9fa0910a6be1c494321792e7ba2a1367b1a",
+    "regression": CACHE_ROOT / "autogluon__mitra-regressor@5f277aa8f69042d39d6ac3612aed18bb9279bd95",
 }
 
 # ExpectedWeightsHeaderShaFor("mitra", task) in src/include/tabfm_model_spec.hpp.
@@ -76,7 +76,7 @@ def open_safetensors(path: Path) -> Safetensors:
         raise SpikeError(
             f"weights not found at {path}. Fetch them with:\n"
             f"  curl -L --create-dirs -o {path} \\\n"
-            f"    https://huggingface.co/autogluon/mitra-classifier/resolve/main/model.safetensors"
+            f"    https://huggingface.co/autogluon/mitra-classifier/resolve/c425e9fa0910a6be1c494321792e7ba2a1367b1a/model.safetensors"
         )
     with open(path, "rb") as f:
         header_len = struct.unpack("<Q", f.read(8))[0]

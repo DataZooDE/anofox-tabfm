@@ -148,7 +148,7 @@ caught; on the real checkpoints the masked forward matches the positional one to
 ```bash
 uv run export_tabicl --task classification --config real --contract mask --out ./mask
 uv run python ../make_migraphx_graph.py classification \
-    --weights ~/.cache/anofox-tabfm/jingang__TabICL@main/classification/model.safetensors \
+    --weights ~/.cache/anofox-tabfm/jingang__TabICL@4dcd344ece2c00be9e831fdd35bed57b5ad83e19/classification/model.safetensors \
     --graph ./mask/graph_mask_tabicl_classification.onnx \
     --tensor-map ./mask/tensor_map_mask_tabicl_classification.json \
     --dynamic --out ../../resources/graph_migraphx_tabicl_classification.onnx

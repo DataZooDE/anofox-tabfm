@@ -5,6 +5,42 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **`tabpfn-v3` classification works from a fresh download.** Its `.ckpt` also stores `regression_borders`, which
+  the classification graph does not use; the CPU offered it to ORT under the `m.` fallback name, so every
+  prediction failed ("Failed to find existing initializer with name m.regression_borders") unless the cache
+  already held `convert_weights.py`'s output, and `tabfm_download` wrote no GPU file. The classification tensor
+  map now declares `"complete": true`: the CPU reads the `.ckpt` with no Python step, and `tabfm_download` writes
+  the GPU `model.safetensors` byte-identical to `convert_weights.py`'s (the regressor already did).
+  `tools/export_tabpfn` keeps a map's `"complete"` and `"ckpt_aliases"` when it re-exports.
+
+### Changed
+- **Every built-in model's weights are pinned to a fixed Hugging Face commit instead of `main`** (and so are the
+  file URLs): mitra, mitra-v2, tabpfn-v2, tabpfn-v2-5, tabpfn-v2-5-real, tabpfn-v3, tabpfn-v3-5,
+  tabpfn-v3-5-fast, tabicl-v2, orion-msp, orion-bix, tabdpt, tabdpt-v1-3 and tabfm-v1, the way tabpfn-v2-6 was in
+  v2026.11.01. Each pin is the commit whose LFS object hashes to the weights the graphs, tensor maps and GPU
+  header shas were made from; every declared byte count matches what that commit serves (no other latent size
+  bug like 2.6's turned up), and the entries that declared none now do (tabpfn-v2, tabpfn-v3's regressor,
+  tabicl-v2, tabfm-v1's regressor). A registry test asserts that every built-in names a commit, fetches from
+  it, and declares each file's size. An upstream re-upload can no longer be refused at download time or paired
+  with graphs made for another upload.
+- **Existing caches download once more**: the cache directory is `<repo>@<revision>`, so a directory written
+  under `...@main` is no longer found. `python3 tools/migrate_cache_revisions.py` (dry run by default, `--apply`
+  to rename, `--sha256` to also hash) renames each `@main` directory whose weights match the pinned sizes, which
+  keeps converted files and compiled graphs; it never overwrites a pinned directory. The `convert_weights.py`
+  scripts (tools/export_tabpfn, export_tabicl, export_orion_bix, export_orion_msp) download from the pinned
+  commit and write into the pinned directory, and the tools/ tests and docs that read the developer cache name
+  it too.
+- **`tabpfn-v2`, `tabpfn-v2-5` and `tabpfn-v2-5-real` still need `tools/export_tabpfn/convert_weights.py`**, now
+  stated precisely (docs/REAL_MODELS.md, RealTabPFN-2.5): besides renames, the released checkpoints store each
+  attention block's q/k/v as one `_w_qkv` `[3, H, D, E]` and the output projection as `_w_out` `[H, D, E]`, which
+  the graphs read as `[H*D, E]` slices and as the transpose of the reshaped `_w_out`. A transpose reorders values,
+  which `"ckpt_aliases"` and `"complete"` cannot express. `test/sql/tabfm_fresh_download_convert.test` pins that
+  they download at the declared size and then refuse with the conversion hint.
+- Fresh-download coverage (`TABFM_REAL_WEIGHTS=1`, empty cache, CPU): `tabfm_fresh_download.test` adds tabicl-v2
+  and tabpfn-v3; new `tabfm_fresh_download_safetensors.test` covers mitra, mitra-v2, tabdpt, tabdpt-v1-3,
+  tabpfn-v3-5 and tabpfn-v3-5-fast; new `tabfm_fresh_download_convert.test` covers the three above.
+
 ## [v2026.11.01] - 2026-11-01
 
 ### Added

@@ -19,9 +19,9 @@ from export_mitra import configs, export
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
 CACHE = pathlib.Path.home() / ".cache/anofox-tabfm"
-CLF1 = CACHE / "autogluon__mitra-classifier@main/model.safetensors"
-CLF2 = CACHE / "autogluon__mitra-classifier-2@main/model.safetensors"
-REG2 = CACHE / "autogluon__mitra-regressor-2@main/model.safetensors"
+CLF1 = CACHE / "autogluon__mitra-classifier@c425e9fa0910a6be1c494321792e7ba2a1367b1a/model.safetensors"
+CLF2 = CACHE / "autogluon__mitra-classifier-2@edada0d20759c58ada8c8605c25f22f6e98ea5f0/model.safetensors"
+REG2 = CACHE / "autogluon__mitra-regressor-2@246c7d310fff04296a2388df5f448e3ffe809283/model.safetensors"
 
 
 def _wrapper(seed=0):

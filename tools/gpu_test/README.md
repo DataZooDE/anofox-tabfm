@@ -72,7 +72,7 @@ tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --provi
 
 # the stronger statement: the real checkpoint
 tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --providers cpu \
-    --weights ~/.cache/anofox-tabfm/jingang__TabICL@main/classification/model.safetensors \
+    --weights ~/.cache/anofox-tabfm/jingang__TabICL@4dcd344ece2c00be9e831fdd35bed57b5ad83e19/classification/model.safetensors \
     --tensor-map resources/tensor_map_tabicl_classification.json
 
 # on a GPU box: ONNX Runtime's own CUDA execution provider

@@ -25,7 +25,7 @@ import argparse, hashlib, json, os, struct, sys
 import onnx
 from onnx import TensorProto
 
-DEF_CACHE = os.path.expanduser("~/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorch@main")
+DEF_CACHE = os.path.expanduser("~/.cache/anofox-tabfm/google__tabfm-1.0.0-pytorch@77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83")
 
 
 def main():

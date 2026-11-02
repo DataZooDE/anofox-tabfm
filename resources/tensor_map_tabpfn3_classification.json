@@ -1,4 +1,5 @@
 {
+  "complete": true,
   "initializers": {
     "m.col_y_encoder.embedding.weight": "col_y_encoder.embedding.weight",
     "m.column_aggregator.blocks.0.attention.k_projection.weight": "column_aggregator.blocks.0.attention.k_projection.weight",

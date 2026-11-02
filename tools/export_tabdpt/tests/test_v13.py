@@ -22,7 +22,7 @@ from export_tabdpt.tabdpt_patches import build_wrapper
 REPO = pathlib.Path(__file__).resolve().parents[3]
 RESOURCES = REPO / "resources"
 FIXTURE = REPO / "test/fixtures/tabdpt13"
-WEIGHTS13 = pathlib.Path.home() / ".cache/anofox-tabfm/Layer6__TabDPT@main/tabdpt1_3/model.safetensors"
+WEIGHTS13 = pathlib.Path.home() / ".cache/anofox-tabfm/Layer6__TabDPT@a5ca6e01c0fa09ec68c73e958e5199d1932abb3a/tabdpt1_3/model.safetensors"
 
 
 def test_v13_state_dict_signature():

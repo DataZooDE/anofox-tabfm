@@ -11,7 +11,7 @@ import onnxruntime as ort
 
 from common import make_inputs
 
-CACHE = os.path.expanduser("~/.cache/anofox-tabfm/autogluon__mitra-classifier@main")
+CACHE = os.path.expanduser("~/.cache/anofox-tabfm/autogluon__mitra-classifier@c425e9fa0910a6be1c494321792e7ba2a1367b1a")
 GRAPH = os.path.join(CACHE, "graph_ext_mitra_classification.onnx")  # staged beside weights
 
 feed, input_sha = make_inputs()

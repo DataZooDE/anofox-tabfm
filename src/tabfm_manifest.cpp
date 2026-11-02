@@ -266,13 +266,14 @@ string ResolveManifestFileUrl(const ModelManifest &manifest, const ManifestFile 
 namespace {
 
 // classification/model.safetensors size verified 2026-07-04 (S03 RESULTS:
-// x-linked-size 6557888408). The regression checkpoint size was not captured
-// by the spikes; bytes=0 means "unknown, size check skipped" per the schema.
+// x-linked-size 6557888408); the regression file is 6591243724. Both are pinned to Hugging Face revision
+// 77cb9cc1 (2026-07-04): its LFS sha256s are those of the weights the graphs and the GPU header shas were
+// made from. Neither file has changed upstream since, but "main" could.
 const char *const BUILTIN_TABFM_V1_CLASSIFICATION = R"json({
 	"model": "tabfm-v1",
 	"task": "classification",
 	"repo": "google/tabfm-1.0.0-pytorch",
-	"revision": "main",
+	"revision": "77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83",
 	"files": [
 		{"path": "classification/model.safetensors", "bytes": 6557888408}
 	],
@@ -291,9 +292,9 @@ const char *const BUILTIN_TABFM_V1_REGRESSION = R"json({
 	"model": "tabfm-v1",
 	"task": "regression",
 	"repo": "google/tabfm-1.0.0-pytorch",
-	"revision": "main",
+	"revision": "77cb9cc1b4fd3a9c77fbb9552c218200bb4dab83",
 	"files": [
-		{"path": "regression/model.safetensors", "bytes": 0}
+		{"path": "regression/model.safetensors", "bytes": 6591243724}
 	],
 	"graph": "graph_regression",
 	"tensor_map": "tensor_map_regression.json",
