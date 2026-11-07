@@ -35,6 +35,7 @@
 #include "tabfm_mlx_ops.hpp"
 #include "tabfm_onnx_reader.hpp"
 #include "tabfm_state.hpp"
+#include "tabfm_context_cache.hpp"
 
 #include "duckdb/common/file_system.hpp"
 #include "duckdb/common/unordered_set.hpp"
@@ -763,10 +764,16 @@ struct SplitOrtBackend : public TabFMBackend {
 	// re-keyed again -- before #42 a connection on 'auto' and one on 'cpu' took different mutexes for the
 	// same backend.
 	//
-	// The key is the support rows and labels themselves. The 64-bit hash only FINDS a candidate; a hit is
-	// accepted after a full compare of the stored rows. A hash match alone would not fail on a collision,
-	// it would answer a query against someone else's training data (KV_CACHE_DESIGN.md). The compare costs
-	// O(S*H) floats, nothing next to the forward pass it saves.
+	// The key is the support rows and labels themselves, in order. The 64-bit hash only FINDS a candidate; a
+	// hit is accepted after a full compare of the stored rows. A hash match alone would not fail on a
+	// collision, it would answer a query against someone else's training data (KV_CACHE_DESIGN.md). The
+	// compare costs O(S*H) floats, nothing next to the forward pass it saves.
+	//
+	// Row order is part of the key on purpose. TabICL has no positional term, but its float reductions are
+	// not order-invariant: on the real weights the combined graph's answers for a permuted support table
+	// move by up to 1.6e-4 in log-probability and 5e-5 x std(y), well above the pair's exactness bound
+	// (docs/CONTEXT_CACHE_PLAN.md, "Phase 1b"). Serving another order from this entry would answer for the
+	// order it was encoded in, not the caller's.
 	struct Entry {
 		hash_t hash = 0;
 		int64_t s = 0;
@@ -778,6 +785,8 @@ struct SplitOrtBackend : public TabFMBackend {
 		idx_t bytes = 0;
 	};
 	std::list<Entry> entries;
+	//! Recently seen keys: a context is kept the second time its key is seen (anofox_tabfm_context_cache_admit).
+	ContextSightings sightings;
 	mutex cache_lock;
 
 	TabFMSessionHandle prepare;
@@ -795,7 +804,8 @@ struct SplitOrtBackend : public TabFMBackend {
 
 	// One lookup (or one encode) per call, whatever query_batch is: the support rows are hashed, compared
 	// and copied once, the context rows' outputs are emitted once, and the query rows go through the query
-	// graph in batches straight from the caller's buffer.
+	// graph in batches straight from the caller's buffer -- also on a first sighting, whose context is not
+	// kept but still serves every batch of its own call.
 	TabFMRunOutput RunBatched(const TabFMRunInput &input, int64_t query_batch) override {
 		// The cache's own lock. Every caller also holds the per-device lock across the whole call today,
 		// so this is uncontended; it makes the list's safety a property of this type rather than of a
@@ -812,9 +822,12 @@ struct SplitOrtBackend : public TabFMBackend {
 		Trim(budget);
 
 		const auto hash = KeyHash(input.x, input.y, s, input.h);
+		// Every lookup is a sighting, hits included: a context that is in use stays "seen", so if it is
+		// evicted and comes back it is kept again at once.
+		const bool seen_before = sightings.Sight(hash);
 		auto hit = Find(hash, input, s);
-		// Kept here for a context that is not cached (larger than the budget): it lives for this whole call,
-		// so every batch of the call uses it and it is encoded once.
+		// Kept here for a context that is not cached (a first sighting, or larger than the budget): it lives
+		// for this whole call, so every batch of the call uses it and it is encoded once.
 		Entry uncached;
 		const Entry *context;
 		if (hit != entries.end()) {
@@ -834,13 +847,18 @@ struct SplitOrtBackend : public TabFMBackend {
 			auto wanted = context_inputs;
 			wanted.push_back("context_logits");
 			fresh.state = RunPrepare(*prepare, input.x, input.y, s, input.h, wanted);
+			stats->encodes++;
 			TakeContextLogits(fresh.state, s);
 			const auto x_count = static_cast<size_t>(s) * static_cast<size_t>(input.h);
 			fresh.x.assign(input.x, input.x + x_count);
 			fresh.y.assign(input.y, input.y + static_cast<size_t>(s));
 			fresh.bytes = fresh.state.bytes + (fresh.x.size() + fresh.y.size()) * sizeof(float);
 			stats->misses++;
-			if (fresh.bytes <= budget) {
+			if (!seen_before) {
+				stats->first_seen++;
+			}
+			const bool admit = seen_before || input.context_cache_admit_first;
+			if (admit && fresh.bytes <= budget) {
 				Trim(budget - fresh.bytes);
 				entries.push_front(std::move(fresh));
 				stats->bytes += entries.front().bytes;
@@ -2029,6 +2047,11 @@ void ApplyInstanceContextCacheSettings(DatabaseInstance &db, PredictContext &ctx
 			ctx.context_cache_bytes = bytes;
 		}
 	}
+	if (duckdb_compat::TryGetContextSetting(db, "anofox_tabfm_context_cache_admit", value) && !value.IsNull()) {
+		auto raw = StringUtil::Lower(value.ToString());
+		StringUtil::Trim(raw);
+		ctx.context_cache_admit_first = raw == "first";
+	}
 }
 
 class TabFMRealEngine : public PredictEngine {
@@ -2137,6 +2160,7 @@ public:
 			auto model = LoadOrGetSession(*fs, *state, resolved, ctx);
 			auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
 			run_input.context_cache_bytes = ctx.context_cache_bytes;
+			run_input.context_cache_admit_first = ctx.context_cache_admit_first;
 			// A lowered budget frees cached contexts before the memory check below, so following that
 			// check's advice (shrink the cache) can actually get a refused call through.
 			backend->TrimContextCache(ctx.context_cache_bytes);
@@ -2268,6 +2292,24 @@ private:
 };
 
 } // anonymous namespace
+
+bool ContextSightings::Sight(hash_t key) {
+	auto found = index.find(key);
+	if (found != index.end()) {
+		order.splice(order.begin(), order, found->second);
+		return true;
+	}
+	if (capacity == 0) {
+		return false;
+	}
+	order.push_front(key);
+	index[key] = order.begin();
+	while (order.size() > capacity) {
+		index.erase(order.back());
+		order.pop_back();
+	}
+	return false;
+}
 
 string ContextCachePairProblem(const vector<string> &prepare_inputs, const vector<string> &prepare_outputs,
                                const vector<string> &query_inputs, const vector<string> &query_outputs,

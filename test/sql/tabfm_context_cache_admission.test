@@ -1,0 +1,398 @@
+# name: test/sql/tabfm_context_cache_admission.test
+# description: The context cache's admission rule (docs/CONTEXT_CACHE_PLAN.md, "Phase 1b"), on the exact
+#              fixture pair (test/fixtures/tabicl_kv): a context is kept the second time its key is seen
+#              within the recent window (anofox_tabfm_context_cache_admit = 'second', the default); the
+#              first sighting encodes it, answers the call (every query_batch pass of it) and drops it.
+#              'first' keeps it at once. Every answer equals the kill switch's. The key stays the support
+#              rows IN ORDER: a reordered table is another context (why: the plan's Phase 1b section).
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'tabicl-kv-fixture', base_dir := 'test/fixtures/tabicl_kv',
+  classification_graph := 'graph_tabicl_classification.onnx',
+  regression_graph := 'graph_tabicl_regression.onnx',
+  classification_weights := '../tabicl/model_classification.safetensors',
+  regression_weights := '../tabicl/model_regression.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json',
+  license := 'bsd-3-clause', commercial := true,
+  weights_repo := 'local:test/fixtures/tabicl_kv', weights_revision := 'fixture-kv-v2',
+  preprocessing_profile := 'tabicl_v2_raw',
+  max_rows := 4096, max_features := 64, max_classes := 3)
+
+query T
+SELECT current_setting('anofox_tabfm_context_cache_admit')
+----
+second
+
+statement ok
+CREATE TABLE t AS SELECT * FROM (VALUES
+  (1, 0.5,1.0,0.1,'c0'),(2, 1.5,0.2,0.3,'c1'),(3, 2.5,-1.0,0.5,'c2'),
+  (4, 0.2,0.8,0.7,'c0'),(5, 1.1,0.4,0.2,'c1'),(6, 3.0,-0.5,0.9,'c2'),
+  (7, 0.9,1.2,0.6,'c0'),(8, 2.1,0.1,0.4,'c1'),
+  (9, 1.3,0.3,0.35,NULL),(10, 2.4,-0.2,0.55,NULL))
+  v(id, f1,f2,f3,label);
+
+statement ok
+SET anofox_tabfm_context_cache = false
+
+statement ok
+CREATE TABLE combined AS SELECT id, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture') JOIN t USING (f1, f2, f3);
+
+statement ok
+RESET anofox_tabfm_context_cache
+
+# ---------------------------------------------------------------------------
+# First sighting: the combined graph's answer on every row, and nothing kept.
+
+statement ok
+CREATE TABLE first_call AS SELECT id, yhat, yhat_score, is_training
+FROM tabfm_classify('t', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture') JOIN t USING (f1, f2, f3);
+
+query II
+SELECT count(*), count(*) FILTER (WHERE c.yhat <> f.yhat OR abs(c.yhat_score - f.yhat_score) > 1e-6 OR c.is_training <> f.is_training)
+FROM combined c JOIN first_call f USING (id)
+----
+10	0
+
+query IIIII
+SELECT context_entries, context_bytes, context_hits, context_misses, context_first_seen
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+0	0	0	1	1
+
+# Second sighting: encoded again (a miss) and kept.
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture')
+----
+10
+
+query IIIII
+SELECT context_entries, context_bytes > 0, context_hits, context_misses, context_first_seen
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	true	0	2	1
+
+# Third: a hit, same answers.
+query I
+SELECT count(*) FROM combined c JOIN (SELECT id, yhat, yhat_score FROM tabfm_classify('t', 'label', features := ['f1','f2','f3'],
+  model := 'tabicl-kv-fixture') JOIN t USING (f1, f2, f3)) h USING (id)
+WHERE c.yhat <> h.yhat OR abs(c.yhat_score - h.yhat_score) > 1e-6
+----
+0
+
+query III
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	1	2
+
+# ---------------------------------------------------------------------------
+# Row order is part of the key: the same rows reordered are another context, with its own sightings, and
+# the answer is the combined graph's for that order.
+
+statement ok
+SET anofox_tabfm_context_cache = false
+
+statement ok
+CREATE TABLE combined_rev AS SELECT id, yhat, yhat_score, is_training
+FROM tabfm_classify('(SELECT * FROM t ORDER BY f1 DESC)', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture')
+JOIN t USING (f1, f2, f3);
+
+statement ok
+RESET anofox_tabfm_context_cache
+
+statement ok
+CREATE TABLE cached_rev AS SELECT id, yhat, yhat_score, is_training
+FROM tabfm_classify('(SELECT * FROM t ORDER BY f1 DESC)', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture')
+JOIN t USING (f1, f2, f3);
+
+query IIII
+SELECT context_entries, context_hits, context_misses, context_first_seen
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	1	3	2
+
+query II
+SELECT count(*), count(*) FILTER (WHERE c.yhat <> r.yhat OR abs(c.yhat_score - r.yhat_score) > 1e-6 OR c.is_training <> r.is_training)
+FROM combined_rev c JOIN cached_rev r USING (id)
+----
+10	0
+
+# its second sighting keeps it beside the first order's context; the third is a hit
+query I
+SELECT count(*) FROM tabfm_classify('(SELECT * FROM t ORDER BY f1 DESC)', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture')
+----
+10
+
+query I
+SELECT count(*) FROM tabfm_classify('(SELECT * FROM t ORDER BY f1 DESC)', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture')
+----
+10
+
+query IIII
+SELECT context_entries, context_hits, context_misses, context_first_seen
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+2	2	4	2
+
+# A changed label is a first sighting.
+query I
+SELECT count(*) FROM tabfm_classify('(SELECT * REPLACE (CASE WHEN id = 1 THEN ''c1'' ELSE label END AS label) FROM t)',
+  'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture')
+----
+10
+
+query IIII
+SELECT context_entries, context_hits, context_misses, context_first_seen
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+2	2	5	3
+
+# ---------------------------------------------------------------------------
+# query_batch on a first sighting: one encode serves every pass of the call (one miss), the answers are the
+# unbatched kill switch's, and nothing is kept. (The Catch2 test counts the prepare runs.)
+
+statement ok
+CALL tabfm_unload()
+
+statement ok
+CREATE TABLE q AS SELECT i AS id, (i % 7) * 0.3 AS f1, (i % 5) * 0.2 - 0.4 AS f2, (i % 3) * 0.25 AS f3,
+  CASE WHEN i < 30 THEN 'c' || (i % 3) END AS label
+FROM range(70) r(i);
+
+statement ok
+SET anofox_tabfm_context_cache = false
+
+statement ok
+CREATE TABLE q_off AS SELECT id, yhat, yhat_score, is_training
+FROM tabfm_classify('q', 'label', features := ['f1', 'f2', 'f3'], model := 'tabicl-kv-fixture') JOIN q USING (f1, f2, f3);
+
+statement ok
+RESET anofox_tabfm_context_cache
+
+query II
+SELECT count(*), count(*) FILTER (WHERE o.yhat <> b.yhat OR abs(o.yhat_score - b.yhat_score) > 1e-6 OR o.is_training <> b.is_training)
+FROM q_off o JOIN (SELECT id, yhat, yhat_score, is_training FROM tabfm_classify('q', 'label', features := ['f1', 'f2', 'f3'],
+  model := 'tabicl-kv-fixture', opts := MAP{'query_batch': '7'}) JOIN q USING (f1, f2, f3)) b USING (id)
+----
+70	0
+
+query IIIII
+SELECT context_entries, context_bytes, context_hits, context_misses, context_first_seen
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+0	0	0	1	1
+
+# ---------------------------------------------------------------------------
+# Duplicate rows, and categorical / NULL features: first, second and third sighting all give the kill
+# switch's answer; the third is a hit.
+
+statement ok
+CREATE TABLE dup AS SELECT i AS id, (i % 4) * 0.5 AS f1, (i % 2) * 0.3 AS f2, 0.1 * (i % 3) AS f3,
+  CASE WHEN i < 24 THEN 'c' || (i % 4 % 3) END AS label FROM range(30) r(i);
+
+query I
+SELECT count(*) - count(DISTINCT (f1, f2, f3, label)) FROM dup WHERE label IS NOT NULL
+----
+12
+
+statement ok
+CREATE TABLE mixed AS SELECT * FROM (VALUES
+  (0.5, 'red',   NULL, 'c0'), (1.5, 'blue',  0.3, 'c1'), (2.5, 'red',   0.5, 'c2'),
+  (0.2, NULL,    0.7, 'c0'), (1.1, 'green', 0.2, 'c1'), (3.0, 'blue',  NULL, 'c2'),
+  (0.9, 'red',   0.6, 'c0'), (2.1, 'green', 0.4, 'c1'),
+  (1.3, 'blue',  0.35, NULL), (2.4, NULL,  NULL, NULL))
+  v(f1, colour, f3, label);
+
+statement ok
+SET anofox_tabfm_context_cache = false
+
+statement ok
+CREATE TABLE dup_off AS SELECT f1, f2, f3, yhat, yhat_score, is_training
+FROM tabfm_classify('dup', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture');
+
+statement ok
+CREATE TABLE mixed_off AS SELECT f1, yhat, yhat_score, is_training FROM tabfm_classify('mixed', 'label', model := 'tabicl-kv-fixture');
+
+statement ok
+RESET anofox_tabfm_context_cache
+
+statement ok
+CALL tabfm_unload()
+
+statement ok
+CREATE TABLE dup_1 AS SELECT f1, f2, f3, yhat, yhat_score, is_training FROM tabfm_classify('dup', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture');
+
+statement ok
+CREATE TABLE mixed_1 AS SELECT f1, yhat, yhat_score, is_training FROM tabfm_classify('mixed', 'label', model := 'tabicl-kv-fixture');
+
+statement ok
+CREATE TABLE dup_2 AS SELECT f1, f2, f3, yhat, yhat_score, is_training FROM tabfm_classify('dup', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture');
+
+statement ok
+CREATE TABLE mixed_2 AS SELECT f1, yhat, yhat_score, is_training FROM tabfm_classify('mixed', 'label', model := 'tabicl-kv-fixture');
+
+statement ok
+CREATE TABLE dup_3 AS SELECT f1, f2, f3, yhat, yhat_score, is_training FROM tabfm_classify('dup', 'label', features := ['f1','f2','f3'], model := 'tabicl-kv-fixture');
+
+statement ok
+CREATE TABLE mixed_3 AS SELECT f1, yhat, yhat_score, is_training FROM tabfm_classify('mixed', 'label', model := 'tabicl-kv-fixture');
+
+query IIIII
+SELECT context_entries, context_hits, context_misses, context_first_seen, context_hits + context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+2	2	4	2	6
+
+# copies of a row have one answer, so every pairing of copies must agree
+query IIII
+SELECT count(*),
+  count(*) FILTER (WHERE o.yhat <> a.yhat OR abs(o.yhat_score - a.yhat_score) > 1e-6),
+  count(*) FILTER (WHERE o.yhat <> b.yhat OR abs(o.yhat_score - b.yhat_score) > 1e-6),
+  count(*) FILTER (WHERE o.yhat <> c.yhat OR abs(o.yhat_score - c.yhat_score) > 1e-6)
+FROM dup_off o JOIN dup_1 a USING (f1, f2, f3, is_training) JOIN dup_2 b USING (f1, f2, f3, is_training)
+  JOIN dup_3 c USING (f1, f2, f3, is_training)
+----
+198	0	0	0
+
+query IIII
+SELECT count(*),
+  count(*) FILTER (WHERE o.yhat <> a.yhat OR abs(o.yhat_score - a.yhat_score) > 1e-6 OR o.is_training <> a.is_training),
+  count(*) FILTER (WHERE o.yhat <> b.yhat OR abs(o.yhat_score - b.yhat_score) > 1e-6),
+  count(*) FILTER (WHERE o.yhat <> c.yhat OR abs(o.yhat_score - c.yhat_score) > 1e-6)
+FROM mixed_off o JOIN mixed_1 a USING (f1) JOIN mixed_2 b USING (f1) JOIN mixed_3 c USING (f1)
+----
+10	0	0	0
+
+# ---------------------------------------------------------------------------
+# An aggregate of single-use contexts (one per group) keeps nothing; running it again keeps them all; a
+# third run is all hits. Parallel finalize threads, same answers as the kill switch.
+
+statement ok
+CALL tabfm_unload()
+
+statement ok
+CREATE TABLE segs AS SELECT i % 40 AS seg, (i % 7) * 0.3 + (i % 40) * 0.05 AS f1, (i % 5) * 0.2 AS f2,
+  (i % 3) * 0.25 AS f3, CASE WHEN i < 320 THEN 'c' || ((i // 40) % 3) END AS label
+FROM range(400) r(i);
+
+statement ok
+SET threads = 4
+
+statement ok
+SET anofox_tabfm_context_cache = false
+
+statement ok
+CREATE TABLE seg_off AS SELECT seg, __anofox_tabfm_predict_agg({'f1': f1, 'f2': f2, 'f3': f3, 'label': label}, 'label',
+  MAP{'model': 'tabicl-kv-fixture', 'task': 'classification'}) AS res FROM segs GROUP BY seg;
+
+statement ok
+RESET anofox_tabfm_context_cache
+
+statement ok
+CREATE TABLE seg_1 AS SELECT seg, __anofox_tabfm_predict_agg({'f1': f1, 'f2': f2, 'f3': f3, 'label': label}, 'label',
+  MAP{'model': 'tabicl-kv-fixture', 'task': 'classification'}) AS res FROM segs GROUP BY seg;
+
+query IIIII
+SELECT context_entries, context_bytes, context_hits, context_misses, context_first_seen
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+0	0	0	40	40
+
+statement ok
+CREATE TABLE seg_2 AS SELECT seg, __anofox_tabfm_predict_agg({'f1': f1, 'f2': f2, 'f3': f3, 'label': label}, 'label',
+  MAP{'model': 'tabicl-kv-fixture', 'task': 'classification'}) AS res FROM segs GROUP BY seg;
+
+statement ok
+CREATE TABLE seg_3 AS SELECT seg, __anofox_tabfm_predict_agg({'f1': f1, 'f2': f2, 'f3': f3, 'label': label}, 'label',
+  MAP{'model': 'tabicl-kv-fixture', 'task': 'classification'}) AS res FROM segs GROUP BY seg;
+
+query IIII
+SELECT context_entries, context_hits, context_misses, context_first_seen
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+40	40	80	40
+
+query IIII
+SELECT count(*), count(*) FILTER (WHERE o.res IS DISTINCT FROM a.res), count(*) FILTER (WHERE o.res IS DISTINCT FROM b.res),
+  count(*) FILTER (WHERE o.res IS DISTINCT FROM c.res)
+FROM seg_off o JOIN seg_1 a USING (seg) JOIN seg_2 b USING (seg) JOIN seg_3 c USING (seg)
+----
+40	0	0	0
+
+statement ok
+RESET threads
+
+# ---------------------------------------------------------------------------
+# 'first': keep every context at once (the behaviour before the admission rule).
+
+statement ok
+CALL tabfm_unload()
+
+statement ok
+SET anofox_tabfm_context_cache_admit = 'FIRST'
+
+query T
+SELECT current_setting('anofox_tabfm_context_cache_admit')
+----
+first
+
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture')
+----
+10
+
+query IIII
+SELECT context_entries, context_hits, context_misses, context_first_seen
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	0	1	1
+
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'tabicl-kv-fixture')
+----
+10
+
+query III
+SELECT context_entries, context_hits, context_misses
+FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification' AND loaded AND context_cache
+----
+1	1	1
+
+# instance-wide, like the budget: a second connection sees it, SET SESSION is refused
+query T con2
+SELECT current_setting('anofox_tabfm_context_cache_admit')
+----
+first
+
+statement error con2
+SET SESSION anofox_tabfm_context_cache_admit = 'second'
+----
+instance-wide
+
+statement error
+SET anofox_tabfm_context_cache_admit = 'third'
+----
+must be 'second'
+
+statement error
+SET anofox_tabfm_context_cache_admit = NULL
+----
+cannot be NULL
+
+statement ok
+RESET anofox_tabfm_context_cache_admit
+
+query T
+SELECT current_setting('anofox_tabfm_context_cache_admit')
+----
+second

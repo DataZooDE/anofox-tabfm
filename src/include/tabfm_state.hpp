@@ -44,6 +44,11 @@ struct ContextCacheStats {
 	//! Calls answered from a cached context, and calls that had to encode one.
 	atomic<idx_t> hits {0};
 	atomic<idx_t> misses {0};
+	//! Misses on a context whose key had not been seen recently (ContextSightings). Under the default
+	//! admission ('second') such a context serves its own call and is not kept.
+	atomic<idx_t> first_seen {0};
+	//! Prepare-graph runs. One per miss, whatever query_batch is; not reported, the tests read it.
+	atomic<idx_t> encodes {0};
 };
 
 //! One loaded model. `session` is deliberately an opaque shared_ptr<void>

@@ -9,7 +9,9 @@
 #              equals the combined graph's (the kill switch), a hit answers identically, a changed
 #              support table misses, the byte budget evicts least-recently-used contexts, a context
 #              larger than the budget is not kept, query_batch encodes the context once per call, and
-#              tabfm_models() reports all of it.
+#              tabfm_models() reports all of it. It pins those mechanics with a context kept on its
+#              FIRST sighting (anofox_tabfm_context_cache_admit = 'first', set below); the default rule,
+#              kept on the second sighting, is in tabfm_context_cache_admission.test.
 #
 #              What it cannot prove: numeric parity. The fixture is random-init and near-constant (a
 #              different context moves its logits by ~2e-08), so "equal" here would also hold for a
@@ -39,10 +41,16 @@ CALL tabfm_register_model(
   max_rows := 4096, max_features := 64, max_classes := 3)
 
 # On by default: the setting is now the kill switch, and the budget defaults to 256 MB.
-query TT
-SELECT current_setting('anofox_tabfm_context_cache'), current_setting('anofox_tabfm_context_cache_memory')
+query TTT
+SELECT current_setting('anofox_tabfm_context_cache'), current_setting('anofox_tabfm_context_cache_memory'),
+  current_setting('anofox_tabfm_context_cache_admit')
 ----
-true	256MB
+true	256MB	second
+
+# Keep every context on its first sighting, so each call below is one step of the LRU/budget mechanics.
+# Instance-wide, so con1/con2 further down see it too.
+statement ok
+SET anofox_tabfm_context_cache_admit = 'first'
 
 statement ok
 CREATE TABLE t AS SELECT * FROM (VALUES
@@ -684,8 +692,10 @@ FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification
 ----
 1	7	1
 
-# Reordered support rows are a different key: a miss, never a hit on the wrong row order. The answers
-# per row are the same (TabICL attends over the rows without a positional term).
+# Reordered support rows are a different key: a miss, never a hit on the wrong row order. TabICL has no
+# positional term, but its float reductions are not order-invariant: on the real weights a permuted table
+# moves the combined graph's answers by up to 1.6e-4 in log-probability, above the pair's exactness bound
+# (docs/CONTEXT_CACHE_PLAN.md, "Phase 1b"). On this near-constant fixture the answers agree to 1e-6.
 statement ok
 CREATE TABLE reordered AS SELECT f1, yhat, yhat_score
 FROM tabfm_classify('(SELECT * FROM t ORDER BY f1 DESC)', 'label', model := 'tabicl-kv-fixture');

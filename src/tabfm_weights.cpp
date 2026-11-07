@@ -1289,11 +1289,13 @@ struct ModelsRow {
 	//! tools/gpu_test/usecase_equivalence.sql had to be validated.
 	string device;
 	//! The context cache of this loaded configuration (anofox_tabfm_context_cache): resident bytes,
-	//! contexts kept, and calls answered from / encoding a context. Zeros when it does not use the cache.
+	//! contexts kept, calls answered from / encoding a context, and the misses whose key had not been seen
+	//! recently (not kept under the default admission). Zeros when it does not use the cache.
 	int64_t context_bytes = 0;
 	int64_t context_entries = 0;
 	int64_t context_hits = 0;
 	int64_t context_misses = 0;
+	int64_t context_first_seen = 0;
 	//! This loaded session is the context-cache (split) one. It coexists with the combined session of the
 	//! same device, which generation, imputation and connections with the kill switch on use.
 	bool context_cache = false;
@@ -1314,11 +1316,11 @@ unique_ptr<FunctionData> ModelsBind(ClientContext &context, TableFunctionBindInp
 	PostHogTelemetry::Instance().RecordFunctionCall("tabfm_models");
 	names = {"model",         "task",          "revision",        "path",         "bytes",
 	         "loaded",        "license",       "device",          "context_cache", "context_bytes",
-	         "context_entries", "context_hits", "context_misses"};
+	         "context_entries", "context_hits", "context_misses", "context_first_seen"};
 	return_types = {LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                LogicalType::BIGINT,  LogicalType::BOOLEAN, LogicalType::VARCHAR, LogicalType::VARCHAR,
 	                LogicalType::BOOLEAN, LogicalType::BIGINT,  LogicalType::BIGINT,  LogicalType::BIGINT,
-	                LogicalType::BIGINT};
+	                LogicalType::BIGINT,  LogicalType::BIGINT};
 	return make_uniq<ModelsBindData>();
 }
 
@@ -1381,6 +1383,7 @@ unique_ptr<GlobalTableFunctionState> ModelsInit(ClientContext &context, TableFun
 					loaded_row.context_entries = NumericCast<int64_t>(stats->entries.load());
 					loaded_row.context_hits = NumericCast<int64_t>(stats->hits.load());
 					loaded_row.context_misses = NumericCast<int64_t>(stats->misses.load());
+					loaded_row.context_first_seen = NumericCast<int64_t>(stats->first_seen.load());
 				}
 				state->rows.push_back(std::move(loaded_row));
 			}
@@ -1430,6 +1433,7 @@ void ModelsExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 		output.SetValue(10, out, Value::BIGINT(row.context_entries));
 		output.SetValue(11, out, Value::BIGINT(row.context_hits));
 		output.SetValue(12, out, Value::BIGINT(row.context_misses));
+		output.SetValue(13, out, Value::BIGINT(row.context_first_seen));
 		out++;
 	}
 	duckdb_compat::SetChildCardinality(output, out);

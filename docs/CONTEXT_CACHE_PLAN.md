@@ -1,8 +1,10 @@
 # Context cache, next steps: design and tabicl-v2 spike (#37), 2026-11-01
 
 **Status: Phase 1 shipped (2026-11-02), covering the plan's phases 1-3 for `tabicl-v2` on the CPU.** See
-[Phase 1: what shipped](#phase-1-what-shipped) for the result and where it departs from the plan below. The
-sections after it are the design and spike this round was built from, kept as written.
+[Phase 1: what shipped](#phase-1-what-shipped) for the result and where it departs from the plan below.
+[Phase 1b](#phase-1b-admission-on-the-second-sighting) adds the admission rule (a context is kept on its second
+sighting) and records why the key stays order-sensitive. The sections after them are the design and spike this
+round was built from, kept as written.
 Background: [KV_CACHE_DESIGN.md](KV_CACHE_DESIGN.md), which records what shipped in #38 and #40.
 
 ## Phase 1: what shipped
@@ -98,6 +100,105 @@ gone; what remains at tiny batches is the query graph's fixed cost per pass (abo
   parity in CI (no real-weights CI job exists; `gate_context_cache` and `tabfm_context_cache_real.test` are a
   manual gate).
 - *Not run:* the reporter's 28-dataset harness (the external check), TSan, and anything on a GPU.
+
+## Phase 1b: admission on the second sighting
+
+Both follow-ups from Phase 1's "not done" list were tried. One shipped; the other was measured and dropped.
+
+**1. Admission (shipped).** `anofox_tabfm_context_cache_admit` (default `'second'`, instance-wide like the
+budget, `SET SESSION` refused) keeps an encoded context only the second time its key is seen.
+- The first sighting runs prepare + query exactly as before, so the answers are the same. It serves every
+  `query_batch` pass of its own call from one encode (#37's promise), then drops the context.
+- Sightings are a bounded LRU of 64-bit key hashes (`ContextSightings`, 4096 per loaded model, about 256 KB),
+  never the rows. Every lookup is a sighting, hits included, so a context in use that is evicted is kept again
+  on its next miss. A hash collision only admits a context one sighting early; a hit still needs the full
+  compare.
+- `'first'` restores Phase 1's eager admission.
+
+Why a setting. The default is right for unknown workloads: a `GROUP BY` of single-use contexts no longer fills
+the budget. It does cost one extra encode for every reused context, and that extra encode is a whole cold call:
+up to about 4 s CPU at S = 1000, H = 100. A caller who knows a context will be reused (a scoring service over
+one training table, an interactive what-if session, chunks of one test set sent as separate calls) gets
+Phase 1's behaviour back with one `SET`, without turning the cache off. The setting also lets the LRU and
+budget tests pin one step per call.
+
+`tabfm_models()` gains `context_first_seen`: misses whose key was not in the window. Under `'second'` those
+contexts answered their call and were not kept, so `context_misses - context_first_seen` counts the contexts
+that were kept (or dropped as larger than the budget). Hits and misses still count lookups, one per call; each
+miss is exactly one prepare run (pinned by a C++ test).
+
+**Memory.** Measured with the real `tabicl-v2` weights on the CPU, `SET threads = 4; SET anofox_tabfm_threads = 4`, as RSS
+of the `duckdb` process. The workload is Phase 1's 500-group aggregate: 64 support + 4 query rows per group,
+H = 20, each context about 7.9 MB, default budget 256 MB. Three processes per mode; medians. The machine was
+shared, with a load average of 19-56 on 32 cores.
+
+| mode | RSS after the aggregate | contexts kept | aggregate wall / CPU s |
+|---|---|---|---|
+| cache off | 0.73 GB | (none) | 54.3 / 215 |
+| on, `'first'` (Phase 1) | 1.18 GB | 32 (252 MB) | 51.8 / 287 |
+| on, `'second'` (default) | 0.97 GB | 0 | 49.6 / 260 |
+
+The 0.24 GB that remains over *off* is the second ORT session (prepare + query), which Phase 1 measured at about
++310 MB. No context of the 500 is resident. The CPU time is noise-dominated, but the cold path at S = 64 has
+cost about 1.15-1.2x the combined graph since Phase 1.
+
+**Speed.** Measured through `tabfm_classify` / `tabfm_regress`, built-in `tabicl-v2`, CPU, H = 100, same thread settings.
+There were two rounds. Each round ran one *off* process (4 timed calls) and one *on* process; in the *on*
+process, each of 4 fresh support tables was called three times (1st, 2nd, 3rd sighting) and then once in a
+shuffled row order. Cells are medians of 8 values, wall s / CPU s (user + sys). Load average 19-56: read the
+ratios.
+
+| task | S | Q | off | 1st | 2nd | 3rd (warm) | shuffled | warm vs off, CPU | Phase 1 warm vs off, CPU |
+|---|---|---|---|---|---|---|---|---|---|
+| classification | 375 | 16 | 1.42 / 6.29 | 1.61 / 6.81 | 1.57 / 7.38 | 0.12 / 0.52 | 1.58 / 7.05 | **12.2x** | 26.0x (*off* 16.0 CPU s, noted as load) |
+| classification | 1000 | 16 | 3.48 / 14.44 | 3.47 / 14.96 | 3.47 / 14.14 | 0.15 / 0.50 | 3.45 / 13.67 | **29.1x** | 24.5x |
+| classification | 1000 | 128 | 4.14 / 19.55 | 4.66 / 18.75 | 4.74 / 20.60 | 0.56 / 1.93 | 4.82 / 21.23 | **10.1x** | 10.9x |
+| regression | 1000 | 16 | 3.84 / 18.29 | 3.56 / 16.53 | 4.39 / 16.54 | 0.15 / 0.57 | 4.83 / 18.37 | **31.9x** | 25.1x |
+
+- The warm call is unchanged from Phase 1 in absolute CPU time: 0.52 / 0.50 / 1.93 / 0.57 s here, against
+  0.62 / 0.60 / 1.65 / 0.58 s then. It now comes on the third call instead of the second.
+- The first and second sightings each cost what *off* costs (0.90-1.17x CPU).
+- A shuffled table is a miss, by design (part 2 below).
+
+**2. Order-independent key (dropped).** The idea: canonicalise the support rows (sort the row indices by
+(row bytes, label), ties by index) for hashing and the compare, and permute the context rows' outputs back
+to the caller's order. It was built and tested: the fixture suites, a duplicate- and tie-heavy table, and
+categorical columns, whose first-appearance coding means some reorderings change the encoded rows and miss.
+It does not ship, because TabICL is permutation-equivariant in exact arithmetic but not in float32.
+
+On the real weights (pinned `4dcd344e`, CPU, ORT), each dataset was run three ways:
+- *off_A* and *off_B*: the combined graph (the kill switch) on the rows in order A and in a shuffled order B;
+- *hit_B*: the cache warmed in order A and then hit in order B, with the context rows permuted back.
+
+Every row is compared, context rows included. Classification reports max |Δp| and max |Δ log p| over all
+classes; regression reports max |Δyhat| / std(y).
+
+| dataset | rows (S + Q) | hit_B vs off_A | off_B vs off_A (the model's own order sensitivity) | hit_B vs off_B |
+|---|---|---|---|---|
+| iris | 105 + 45 | 1.0e-06 / 1.2e-05 | 7.9e-06 / 8.1e-05 | 7.1e-06 / 8.3e-05 |
+| wine | 124 + 54 | 1.3e-06 / 1.1e-05 | 9.9e-06 / 5.8e-05 | 1.1e-05 / 6.1e-05 |
+| synthetic (10 features, 3 classes) | 500 + 100 | 1.6e-06 / 2.1e-05 | 2.0e-05 / 1.6e-04 | 1.9e-05 / 1.6e-04 |
+| random labels | 400 + 80 | 8.3e-07 / 6.0e-06 | 4.1e-06 / 3.6e-05 | 4.1e-06 / 3.2e-05 |
+| duplicates and ties (150 rows x 2) | 300 + 60 | 7.5e-07 / 2.1e-05 | 3.2e-06 / 1.4e-04 | 3.2e-06 / 1.4e-04 |
+| diabetes (regression) | 309 + 133 | 1.3e-06 | 6.4e-06 | 6.4e-06 |
+| california, 1000 rows (regression) | 700 + 300 | 9.2e-06 | 5.2e-05 | 5.3e-05 |
+| synthetic (regression) | 500 + 100 | 9.8e-07 | 2.0e-06 | 3.0e-06 |
+| duplicates and ties (regression) | 300 + 60 | 1.1e-06 | 2.1e-06 | 2.1e-06 |
+
+There are no label differences anywhere. The permutation is right: a hit in order B returns order A's answers
+to within the pair's own Phase 1 bound. But the combined graph's answers move by up to 1.6e-4 in log-probability
+and 5.2e-05 x std(y) when the support rows are shuffled; the float reductions over rows run in a different
+order. That is 8x Phase 1's |Δlogit| ≲ 2e-5, and 17x its regression bound of 3e-6 x std(y). A cross-order hit
+would therefore answer for the order the context was encoded in, not the caller's, and would not match the kill
+switch on the caller's input within the tolerance the cache promises. The key stays order-sensitive.
+`SplitOrtBackend` says why, and `tabfm_context_cache_kv.test` and the C++ admission test pin the miss.
+The harness was `exact.py`, run outside the repo against the extension's own shell; it is not committed.
+
+If row-order reuse is wanted later, two exact routes remain:
+- sort the support rows canonically *before* the prepare graph runs on every call, so that every order encodes
+  the same sequence. This changes every call's answers (cache on or off) by the same 1.6e-4, so it would need
+  its own exactness decision;
+- or define exactness as "within the model's own order sensitivity" and say so in the docs.
 
 ## Summary
 
