@@ -1,0 +1,84 @@
+# name: test/sql/tabfm_rocm_precompile.test
+# description: tabfm_gpu_precompile on ROCm reports what it did: the padded MIGraphX bucket a (rows,
+#              features) shape lands in, 'compiled' when it wrote a new .mxr and 'cached' when the bucket was
+#              already built, and the device that serves the model. Then a predict in that bucket is served
+#              by the GPU without a second compile.
+#
+#              Weight-free: the committed fixture's MIGraphX graph compiles in seconds
+#              (tools/gpu_test/scenarios/rocm_fixture.sql), so this needs an AMD GPU with ROCm + MIGraphX and
+#              the freshly built plugin, but no download:
+#
+#                TABFM_ROCM=1 ./build/release/test/unittest test/sql/tabfm_rocm_precompile.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_ROCM
+
+statement ok
+SET anofox_tabfm_ep_path = 'build/release/extension/anofox_tabfm';
+
+# A cache directory of its own, so the first precompile cannot find a program another run left behind.
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/rocm_precompile_cache';
+
+statement ok
+CALL tabfm_register_model(id := 'mgx-fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_migraphx_graph := 'graph_migraphx_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal');
+
+statement ok
+SET anofox_tabfm_device = 'rocm';
+
+# 9 rows x 2 features pads to the smallest bucket, 128 x 16. Nothing is cached yet: a compile.
+query IIIIIII
+SELECT task, rows, features, starts_with(device, 'rocm:'), status, bucket_rows, bucket_features
+FROM tabfm_gpu_precompile('classification', 9, 2, model := 'mgx-fixture');
+----
+classification	9	2	true	compiled	128	16
+
+# Another shape in the SAME bucket is the program that is already built.
+query III
+SELECT status, bucket_rows, bucket_features FROM tabfm_gpu_precompile('classification', 100, 15, model := 'mgx-fixture');
+----
+cached	128	16
+
+# One row over a bucket edge is a new bucket and a new compile.
+query III
+SELECT status, bucket_rows, bucket_features FROM tabfm_gpu_precompile('classification', 129, 17, model := 'mgx-fixture');
+----
+compiled	512	64
+
+# The program persists on disk: a fresh session (unload drops the in-memory one) loads the .mxr instead of
+# compiling.
+statement ok
+CALL tabfm_unload();
+
+query III
+SELECT status, bucket_rows, bucket_features FROM tabfm_gpu_precompile('classification', 9, 2, model := 'mgx-fixture');
+----
+cached	128	16
+
+# A predict in the precompiled bucket is served by the GPU.
+statement ok
+CREATE TABLE t AS SELECT (hash(i*3)%100)/25.0 AS f1, (hash(i*7)%100)/25.0 AS f2,
+  (CASE WHEN i<6 THEN 'c'||(i%2)::VARCHAR END) AS label FROM range(9) r(i);
+
+query I
+SELECT count(*) FROM tabfm_classify('t', 'label', model := 'mgx-fixture');
+----
+9
+
+query I
+SELECT starts_with(device, 'rocm:') FROM tabfm_models() WHERE model = 'mgx-fixture' AND loaded;
+----
+true
+
+# Rows and features below 1 are refused before anything is loaded.
+statement error
+SELECT * FROM tabfm_gpu_precompile('classification', 0, 2, model := 'mgx-fixture');
+----
+rows and features must be >= 1

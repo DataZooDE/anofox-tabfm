@@ -1749,6 +1749,10 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				auto verdict = EvaluateGpuServability(in);
 				row.supported = verdict.supported;
 				row.reason = verdict.reason;
+				// Served, but only up to a shape-bucket ceiling: say so, because a larger table is refused.
+				if (row.supported && row.backend == "rocm") {
+					row.reason = RocmBucketCeilingNote(spec.id);
+				}
 				// Plugin presence is checked AFTER servability, and only when
 				// the model would otherwise run. Both can be true at once --
 				// tabdpt on ROCm has no MIGraphX graph AND no plugin installed
@@ -1989,8 +1993,9 @@ void RemoveExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 //===--------------------------------------------------------------------===//
 // tabfm_gpu_precompile(task [, rows, features]) — warm the shape-bucket OFF the
 // query path. On ROCm this runs (and caches to .mxr) the MIGraphX compile that
-// otherwise stalls the first predict for minutes; on CPU/CUDA it just warms the
-// ORT session. rows/features default to the smallest bucket.
+// otherwise stalls the first predict for minutes; on CPU/CUDA/MLX it just warms
+// the session and reports 'not needed'. rows/features default to the smallest
+// bucket.
 //===--------------------------------------------------------------------===//
 
 struct PrecompileBindData : public TableFunctionData {
@@ -2049,9 +2054,14 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	if (context.TryGetCurrentSetting("anofox_tabfm_context_cache", v) && !v.IsNull()) {
 		ctx.context_cache = BooleanValue::Get(v);
 	}
-	names = {"task", "rows", "features", "device", "status"};
+	// The first five columns are the original contract; the rest say what the
+	// call actually did, so a user can tell a cold compile from a cache hit and
+	// see which padded bucket a (rows, features) shape lands in.
+	names = {"task",  "rows",          "features",        "device",  "status",
+	         "model", "bucket_rows", "bucket_features", "seconds", "reason"};
 	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR,
-	                LogicalType::VARCHAR};
+	                LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT,
+	                LogicalType::DOUBLE,  LogicalType::VARCHAR};
 	return std::move(result);
 }
 
@@ -2063,12 +2073,20 @@ void PrecompileExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 	}
 	state.done = true;
 	auto &bind = data.bind_data->Cast<PrecompileBindData>();
-	TabFMGpuPrecompile(bind.ctx, bind.task_enum, bind.rows, bind.features); // the (slow) compile happens here
+	// The (slow) compile happens here.
+	auto result = TabFMGpuPrecompile(bind.ctx, bind.task_enum, bind.rows, bind.features);
 	output.SetValue(0, 0, Value(bind.task));
 	output.SetValue(1, 0, Value::BIGINT(bind.rows));
 	output.SetValue(2, 0, Value::BIGINT(bind.features));
-	output.SetValue(3, 0, Value(bind.ctx.device));
-	output.SetValue(4, 0, Value("compiled"));
+	// The device that serves the model, not the setting: 'auto' says nothing
+	// about whether a compile happened.
+	output.SetValue(3, 0, Value(result.device));
+	output.SetValue(4, 0, Value(result.status));
+	output.SetValue(5, 0, Value(result.model));
+	output.SetValue(6, 0, result.bucketed ? Value::BIGINT(result.bucket_rows) : Value(LogicalType::BIGINT));
+	output.SetValue(7, 0, result.bucketed ? Value::BIGINT(result.bucket_features) : Value(LogicalType::BIGINT));
+	output.SetValue(8, 0, Value::DOUBLE(result.seconds));
+	output.SetValue(9, 0, result.reason.empty() ? Value(LogicalType::VARCHAR) : Value(result.reason));
 	duckdb_compat::SetChildCardinality(output, 1);
 }
 
@@ -2395,8 +2413,10 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT}},
 	            PrecompileBind, LifecycleInit, PrecompileExecute,
 	            "Warm the GPU path for a task by compiling the model for a shape bucket ahead of the first predict "
-	            "(on ROCm this builds and caches the .mxr program; a no-op cost on CPU/CUDA). Returns task, rows, "
-	            "features, device, status.",
+	            "(on ROCm this builds and caches the .mxr program; nothing to compile on CPU, CUDA or MLX). Returns "
+	            "task, rows, features, device (the one serving the model), status ('compiled', 'cached' or 'not "
+	            "needed'), model, bucket_rows and bucket_features (the padded ROCm bucket, NULL elsewhere) and "
+	            "seconds.",
 	            "CALL tabfm_gpu_precompile('classification', 1000, 50);", true);
 
 	// CALL tabfm_register_model(id := '...', classification_graph := '...', ...);

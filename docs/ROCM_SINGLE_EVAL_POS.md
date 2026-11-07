@@ -190,3 +190,72 @@ What MIGraphX could not take, each rewritten to the same function (and now caugh
 
 Remaining positional on ROCm: `orion-bix`, `orion-msp`, `causilo` (each being converted on its own branch at
 the time of writing).
+
+## LimiX-2M bucket ceiling (2026-11-02)
+
+**What happened.** On the bucket sweep (gfx1201, RX 9070 XT, 16 GiB, MIGraphX 2.15 from the Arch package), a
+LimiX-2M call with 3000 rows x 100 features (bucket T4096 x H128) killed the DuckDB process, for classification and
+regression alike, about 20 minutes into the compile:
+
+```
+hip.cpp:155: std::shared_ptr<void> migraphx::gpu::write_to_gpu(const void *, std::size_t, bool):
+  Assertion `host or is_device_ptr(result.get())' failed.        (SIGABRT, exit 134)
+```
+
+**Cause: VRAM, not a miscompile.** In MIGraphX 2.15, `allocate_gpu` retries a failed `hipMalloc` with
+`hipHostMalloc` without saying so, and `write_to_gpu` then asserts that it got device memory. So the assertion
+fires exactly when a device allocation fails. With assertions compiled in, as in the Arch package, that is a process
+abort that no `try` can catch. `migraphx-driver compile --gpu` on the bundled masked graph (`--input-dim @x 1 4096 128
+@y 1 4096`, under gdb, `AMD_LOG_LEVEL=1`) reproduces it outside the plugin. The backtrace is
+`compile_ops -> compile_manager::compile -> compile_plan::benchmark -> time_program -> to_gpu -> write_to_gpu`: the
+kernel benchmark allocates its arguments, and one argument is too big. The biggest tensor in the program is
+`float[65, 6, 4096, 4096]` = **24.4 GiB** (702 instructions). That is the sample attention's score tensor, one
+attention per feature token (G = H/2 = 64 groups + the label token), 6 heads, rows x rows. It cannot fit on a
+16 GiB card, whatever the graph does around it.
+
+**Minimal reproducer** (`tools/gpu_test/repro/migraphx_attention_oom.py`): four nodes, `softmax(q k^T) v` with
+q, k, v `[65, 6, 4096, 16]`. `--gpu` aborts with the same assertion (rc 134, 330 s). The same graph at
+`[33, 6, 2048, 16]` (3.3 GiB of scores) compiles (rc 0, 66 s).
+
+**Not fixable by a flag here.** MIGraphX's fused attention (`MIGRAPHX_MLIR_USE_SPECIFIC_OPS=attention`, enabled
+by default only on gfx94x) would avoid materialising the scores. On gfx1201 in fp32 it fails to compile:
+`No solutions provided for gpu::mlir_op ... -t f32` (600 x 40 bucket). Graph-side, the scores could be cut by
+computing the sample attention in slices: per head (6x) and over slices of the feature tokens. That re-exports the
+graph, needs a fresh parity gate, and makes compiles longer. It would raise the ceiling but not remove it:
+T10000 x H16 alone is 20 GiB of scores. It is not done.
+
+**What the engine does instead: a ceiling.** `RocmBucketRefusal` (src/include/tabfm_model_spec.hpp) computes
+LimiX's score tensor size `(ceil(H/2) + 1) * 6 * T^2` for the padded bucket. It refuses any bucket larger than the
+biggest bucket measured to compile and run, BEFORE the plugin starts the compile:
+
+- a predict raises `... cannot be compiled for the ROCm shape bucket 4096 rows x 128 features: its sample attention
+  holds a 24.4 GiB float32 score tensor there ... SET anofox_tabfm_device = 'cpu'`;
+- `tabfm_gpu_precompile` returns `status = 'refused'` and the same text in its new `reason` column;
+- `tabfm_backends()` keeps `supported = true` for LimiX on ROCm and states the ceiling in `reason`.
+
+A card with less than 16 GiB gets a proportionally lower ceiling. A larger card keeps this one, because no bigger
+bucket was measured. Covered by test/cpp/test_tabfm_model_spec.cpp (`[rocm]`) and
+test/sql/tabfm_rocm_limix_ceiling.test (`TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1`; refuses without compiling, in seconds).
+
+**Measured** (gfx1201, fp32, through the plugin. "Peak" is VRAM over the card's idle use of about 2.5 GiB, sampled
+every 0.2 s. "CPU" is the same table on the CPU and is noisy: another session was benchmarking on the CPU at the same
+time):
+
+| bucket (table) | task | score tensor | compile | warm call | CPU | peak VRAM | vs CPU |
+|---|---|---|---|---|---|---|---|
+| 1024 x 64 (600 x 40) | classification | 0.8 GiB | 273 s | 0.28 s | 3.9 s | 2.6 GiB | 0/600 labels differ |
+| 2048 x 64 (2000 x 60) | classification | 3.1 GiB | 384 s | 0.89 s | 23.5 s | 9.6 GiB | 0/2000 labels differ |
+| 2048 x 64 (2000 x 60) | regression | 3.1 GiB | 379 s | 0.86 s | 23.8 s | 10.1 GiB | max abs diff 6.4e-4 (scale 12.4) |
+| 4096 x 16 (3000 x 16) | classification | 3.4 GiB | 326 s | 0.99 s | 13.8 s | 10.5 GiB | 0/3000 labels differ |
+| 1024 x 256 (1000 x 250) | classification | 3.0 GiB | 522 s | 1.02 s | 25.8 s | 9.5 GiB | 0/1000 labels differ |
+| 4096 x 128 (3000 x 100) | both | 24.4 GiB | abort | | 68 s / 66 s | | |
+
+Peak VRAM ran at about 3x the score tensor. **The ceiling is the 4096 x 16 bucket's score size** (3.4 GiB, peak
+10.5 GiB plus the idle 2.5 GiB = 13 of 16 GiB). It admits every bucket up to 512 x 512, 1024 x 256, 2048 x 64 and
+4096 x 16. The next buckets up (2048 x 128, 1024 x 512, 4096 x 64) need 1.8x to 3.5x that, so about 20 GiB or more,
+and are refused. Something else holding VRAM on the same card (a desktop, a second process) lowers the real
+headroom, and the ceiling cannot see it.
+
+Not checked: Nori-30M, LimiX's fork, has the same per-token sample attention and almost certainly the same
+ceiling, but it was not measured and has no ceiling yet. Neither has any other model: TabICL, Orion and Causilo
+attend over one token per row, so their scores are `heads x T x T` without the feature-token factor.

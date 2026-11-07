@@ -817,3 +817,37 @@ TEST_CASE("servability: no bundled graph is refused on CUDA by name", "[tabfm][m
 	REQUIRE(GpuKnownWrong("rocm", "tabpfn-v3-5", "classification").empty());
 	REQUIRE(GpuKnownWrong("mlx", "tabpfn-v3-5", "classification").empty()); // MlxKnownWrong lists none today
 }
+
+// LimiX-2M's sample attention holds a [ceil(H/2) + 1, 6, T, T] float32 score tensor. At T4096 x H128 (24.4 GiB)
+// MIGraphX's compile could not allocate it on a 16 GiB gfx1201 and the hip.cpp:155 assertion aborted the process
+// (docs/ROCM_SINGLE_EVAL_POS.md). Buckets over the largest one measured to work are refused before the compile.
+TEST_CASE("rocm bucket ceiling: limix-2m buckets over the measured one are refused", "[tabfm][model_spec][rocm]") {
+	const int64_t gib16 = int64_t(16) << 30;
+	REQUIRE(LimixRocmScoreElements(4096, 128) == int64_t(65) * 6 * 4096 * 4096);
+	REQUIRE(LimixRocmScoreElements(1024, 64) == int64_t(33) * 6 * 1024 * 1024);
+	// the measured bucket and everything smaller is served
+	REQUIRE(RocmBucketRefusal("limix-2m", LIMIX_ROCM_MEASURED_T, LIMIX_ROCM_MEASURED_H, gib16).empty());
+	REQUIRE(RocmBucketRefusal("limix-2m", 128, 16, gib16).empty());
+	REQUIRE(RocmBucketRefusal("limix-2m", 512, 512, -1).empty());     // 257 tokens x 512^2
+	REQUIRE(RocmBucketRefusal("limix-2m", 1024, 256, gib16).empty()); // 129 tokens x 1024^2
+	REQUIRE(RocmBucketRefusal("limix-2m", 2048, 64, gib16).empty());  // 33 tokens x 2048^2
+	// one bucket up on either axis is refused
+	REQUIRE_FALSE(RocmBucketRefusal("limix-2m", 2048, 128, gib16).empty());
+	REQUIRE_FALSE(RocmBucketRefusal("limix-2m", 1024, 512, gib16).empty());
+	REQUIRE_FALSE(RocmBucketRefusal("limix-2m", 4096, 64, gib16).empty());
+	// the bucket that aborted, on any card size, with the reason and the way out
+	for (int64_t vram : {int64_t(-1), gib16, int64_t(48) << 30}) {
+		auto reason = RocmBucketRefusal("limix-2m", 4096, 128, vram);
+		REQUIRE_THAT(reason, Contains("4096 rows x 128 features"));
+		REQUIRE_THAT(reason, Contains("24.4 GiB"));
+		REQUIRE_THAT(reason, Contains("anofox_tabfm_device = 'cpu'"));
+	}
+	REQUIRE_FALSE(RocmBucketRefusal("limix-2m", 10000, 16, gib16).empty());
+	// a smaller card lowers the ceiling in proportion; a bigger one does not raise it
+	REQUIRE_FALSE(
+	    RocmBucketRefusal("limix-2m", LIMIX_ROCM_MEASURED_T, LIMIX_ROCM_MEASURED_H, int64_t(8) << 30).empty());
+	// other models have no ceiling
+	REQUIRE(RocmBucketRefusal("tabicl-v2", 10000, 512, gib16).empty());
+	REQUIRE(RocmBucketCeilingNote("tabicl-v2").empty());
+	REQUIRE_THAT(RocmBucketCeilingNote("limix-2m"), Contains("refused"));
+}
