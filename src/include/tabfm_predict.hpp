@@ -276,11 +276,32 @@ public:
 //! model's weights are not available.
 PredictEngine &GetPredictEngine();
 
+//! What one precompile did, as tabfm_gpu_precompile reports it.
+struct TabFMPrecompileResult {
+	//! The model the call resolved to.
+	string model;
+	//! The device that serves it (the resolved id: "cpu", "rocm:0", "cuda:0", "mlx:0").
+	string device;
+	//! True when the device compiles per shape bucket (ROCm/MIGraphX); bucket_rows/_features are
+	//! then the padded (T, H) the program was built for.
+	bool bucketed = false;
+	int64_t bucket_rows = 0;
+	int64_t bucket_features = 0;
+	//! "compiled" (a new .mxr was written), "cached" (the bucket's program was already in memory or
+	//! on disk), "not needed" (the device has no per-shape compile: CPU, CUDA, MLX), or "refused" (the
+	//! bucket is over the model's ROCm ceiling, RocmBucketRefusal; nothing was compiled).
+	string status;
+	//! Why the bucket was refused; "" otherwise.
+	string reason;
+	//! Wall time of the call, model load included.
+	double seconds = 0;
+};
+
 //! Warm the model for a (rows, features) shape without predicting: loads/caches
 //! the session and, on the ROCm GPU, compiles + caches the MIGraphX .mxr for the
 //! matching shape-bucket (minutes) so the first real query does not stall. On
-//! CPU/CUDA it just warms the ORT session. Backs CALL tabfm_gpu_precompile(...).
-void TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows, int64_t features);
+//! CPU/CUDA/MLX it just warms the session. Backs CALL tabfm_gpu_precompile(...).
+TabFMPrecompileResult TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows, int64_t features);
 
 } // namespace anofox
 } // namespace duckdb

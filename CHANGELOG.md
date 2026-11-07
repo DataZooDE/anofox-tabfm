@@ -73,8 +73,24 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   from it instead of a second query pass over the support rows, so every output row equals the combined
   graph's and a cache miss no longer pays that pass. No shipped model has a pair yet; the setting stays off by
   default. Design and the tabicl-v2 spike behind it: docs/CONTEXT_CACHE_PLAN.md (#37).
+- **`tabfm_gpu_precompile` says what it did.** Four columns join the original five: `model` (the model the
+  call resolved), `bucket_rows` and `bucket_features` (the padded MIGraphX bucket the shape lands in; `NULL` on a
+  device without buckets) and `seconds`. `status` is now `compiled` (a new `.mxr` was written), `cached` (the
+  bucket was already built, in memory or on disk) or `not needed` (CPU, CUDA, MLX: nothing compiles per shape);
+  it used to be `compiled` everywhere, including the CPU. `device` is the device that serves the model
+  (`rocm:0`), not the setting (`auto`). `test/sql/tabfm_rocm_precompile.test` (`TABFM_ROCM=1`, weight-free)
+  pins the ROCm side.
 
 ### Fixed
+- **LimiX-2M on ROCm no longer aborts DuckDB on a large table.** At 3000 rows x 100 features (the 4096 x 128
+  bucket), the sample attention's score tensor is 24.4 GiB. MIGraphX's compile could not allocate it on a 16 GiB
+  GPU, and its `hip.cpp:155` assertion killed the process, for both tasks. LimiX buckets larger than the largest
+  one measured to work (4096 x 16, which admits 2048 x 64, 1024 x 256 and 512 x 512 too) are now refused before
+  the compile. A predict raises an error naming the bucket and `SET anofox_tabfm_device = 'cpu'`.
+  `tabfm_gpu_precompile` returns `status = 'refused'` with the reason in a new `reason` column. `tabfm_backends()`
+  states the ceiling. GPUs with less VRAM get a proportionally lower ceiling. Diagnosis, measurements and a
+  four-node MIGraphX reproducer: docs/ROCM_SINGLE_EVAL_POS.md "LimiX-2M bucket ceiling",
+  tools/gpu_test/repro/migraphx_attention_oom.py.
 - **`tabpfn-v3` classification works from a fresh download.** Its `.ckpt` also stores `regression_borders`, which
   the classification graph does not use; the CPU offered it to ORT under the `m.` fallback name, so every
   prediction failed ("Failed to find existing initializer with name m.regression_borders") unless the cache
@@ -93,6 +109,11 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   1.8e-05 / 4.0e-05. CPU results are bit-identical; weights layout and header shas are unchanged.
   `CudaKnownWrong` now lists nothing. Not yet re-run through the extension with `cuda_catalog.sh`. Draft
   upstream issue: docs/UPSTREAM_ORT_ISSUES.md, Draft 3.
+
+### Documentation
+- docs/api/04-gpu.md "ROCm compile time": cold-compile time, warm call against the CPU, VRAM and CPU agreement
+  per shape bucket for the five newest masked ROCm graphs (`tabicl-v2`, `limix-2m`, `orion-bix`, `orion-msp`,
+  `causilo`), measured on a gfx1201 with the real weights, and how to precompile the buckets you use.
 
 ## [v2026.11.01] - 2026-11-01
 

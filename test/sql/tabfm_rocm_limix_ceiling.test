@@ -1,0 +1,65 @@
+# name: test/sql/tabfm_rocm_limix_ceiling.test
+# description: LimiX-2M's ROCm shape-bucket ceiling. Its sample attention holds a [ceil(H/2)+1, 6, T, T] float32
+#              score tensor; at T4096 x H128 (24.4 GiB) MIGraphX could not allocate it on a 16 GiB gfx1201 and its
+#              hip.cpp:155 assertion aborted the whole DuckDB process from one SQL call. Buckets over the largest
+#              one measured to work (4096 x 16) are now refused before the compile: a predict raises an error,
+#              tabfm_gpu_precompile reports status 'refused' with the reason, and tabfm_backends() states the
+#              ceiling (docs/ROCM_SINGLE_EVAL_POS.md, "LimiX-2M bucket ceiling").
+#
+#              Nothing here compiles, so it takes seconds, but it loads the real model on the GPU:
+#
+#                TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1 ./build/release/test/unittest test/sql/tabfm_rocm_limix_ceiling.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_REAL_WEIGHTS
+
+require-env TABFM_ROCM
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true;
+
+statement ok
+SET anofox_tabfm_ep_path = 'build/release/extension/anofox_tabfm';
+
+statement ok
+SET anofox_tabfm_device = 'rocm';
+
+# The capability relation says the model is served, and up to what.
+query II
+SELECT task, supported AND reason LIKE '%4096 rows x 16 features shape bucket%' FROM tabfm_backends()
+WHERE backend = 'rocm' AND model = 'limix-2m' ORDER BY task
+----
+classification	true
+regression	true
+
+# The shape that aborted the process: refused, with the bucket, the tensor size and the way out.
+query IIIIII
+SELECT device LIKE 'rocm:%', status, bucket_rows, bucket_features, reason LIKE '%24.4 GiB float32 score tensor%',
+       reason LIKE '%anofox_tabfm_device = ''cpu''%'
+FROM tabfm_gpu_precompile('classification', 3000, 100, model := 'limix-2m');
+----
+true	refused	4096	128	true	true
+
+query II
+SELECT status, bucket_rows FROM tabfm_gpu_precompile('regression', 3000, 100, model := 'limix-2m');
+----
+refused	4096
+
+# A predict over the ceiling (4100 rows pad to the 10000-row bucket) is an error, not an abort.
+statement ok
+CREATE TABLE big AS SELECT sin(i * 0.11) f1, cos(i * 0.07) f2, (i % 13) / 13.0 f3,
+  CASE WHEN i < 3000 THEN (CASE WHEN sin(i * 0.11) > 0 THEN 'a' ELSE 'b' END) END AS label
+FROM range(4100) t(i);
+
+statement error
+SELECT count(*) FROM tabfm_classify('big', 'label', features := ['f1', 'f2', 'f3'], model := 'limix-2m');
+----
+cannot be compiled for the ROCm shape bucket 10000 rows x 16 features
+
+# ...and the process is still here to answer.
+query I
+SELECT 42;
+----
+42

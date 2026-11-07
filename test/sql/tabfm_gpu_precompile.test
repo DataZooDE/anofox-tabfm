@@ -1,5 +1,6 @@
 # name: test/sql/tabfm_gpu_precompile.test
-# description: tabfm_gpu_precompile honours both documented ways of choosing a model
+# description: tabfm_gpu_precompile honours both documented ways of choosing a model, and on a device
+#              with no per-shape compile says so ('not needed', NULL bucket) instead of claiming a compile
 # group: [anofox_tabfm]
 
 require anofox_tabfm
@@ -43,18 +44,43 @@ SET anofox_tabfm_device = 'cpu';
 # ignored. Harmless while the registry held one model; broken for every install
 # once the catalog grew.
 query IIIII
-CALL tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
+SELECT task, rows, features, device, status FROM tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
 ----
-classification	64	4	cpu	compiled
+classification	64	4	cpu	not needed
+
+# The full row on a device with nothing to compile: the resolved device (not the
+# setting), status 'not needed' rather than a claim that something compiled, the
+# model the call resolved, and NULL buckets -- only ROCm pads to a bucket.
+query IIIIIIIII
+SELECT task, rows, features, device, status, model, bucket_rows, bucket_features, seconds >= 0
+FROM tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
+----
+classification	64	4	cpu	not needed	fixture	NULL	NULL	true
+
+# 'auto' on a host where it resolves to the CPU reports the device it resolved to.
+statement ok
+SET anofox_tabfm_device = 'auto';
+
+query II
+SELECT device IS NOT NULL AND device <> 'auto', model FROM tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
+----
+true	fixture
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+# The CALL form still works.
+statement ok
+CALL tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
 
 # ...and via the session default, the other remedy the error text advertises.
 statement ok
 SET anofox_tabfm_default_model = 'fixture';
 
-query IIIII
-CALL tabfm_gpu_precompile('classification', 64, 4);
+query IIIIII
+SELECT task, rows, features, device, status, model FROM tabfm_gpu_precompile('classification', 64, 4);
 ----
-classification	64	4	cpu	compiled
+classification	64	4	cpu	not needed	fixture
 
 # The one-argument overload resolves a model the same way.
 query I
@@ -84,9 +110,9 @@ statement ok
 SET anofox_tabfm_ep_path = '';
 
 query IIIII
-CALL tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
+SELECT task, rows, features, device, status FROM tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
 ----
-classification	64	4	cpu	compiled
+classification	64	4	cpu	not needed
 
 # ...and an explicit ep_path is still honoured rather than overridden by the
 # default.
@@ -94,9 +120,9 @@ statement ok
 SET anofox_tabfm_ep_path = '__TEST_DIR__/precompile_ep';
 
 query IIIII
-CALL tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
+SELECT task, rows, features, device, status FROM tabfm_gpu_precompile('classification', 64, 4, model := 'fixture');
 ----
-classification	64	4	cpu	compiled
+classification	64	4	cpu	not needed
 
 statement ok
 SET anofox_tabfm_ep_path = '';
