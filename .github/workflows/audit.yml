@@ -1,0 +1,43 @@
+#
+# Static audits: no build, no ONNX Runtime, no weights, no secrets.
+#
+# The compat-stray-headers job compiles src/tabfm_generate.cpp and
+# src/tabfm_predict_agg.cpp (syntax only) against the bundled DuckDB headers
+# with stray headers from another DuckDB version on a later include path, as a
+# system DuckDB package puts them (scripts/check_compat_stray_headers.sh,
+# ported from anofox-forecast#312). CI runners have no system DuckDB, so
+# without it a __has_include probe that finds the wrong tree only breaks on
+# developer machines. Separate from MainDistributionPipeline.yml for the same
+# reason as graph_invariants.yml.
+#
+name: Static audits
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  compat-stray-headers:
+    name: sources with stray DuckDB headers
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          submodules: false
+
+      - name: Fetch the bundled DuckDB, duckdb-compat and telemetry headers
+        run: git submodule update --init --depth 1 duckdb duckdb-compat posthog-telemetry
+
+      - name: Compile the sources with stray headers on the include path
+        run: scripts/check_compat_stray_headers.sh

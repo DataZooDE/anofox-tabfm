@@ -26,10 +26,10 @@
 #include "duckdb_compat/aggregate.hpp"
 #include "duckdb_compat.hpp"
 // DuckDB 2.0 moved the vector helpers out of vector.hpp into their own headers.
-#if __has_include("duckdb/common/vector/list_vector.hpp")
-#include "duckdb/common/vector/list_vector.hpp"
-#include "duckdb/common/vector/struct_vector.hpp"
-#endif
+// generic_executor.hpp exists on 1.5.6 and 2.0 and includes whatever declares
+// ListVector/StructVector there. Not __has_include: a 1.5.6 build would also
+// find a system DuckDB 2.0's headers (/usr/include/duckdb).
+#include "duckdb/common/vector_operations/generic_executor.hpp"
 #include "telemetry.hpp"
 
 #include <algorithm>
