@@ -2159,7 +2159,8 @@ public:
 		// representation and decodes every row with a head trained only on rows without one returns, for the
 		// context rows, outputs the head never saw: measured on the real weights, tabfm-v1 regression corr -0.016
 		// and tabicl-v2 regression -0.364 against the labels (eager PyTorch agrees with this engine to four
-		// digits), where a second pass gives +0.93 and +0.86. So for a model the registry marks
+		// digits), where a second pass gives +0.93 and +0.86; kumo-tabular and tabfm-v1-1 likewise (the
+		// registry lists the measurements, test_tabfm_registry.cpp). So for a model the registry marks
 		// fitted_second_pass the context rows are appended AFTER the real rows, as queries, and their fitted
 		// values are read from there. Appending (not prepending) keeps the split at train_size, and a query row's
 		// answer depends only on the context, so every real query row is bit-identical (measured: max diff 0).

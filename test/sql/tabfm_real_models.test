@@ -1158,8 +1158,9 @@ ORDER BY 1
 ----
 model.ckpt	true
 model.safetensors	true
-#
-# Fitted values on NOISY data: tabfm-v1 (both tasks) and tabicl-v2 regression.
+
+# ---------------------------------------------------------------------------
+# Fitted values on NOISY data: tabfm-v1, tabfm-v1-1, tabicl-v2, kumo-tabular (fitted_second_pass).
 #
 # The oracles above use easy data (a clean linear target, separable classes), where even a context row's
 # untrained output happens to look right. These two models failed on NOISY data, which is what real tables
@@ -1195,6 +1196,28 @@ true
 
 query I
 SELECT avg((yhat = label)::INT) > 0.9 FROM tabfm_classify('cls_noisy', 'label', model := 'tabfm-v1') WHERE is_training;
+----
+true
+
+# Measured later, the same defect: tabfm-v1-1 (classification 40% on its own context rows, 100% after the pass),
+# kumo-tabular-* (regression corr -0.77 for small) and tabicl-v2 classification (71% -> 93%).
+query I
+SELECT avg((yhat = label)::INT) > 0.9 FROM tabfm_classify('cls_noisy', 'label', model := 'tabfm-v1-1') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.5 FROM tabfm_regress('reg_noisy', 'target', model := 'kumo-tabular-small') WHERE is_training;
+----
+true
+
+query I
+SELECT avg((yhat = label)::INT) > 0.75 FROM tabfm_classify('cls_noisy', 'label', model := 'kumo-tabular-small') WHERE is_training;
+----
+true
+
+query I
+SELECT avg((yhat = label)::INT) > 0.85 FROM tabfm_classify('cls_noisy', 'label', model := 'tabicl-v2') WHERE is_training;
 ----
 true
 

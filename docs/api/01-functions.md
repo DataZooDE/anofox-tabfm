@@ -37,8 +37,12 @@ SELECT * FROM tabfm_regress('sold_homes', 'price', test := 'listings', model := 
 ```
 
 **Single relation** — rows whose target is missing are the ones to score; every
-row comes back with an `is_training` flag (context rows get in-context fitted
-values, handy for a sanity check).
+row comes back with an `is_training` flag. A context row's `yhat` is its in-context fitted value: what the
+model answers when asked about that row as a query, against the same context. Some models' graphs give a
+context row an output that is not that (its own label is mixed into its representation), and for those the
+engine scores the context rows a second time as queries; see `context_values` under
+[Settings](05-settings.md). Fitted values are in-sample: use them as a sanity check, not as an accuracy
+estimate.
 
 ```sql
 SELECT * FROM tabfm_classify('customers', 'churned', model := 'mitra');

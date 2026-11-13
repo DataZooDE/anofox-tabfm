@@ -154,7 +154,8 @@ CALL tabfm_register_model(
 Other arguments: `display_name`, `family`, `regression_graph`, `regression_weights`,
 `classification_weights_url` / `regression_weights_url` (download instead of a local file) with their
 `_bytes`, `weights_repo`, `weights_revision`, per-task `classification_tensor_map` / `regression_tensor_map`,
-`commercial`, `gate_setting`, `preprocessing_profile`, `max_rows` / `max_features` / `max_classes`, `base_dir`
+`commercial`, `gate_setting`, `preprocessing_profile`, `max_rows` / `max_features` / `max_classes`,
+`fitted_second_pass` (the tasks whose context rows' own outputs are not fitted values, e.g. `['regression']`), `base_dir`
 (relative paths resolve against it), `contract_inputs` / `contract_outputs`, the GPU graph variants
 (`classification_ext_graph`, `regression_ext_graph`, `classification_migraphx_graph`,
 `regression_migraphx_graph`) and multi-file lists (`classification_files`, `classification_file_urls`,
