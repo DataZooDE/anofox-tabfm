@@ -596,6 +596,7 @@ TEST_CASE("registry: every other built-in already produces usable fitted values 
 TEST_CASE("model spec: a v2 manifest can declare fitted_second_pass, and a typo names the fix",
           "[tabfm][registry][fitted]") {
 	const char *base = R"json({"schema_version": 2, "id": "m", "preprocessing_profile": "p",
+	  "license": {"id": "mit", "commercial": true},
 	  "weights": {"regression": {"repo": "r", "files": [{"path": "w.safetensors"}]}},
 	  "graph": {"regression": "g.onnx"}, "capabilities": ["regress"]%s})json";
 	char buf[1024];

@@ -72,6 +72,11 @@
 #                CALL tabfm_download('classification', model := 'kumo-tabular-small');   -- and regression,
 #                -- and the same for kumo-tabular-medium and kumo-tabular-large
 #
+#                # tabfm-v1 (6.56 GB per task, gated) and tabicl-v2 are asserted on their FITTED VALUES at the end:
+#                SET anofox_tabfm_accept_hf_license = true;
+#                CALL tabfm_download('classification', model := 'tabfm-v1');
+#                CALL tabfm_download('regression', model := 'tabfm-v1');
+#
 #                TABFM_REAL_WEIGHTS=1 ./build/debug/test/unittest test/sql/tabfm_real_models.test
 # group: [anofox_tabfm]
 
@@ -1153,3 +1158,59 @@ ORDER BY 1
 ----
 model.ckpt	true
 model.safetensors	true
+#
+# Fitted values on NOISY data: tabfm-v1 (both tasks) and tabicl-v2 regression.
+#
+# The oracles above use easy data (a clean linear target, separable classes), where even a context row's
+# untrained output happens to look right. These two models failed on NOISY data, which is what real tables
+# are: measured on diabetes through the engine, tabfm-v1 regression fitted corr -0.016 and tabicl-v2 -0.364
+# (their query rows were fine, corr 0.649), tabfm-v1 classification context accuracy 0.76 on iris. Their graphs
+# add a context row's label to that row's own representation and then decode it with a head only ever trained
+# on rows without one, so the registry marks them fitted_second_pass and the engine reads the context rows'
+# values from a second pass over them. This table (corr(query) ~0.6, the same regime as diabetes) read -0.58
+# for tabicl-v2 before the fix.
+
+statement ok
+CREATE TABLE reg_noisy AS SELECT (hash(i*3) % 1000) / 100.0 AS f1, (hash(i*7) % 1000) / 100.0 AS f2,
+  CASE WHEN i < 80 THEN 3.0 * ((hash(i*3) % 1000) / 100.0) - 2.0 * ((hash(i*7) % 1000) / 100.0)
+                         + ((hash(i*11) % 1000)::DOUBLE - 500.0) / 20.0 END AS target
+FROM range(100) s(i);
+
+statement ok
+CREATE TABLE cls_noisy AS SELECT f1, f2, CASE WHEN i < 80 THEN CASE WHEN s < -2 THEN 'a' WHEN s < 2 THEN 'b' ELSE 'c' END END AS label
+FROM (SELECT i, (hash(i*3) % 1000) / 100.0 AS f1, (hash(i*7) % 1000) / 100.0 AS f2,
+             (hash(i*3) % 1000) / 100.0 - (hash(i*7) % 1000) / 100.0 + ((hash(i*13) % 100)::DOUBLE - 50.0) / 10.0 AS s
+      FROM range(100) s(i));
+
+# the value the model gives a context row must track the label, not be unrelated to it
+query I
+SELECT corr(yhat, target) > 0.5 FROM tabfm_regress('reg_noisy', 'target', model := 'tabicl-v2') WHERE is_training;
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.5 FROM tabfm_regress('reg_noisy', 'target', model := 'tabfm-v1') WHERE is_training;
+----
+true
+
+query I
+SELECT avg((yhat = label)::INT) > 0.9 FROM tabfm_classify('cls_noisy', 'label', model := 'tabfm-v1') WHERE is_training;
+----
+true
+
+# ...and the answers for the rows to predict are what they were: the same call with the second pass switched off
+# gives bit-identical query rows (a query row depends only on the context).
+query I
+SELECT count(*) FILTER (WHERE abs(a.yhat - b.yhat) > 1e-6)
+FROM tabfm_regress('reg_noisy', 'target', model := 'tabicl-v2') a
+JOIN tabfm_regress('reg_noisy', 'target', model := 'tabicl-v2', opts := MAP{'context_values': 'false'}) b
+  ON a.f1 = b.f1 AND a.f2 = b.f2
+WHERE NOT a.is_training;
+----
+0
+
+# a model that already produced usable fitted values is not touched, and not slowed: nothing declares it
+query I
+SELECT corr(yhat, target) > 0.5 FROM tabfm_regress('reg_noisy', 'target', model := 'tabpfn-v2-6') WHERE is_training;
+----
+true
