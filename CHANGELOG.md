@@ -115,6 +115,12 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   pins the ROCm side.
 
 ### Fixed
+- **Mitra regression was shrunk toward the mean.** The engine z-scored the regression target, but Mitra's
+  released regressor was trained on targets min-max scaled to [0, 1] (autogluon's `normalize_y`). On a
+  noise-free linear target upstream's own forward gives R2 0.61 and slope 1.87 (truth on prediction) with a
+  z-scored target and 0.999 / 1.005 with a min-max one; the engine now gives 0.999 / 1.007. The built-in `mitra`
+  entry uses the new `mitra_v1_minmax` profile, so classify, regress, impute and every GPU backend get the fix.
+  `mitra-v2` was not affected: its graph min-max scales the target itself.
 - **LimiX-2M on ROCm no longer aborts DuckDB on a large table.** At 3000 rows x 100 features (the 4096 x 128
   bucket), the sample attention's score tensor is 24.4 GiB. MIGraphX's compile could not allocate it on a 16 GiB
   GPU, and its `hip.cpp:155` assertion killed the process, for both tasks. LimiX buckets larger than the largest

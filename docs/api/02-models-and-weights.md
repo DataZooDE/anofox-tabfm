@@ -179,6 +179,9 @@ The only external thing is the weight-free ONNX graph; every other field is a na
 `contract_inputs` / `contract_outputs`, the GPU graph variants (`classification_ext_graph`,
 `regression_ext_graph`, `classification_migraphx_graph`, `regression_migraphx_graph`) and, for several files
 per task, the parallel lists `classification_files` / `classification_file_urls` /
-`classification_file_bytes` (and the `regression_` equivalents). A registration is kept in memory and is gone when the process ends. A
+`classification_file_bytes` (and the `regression_` equivalents). The `preprocessing_profile` suffix decides
+how the engine scales inputs: `_raw` passes features and target unscaled (the graph normalises them itself),
+`_minmax` z-scores the features and min-max scales a regression target to [0, 1] (what Mitra v1 was trained
+on), and any other suffix z-scores both. A registration is kept in memory and is gone when the process ends. A
 model registered with the id of a built-in shadows it; a single SQL-registered model becomes the implicit
 default.
