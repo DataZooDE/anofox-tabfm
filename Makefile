@@ -82,3 +82,13 @@ test_reldebug_internal:
 # release artifact next to a released anofox_visualization in the official DuckDB CLI.
 test_visualization:
 	python3 scripts/visualization_pickup.py $(BUILD_ROOT)/release/extension/anofox_tabfm/anofox_tabfm.duckdb_extension
+
+# Docs and Claude Code skills (plugins/anofox-tabfm): run every ```sql example against the
+# release build with the weight-free fixture standing in for each named model, and check
+# function, setting and model names, the model tables and the plugin version
+# (scripts/check_doc_snippets.py). check-docs-static needs no build.
+check-docs:
+	python3 scripts/check_doc_snippets.py --duckdb $(BUILD_ROOT)/release/duckdb
+
+check-docs-static:
+	python3 scripts/check_doc_snippets.py --static

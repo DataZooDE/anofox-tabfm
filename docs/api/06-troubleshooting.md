@@ -50,6 +50,7 @@ If an error does not tell you what to do, please
 | You see | It means | Do this |
 |---|---|---|
 | ``the context relation and the `test` relation must expose the same feature columns, but only in ...`` | in the train / test form one relation has a column the other lacks, which would be filled with `NULL` and degrade the prediction silently | drop the column, add it to the other relation, or name the shared columns with `features := [...]` |
+| ``UNION (ALL) BY NAME operation doesn't support duplicate names ... the name "<target>" occurs multiple times`` | the `test` relation still contains the target column | `test := '(SELECT * EXCLUDE (<target>) FROM t)'` |
 | `features := [...] names '<x>', which matched no column` | a misspelled feature name | check it against the relation's columns (matching is case-insensitive) |
 | `input exceeds anofox_tabfm_max_rows` | more rows than the global guardrail allows in one call or group | send fewer rows, or raise it: `SET anofox_tabfm_max_rows = <n>;`. The per-model `max_rows` in `tabfm_list_models()` is a recommendation that is not enforced; to hold to it, set the guardrail to it (e.g. `5000` for `limix-2m`) |
 | `'<model>' supports at most N classes` | the target has more classes than the model's head | reduce the class count or decompose the problem; `SELECT model, max_classes FROM tabfm_list_models();` |

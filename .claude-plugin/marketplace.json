@@ -1,0 +1,24 @@
+{
+  "name": "anofox-tabfm",
+  "description": "Claude Code skills for the anofox_tabfm DuckDB extension: zero-shot tabular ML in SQL.",
+  "owner": {
+    "name": "DataZoo GmbH",
+    "url": "https://github.com/DataZooDE"
+  },
+  "plugins": [
+    {
+      "name": "anofox-tabfm",
+      "source": "./plugins/anofox-tabfm",
+      "description": "Zero-shot tabular machine learning skills for the anofox_tabfm DuckDB extension — classification and regression with 23 tabular foundation models, model and weight management, evaluation and cross-validation, synthetic data and imputation, and GPU acceleration, all in SQL.",
+      "keywords": [
+        "duckdb",
+        "tabular",
+        "machine-learning",
+        "foundation-models",
+        "tabpfn",
+        "sql",
+        "claude-code"
+      ]
+    }
+  ]
+}

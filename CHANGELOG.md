@@ -6,6 +6,19 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **Claude Code plugin** (`plugins/anofox-tabfm`, marketplace `.claude-plugin/marketplace.json`): five skills,
+  `anofox-tabfm-predict`, `-models`, `-evaluate`, `-generate` and `-gpu`, covering the full SQL surface.
+  Install with `/plugin marketplace add DataZooDE/anofox-tabfm` and
+  `/plugin install anofox-tabfm@anofox-tabfm`; docs/guides/06-claude-code.md.
+- **`make check-docs`** (`scripts/check_doc_snippets.py`, ported from anofox-forecast): every ```` ```sql ````
+  example in README.md, docs/api, docs/guides and the skills runs against the built extension, with the
+  weight-free TabPFN fixture registered under each model id the example names; every `tabfm_*` /
+  `anofox_tabfm_*` name must be a registered function or setting and every model id a built-in; the model
+  tables in the README, docs/api/02 and the models skill must list every built-in model; the plugin version
+  must agree across plugin.json and the skills and not lag the latest release tag. It runs on every pull
+  request against the linux_amd64 artifact (`_docs_check.yml`, not a deploy prerequisite), and its no-build
+  half in seconds (`docs_static.yml`, `make check-docs-static`). `scripts/bump_plugin_version.sh` sets the
+  plugin version at a release.
 - **Context cache for `tabicl-v2`, on by default (#37, docs/CONTEXT_CACHE_PLAN.md Phase 1).** The labelled
   context is encoded once and reused across calls: once a context is kept (on its second sighting), later
   calls against the same support rows run the query rows only. Through `tabfm_classify` / `tabfm_regress` on
@@ -47,6 +60,13 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
     gate.
 
 ### Changed
+- **Docs list all 23 built-in models.** The README and docs/api/02 tables, the README feature list and the
+  "which one to start with" table in docs/guides/02 stopped at 13: mitra-v2, tabdpt-v1-3, tabpfn-v3-5,
+  tabpfn-v3-5-fast, tabfm-v1-1, nori-30m, exaone-tabular and the three Kumo-Tabular sizes were missing.
+- docs/api/01 and docs/api/06: `is_training` is in the train / test output too; with `features :=` the result
+  carries only those columns; a `test` relation that still contains the target fails with a `UNION (ALL) BY
+  NAME` binder error. docs/api/07: a numeric target needs `task := 'regression'` in `tabfm_cross_validate`,
+  and its summary row is `fold_id = -1`.
 - **`anofox_tabfm_context_cache` defaults to `true` and is now the kill switch.** A session `SET` applies to
   statements bound after it; `SET GLOBAL ... = false` also stops prepared statements. It serves exact pairs
   only: the prepare graph emits `context_logits` and every state tensor the query graph reads, and the combined

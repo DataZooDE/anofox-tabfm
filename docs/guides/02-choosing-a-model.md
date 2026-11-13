@@ -16,9 +16,9 @@ allowed and whether the download is gated. Per-model detail (sizes, size limits,
 
 | You want | Start with |
 |---|---|
-| commercial use, no licence gate | `mitra` (about 303 MB per task), `tabicl-v2`, `tabdpt`; `orion-bix` and `orion-msp` for classification only |
+| commercial use, no licence gate | `mitra` (about 303 MB per task), `mitra-v2` (larger tables), `tabicl-v2`, `tabdpt`, `tabdpt-v1-3`, `kumo-tabular-small` / `-medium` / `-large`; `orion-bix` and `orion-msp` for classification only, `nori-30m` for regression only |
 | commercial use, attribution is fine | `tabpfn-v2`, `limix-2m` (about 10 MB, one checkpoint for both tasks) |
-| research or evaluation only | the non-commercial models: `tabpfn-v2-5`, `tabpfn-v2-5-real`, `tabpfn-v2-6`, `tabpfn-v3`, `causilo`, `tabfm-v1` (6.56 GB) |
+| research or evaluation only | the non-commercial models: `tabpfn-v2-5`, `tabpfn-v2-5-real`, `tabpfn-v2-6`, `tabpfn-v3`, `tabpfn-v3-5`, `tabpfn-v3-5-fast`, `causilo`, `exaone-tabular`, `tabfm-v1` (6.56 GB), `tabfm-v1-1` |
 | a GPU | check `SELECT * FROM tabfm_backends();`: not every model runs on every backend ([support matrix](../api/04-gpu.md#backend-support-matrix)) |
 
 ## Selecting a model

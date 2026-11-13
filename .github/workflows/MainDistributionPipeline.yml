@@ -64,6 +64,17 @@ jobs:
       duckdb_version: v1.5.6
       extension_name: anofox_tabfm
 
+  # The README, docs/api, docs/guides and the Claude Code skills (plugins/anofox-tabfm) run
+  # against the built artifact: every example executes on the fixture model and every name
+  # must exist. Not a deploy prerequisite: a doc regression should be fixed, not block a release.
+  duckdb-v1_5_6-docs-check:
+    name: Docs and skills check (v1.5.6)
+    needs: duckdb-v1_5_6-build
+    uses: ./.github/workflows/_docs_check.yml
+    with:
+      duckdb_version: v1.5.6
+      extension_name: anofox_tabfm
+
   duckdb-v1_5_6-deploy:
     name: Deploy extension binaries (v1.5.6)
     needs: [duckdb-v1_5_6-build, duckdb-v1_5_6-smoke-test, duckdb-v1_5_6-visualization-pickup]
