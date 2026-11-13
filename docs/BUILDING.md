@@ -14,6 +14,8 @@ GEN=ninja make release TABFM_ORT_VCPKG=0   # faster local build against the preb
 GEN=ninja make debug                       # debug build (prebuilt ONNX Runtime archive, linked dynamically)
 make test_release                          # sqllogictests + C++ unit tests (telemetry disabled)
 ./build/release/test/unittest test/sql/tabfm_classify.test   # a single file
+make check-docs                            # every SQL example in README, docs/api, docs/guides and the
+                                           # Claude Code skills, plus function / setting / model names
 ```
 
 Without `VCPKG_TOOLCHAIN_PATH` the build stops during configure with a cascade in which only the

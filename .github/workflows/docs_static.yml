@@ -1,0 +1,37 @@
+#
+# The no-build half of scripts/check_doc_snippets.py, in seconds on every change: the Claude
+# Code plugin manifests, each SKILL.md's frontmatter, the plugin version (consistent across
+# plugin.json and the skills, and not older than the latest release tag), and every built-in
+# model in src/tabfm_registry.cpp present in the README, docs/api/02 and the models skill.
+# The full check (examples run against the built extension) is _docs_check.yml, called by the
+# main pipeline once the linux_amd64 build exists.
+#
+name: Docs static check
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: Plugin, skills and model tables
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # tags, for the plugin-version check
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python3 scripts/check_doc_snippets.py --static

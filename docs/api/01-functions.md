@@ -98,22 +98,26 @@ SELECT * FROM tabfm_classify(
     model    := 'mitra');
 ```
 
-A name in `features` that matches no column is an error, not a quietly smaller model. In the train / test
-form both relations must expose the same feature columns: a column on one side only is an error naming it,
+A name in `features` that matches no column is an error, not a quietly smaller model. With `features` the
+result carries only those columns, so a key you want to join the predictions back on has to be one of them
+(keep it in both relations), or leave `features` out. The `test` relation must not contain the target
+column: `'(SELECT * EXCLUDE (churned) FROM t)'`; otherwise the call fails with a binder error about duplicate
+names in `UNION (ALL) BY NAME`. In the train / test form both relations must expose the same feature columns: a column on one side only is an error naming it,
 because it would otherwise be filled with `NULL` on the other side and degrade the prediction silently.
 The `opts` keys (`seed`, `softmax_temperature`, `output_mode`, `query_batch`, ...) are listed in
 [Settings](05-settings.md#options).
 
 ## Output columns
 
-Every column of the scored rows, plus:
+The scored rows' feature columns (every column when `features` is omitted, only the listed ones otherwise)
+and the target column (`NULL` on the scored rows), plus:
 
 | column | meaning |
 |---|---|
 | `yhat` | predicted label (classification) or value (regression) |
 | `yhat_score` | top-class probability; `NULL` for regression |
 | `proba` | `MAP(label → probability)` — classification, `output_mode = 'detail'` (the default for `tabfm_classify`) |
-| `is_training` | present in single-relation mode: was this a context row? |
+| `is_training` | was this a context row? Always `false` in the train / test form, where only the `test` rows come back |
 
 ## Every function
 

@@ -41,6 +41,15 @@ TABFM_FLAVOR=rocm make release TABFM_ORT_ROCM_DIR=...       # rocm flavor
 6. **License wall.** No Google weight bytes anywhere in the repo — fixtures
    are random-init (S06); real graphs in `resources/` are weight-free stubs.
    `unnest(res, max_depth := 3)` — never `recursive := true` (S04).
+7. **Docs and skills ship with the code.** A change to a function, its parameters or `opts` keys, a
+   setting, an error text or the model registry updates, in the same PR, the matching page under
+   `docs/api/` and the matching skill in `plugins/anofox-tabfm/skills/`: predict ← `tabfm_macros.cpp`,
+   `tabfm_predict_agg.cpp`; models ← `tabfm_registry.cpp`, `tabfm_weights.cpp`, `tabfm_settings.cpp`;
+   evaluate ← `tabfm_metrics_*.cpp`, `tabfm_scoring.cpp`, `tabfm_crossval.cpp`, `tabfm_contract.cpp`;
+   generate ← `tabfm_generate*.cpp`; gpu ← `tabfm_devices.cpp`, the plugins, `tabfm_backends`. A new model
+   gets a row in the README, `docs/api/02-models-and-weights.md` and the models skill. `make check-docs`
+   (needs `make release`) must pass; CI runs it on the linux artifact. At a release,
+   `scripts/bump_plugin_version.sh <YYYY.MM.DD>`.
 
 ## Layout
 
@@ -51,6 +60,8 @@ TABFM_FLAVOR=rocm make release TABFM_ORT_ROCM_DIR=...       # rocm flavor
 - `src/tabfm_preprocess.cpp`, `tabfm_ensemble.cpp` — WS-F
 - `tools/export_onnx`, `tools/make_fixture`, `tools/parity` — WS-A (uv projects)
 - `vendor/tabfm` — upstream Apache-2.0 submodule; never edit, patch copies in tools/
+- `plugins/anofox-tabfm/` — the Claude Code plugin (5 skills; marketplace in `.claude-plugin/`);
+  `scripts/check_doc_snippets.py` + `scripts/doc_snippets/` check it and the user docs (`make check-docs`)
 - `test/fixtures/` — committed fixture model (graph, safetensors, golden.json,
   manifest.json); CI verifies the pinned sha256, never regenerates
 

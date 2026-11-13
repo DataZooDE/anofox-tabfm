@@ -1,0 +1,9 @@
+{
+  "name": "anofox-tabfm",
+  "description": "Zero-shot tabular machine learning skills for the anofox_tabfm DuckDB extension — classification and regression with 23 tabular foundation models, model and weight management, evaluation and cross-validation, synthetic data and imputation, and GPU acceleration, all in SQL.",
+  "version": "2026.11.01",
+  "author": { "name": "DataZoo GmbH", "url": "https://github.com/DataZooDE" },
+  "homepage": "https://github.com/DataZooDE/anofox-tabfm",
+  "repository": "https://github.com/DataZooDE/anofox-tabfm",
+  "license": "MIT"
+}

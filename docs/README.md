@@ -13,6 +13,7 @@ documents explain how things came to be; where they disagree with the guides or 
 | [Evaluate and compare](guides/03-evaluate-and-compare.md) | A churn walk-through, cross-validation, plotting |
 | [GPU acceleration](guides/04-gpu-acceleration.md) | `tabfm_accelerate()`, checking the device, the ROCm first-run compile |
 | [Generate and impute](guides/05-generate-and-impute.md) | Synthetic rows and filling NULLs |
+| [Claude Code skills](guides/06-claude-code.md) | The Claude Code plugin: install, the five skills, how they are checked |
 
 ## API reference
 

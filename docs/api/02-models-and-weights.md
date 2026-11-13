@@ -21,18 +21,28 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 | `model` | by | tasks | licence id | `commercial` | gated | weights | notes |
 |---|---|---|---|---|---|---|---|
 | `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB per task | |
-| `tabdpt` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~254 MB, one file for both tasks | |
-| `tabicl-v2` | Inria (soda-inria) | classify, regress | `bsd-3-clause` | `true` | no | | |
+| `mitra-v2` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB / ~307 MB | recommended up to 32,768 rows and 256 features; the classifier runs mitra's graph |
+| `tabdpt` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~254 MB, one file for both tasks | TabDPT v1.2 |
+| `tabdpt-v1-3` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~252 MB, one file for both tasks | TabDPT v1.3 |
+| `tabicl-v2` | Inria (soda-inria) | classify, regress | `bsd-3-clause` | `true` | no | ~110 MB / ~114 MB | the [context cache](#context-cache) model |
 | `orion-bix` | Lexsi Labs | classify | `mit` | `true` | no | ~315 MB | classify only |
 | `orion-msp` | Lexsi Labs | classify | `mit` | `true` | no | ~336 MB | classify only |
-| `tabpfn-v2` | Prior Labs | classify, regress | `apache-2.0` | `true` | yes | | Prior Labs License v1.1 = Apache-2.0 + attribution |
+| `nori-30m` | Synthefy | regress | `apache-2.0` | `true` | no | ~117 MB | regress only, so `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only; recommended at most 5,000 rows and 100 features |
+| `kumo-tabular-small` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~110 MB / ~114 MB | OpenMDW-1.1: keep the agreement and NVIDIA's notice when you distribute ([THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)); recommended at most 5,000 rows |
+| `kumo-tabular-medium` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~246 MB / ~250 MB | as `kumo-tabular-small` |
+| `kumo-tabular-large` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~855 MB / ~863 MB | as `kumo-tabular-small` |
+| `tabpfn-v2` | Prior Labs | classify, regress | `apache-2.0` | `true` | yes | ~29 MB / ~44 MB | Prior Labs License v1.1 = Apache-2.0 + attribution |
 | `limix-2m` | StableAI | classify, regress | `limix-2m-license-v1.0` | `true` | yes | ~10 MB, one checkpoint for both tasks | Apache-2.0 + Section 10: "Built with StableAI LimiX"; recommended at most 5,000 rows and 100 features (not enforced: `SET anofox_tabfm_max_rows = 5000`) |
 | `tabpfn-v2-5` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | `false` | yes | ~43 MB / ~41 MB | |
 | `tabpfn-v2-5-real` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | `false` | yes | ~43 MB / ~41 MB | |
-| `tabpfn-v2-6` | Prior Labs | classify, regress | `tabpfn-2.6-license-v1.0` | `false` | yes | ~43 MB / ~52 MB | |
-| `tabpfn-v3` | Prior Labs | classify, regress | `tabpfn-3-license-v1.0` | `false` | yes | ~213 MB (classification) | |
+| `tabpfn-v2-6` | Prior Labs | classify, regress | `tabpfn-2.6-license-v1.0` | `false` | yes | ~43 MB / ~52 MB | recommended up to 50,000 rows and 2,000 features |
+| `tabpfn-v3` | Prior Labs | classify, regress | `tabpfn-3-license-v1.0` | `false` | yes | ~213 MB / ~233 MB | |
+| `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~876 MB, one file for both tasks | no hosted service; refused on CUDA |
+| `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~334 MB, one file for both tasks | 3.5 with 8 instead of 24 layers; no hosted service; refused on CUDA |
 | `causilo` | Nums AI | classify, regress | `causilo-license-v1.0` | `false` | yes | ~144 MB / ~148 MB | hosted, API or SaaS use needs a separate licence |
+| `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | `false` | yes | ~83 MB / ~85 MB | EXAONE AI Model License 1.2 - NC; recommended at most 3,000 rows and 100 features; CPU and ROCm only |
 | `tabfm-v1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | `false` | yes | 6.56 GB (classification) | non-commercial, no redistribution |
+| `tabfm-v1-1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | `false` | yes | ~821 MB / ~825 MB | same licence as v1, 4x fewer parameters |
 
 Some repositories are also gated by Hugging Face itself (account approval plus a token); that is a
 separate step, described in

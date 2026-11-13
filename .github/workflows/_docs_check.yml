@@ -1,0 +1,57 @@
+#
+# Reusable workflow: the docs and the Claude Code skills against the built extension.
+#
+# Loads the linux_amd64 artifact the build job produced into the official DuckDB CLI and runs
+# scripts/check_doc_snippets.py: every ```sql example in README.md, docs/api, docs/guides and
+# plugins/anofox-tabfm/skills runs against the weight-free fixture model (no weights, no
+# network), and every function, setting and model name must exist. anofox-forecast runs the
+# same check only by hand before a release; here it gates every pull request, so a renamed
+# parameter or a new model breaks the build instead of silently rotting the skills.
+#
+name: Docs Check
+
+on:
+  workflow_call:
+    inputs:
+      extension_name:
+        required: true
+        type: string
+      duckdb_version:
+        required: true
+        type: string
+
+jobs:
+  docs:
+    name: Docs and skills (linux_amd64)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the plugin-version check compares against the latest v* tag
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download extension artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.extension_name }}-${{ inputs.duckdb_version }}-extension-linux_amd64
+          path: ./extension_artifact
+
+      - name: Run every documented example and check every name
+        env:
+          DATAZOO_DISABLE_TELEMETRY: '1'
+        run: |
+          python3 scripts/check_doc_snippets.py \
+            --extension "$(pwd)/extension_artifact/${{ inputs.extension_name }}.duckdb_extension" \
+            --duckdb-version "${{ inputs.duckdb_version }}" --arch linux_amd64
+
+      - name: Upload the per-block report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: doc-snippets-${{ inputs.duckdb_version }}
+          path: build/doc-snippets.tsv
+          if-no-files-found: ignore

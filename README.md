@@ -5,6 +5,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
   <a href="https://duckdb.org"><img src="https://img.shields.io/badge/DuckDB-1.5.6%20%7C%202.0-green.svg" alt="DuckDB 1.5.6 | 2.0"></a>
   <a href="https://github.com/DataZooDE/anofox-tabfm/actions/workflows/MainDistributionPipeline.yml"><img src="https://github.com/DataZooDE/anofox-tabfm/actions/workflows/MainDistributionPipeline.yml/badge.svg?branch=main" alt="Build"></a>
+  <a href="#claude-code-skills"><img src="https://img.shields.io/badge/Claude_Code-AI_skills_plugin-8A2BE2.svg" alt="Claude Code AI skills plugin"></a>
 </p>
 
 This extension runs **tabular foundation models**, TabPFN-style in-context learners, so classification
@@ -15,6 +16,11 @@ labelled rows as context and predicts the rest.
 SELECT customer_id, yhat AS will_churn, yhat_score
 FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra');
 ```
+
+> **Built for AI pair-programming.** anofox-tabfm ships a [Claude Code plugin](#claude-code-skills): five
+> skills with the full, checked SQL surface, so Claude writes working `tabfm_*` queries from a plain-English
+> request. Install with `/plugin marketplace add DataZooDE/anofox-tabfm` →
+> `/plugin install anofox-tabfm@anofox-tabfm`.
 
 > **Built with StableAI LimiX.** The `limix-2m` model is StableAI's LimiX-2M, used under the Stable AI
 > Technology Co., Ltd. License v1.0 ([licence](https://huggingface.co/stable-ai/LimiX-2M/blob/main/LICENSE.txt)).
@@ -28,9 +34,10 @@ FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra')
 - **Two forms**: an explicit train / test pair, or one table whose missing targets are the rows to score
 - **Probabilities**, not just labels: `yhat_score` and a `proba` map per row
 
-### 13 models, plus your own
-- **Built in, selectable by name**: Mitra, TabDPT, TabPFN v2 / 2.5 / 2.5-real / 2.6 / 3, TabICL v2, Causilo,
-  LimiX-2M, Orion-BiX, Orion-MSP and Google TabFM v1
+### 23 models, plus your own
+- **Built in, selectable by name**: Mitra and Mitra-v2, TabDPT v1.2 and v1.3, TabPFN v2 / 2.5 / 2.5-real / 2.6 /
+  3 / 3.5 / 3.5-Fast, TabICL v2, Causilo, LimiX-2M, Nori-30M, EXAONE Tabular, Kumo-Tabular (small, medium,
+  large), Orion-BiX, Orion-MSP and Google TabFM v1 / 1.1
 - **Your own model**, registered entirely in SQL with `tabfm_register_model`
 - **One SQL surface**: swap `model :=` to compare models on your own data
 
@@ -58,6 +65,7 @@ FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra')
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Models](#models)
+- [Claude Code skills](#claude-code-skills)
 - [Documentation](#documentation)
 - [Status](#status)
 - [Development](#development)
@@ -120,24 +128,60 @@ weights: `CALL tabfm_download('regression', model := 'mitra');`. The full walk-t
 | Model | By | Tasks | Licence (`tabfm_list_models()`) | Commercial | Gated |
 |---|---|---|---|---|---|
 | `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | yes | no |
+| `mitra-v2` | AWS AutoGluon | classify, regress | `apache-2.0` | yes | no |
 | `tabdpt` | Layer 6 AI | classify, regress | `apache-2.0` | yes | no |
+| `tabdpt-v1-3` | Layer 6 AI | classify, regress | `apache-2.0` | yes | no |
 | `tabicl-v2` | Inria (soda-inria) | classify, regress | `bsd-3-clause` | yes | no |
 | `orion-bix` | Lexsi Labs | classify | `mit` | yes | no |
 | `orion-msp` | Lexsi Labs | classify | `mit` | yes | no |
+| `nori-30m` | Synthefy | regress | `apache-2.0` | yes | no |
+| `kumo-tabular-small` | NVIDIA | classify, regress | `openmdw-1.1` (keep the agreement and NVIDIA's notice when you distribute) | yes | no |
+| `kumo-tabular-medium` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no |
+| `kumo-tabular-large` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no |
 | `tabpfn-v2` | Prior Labs | classify, regress | `apache-2.0` (Prior Labs License v1.1: Apache-2.0 + attribution) | yes | yes |
 | `limix-2m` | StableAI | classify, regress | `limix-2m-license-v1.0` (Apache-2.0 + attribution: "Built with StableAI LimiX") | yes | yes |
 | `tabpfn-v2-5` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | **no** | yes |
 | `tabpfn-v2-5-real` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | **no** | yes |
 | `tabpfn-v2-6` | Prior Labs | classify, regress | `tabpfn-2.6-license-v1.0` | **no** | yes |
 | `tabpfn-v3` | Prior Labs | classify, regress | `tabpfn-3-license-v1.0` | **no** | yes |
+| `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` (no hosted service) | **no** | yes |
+| `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` (no hosted service) | **no** | yes |
 | `causilo` | Nums AI | classify, regress | `causilo-license-v1.0` (hosted, API or SaaS use needs a separate licence) | **no** | yes |
+| `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | **no** | yes |
 | `tabfm-v1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | **no** | yes |
+| `tabfm-v1-1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | **no** | yes |
 
 **Gated** means the download needs `SET anofox_tabfm_accept_hf_license = true;` first, your acknowledgement
 of that licence. Some Hugging Face repositories also need account approval and a token, which is a separate
 step: [Getting Started](docs/guides/01-getting-started.md#licence-acknowledgement-and-gated-repositories).
 Which model to pick, and how they compared: [Choosing a model](docs/guides/02-choosing-a-model.md). Sizes,
 backends and attribution texts: [Models and weights](docs/api/02-models-and-weights.md).
+
+## Claude Code skills
+
+**Tabular ML is easier when your AI assistant knows the API.** anofox-tabfm ships an installable
+[Claude Code](https://claude.com/claude-code) plugin: five skills that give Claude every function, named
+parameter, `opts` key, output column, model and error message of this release. Ask *"predict churn for the
+prospects from history with a commercially usable model, then cross-validate it"* and Claude writes the
+`tabfm_classify` and `tabfm_cross_validate` calls.
+
+```
+/plugin marketplace add DataZooDE/anofox-tabfm
+/plugin install anofox-tabfm@anofox-tabfm
+```
+
+| Skill | Covers |
+|---|---|
+| `anofox-tabfm-predict` | `tabfm_classify` / `tabfm_regress`: both forms, features, `opts`, output columns, segments |
+| `anofox-tabfm-models` | the 23 models, licences, the licence gate, the weight lifecycle, your own model, the context cache |
+| `anofox-tabfm-evaluate` | metrics, scoring rules, cross-validation, the `_by` plotting macros |
+| `anofox-tabfm-generate` | synthetic rows and imputation |
+| `anofox-tabfm-gpu` | CUDA, ROCm and MLX plugins, devices, precision, the ROCm precompile |
+
+The skills live in [`plugins/anofox-tabfm/`](plugins/anofox-tabfm/) and are checked against the built
+extension on every pull request: each SQL example runs, and each function, setting and model name must
+exist ([how](docs/guides/06-claude-code.md#how-the-skills-stay-correct)). In this repository, load them
+directly with `claude --plugin-dir ./plugins/anofox-tabfm`.
 
 ## Documentation
 
@@ -150,6 +194,7 @@ backends and attribution texts: [Models and weights](docs/api/02-models-and-weig
 | [Evaluate and compare](docs/guides/03-evaluate-and-compare.md) | A churn walk-through, cross-validation, plotting the results |
 | [GPU acceleration](docs/guides/04-gpu-acceleration.md) | `tabfm_accelerate()`, checking which device served a query, the ROCm first compile |
 | [Generate and impute](docs/guides/05-generate-and-impute.md) | Synthetic rows and filling NULL cells |
+| [Claude Code skills](docs/guides/06-claude-code.md) | Installing the plugin, what each skill covers, how they stay in sync |
 
 ### API reference
 
@@ -206,6 +251,7 @@ git clone --recurse-submodules https://github.com/DataZooDE/anofox-tabfm.git
 cd anofox-tabfm
 GEN=ninja make release      # needs vcpkg: see docs/BUILDING.md
 make test_release           # sqllogictests + C++ unit tests (fixture models, no real weights)
+make check-docs             # every documented SQL example and name, docs and Claude Code skills
 ```
 
 Prerequisites, the GPU plugins and source-build flavors: [docs/BUILDING.md](docs/BUILDING.md).
