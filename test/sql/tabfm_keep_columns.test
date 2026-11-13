@@ -1,0 +1,120 @@
+# name: test/sql/tabfm_keep_columns.test
+# description: #98 -- `keep := [...]` carries columns (a row key, a label for a
+#              report) through to the result without making them features.
+#              Before it there was no clean way: without `features :=` an id
+#              column went into the model as a feature, and with it the id
+#              dropped out of the result, so scores could only be matched back
+#              to their rows by position.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'keep-fixture', base_dir := 'test/fixtures/tabdpt',
+  classification_graph := 'graph_tabdpt_classification.onnx',
+  regression_graph := 'graph_tabdpt_regression.onnx',
+  classification_weights := 'model.safetensors',
+  regression_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_tabdpt_classification.json',
+  regression_tensor_map := 'tensor_map_tabdpt_regression.json',
+  license := 'apache-2.0', commercial := true,
+  preprocessing_profile := 'tabdpt_v1_raw',
+  max_rows := 4096, max_features := 16, max_classes := 4)
+
+statement ok
+SET anofox_tabfm_default_model = 'keep-fixture'
+
+# the issue's example, with ids far from the feature values: as a feature they
+# would move the prediction
+statement ok
+CREATE TABLE leads AS SELECT * FROM (VALUES
+  (101, 5.0, 0.3, 'won'), (102, 1.0, 0.9, 'lost'), (103, 4.0, 0.2, 'won'),
+  (104, 0.0, 0.8, 'lost'), (105, 3.0, 0.4, NULL), (106, 1.0, 0.7, NULL))
+  t(id, visits, recency, outcome);
+
+statement ok
+CREATE TABLE leads_no_id AS SELECT * EXCLUDE (id) FROM leads;
+
+# --- single-relation form: the id comes back ---------------------------------
+
+query T
+SELECT string_agg(column_name, ', ') FROM (DESCRIBE SELECT * FROM tabfm_classify('leads', 'outcome', keep := ['id']))
+----
+id, visits, recency, outcome, yhat, yhat_score, is_training, proba
+
+# ... and is not a feature: every score equals the call without the column
+query I
+SELECT count(*) FROM tabfm_classify('leads', 'outcome', keep := ['id']) k
+JOIN tabfm_classify('leads_no_id', 'outcome') n USING (visits, recency)
+WHERE k.yhat_score IS NOT DISTINCT FROM n.yhat_score AND k.yhat IS NOT DISTINCT FROM n.yhat
+----
+6
+
+# with features := as well: the id is kept and the other columns are dropped
+query T
+SELECT string_agg(column_name, ', ') FROM (DESCRIBE SELECT * FROM tabfm_classify('leads', 'outcome',
+  features := ['visits'], keep := ['id']))
+----
+id, visits, outcome, yhat, yhat_score, is_training, proba
+
+# --- train/test form: the test relation's id survives the feature guard -----
+
+statement ok
+CREATE VIEW decided AS SELECT visits, recency, outcome FROM leads WHERE outcome IS NOT NULL;
+
+statement ok
+CREATE VIEW open_leads AS SELECT id, visits, recency FROM leads WHERE outcome IS NULL;
+
+query IT
+SELECT id, typeof(yhat) FROM tabfm_classify('decided', 'outcome', test := 'open_leads', keep := ['id']) ORDER BY id
+----
+105	VARCHAR
+106	VARCHAR
+
+# without keep the one-sided id is still the silent-mismatch error
+statement error
+SELECT * FROM tabfm_classify('decided', 'outcome', test := 'open_leads')
+----
+<REGEX>:.*only in the `test` relation: id.*
+
+# --- regression ---------------------------------------------------------------
+
+query I
+SELECT count(*) FROM tabfm_regress('leads', 'visits', keep := ['id'], features := ['recency']) WHERE id IS NOT NULL
+----
+6
+
+# --- any type can be kept, nested ones too: it never reaches the model -------
+
+query I
+SELECT count(*) FROM tabfm_classify(
+  '(SELECT {''crm'': id, ''tags'': [id, id]} AS ref, visits, recency, outcome FROM leads)', 'outcome',
+  keep := ['ref']) WHERE ref.crm IS NOT NULL
+----
+6
+
+# --- errors name the fix ---------------------------------------------------------
+
+statement error
+SELECT * FROM tabfm_classify('leads', 'outcome', keep := ['id_typo'])
+----
+<REGEX>:.*keep := \[\.\.\.\] names 'id_typo', which matched no column.*
+
+statement error
+SELECT * FROM tabfm_classify('leads', 'outcome', keep := ['outcome'])
+----
+<REGEX>:.*'outcome' is the target.*
+
+statement error
+SELECT * FROM tabfm_classify('leads', 'outcome', features := ['visits', 'id'], keep := ['id'])
+----
+<REGEX>:.*'id' is in both features := \[\.\.\.\] and keep := \[\.\.\.\].*
+
+statement error
+SELECT * FROM tabfm_classify('leads', 'outcome', keep := ['id', 'visits', 'recency'])
+----
+<REGEX>:.*no feature columns left.*

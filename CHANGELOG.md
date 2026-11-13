@@ -6,6 +6,11 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`keep := [...]` on `tabfm_classify` / `tabfm_regress`** (#98): columns passed through to the result
+  unchanged and never used as features, so a row key comes back without becoming a model input. A kept
+  column may exist in the `test` relation only (it is exempt from the feature-column check), may have any
+  type, and is not part of the context-cache key. A misspelled name, the target, or a name also in
+  `features := [...]` is an error naming the fix.
 - **Claude Code plugin** (`plugins/anofox-tabfm`, marketplace `.claude-plugin/marketplace.json`): five skills,
   `anofox-tabfm-predict`, `-models`, `-evaluate`, `-generate` and `-gpu`, covering the full SQL surface.
   Install with `/plugin marketplace add DataZooDE/anofox-tabfm` and

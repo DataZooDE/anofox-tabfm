@@ -32,10 +32,9 @@ exactly the rows you hand it.
    (`'(SELECT * EXCLUDE (leak) FROM t)'`).
 3. **The `test` relation must not contain the target column.** If it does, the call fails with a binder
    error about duplicate names in `UNION (ALL) BY NAME`. Use `'(SELECT * EXCLUDE (target) FROM t)'`.
-4. **The output carries only the columns the model saw.** With `features := [...]` only those columns (plus
-   the target and the outputs) come back, so an ID you want to join on must be a feature: keep it in both
-   relations (a surrogate key is near-noise to the model, but it is an input), or score without `features`.
-   There is no pass-through parameter yet.
+4. **Pass row keys with `keep := [...]`, not as features.** Without `features` every column, an ID too,
+   is a model input; with `features := [...]` only the listed columns come back. `keep := ['id']` returns
+   the column unchanged without feeding it to the model, and it may exist in the `test` relation only.
 5. **`data` and `test` are strings**: a table name or a `'(SELECT ...)'` subquery, with quotes inside the
    subquery doubled (`''north''`). Not a bare relation.
 6. **Missing target = predict this row.** `NULL`, and `NaN` in a `FLOAT`/`DOUBLE` target. `±Infinity` in the
@@ -52,8 +51,8 @@ exactly the rows you hand it.
 ## `tabfm_classify` / `tabfm_regress`
 
 ```sql
-tabfm_classify(data, target [, test] [, features] [, opts] [, model])
-tabfm_regress (data, target [, test] [, features] [, opts] [, model])
+tabfm_classify(data, target [, test] [, features] [, opts] [, model] [, keep])
+tabfm_regress (data, target [, test] [, features] [, opts] [, model] [, keep])
 ```
 
 | argument | type | meaning |
@@ -64,6 +63,7 @@ tabfm_regress (data, target [, test] [, features] [, opts] [, model])
 | `features` | `VARCHAR[]` | optional; default every column except the target. A name that matches no column is an error (matching is case-insensitive) |
 | `opts` | `MAP(VARCHAR, VARCHAR)` | optional, see below |
 | `model` | `VARCHAR` | the model id; default `anofox_tabfm_default_model` |
+| `keep` | `VARCHAR[]` | optional; columns returned unchanged and never used as features (a row key). Any type; may exist in `test` only |
 
 **Explicit train / test**, like `clf.fit(X_train, y_train).predict(X_test)`: only the test rows come back.
 
@@ -102,7 +102,7 @@ FROM tabfm_classify(
 ## Output columns
 
 The scored relation's feature columns (all of its columns when `features` is omitted, only the listed
-ones otherwise), the target column (`NULL` on scored rows), plus:
+ones otherwise), the `keep` columns, the target column (`NULL` on scored rows), plus:
 
 | column | type | meaning |
 |---|---|---|
@@ -191,6 +191,8 @@ FROM pred;
 | `has no downloaded weights for task '<task>'` | `CALL tabfm_download('<task>', model := '<id>');` |
 | ``the context relation and the `test` relation must expose the same feature columns`` | drop or add the column, or `features := [...]` |
 | `features := [...] names '<x>', which matched no column` | fix the name |
+| `keep := [...] names '<x>', which matched no column` | fix the name |
+| `'<x>' is in both features := [...] and keep := [...]` | name it in only one: `keep` to pass it through, `features` to model it |
 | `input exceeds anofox_tabfm_max_rows` | fewer rows, or `SET anofox_tabfm_max_rows = <n>;` |
 | `'<model>' supports at most N classes` | fewer classes, or decompose (one-vs-rest) |
 | `UNION (ALL) BY NAME ... the name "<target>" occurs multiple times` | the `test` relation still has the target column: `EXCLUDE` it |

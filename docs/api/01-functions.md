@@ -20,8 +20,8 @@ Both functions have the same signature; the task (classification vs
 regression) is fixed by which one you call.
 
 ```sql
-tabfm_classify(data, target [, test] [, features] [, opts] [, model])
-tabfm_regress (data, target [, test] [, features] [, opts] [, model])
+tabfm_classify(data, target [, test] [, features] [, opts] [, model] [, keep])
+tabfm_regress (data, target [, test] [, features] [, opts] [, model] [, keep])
 ```
 
 `data` and `test` are table names or `'(SELECT ...)'` strings; `target` is a column name. `model` names a
@@ -94,13 +94,16 @@ SELECT * FROM tabfm_classify(
     'history', 'churned',
     test     := 'prospects',
     features := ['age', 'plan', 'usage_gb'],   -- default: all other columns
+    keep     := ['customer_id'],               -- passed through, never a feature
     opts     := MAP{'seed': '42', 'output_mode': 'detail'},
     model    := 'mitra');
 ```
 
 A name in `features` that matches no column is an error, not a quietly smaller model. With `features` the
-result carries only those columns, so a key you want to join the predictions back on has to be one of them
-(keep it in both relations), or leave `features` out. The `test` relation must not contain the target
+result carries only those columns plus the `keep` columns. `keep` names columns that come back unchanged
+and are never fed to the model: a row key to join the predictions back on, a label for a report. Any type
+works, and a kept column may exist in the `test` relation only. A `keep` name that matches no column, the
+target, or a name also in `features` is an error. The `test` relation must not contain the target
 column: `'(SELECT * EXCLUDE (churned) FROM t)'`; otherwise the call fails with a binder error about duplicate
 names in `UNION (ALL) BY NAME`. In the train / test form both relations must expose the same feature columns: a column on one side only is an error naming it,
 because it would otherwise be filled with `NULL` on the other side and degrade the prediction silently.
@@ -109,8 +112,8 @@ The `opts` keys (`seed`, `softmax_temperature`, `output_mode`, `query_batch`, ..
 
 ## Output columns
 
-The scored rows' feature columns (every column when `features` is omitted, only the listed ones otherwise)
-and the target column (`NULL` on the scored rows), plus:
+The scored rows' feature columns (every column when `features` is omitted, only the listed ones otherwise),
+the `keep` columns and the target column (`NULL` on the scored rows), plus:
 
 | column | meaning |
 |---|---|

@@ -55,6 +55,15 @@ struct PredictBindData : public FunctionData {
 	//! What the caller passed as `features := [...]`, unit-separated, as the
 	//! macro saw it. Empty when the caller named no features.
 	string requested_features;
+	//! What the caller passed as `keep := [...]` (#98), unit-separated; empty when none.
+	string requested_keep;
+	//! Per row field: a `keep := [...]` column. It rides along in the row so the result echoes it, but the
+	//! engine sees the row without it (engine_row_type), so it is never a feature and never part of the
+	//! context-cache key, which is built from what the engine preprocesses.
+	vector<bool> kept;
+	bool has_kept = false;
+	LogicalType engine_row_type;
+	idx_t engine_target_idx = 0;
 	//! anofox_tabfm_max_memory snapshot in bytes, 0 = disabled (FR-3.4 / issue #2)
 	idx_t max_memory_bytes = 0;
 	//! settings + DB handle captured at bind (finalize has no ClientContext)
@@ -70,7 +79,7 @@ struct PredictBindData : public FunctionData {
 		       options.task == other.options.task && options.detail == other.options.detail &&
 		       options.n_estimators == other.options.n_estimators && options.seed == other.options.seed &&
 		       options.context_rows == other.options.context_rows && options.model == other.options.model &&
-		       options.query_batch == other.options.query_batch &&
+		       options.query_batch == other.options.query_batch && kept == other.kept &&
 		       max_rows == other.max_rows && max_memory_bytes == other.max_memory_bytes;
 	}
 
@@ -107,6 +116,41 @@ struct PredictBindData : public FunctionData {
 //===--------------------------------------------------------------------===//
 // Options parsing (bind time; opts must be a constant MAP, values VARCHAR)
 //===--------------------------------------------------------------------===//
+//! The macro joins `features := [...]` / `keep := [...]` with the unit separator (chr(31)).
+vector<string> SplitUnitSeparated(const string &joined) {
+	vector<string> names;
+	size_t start = 0;
+	while (start <= joined.size()) {
+		auto end = joined.find('\x1f', start);
+		if (end == string::npos) {
+			end = joined.size();
+		}
+		auto name = joined.substr(start, end - start);
+		start = end + 1;
+		if (!name.empty()) {
+			names.push_back(std::move(name));
+		}
+	}
+	return names;
+}
+
+//! keep := [...] columns are echoed in the result but never seen by the engine (#98).
+void DropKeptColumns(const PredictBindData &bind, vector<vector<Value>> &rows) {
+	if (!bind.has_kept) {
+		return;
+	}
+	for (auto &row : rows) {
+		vector<Value> engine_row;
+		engine_row.reserve(row.size());
+		for (idx_t i = 0; i < row.size(); i++) {
+			if (!bind.kept[i]) {
+				engine_row.push_back(std::move(row[i]));
+			}
+		}
+		row = std::move(engine_row);
+	}
+}
+
 int64_t ParseIntegerOption(const string &fname, const string &key, const string &raw, const char *expectation) {
 	try {
 		size_t pos = 0;
@@ -206,6 +250,9 @@ void ParseOneOption(const string &fname, PredictBindData &bind, const string &ke
 		// Internal: the macro forwards `features := [...]` verbatim so bind can
 		// tell a misspelled column from one the caller deliberately omitted.
 		bind.requested_features = val;
+	} else if (key == "__keep") {
+		// Internal: the macro forwards `keep := [...]` (#98).
+		bind.requested_keep = val;
 	} else {
 		throw BinderException("%s: unknown option '%s'; valid options are task, n_estimators, seed, output_mode, "
 		                      "context_rows, softmax_temperature, query_batch, model",
@@ -345,15 +392,6 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, duckdb_comp
 		throw BinderException("%s: target column '%s' has unsupported type %s; the target must be scalar", fname,
 		                      bind->target, bind->target_type.ToString());
 	}
-	for (idx_t i = 0; i < fields.size(); i++) {
-		if (i == bind->target_idx || !IsUnsupportedNestedType(fields[i].second)) {
-			continue;
-		}
-		throw BinderException("%s: feature column '%s' has unsupported type %s; feature columns must be scalar — "
-		                      "project it into scalar columns (e.g. %s[1] AS f1, %s[2] AS f2) or exclude it with "
-		                      "features := [...]",
-		                      fname, duckdb_compat::Str(fields[i].first), fields[i].second.ToString(), duckdb_compat::Str(fields[i].first), duckdb_compat::Str(fields[i].first));
-	}
 
 	// FR-3.2 task inference: non-numeric target (VARCHAR/ENUM/BOOL/…) →
 	// classification; numeric → regression. Overridable via opts['task'].
@@ -370,19 +408,9 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, duckdb_comp
 	// what was requested against what arrived; the filter keeps the target plus
 	// the requested columns, so anything missing here is a name that matched
 	// nothing.
-	if (!bind->requested_features.empty()) {
-		const char kSep = '\x1f';
-		size_t start = 0;
-		while (start <= bind->requested_features.size()) {
-			auto end = bind->requested_features.find(kSep, start);
-			if (end == string::npos) {
-				end = bind->requested_features.size();
-			}
-			auto wanted = bind->requested_features.substr(start, end - start);
-			start = end + 1;
-			if (wanted.empty()) {
-				continue;
-			}
+	const auto requested_features = SplitUnitSeparated(bind->requested_features);
+	if (!requested_features.empty()) {
+		for (auto &wanted : requested_features) {
 			bool found = false;
 			for (auto &field : fields) {
 				if (StringUtil::CIEquals(duckdb_compat::Str(field.first), wanted)) {
@@ -403,6 +431,68 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, duckdb_comp
 		}
 	}
 
+	// keep := [...] (#98): resolve each name to its field. The macro's column filter let these through
+	// whether or not `features := [...]` names them; the engine must not see them.
+	bind->kept.assign(fields.size(), false);
+	for (auto &wanted : SplitUnitSeparated(bind->requested_keep)) {
+		idx_t idx = fields.size();
+		for (idx_t i = 0; i < fields.size(); i++) {
+			if (StringUtil::CIEquals(duckdb_compat::Str(fields[i].first), wanted)) {
+				idx = i;
+				break;
+			}
+		}
+		if (idx == fields.size()) {
+			throw BinderException(
+			    "%s: keep := [...] names '%s', which matched no column. Check it against the relation's columns "
+			    "(matching is case-insensitive).",
+			    fname, wanted);
+		}
+		if (idx == bind->target_idx) {
+			throw BinderException("%s: keep := [...] names '%s', but '%s' is the target, which is always in the "
+			                      "result. Remove it from keep := [...].",
+			                      fname, wanted, wanted);
+		}
+		for (auto &feature : requested_features) {
+			if (StringUtil::CIEquals(feature, wanted)) {
+				throw BinderException("%s: '%s' is in both features := [...] and keep := [...]. A kept column is "
+				                      "passed through and never used as a feature; name it in only one of them.",
+				                      fname, wanted);
+			}
+		}
+		bind->kept[idx] = true;
+		bind->has_kept = true;
+	}
+	child_list_t<LogicalType> engine_fields;
+	for (idx_t i = 0; i < fields.size(); i++) {
+		if (bind->kept[i]) {
+			continue;
+		}
+		if (i == bind->target_idx) {
+			bind->engine_target_idx = engine_fields.size();
+		}
+		engine_fields.push_back(fields[i]);
+	}
+	if (bind->has_kept && engine_fields.size() < 2) {
+		throw BinderException("%s: keep := [...] takes every column except the target, so there are no feature "
+		                      "columns left. Remove a column from keep := [...].",
+		                      fname);
+	}
+	bind->engine_row_type = bind->has_kept ? LogicalType::STRUCT(engine_fields) : bind->row_type;
+	if (!bind->has_kept) {
+		bind->engine_target_idx = bind->target_idx;
+	}
+	// A kept column never reaches the model, so it may have any type, nested ones included.
+	for (idx_t i = 0; i < fields.size(); i++) {
+		if (i == bind->target_idx || bind->kept[i] || !IsUnsupportedNestedType(fields[i].second)) {
+			continue;
+		}
+		throw BinderException("%s: feature column '%s' has unsupported type %s; feature columns must be scalar — "
+		                      "project it into scalar columns (e.g. %s[1] AS f1, %s[2] AS f2), exclude it with "
+		                      "features := [...] or pass it through with keep := [...]",
+		                      fname, duckdb_compat::Str(fields[i].first), fields[i].second.ToString(), duckdb_compat::Str(fields[i].first), duckdb_compat::Str(fields[i].first));
+	}
+
 	// guardrails snapshot (FR-3.4): features checked here, rows incrementally,
 	// memory watchdog checked right before each engine call (finalize/window)
 	bind->max_rows = ReadSettingUBigint(context, "anofox_tabfm_max_rows", 10000);
@@ -411,7 +501,7 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, duckdb_comp
 	// see what a forward pass costs. Read once at bind so both checks agree.
 	bind->context.max_memory_bytes = bind->max_memory_bytes;
 	const auto max_features = ReadSettingUBigint(context, "anofox_tabfm_max_features", 500);
-	const auto feature_count = fields.size() - 1; // everything but the target
+	const auto feature_count = engine_fields.size() - 1; // everything but the target and the kept columns
 	if (feature_count > max_features) {
 		throw BinderException("%s: %llu feature columns exceed anofox_tabfm_max_features (%llu). Raise it with "
 		                      "SET anofox_tabfm_max_features = %llu; or pass a feature list",
@@ -703,10 +793,11 @@ void PredictAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_dat
 		}
 
 		CheckMemoryCeiling(bind);
+		DropKeptColumns(bind, rows);
 
 		// ENGINE SEAM: one engine call per group (HLD §4.6)
-		PredictInput engine_input {rows,           bind.row_type, bind.target_idx, bind.target_type,
-		                           bind.target,     bind.options,  bind.context};
+		PredictInput engine_input {rows,        bind.engine_row_type, bind.engine_target_idx, bind.target_type,
+		                           bind.target, bind.options,         bind.context};
 		auto predictions = GetPredictEngine().Predict(engine_input);
 
 		const idx_t list_start = ListVector::GetListSize(result);
@@ -850,9 +941,10 @@ void PredictWinWindow(AggregateInputData &aggr_input_data, const WindowPartition
 	rows.push_back(std::move(scored_children));
 
 	CheckMemoryCeiling(bind);
+	DropKeptColumns(bind, rows);
 
-	PredictInput engine_input {rows,       bind.row_type, bind.target_idx, bind.target_type,
-	                           bind.target, bind.options,  bind.context};
+	PredictInput engine_input {rows,        bind.engine_row_type, bind.engine_target_idx, bind.target_type,
+	                           bind.target, bind.options,         bind.context};
 	auto predictions = GetPredictEngine().Predict(engine_input);
 	const auto last = rows.size() - 1;
 	WriteWindowResult(result, rid, bind, predictions.yhat[last], predictions.yhat_score[last],
