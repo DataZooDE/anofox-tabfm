@@ -1,0 +1,152 @@
+# name: test/sql/tabfm_keep.test
+# description: keep := [...] (#98) — pass-through columns for tabfm_classify / tabfm_regress.
+#              A kept column comes back with every row, unchanged, and never reaches the model:
+#              the predictions equal those of the same call with the column absent.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture-reg', base_dir := 'test/fixtures/regression',
+  regression_graph := 'graph_fixture.onnx',
+  regression_weights := 'model.safetensors',
+  regression_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
+
+# issue #98's table: an id, two features, a label (NULL = to score)
+statement ok
+CREATE TABLE leads AS SELECT * FROM (VALUES
+  (101, 5.0, 'Referral', 'won'), (102, 1.0, 'Cold call', 'lost'), (103, 4.0, 'Webinar', 'won'),
+  (104, 0.0, 'Cold call', 'lost'), (107, 2.0, 'Website', 'won'), (108, 0.5, 'Referral', 'lost'),
+  (105, 3.0, 'Referral', NULL), (106, 1.0, 'Website', NULL))
+  t(id, visits, source, outcome);
+
+statement ok
+CREATE VIEW leads_noid AS SELECT visits, source, outcome FROM leads;
+
+statement ok
+CREATE VIEW decided AS SELECT id, visits, source, outcome FROM leads WHERE outcome IS NOT NULL;
+
+statement ok
+CREATE VIEW decided_noid AS SELECT visits, source, outcome FROM leads WHERE outcome IS NOT NULL;
+
+statement ok
+CREATE VIEW open_leads AS SELECT id, visits, source FROM leads WHERE outcome IS NULL;
+
+statement ok
+CREATE VIEW open_noid AS SELECT visits, source FROM leads WHERE outcome IS NULL;
+
+# --- the id comes back in all three of #98's forms ---------------------------
+
+query I
+SELECT string_agg(column_name, ', ') FROM (DESCRIBE SELECT * FROM tabfm_classify('leads', 'outcome', keep := ['id'], model := 'fixture'))
+----
+id, visits, source, outcome, yhat, yhat_score, is_training, proba
+
+query I
+SELECT string_agg(column_name, ', ') FROM (DESCRIBE SELECT * FROM tabfm_classify('leads', 'outcome', features := ['visits', 'source'], keep := ['id'], model := 'fixture'))
+----
+id, visits, source, outcome, yhat, yhat_score, is_training, proba
+
+query I
+SELECT string_agg(column_name, ', ') FROM (DESCRIBE SELECT * FROM tabfm_classify('decided', 'outcome', test := 'open_leads', features := ['visits', 'source'], keep := ['id'], model := 'fixture'))
+----
+id, visits, source, outcome, yhat, yhat_score, is_training, proba
+
+# --- ... and is not a feature: predictions equal the call without the id ----
+
+query I
+SELECT count(*) FROM (
+  SELECT visits, source, yhat, proba FROM tabfm_classify('leads', 'outcome', keep := ['id'], model := 'fixture')
+  EXCEPT
+  SELECT visits, source, yhat, proba FROM tabfm_classify('leads_noid', 'outcome', model := 'fixture'))
+----
+0
+
+query I
+SELECT count(*) FROM (
+  SELECT visits, source, yhat, proba
+  FROM tabfm_classify('decided', 'outcome', test := 'open_leads', keep := ['id'], model := 'fixture')
+  EXCEPT
+  SELECT visits, source, yhat, proba
+  FROM tabfm_classify('decided_noid', 'outcome', test := 'open_noid', model := 'fixture'))
+----
+0
+
+# the key joins back: every scored id is an open lead, with its own feature values
+query I
+SELECT count(*) FROM tabfm_classify('decided', 'outcome', test := 'open_leads', keep := ['id'], model := 'fixture') p
+JOIN open_leads o ON o.id = p.id AND o.visits = p.visits AND o.source = p.source
+----
+2
+
+# --- a key on the `test` side only passes the feature-column contract --------
+
+query II
+SELECT count(*), count(id) FROM tabfm_classify('decided_noid', 'outcome', test := 'open_leads', keep := ['id'], model := 'fixture')
+----
+2	2
+
+# --- several keys, any case, any type (a kept column is never a feature) -----
+
+query I
+SELECT count(*) FROM tabfm_classify(
+  '(SELECT *, {''region'': ''eu''} AS meta, [id, id] AS tags FROM leads)', 'outcome',
+  keep := ['ID', 'Meta', 'tags'], model := 'fixture')
+WHERE meta.region = 'eu' AND tags[1] = id
+----
+8
+
+# --- regression ---------------------------------------------------------------
+
+statement ok
+CREATE TABLE homes AS SELECT * FROM (VALUES
+  (1, 1200.0, 2, 210000.0), (2, 1800.0, 3, 320000.0), (3, 900.0, 1, 150000.0),
+  (4, 2400.0, 4, 410000.0), (5, 1500.0, 3, NULL), (6, 2000.0, 3, NULL))
+  t(id, sqft, beds, price);
+
+query I
+SELECT count(*) FROM (
+  SELECT sqft, yhat FROM tabfm_regress('homes', 'price', keep := ['id'], model := 'fixture-reg')
+  EXCEPT
+  SELECT sqft, yhat FROM tabfm_regress('(SELECT sqft, beds, price FROM homes)', 'price', model := 'fixture-reg'))
+----
+0
+
+query I
+SELECT list_sort(list(id)) FROM tabfm_regress('homes', 'price', keep := ['id'], model := 'fixture-reg') WHERE NOT is_training
+----
+[5, 6]
+
+# --- errors -------------------------------------------------------------------
+
+statement error
+SELECT * FROM tabfm_classify('leads', 'outcome', keep := ['idd'], model := 'fixture')
+----
+<REGEX>:.*keep := \[\.\.\.\] names 'idd', which matched no column.*
+
+statement error
+SELECT * FROM tabfm_classify('leads', 'outcome', keep := ['Outcome'], model := 'fixture')
+----
+<REGEX>:.*keep := \[\.\.\.\] names the target 'Outcome'.*
+
+# --- the parameter is surfaced for autocomplete -------------------------------
+
+query I
+SELECT count(*) FROM duckdb_functions()
+WHERE function_name IN ('tabfm_classify', 'tabfm_regress', 'anofox_tabfm_classify', 'anofox_tabfm_regress')
+  AND list_contains(parameters, 'keep')
+----
+4

@@ -18,11 +18,14 @@ CALL tabfm_download('regression', model := 'mitra');       -- for tabfm_impute o
 ## Generate synthetic rows
 
 ```sql
--- 500 synthetic customers that look like the real ones
-SELECT * FROM tabfm_generate('customers', 500, model := 'mitra');
+-- 500 synthetic customers that look like the real ones; leave the key out, a numeric id would be
+-- generated like any number (duplicates of real keys) and condition every other column
+SELECT * FROM tabfm_generate('(SELECT * EXCLUDE (id) FROM customers)', 500, model := 'mitra');
 
--- ...and straight back into the table: with features omitted the shape matches
-INSERT INTO customers SELECT * EXCLUDE (synthetic_id) FROM tabfm_generate('customers', 500, model := 'mitra');
+-- ...and straight back into the table, with fresh keys
+INSERT INTO customers
+SELECT (SELECT max(id) FROM customers) + synthetic_id AS id, * EXCLUDE (synthetic_id)
+FROM tabfm_generate('(SELECT * EXCLUDE (id) FROM customers)', 500, model := 'mitra');
 
 -- with features, only those columns come back: name them in the INSERT
 INSERT INTO customers (age, plan, income)

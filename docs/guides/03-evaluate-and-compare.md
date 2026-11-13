@@ -21,12 +21,12 @@ FROM 'hf://datasets/scikit-learn/churn-prediction/**/*.csv';
 
 CREATE TABLE train AS SELECT * EXCLUDE (bucket) FROM (FROM churn WHERE bucket < 70) USING SAMPLE 500 ROWS (reservoir, 42);
 CREATE TABLE test  AS SELECT * EXCLUDE (bucket) FROM (FROM churn WHERE bucket >= 70) USING SAMPLE 150 ROWS (reservoir, 42);
-CREATE TABLE test_features AS SELECT * EXCLUDE (Churn) FROM test;   -- no target for the test rows
 
--- 2. predict the test rows using the train rows as context
+-- 2. predict the test rows using the train rows as context: their Churn labels are ignored, and
+--    keep := ['customerID'] returns the key without making it a feature
 CREATE TABLE preds AS
 SELECT customerID, yhat AS pred, proba
-FROM tabfm_classify('train', 'Churn', test := 'test_features', model := 'mitra');
+FROM tabfm_classify('train', 'Churn', test := 'test', keep := ['customerID'], model := 'mitra');
 
 -- 3. F1 of the positive class, in SQL
 WITH cm AS (
@@ -74,11 +74,11 @@ INSTALL anofox_visualization FROM community; LOAD anofox_visualization;
 
 CREATE TABLE scored AS
 SELECT 'mitra' AS model, t.Churn::VARCHAR AS actual, p.yhat::VARCHAR AS yhat, p.proba
-FROM tabfm_classify('train', 'Churn', test := 'test_features', model := 'mitra') p
+FROM tabfm_classify('train', 'Churn', test := 'test', keep := ['customerID'], model := 'mitra') p
 JOIN test t USING (customerID)
 UNION ALL
 SELECT 'tabicl-v2', t.Churn::VARCHAR, p.yhat::VARCHAR, p.proba
-FROM tabfm_classify('train', 'Churn', test := 'test_features', model := 'tabicl-v2') p
+FROM tabfm_classify('train', 'Churn', test := 'test', keep := ['customerID'], model := 'tabicl-v2') p
 JOIN test t USING (customerID);
 
 SELECT anofox_plot(t) FROM tabfm_classification_metrics_by('scored', 'model', 'actual', 'yhat', 'proba') t;

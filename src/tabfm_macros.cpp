@@ -24,12 +24,15 @@ namespace anofox {
 //   * target   — the column to predict.
 //   * test     — optional relation of rows to score (predict(X_test)). When
 //                given, only those rows are returned, their `target` forced to
-//                NULL so it never contaminates the context. When omitted
+//                NULL so it never contaminates the context (a `test` that still
+//                has the target column is fine: the column is dropped first). When omitted
 //                (NULL), the call is single-relation: rows of `data` whose
 //                target IS NULL are the scored rows (and all rows come back,
 //                with is_training).
 //   * features — optional VARCHAR[] of feature columns (default: all others);
 //                matched case-insensitively, the target is always kept.
+//   * keep     — optional VARCHAR[] of pass-through columns (#98): returned
+//                unchanged with every row, never used as features (a row key).
 //   * opts     — trailing MAP(VARCHAR,VARCHAR) of engine options (seed,
 //                n_estimators, output_mode, context_rows, …). `task` is fixed
 //                by the function and cannot be overridden.
@@ -74,7 +77,7 @@ struct PredictMacroDef {
 // 'regression'). `data`, `test`, `target`, `features`, `opts` are macro params.
 static const PredictMacroDef CLASSIFY_MACRO = {
     {"data", "target", nullptr},
-    {"test=NULL", "features=NULL", "opts=MAP{}", "model=NULL", nullptr},
+    {"test=NULL", "features=NULL", "opts=MAP{}", "model=NULL", "keep=NULL", nullptr},
 R"(
     SELECT * FROM (
       SELECT unnest(res, max_depth := 3) FROM (
@@ -91,12 +94,20 @@ R"(
                      -- does not match a column, so a misspelling would reach
                      -- the aggregate as a QUIETER MODEL rather than an error.
                      -- Pass what was ASKED for so bind can compare the two.
-                     CASE WHEN features IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
-                          ELSE MAP{'__features': array_to_string(features, chr(31))} END))) AS res
+                     map_concat(
+                       CASE WHEN features IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                            ELSE MAP{'__features': array_to_string(features, chr(31))} END,
+                       -- keep := [...] (#98): pass-through columns. They ride in the
+                       -- row struct so they come back in the output; bind marks them
+                       -- so they never reach the model as features.
+                       CASE WHEN keep IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                            ELSE MAP{'__keep': array_to_string(keep, chr(31))} END)))) AS res
         FROM (
           SELECT COLUMNS(lambda c: features IS NULL
                                    OR list_contains(list_transform(features, lambda f: lcase(f)), lcase(c))
-                                   OR lcase(c) = lcase(target))
+                                   OR lcase(c) = lcase(target)
+                                   OR (keep IS NOT NULL
+                                       AND list_contains(list_transform(keep, lambda k: lcase(k)), lcase(c))))
           FROM query(
             CASE WHEN test IS NULL
                  THEN 'FROM ' || data
@@ -118,7 +129,12 @@ R"(
                       || '" IS NOT NULL AND NOT (typeof("' || replace(target, '"', '""')
                       || '") IN (''FLOAT'', ''DOUBLE'') AND isnan(TRY_CAST("' || replace(target, '"', '""')
                       || '" AS DOUBLE)))) UNION ALL BY NAME '
-                      || 'SELECT *, NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
+                      -- `test` may still carry the target (a labelled holdout): drop
+                      -- it whatever its case, then add it back as NULL. Its values
+                      -- never reach the model, and a plain `SELECT *, NULL AS t`
+                      -- would fail on the duplicate name instead.
+                      || 'SELECT COLUMNS(lambda c: lcase(c) <> lcase(''' || replace(target, '''', '''''')
+                      || ''')), NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
             END)
         ) anofox_tabfm_row
         -- Feature-column contract for the train/test form. Both column lists are
@@ -154,11 +170,17 @@ R"(
              SELECT
                list_filter(__c, lambda c: lcase(c) <> lcase(target)
                                           AND NOT list_contains(list_transform(__t, lambda x: lcase(x)), lcase(c))
+                                          -- a keep column (a key) may exist on one side only
+                                          AND NOT (keep IS NOT NULL AND list_contains(
+                                                     list_transform(keep, lambda k: lcase(k)), lcase(c)))
                                           AND (features IS NULL
                                                OR list_contains(list_transform(features, lambda f: lcase(f)),
                                                                 lcase(c)))) AS __anofox_ctx_only,
                list_filter(__t, lambda c: lcase(c) <> lcase(target)
                                           AND NOT list_contains(list_transform(__c, lambda x: lcase(x)), lcase(c))
+                                          -- a keep column (a key) may exist on one side only
+                                          AND NOT (keep IS NOT NULL AND list_contains(
+                                                     list_transform(keep, lambda k: lcase(k)), lcase(c)))
                                           AND (features IS NULL
                                                OR list_contains(list_transform(features, lambda f: lcase(f)),
                                                                 lcase(c)))) AS __anofox_test_only
@@ -177,14 +199,16 @@ R"(
 )",
     "Zero-shot tabular classification with the TabFM foundation model. Uses the labelled rows of `data` as "
     "in-context examples to score the rows whose `target` is NULL (single-relation form) or every row of the "
-    "`test` relation (train/test form). Returns one row per scored row with yhat, yhat_score, is_training and "
-    "(detail mode) a proba MAP. Optional `features` restricts the feature columns; `opts` is a MAP of options "
+    "`test` relation (train/test form; a target column in `test` is ignored). Returns one row per scored row "
+    "with yhat, yhat_score, is_training and "
+    "(detail mode) a proba MAP. Optional `features` restricts the feature columns, `keep` names columns passed "
+    "through to the output without being features (a row key); `opts` is a MAP of options "
     "(seed, softmax_temperature, output_mode, ...).",
     "SELECT age, plan, yhat, yhat_score FROM tabfm_classify('customers', 'churned') WHERE churned IS NULL;"};
 
 static const PredictMacroDef REGRESS_MACRO = {
     {"data", "target", nullptr},
-    {"test=NULL", "features=NULL", "opts=MAP{}", "model=NULL", nullptr},
+    {"test=NULL", "features=NULL", "opts=MAP{}", "model=NULL", "keep=NULL", nullptr},
 R"(
     SELECT * FROM (
       SELECT unnest(res, max_depth := 3) FROM (
@@ -199,12 +223,20 @@ R"(
                      -- does not match a column, so a misspelling would reach
                      -- the aggregate as a QUIETER MODEL rather than an error.
                      -- Pass what was ASKED for so bind can compare the two.
-                     CASE WHEN features IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
-                          ELSE MAP{'__features': array_to_string(features, chr(31))} END))) AS res
+                     map_concat(
+                       CASE WHEN features IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                            ELSE MAP{'__features': array_to_string(features, chr(31))} END,
+                       -- keep := [...] (#98): pass-through columns. They ride in the
+                       -- row struct so they come back in the output; bind marks them
+                       -- so they never reach the model as features.
+                       CASE WHEN keep IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                            ELSE MAP{'__keep': array_to_string(keep, chr(31))} END)))) AS res
         FROM (
           SELECT COLUMNS(lambda c: features IS NULL
                                    OR list_contains(list_transform(features, lambda f: lcase(f)), lcase(c))
-                                   OR lcase(c) = lcase(target))
+                                   OR lcase(c) = lcase(target)
+                                   OR (keep IS NOT NULL
+                                       AND list_contains(list_transform(keep, lambda k: lcase(k)), lcase(c))))
           FROM query(
             CASE WHEN test IS NULL
                  THEN 'FROM ' || data
@@ -226,7 +258,12 @@ R"(
                       || '" IS NOT NULL AND NOT (typeof("' || replace(target, '"', '""')
                       || '") IN (''FLOAT'', ''DOUBLE'') AND isnan(TRY_CAST("' || replace(target, '"', '""')
                       || '" AS DOUBLE)))) UNION ALL BY NAME '
-                      || 'SELECT *, NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
+                      -- `test` may still carry the target (a labelled holdout): drop
+                      -- it whatever its case, then add it back as NULL. Its values
+                      -- never reach the model, and a plain `SELECT *, NULL AS t`
+                      -- would fail on the duplicate name instead.
+                      || 'SELECT COLUMNS(lambda c: lcase(c) <> lcase(''' || replace(target, '''', '''''')
+                      || ''')), NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
             END)
         ) anofox_tabfm_row
         -- Feature-column contract for the train/test form. Both column lists are
@@ -262,11 +299,17 @@ R"(
              SELECT
                list_filter(__c, lambda c: lcase(c) <> lcase(target)
                                           AND NOT list_contains(list_transform(__t, lambda x: lcase(x)), lcase(c))
+                                          -- a keep column (a key) may exist on one side only
+                                          AND NOT (keep IS NOT NULL AND list_contains(
+                                                     list_transform(keep, lambda k: lcase(k)), lcase(c)))
                                           AND (features IS NULL
                                                OR list_contains(list_transform(features, lambda f: lcase(f)),
                                                                 lcase(c)))) AS __anofox_ctx_only,
                list_filter(__t, lambda c: lcase(c) <> lcase(target)
                                           AND NOT list_contains(list_transform(__c, lambda x: lcase(x)), lcase(c))
+                                          -- a keep column (a key) may exist on one side only
+                                          AND NOT (keep IS NOT NULL AND list_contains(
+                                                     list_transform(keep, lambda k: lcase(k)), lcase(c)))
                                           AND (features IS NULL
                                                OR list_contains(list_transform(features, lambda f: lcase(f)),
                                                                 lcase(c)))) AS __anofox_test_only
@@ -285,8 +328,10 @@ R"(
 )",
     "Zero-shot tabular regression with the TabFM foundation model. Uses the rows of `data` with a known numeric "
     "`target` as in-context examples to predict the target for rows where it is NULL (single-relation form) or "
-    "every row of the `test` relation (train/test form). Returns one row per scored row with yhat (yhat_score is "
-    "NULL for regression). Optional `features` restricts the feature columns; `opts` is a MAP of options.",
+    "every row of the `test` relation (train/test form; a target column in `test` is ignored). Returns one row "
+    "per scored row with yhat (yhat_score is "
+    "NULL for regression). Optional `features` restricts the feature columns, `keep` names columns passed through "
+    "to the output without being features (a row key); `opts` is a MAP of options.",
     "SELECT * FROM tabfm_regress('sold_homes', 'price', test := 'listings');"};
 // clang-format on
 
@@ -299,7 +344,7 @@ unique_ptr<CreateMacroInfo> BuildMacroInfo(const string &name, const PredictMacr
 	// Surface the signature in duckdb_functions() (description + parameter names
 	// + a runnable example).
 	FunctionDescription fd;
-	fd.parameter_names = {"data", "target", "test", "features", "opts", "model"};
+	fd.parameter_names = {"data", "target", "test", "features", "opts", "model", "keep"};
 	fd.description = def.description;
 	if (def.example) {
 		fd.examples = {def.example};

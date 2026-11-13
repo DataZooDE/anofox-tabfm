@@ -29,9 +29,10 @@ any model's output, not only this extension's.
 2. **Probability metrics take `VARCHAR` labels** and a `MAP(VARCHAR, DOUBLE)`: `tabfm_log_loss`,
    `tabfm_roc_auc`, `tabfm_ece`. That is exactly `tabfm_classify`'s `proba`; cast the label with `::VARCHAR`
    (a `BOOLEAN` target's keys are `'true'` / `'false'`).
-3. **`tabfm_cross_validate` takes no `model :=`.** Set `anofox_tabfm_default_model` first. For a numeric
-   target pass `task := 'regression'`: without it the folds are classified and a continuous target fails on
-   the class limit.
+3. **`tabfm_cross_validate` takes no `model :=`.** Set `anofox_tabfm_default_model` first. `task` is
+   `'classification'` (default) or `'regression'`; anything else (`'auto'`, a typo) is an error. A numeric
+   target that is a quantity needs `task := 'regression'`, or the folds are classified and the call fails
+   on the class limit with an error that says so.
 4. **Scoring rules need a distribution column** `STRUCT(logits DOUBLE[], borders DOUBLE[])`. `tabfm_regress`
    does not emit one yet, so they score distributions you construct or get from elsewhere, and they are not
    usable in cross-validation.
@@ -92,7 +93,7 @@ Deterministic, seedable folds (`hash(row_key, seed) % k`). Each fold is predicte
 train / test form, so no row ever sees its own label.
 
 ```sql
-tabfm_cross_validate(data, target, row_key [, k := 5] [, seed := 42] [, task := 'auto'] [, metric])
+tabfm_cross_validate(data, target, row_key [, k := 5] [, seed := 42] [, task := 'classification'] [, metric])
 tabfm_fold_assign(data, k, row_key, seed)
 ```
 
@@ -100,9 +101,9 @@ tabfm_fold_assign(data, k, row_key, seed)
 |---|---|
 | `data` | table name or `'(SELECT ...)'` |
 | `target` | column to predict |
-| `row_key` | a unique key column; it decides the folds and joins the labels back, so it stays in the data as a feature |
+| `row_key` | a unique key column; it decides the folds and joins the labels back. Passed through with `keep`, so it is not a feature |
 | `k`, `seed` | folds and the hash seed |
-| `task` | `'classification'`, `'regression'` or `'auto'` |
+| `task` | `'classification'` (default) or `'regression'`; anything else is an error |
 | `metric` | `'tabfm_accuracy'` (classification default), `'tabfm_rmse'` (regression default), `'tabfm_mae'`, `'tabfm_r2'` |
 
 Output `fold_id, metric_value, metric_std`: one row per fold (`metric_std` `NULL`) and a summary row with
@@ -111,7 +112,7 @@ Output `fold_id, metric_value, metric_std`: one row per fold (`metric_std` `NULL
 ```sql
 SET anofox_tabfm_default_model = 'mitra';
 SELECT * FROM tabfm_cross_validate('customers', 'churned', 'id', k := 5, seed := 42);
-SELECT * FROM tabfm_cross_validate('sold_homes', 'price', 'sqft', k := 3,
+SELECT * FROM tabfm_cross_validate('sold_homes', 'price', 'home_id', k := 3,
                                    task := 'regression', metric := 'tabfm_mae');
 ```
 
@@ -130,13 +131,22 @@ SELECT * FROM cv ORDER BY metric_value DESC;
 ```
 
 `tabfm_fold_assign` returns every input column plus `fold_id` (and a helper column `_cv_rk`), for your own
-fold loops, e.g. metrics that `tabfm_cross_validate` does not offer:
+fold loops, e.g. metrics that `tabfm_cross_validate` does not offer. Drop both helper columns and pass the
+key through `keep`, or they become features (the test fold's `fold_id` is a value no context row has):
 
 ```sql
-SELECT fold_id, count(*) AS n
-FROM tabfm_fold_assign('customers', 5, 'id', 42)
-GROUP BY fold_id ORDER BY fold_id;
+CREATE TABLE fa AS SELECT * FROM tabfm_fold_assign('customers', 5, 'id', 42);
+
+-- one fold (fold 0); repeat per fold, or generate the UNION ALL
+SELECT 0 AS fold, tabfm_f1(c.churned::VARCHAR, p.yhat::VARCHAR, avg := 'macro') AS f1
+FROM tabfm_classify('(SELECT * EXCLUDE (fold_id, _cv_rk) FROM fa WHERE fold_id <> 0)', 'churned',
+                    test := '(SELECT * EXCLUDE (fold_id, _cv_rk) FROM fa WHERE fold_id = 0)',
+                    keep := ['id'], model := 'mitra') p
+JOIN customers c USING (id);
 ```
+
+Cost: CV is k predict calls per model, each over (k-1)/k of the rows; use `k := 3` on large tables. Comparing
+more models than `anofox_tabfm_max_sessions` (default 4) reloads sessions between runs.
 
 ## Comparing models on a held-out split
 
@@ -148,11 +158,11 @@ CREATE TABLE truth AS SELECT id AS customer_id, churned FROM customers WHERE id 
 
 CREATE TABLE cmp AS
 SELECT 'mitra' AS model, t.churned::VARCHAR AS actual, p.yhat::VARCHAR AS yhat, p.proba
-FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra') p
+FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['customer_id'], model := 'mitra') p
 JOIN truth t USING (customer_id)
 UNION ALL
 SELECT 'tabicl-v2', t.churned::VARCHAR, p.yhat::VARCHAR, p.proba
-FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'tabicl-v2') p
+FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['customer_id'], model := 'tabicl-v2') p
 JOIN truth t USING (customer_id);
 
 SELECT model, tabfm_accuracy(actual, yhat) AS acc, tabfm_roc_auc(actual, proba, avg := 'ovr') AS auc
@@ -214,7 +224,7 @@ CREATE TABLE ctx  AS SELECT * FROM customers WHERE hash(id) % 10 < 7;
 CREATE TABLE hold AS SELECT * FROM customers WHERE hash(id) % 10 >= 7;
 CREATE TABLE ev AS
 SELECT 'mitra' AS model, h.churned::VARCHAR AS actual, p.yhat::VARCHAR AS yhat, p.proba
-FROM tabfm_classify('ctx', 'churned', test := '(SELECT * EXCLUDE (churned) FROM hold)') p
+FROM tabfm_classify('ctx', 'churned', test := 'hold', keep := ['id']) p
 JOIN hold h USING (id);
 
 -- 3. the numbers, and the long table to plot
