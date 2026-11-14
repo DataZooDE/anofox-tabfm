@@ -11,6 +11,10 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   column may exist in the `test` relation only (it is exempt from the feature-column check), may have any
   type, and is not part of the context-cache key. A misspelled name, the target, or a name also in
   `features := [...]` is an error naming the fix.
+- **`keep := [...]` on `tabfm_impute`**: the same pass-through for imputation. A kept column (a row key) is
+  returned unchanged, a NULL in it stays NULL, and it neither conditions the fills nor is filled. A name that
+  matches no column, or is also in `columns := [...]` or `features := [...]`, is an error. `tabfm_generate`
+  has no `keep`: a synthetic row has no source row.
 - **Claude Code plugin** (`plugins/anofox-tabfm`, marketplace `.claude-plugin/marketplace.json`): five skills,
   `anofox-tabfm-predict`, `-models`, `-evaluate`, `-generate` and `-gpu`, covering the full SQL surface.
   Install with `/plugin marketplace add DataZooDE/anofox-tabfm` and

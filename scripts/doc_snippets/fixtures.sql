@@ -25,7 +25,7 @@ SELECT 100 + i AS home_id, 55.0 + i * 9 AS sqft, 1 + i % 3 AS bedrooms FROM rang
 
 -- raw: NULL cells to impute
 CREATE TABLE raw AS
-SELECT age, CASE WHEN id % 7 = 0 THEN NULL ELSE plan END AS plan,
+SELECT id, age, CASE WHEN id % 7 = 0 THEN NULL ELSE plan END AS plan,
        CASE WHEN id % 5 = 0 THEN NULL ELSE income END AS income
 FROM customers;
 

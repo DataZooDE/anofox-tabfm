@@ -909,6 +909,10 @@ struct GenerateBindData : public FunctionData {
 	idx_t max_rows = 10000;
 	//! What `features := [...]` asked for, unit-separated, as the macro saw it.
 	string requested_features;
+	//! impute: what `keep := [...]` asked for, unit-separated, and the column indices it resolved to
+	//! (ascending). Kept columns ride along in the row but are never features and never filled.
+	string requested_keep;
+	vector<idx_t> keep_columns;
 	PredictContext context;
 
 	unique_ptr<FunctionData> Copy() const override {
@@ -921,7 +925,7 @@ struct GenerateBindData : public FunctionData {
 		       options.seed == other.options.seed && options.temperature == other.options.temperature &&
 		       options.bins == other.options.bins && options.column_order == other.options.column_order &&
 		       options.rounds == other.options.rounds && options.model == other.options.model &&
-		       max_rows == other.max_rows;
+		       max_rows == other.max_rows && keep_columns == other.keep_columns;
 	}
 
 	//! generate: LIST(STRUCT(cols, synthetic_id)); impute: LIST(STRUCT(cols)).
@@ -993,6 +997,9 @@ void ParseOneOption(const string &fname, GenerateBindData &bind, const string &k
 			throw BinderException("%s: rounds must be an integer between 1 and 16, got '%s'", fname, val);
 		}
 		opts.rounds = NumericCast<idx_t>(n);
+	} else if (key == "__keep") {
+		// Internal: impute's `keep := [...]`, forwarded by the macro.
+		bind.requested_keep = val;
 	} else if (key == "__features") {
 		// Internal: what `features := [...]` asked for, so bind can tell a
 		// misspelled column from one deliberately excluded.
@@ -1077,6 +1084,68 @@ void CaptureContext(ClientContext &context, GenerateBindData &bind) {
 	}
 }
 
+vector<string> SplitUnitSeparated(const string &joined) {
+	vector<string> out;
+	size_t start = 0;
+	while (start <= joined.size()) {
+		auto end = joined.find('\x1f', start);
+		if (end == string::npos) {
+			end = joined.size();
+		}
+		auto name = joined.substr(start, end - start);
+		if (!name.empty()) {
+			out.push_back(std::move(name));
+		}
+		start = end + 1;
+	}
+	return out;
+}
+
+bool IsKept(const GenerateBindData &bind, idx_t column) {
+	return std::find(bind.keep_columns.begin(), bind.keep_columns.end(), column) != bind.keep_columns.end();
+}
+
+//! impute's keep := [...]: resolve the names to column indices. A column is either modelled or passed
+//! through, so a kept name must exist and must not also be a fill target or a listed feature.
+void ResolveKeep(GenerateBindData &bind, const child_list_t<LogicalType> &fields, const string &fname) {
+	if (bind.requested_keep.empty()) {
+		return;
+	}
+	const auto features = SplitUnitSeparated(bind.requested_features);
+	for (auto &wanted : SplitUnitSeparated(bind.requested_keep)) {
+		idx_t found = DConstants::INVALID_INDEX;
+		for (idx_t i = 0; i < fields.size(); i++) {
+			if (StringUtil::CIEquals(duckdb_compat::Str(fields[i].first), wanted)) {
+				found = i;
+				break;
+			}
+		}
+		if (found == DConstants::INVALID_INDEX) {
+			throw BinderException("%s: keep := [...] names '%s', which matched no column. Check it against the "
+			                      "relation's columns (matching is case-insensitive)",
+			                      fname, wanted);
+		}
+		for (auto &f : features) {
+			if (StringUtil::CIEquals(f, wanted)) {
+				throw BinderException("%s: '%s' is in both features := [...] and keep := [...]; a column is either "
+				                      "modelled or passed through",
+				                      fname, wanted);
+			}
+		}
+		for (auto t : bind.targets) {
+			if (t == found) {
+				throw BinderException("%s: '%s' is in both columns := [...] and keep := [...]; a kept column is "
+				                      "passed through, never filled",
+				                      fname, wanted);
+			}
+		}
+		if (!IsKept(bind, found)) {
+			bind.keep_columns.push_back(found);
+		}
+	}
+	std::sort(bind.keep_columns.begin(), bind.keep_columns.end());
+}
+
 unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, duckdb_compat::AggregateBindFunction &function,
                                               vector<unique_ptr<Expression>> &arguments, const string &fname,
                                               bool is_impute) {
@@ -1094,19 +1163,6 @@ unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, duckdb_com
 	if (fields.empty()) {
 		throw BinderException("%s: the input relation has no columns", fname);
 	}
-	// Every column is both a feature and (in turn) a target of the chain rule, so
-	// a nested column is unusable in either role: it would be ordinal-encoded as
-	// garbage and — for generate — SAMPLED, silently emitting meaningless values
-	// in that column. Reject it here (issue #17).
-	for (auto &field : fields) {
-		if (!IsUnsupportedNestedType(field.second)) {
-			continue;
-		}
-		throw BinderException("%s: column '%s' has unsupported type %s; columns must be scalar — project it into "
-		                      "scalar columns (e.g. %s[1] AS f1, %s[2] AS f2) or exclude it with features := [...]",
-		                      fname, duckdb_compat::Str(field.first), field.second.ToString(), duckdb_compat::Str(field.first), duckdb_compat::Str(field.first));
-	}
-
 	// arg 1: generate -> n (BIGINT); impute -> columns (VARCHAR[] or NULL)
 	if (!arguments[1]->IsFoldable()) {
 		throw BinderException("%s: %s must be a constant", fname, is_impute ? "columns" : "n");
@@ -1212,13 +1268,34 @@ unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, duckdb_com
 		}
 	}
 
+	ResolveKeep(*bind, fields, fname);
+
+	// Every column is both a feature and (in turn) a target of the chain rule, so
+	// a nested column is unusable in either role: it would be ordinal-encoded as
+	// garbage and — for generate — SAMPLED, silently emitting meaningless values
+	// in that column. Reject it here (issue #17).
+	// A kept column is neither, so it may be of any type.
+	for (idx_t c = 0; c < fields.size(); c++) {
+		auto &field = fields[c];
+		if (IsKept(*bind, c) || !IsUnsupportedNestedType(field.second)) {
+			continue;
+		}
+		throw BinderException("%s: column '%s' has unsupported type %s; columns must be scalar — project it into "
+		                      "scalar columns (e.g. %s[1] AS f1, %s[2] AS f2) or exclude it with features := [...]",
+		                      fname, duckdb_compat::Str(field.first), field.second.ToString(), duckdb_compat::Str(field.first), duckdb_compat::Str(field.first));
+	}
+
 	bind->max_rows = ReadSettingUBigint(context, "anofox_tabfm_max_rows", 10000);
 	const auto max_features = ReadSettingUBigint(context, "anofox_tabfm_max_features", 500);
-	if (fields.size() > max_features) {
+	const idx_t modelled = fields.size() - bind->keep_columns.size();
+	if (modelled == 0) {
+		throw BinderException("%s: every column is in keep := [...]; there is nothing left to model", fname);
+	}
+	if (modelled > max_features) {
 		throw BinderException("%s: %llu columns exceed anofox_tabfm_max_features (%llu). Raise it with "
 		                      "SET anofox_tabfm_max_features = %llu; or pass a feature list",
-		                      fname, (unsigned long long)fields.size(), (unsigned long long)max_features,
-		                      (unsigned long long)fields.size());
+		                      fname, (unsigned long long)modelled, (unsigned long long)max_features,
+		                      (unsigned long long)modelled);
 	}
 	if (!is_impute && bind->n > bind->max_rows) {
 		throw BinderException("%s: n (%llu) exceeds anofox_tabfm_max_rows (%llu). Raise it with "
@@ -1477,10 +1554,42 @@ void GenerateAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_da
 		}
 
 		if (bind.is_impute) {
-			vector<idx_t> targets = bind.targets;
+			// keep := [...]: the model sees only the other columns; kept cells are spliced back below.
+			const bool has_keep = !bind.keep_columns.empty();
+			vector<idx_t> modelled_of; // projected index -> original index
+			child_list_t<LogicalType> model_fields;
+			vector<vector<Value>> kept_rows;
+			if (has_keep) {
+				for (idx_t c = 0; c < fields.size(); c++) {
+					if (!IsKept(bind, c)) {
+						modelled_of.push_back(c);
+						model_fields.push_back(fields[c]);
+					}
+				}
+				kept_rows.reserve(rows.size());
+				for (auto &row : rows) {
+					vector<Value> projected;
+					projected.reserve(modelled_of.size());
+					for (auto c : modelled_of) {
+						projected.push_back(row[c]);
+					}
+					kept_rows.push_back(std::move(row));
+					row = std::move(projected);
+				}
+			}
+			const auto &mfields = has_keep ? model_fields : fields;
+			vector<idx_t> targets;
+			for (auto t : bind.targets) {
+				if (!has_keep) {
+					targets.push_back(t);
+					continue;
+				}
+				targets.push_back(NumericCast<idx_t>(
+				    std::find(modelled_of.begin(), modelled_of.end(), t) - modelled_of.begin()));
+			}
 			if (!bind.targets_explicit) {
 				// Default: every column that actually has a gap (NULL or NaN) to fill.
-				for (idx_t c = 0; c < fields.size(); c++) {
+				for (idx_t c = 0; c < mfields.size(); c++) {
 					bool has_gap = false;
 					for (idx_t r = 0; r < rows.size() && !has_gap; r++) {
 						has_gap = ClassifyTargetValue(rows[r][c]) == TargetValueKind::MISSING;
@@ -1490,9 +1599,17 @@ void GenerateAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_da
 					}
 				}
 			}
-			NormalizeMissingCells(rows, fields, targets);
-			auto plans = PlanAll(rows, fields, bind.options, bind.function_name, &targets);
-			auto filled = RunImpute(rows, fields, plans, targets, bind.options, bind.context);
+			NormalizeMissingCells(rows, mfields, targets);
+			auto plans = PlanAll(rows, mfields, bind.options, bind.function_name, &targets);
+			auto filled = RunImpute(rows, mfields, plans, targets, bind.options, bind.context);
+			if (has_keep) {
+				for (idx_t r = 0; r < filled.size(); r++) {
+					for (idx_t j = 0; j < modelled_of.size(); j++) {
+						kept_rows[r][modelled_of[j]] = std::move(filled[r][j]);
+					}
+					filled[r] = std::move(kept_rows[r]);
+				}
+			}
 			for (auto &row : filled) {
 				child_list_t<Value> outer;
 				outer.emplace_back("cols", Value::STRUCT(bind.row_type, row));

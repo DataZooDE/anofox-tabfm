@@ -5,7 +5,7 @@ what binning preserves and why this is not a privacy mechanism: [docs/GENERATE.m
 
 ```sql
 tabfm_generate(data, n [, features] [, opts] [, model])           -- sample new rows
-tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
+tabfm_impute  (data [, columns] [, features] [, opts] [, model] [, keep])  -- fill NULLs
 ```
 
 ```sql
@@ -15,7 +15,10 @@ SELECT * FROM tabfm_impute('raw', columns := ['income'], opts := MAP{'rounds': '
 ```
 
 `n` is a positive constant. `columns` limits which columns are filled (default: every column with a NULL);
-`features` limits which columns are used at all. Generation needs only classification weights, so it works
+`features` limits which columns are used at all. `keep` (impute only) passes columns, such as a row key, through
+unchanged: they are never features and never filled, and a NULL in them stays NULL. A `keep` name that matches no
+column, or that is also in `columns` or `features`, is an error. `tabfm_generate` has no `keep`: a synthetic row has
+no source row to carry a key from. Generation needs only classification weights, so it works
 with classify-only models; imputing a numeric column also needs the model's regression weights. A `NaN` in
 a `FLOAT`/`DOUBLE` column being filled counts as missing, like `NULL`; `+/-Infinity` there is an error.
 
@@ -29,7 +32,7 @@ With `features` omitted, `tabfm_generate` returns every column of `data`, plus t
 | `synthetic_id` | `1..n` in generation order — joinable and reproducible |
 
 With `features` omitted, `tabfm_impute` returns **exactly** the columns of `data`, so it round-trips; with
-`features`, only the selected columns.
+`features`, only the selected columns plus any `keep` columns, in the order of `data`.
 
 ## Options
 

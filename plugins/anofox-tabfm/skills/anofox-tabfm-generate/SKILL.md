@@ -31,7 +31,8 @@ column's marginal.
 3. **Leave keys out.** A numeric id is generated like any number: plausible values inside the observed
    range, so duplicates of real keys, and every other column is conditioned on it. Free-text ids,
    timestamps and categoricals with more levels than the model's class head are errors. Name the columns to
-   model with `features := [...]` or pass a subquery without them, and mint fresh keys yourself.
+   model with `features := [...]` or pass a subquery without them, and mint fresh keys yourself. For
+   impute, `keep := ['id']` passes the key through untouched instead (never a feature, never filled).
 4. **Cost: one model call per column, sequentially, each over real rows + `n`.** `real rows + n` must stay
    within `anofox_tabfm_max_rows` (default 10000): for more synthetic rows, sample the input or make several
    calls with different seeds. Impute costs `rounds` x (columns with NULLs) calls; `columns := [...]` limits it.
@@ -43,7 +44,7 @@ column's marginal.
 
 ```sql
 tabfm_generate(data, n [, features] [, opts] [, model])           -- sample n new rows
-tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
+tabfm_impute  (data [, columns] [, features] [, opts] [, model] [, keep])  -- fill NULLs
 ```
 
 | argument | meaning |
@@ -52,6 +53,7 @@ tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
 | `n` | a positive constant: how many rows to generate |
 | `columns` | impute only: the columns to fill (default: every column with a NULL) |
 | `features` | the columns used at all; the others are dropped from the output |
+| `keep` | impute only: columns passed through unchanged (a row key); never features, never filled. A name that matches nothing, or is also in `columns` / `features`, is an error |
 | `opts` | `MAP(VARCHAR, VARCHAR)`, below |
 | `model` | model id; default `anofox_tabfm_default_model` |
 
@@ -69,7 +71,7 @@ tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
 
 - `tabfm_generate`: every column of `data` (or only `features`), plus `synthetic_id` (`1..n`, generation
   order). With `features` omitted, `SELECT * EXCLUDE (synthetic_id)` has the shape of `data`.
-- `tabfm_impute`: exactly the columns of `data` (or only `features`), so it round-trips. Non-NULL cells are
+- `tabfm_impute`: exactly the columns of `data` (or only `features` plus `keep`), so it round-trips. Non-NULL cells are
   never changed; fills are the conditional best estimate (deterministic), at full precision for continuous
   columns. A `NaN` in a `FLOAT` / `DOUBLE` column being filled counts as missing; `±Infinity` is an error.
 
@@ -109,6 +111,9 @@ CREATE TABLE clean AS SELECT * FROM tabfm_impute('raw', model := 'mitra');
 
 -- only some columns, with refinement sweeps
 SELECT * FROM tabfm_impute('raw', columns := ['income'], opts := MAP{'rounds': '3'}, model := 'mitra');
+
+-- a row key that must come back but must not condition the fills
+SELECT * FROM tabfm_impute('raw', keep := ['id'], model := 'mitra');
 ```
 
 ## Checking fidelity

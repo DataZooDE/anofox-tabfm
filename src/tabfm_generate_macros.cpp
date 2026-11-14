@@ -15,7 +15,7 @@ namespace anofox {
 // like the classify/regress macros in tabfm_macros.cpp:
 //
 //   tabfm_generate(data, n [, features] [, opts] [, model])
-//   tabfm_impute  (data [, columns] [, features] [, opts] [, model])
+//   tabfm_impute  (data [, columns] [, features] [, opts] [, model] [, keep])
 //
 //   * data     — the relation to learn from: a table/view NAME or a
 //                parenthesised SQL subquery (spliced after `FROM`).
@@ -24,6 +24,9 @@ namespace anofox {
 //   * features — optional VARCHAR[] restricting which columns are modelled at
 //                all; matched case-insensitively. The escape hatch for a column
 //                that cannot be a target (high-cardinality ids, timestamps).
+//   * keep     — impute only: VARCHAR[] of columns passed through unchanged (a
+//                row key); never features, never filled. generate has no keep:
+//                a synthetic row has no source row to carry a key from.
 //   * opts     — MAP(VARCHAR,VARCHAR): seed, temperature, bins, column_order,
 //                rounds, model.
 //
@@ -87,7 +90,7 @@ R"(
 
 static const GenerateMacroDef IMPUTE_MACRO = {
     {"data", nullptr},
-    {"columns=NULL", "features=NULL", "opts=MAP{}", "model=NULL", nullptr},
+    {"columns=NULL", "features=NULL", "opts=MAP{}", "model=NULL", "keep=NULL", nullptr},
 R"(
     SELECT unnest(res, max_depth := 3) FROM (
       SELECT __anofox_tabfm_impute_agg(
@@ -101,10 +104,16 @@ R"(
                    -- name that matches nothing, so a misspelling would silently
                    -- generate FEWER columns than asked for. Forward the request.
                    CASE WHEN features IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
-                        ELSE MAP{'__features': array_to_string(features, chr(31))} END))) AS res
+                        ELSE MAP{'__features': array_to_string(features, chr(31))} END,
+                   -- keep := [...] columns travel in the row, untouched, so they
+                   -- come back in the result; the aggregate drops them from the model.
+                   CASE WHEN keep IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
+                        ELSE MAP{'__keep': array_to_string(keep, chr(31))} END))) AS res
       FROM (
         SELECT COLUMNS(lambda c: features IS NULL
-                                 OR list_contains(list_transform(features, lambda f: lcase(f)), lcase(c)))
+                                 OR list_contains(list_transform(features, lambda f: lcase(f)), lcase(c))
+                                 OR (keep IS NOT NULL
+                                     AND list_contains(list_transform(keep, lambda f: lcase(f)), lcase(c))))
         FROM query('FROM ' || data)
       ) anofox_tabfm_row
     )
@@ -115,9 +124,9 @@ R"(
     "CREATE TABLE clean AS SELECT * FROM tabfm_impute('raw'). Unlike tabfm_generate this does not sample — it takes "
     "the conditional best estimate (classification argmax, regression point estimate), so continuous columns keep "
     "full precision. Optional `columns` restricts which columns are filled; `opts` accepts seed, rounds (MICE-style "
-    "refinement sweeps), model.",
+    "refinement sweeps), model. `keep` passes columns (a row key) through unchanged: never features, never filled.",
     "SELECT * FROM tabfm_impute('customers', columns := ['income']);",
-    {"data", "columns", "features", "opts", "model", nullptr}};
+    {"data", "columns", "features", "opts", "model", "keep", nullptr}};
 // clang-format on
 
 unique_ptr<CreateMacroInfo> BuildMacroInfo(const string &name, const GenerateMacroDef &def, const string &alias_of) {
