@@ -483,6 +483,51 @@ TEST_CASE("servability: a bundled graph needs its header to match the weights",
 	REQUIRE(out.reason.find("does not match its weights") != string::npos);
 }
 
+TEST_CASE("servability: stale converted weights name the fix, not a graph registration",
+          "[tabfm][model_spec][servability][stale_weights]") {
+	// The 2026-11-12 ROCm probe: tabpfn-v2's cached model.safetensors was an older conversion. The refusal
+	// said the model "declares no migraphx_graph", which sends the user to register a graph; the cached
+	// file is the problem, and deleting/reconverting it is the fix.
+	const string path = "/cache/Prior-Labs__TabPFN-v2-clf@275f19d/classification/model.safetensors";
+	auto in = ServableBase("rocm");
+	in.model = "tabpfn-v2";
+	in.bundled_graph_exists = true;
+	in.bundled_header_matches = false;
+	// The checkpoint is gone (convert_weights.py deletes its transient copy): re-download and reconvert.
+	in.weights_remedy = ConvertedWeightsRemedy("tabpfn-v2", "classification", path, true, false);
+	auto out = EvaluateGpuServability(in);
+	REQUIRE(!out.supported);
+	REQUIRE(out.source == GpuGraphSource::NONE);
+	REQUIRE(out.reason.find("tabpfn-v2") != string::npos);
+	REQUIRE(out.reason.find(path) != string::npos);
+	REQUIRE(out.reason.find("Delete that file") != string::npos);
+	REQUIRE(out.reason.find("tabfm_download('classification', model := 'tabpfn-v2')") != string::npos);
+	REQUIRE(out.reason.find("convert_weights.py") != string::npos);
+	REQUIRE(out.reason.find("declares no") == string::npos);
+
+	// The checkpoint is there, so the native converter already failed on it: only the Python step helps,
+	// and tabfm_download (which would find everything cached) must not be offered.
+	in.weights_remedy = ConvertedWeightsRemedy("tabpfn-v2", "classification", path, true, true);
+	out = EvaluateGpuServability(in);
+	REQUIRE(!out.supported);
+	REQUIRE(out.reason.find(path) != string::npos);
+	REQUIRE(out.reason.find("convert_weights.py") != string::npos);
+	REQUIRE(out.reason.find("tabfm_download") == string::npos);
+	REQUIRE(out.reason.find("declares no") == string::npos);
+
+	// Only the checkpoint is there and it needs the Python convert step: say that.
+	in.weights_remedy = ConvertedWeightsRemedy("tabpfn-v2", "classification", "/c/model.ckpt", false, true);
+	out = EvaluateGpuServability(in);
+	REQUIRE(!out.supported);
+	REQUIRE(out.reason.find("convert_weights.py") != string::npos);
+	REQUIRE(out.reason.find("declares no") == string::npos);
+
+	// A remedy never makes a precision the backend cannot run look like a weights problem.
+	in.precision = "tf32";
+	out = EvaluateGpuServability(in);
+	REQUIRE(out.reason.find("not implemented") != string::npos);
+}
+
 TEST_CASE("servability: a read-only weights directory is its own reason, not 'no graph'",
           "[tabfm][model_spec][servability]") {
 	// A bundled graph must be staged beside the weights before it can run.
