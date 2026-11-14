@@ -67,7 +67,7 @@ Every lifecycle function takes the task first and `model :=` (or falls back to
 
 | Call | What it does |
 |---|---|
-| `CALL tabfm_download(task [, revision], model := '<id>')` | fetch the weights into the cache; one row per file (`file, url, bytes, status`). For `nori-30m` and the Kumo models a second row (`url` NULL) is the `model.safetensors` it writes from the checkpoint for the GPU graphs: `converted`, or `cached` when already there |
+| `CALL tabfm_download(task [, revision], model := '<id>')` | fetch the weights into the cache; one row per file (`file, url, bytes, status`). For `nori-30m` and the Kumo models a second row (`url` NULL) is the `model.safetensors` it writes from the checkpoint for the GPU graphs: `converted`, or `cached` when already there. A missing or outdated converted file is also rewritten from the checkpoint the next time a predict, `tabfm_gpu_precompile` or `tabfm_backends()` resolves the model, so a cache left by an older release is not refused on the GPU |
 | `CALL tabfm_load(task, model := '<id>')` | check that the weights are downloaded and fail with the fix if not; the session itself is built on the first predict |
 | `CALL tabfm_unload([task], model := '<id>')` | free a loaded session (all of them without a task); memory returns to baseline |
 | `CALL tabfm_remove(task [, revision], model := '<id>')` | delete the weights from the cache |

@@ -2,6 +2,14 @@
 
 #include "tabfm_weights.hpp"
 #include "tabfm_predict.hpp" // ResolveEpPath — shared by download and dispatch
+#include "tabfm_ckpt.hpp"
+#include "tabfm_model_spec.hpp"
+
+#include "duckdb/common/file_system.hpp"
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 
 using namespace duckdb;
 using namespace duckdb::anofox;
@@ -88,4 +96,130 @@ TEST_CASE("tabfm_weights: ep_path resolution never yields an empty directory",
 	// path, so no combination of blank inputs may produce one.
 	REQUIRE(!ResolveEpPath("", "/c").empty());
 	REQUIRE(!ResolveEpPath("   ", "/c").empty());
+}
+
+//===----------------------------------------------------------------------===//
+// Stale converted weights beside a checkpoint (2026-11-12, ROCm probe). A cache whose model.safetensors was
+// converted by an older release has another header than the bundled GPU graph's, and only tabfm_download ran
+// the converter, so every GPU path compared the stale header and refused the model, advising a graph
+// registration that could not help. RefreshConvertedWeights runs first on those paths now.
+//===----------------------------------------------------------------------===//
+
+namespace {
+namespace stdfs = std::filesystem;
+
+std::string SlurpFile(const stdfs::path &p) {
+	std::ifstream in(p, std::ios::binary);
+	return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+//! A valid safetensors file with a header no bundled graph was built against.
+void WriteStaleSafetensors(const stdfs::path &p) {
+	std::string json = R"({"stale.weight":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}})";
+	while (json.size() % 8 != 0) {
+		json += ' ';
+	}
+	const uint64_t n = json.size();
+	std::ofstream out(p, std::ios::binary | std::ios::trunc);
+	out.write(reinterpret_cast<const char *>(&n), 8);
+	out << json;
+	const float one = 1.0f;
+	out.write(reinterpret_cast<const char *>(&one), 4);
+}
+
+//! A fresh directory holding the tiny fixture checkpoint as <dir>/model.ckpt.
+stdfs::path CkptDir(const char *name) {
+	const auto dir = stdfs::temp_directory_path() / name;
+	stdfs::remove_all(dir);
+	stdfs::create_directories(dir);
+	stdfs::copy_file("test/fixtures/ckpt/tiny.ckpt", dir / "model.ckpt");
+	return dir;
+}
+
+//! The header the native converter writes for the tiny checkpoint: what a bundled graph built against a
+//! fresh conversion of it would pin.
+string TinyConvertedHeaderSha() {
+	const auto bytes = SlurpFile("test/fixtures/ckpt/tiny.ckpt");
+	auto sd = ReadTorchCkpt(reinterpret_cast<const uint8_t *>(bytes.data()), bytes.size());
+	const auto header = CkptSafetensorsHeader(sd);
+	return Sha256Hex(const_data_ptr_cast(header.data()), header.size());
+}
+} // namespace
+
+TEST_CASE("tabfm_weights: a stale model.safetensors beside a .ckpt is reconverted before its header is judged",
+          "[tabfm][weights][stale_weights]") {
+	const auto dir = CkptDir("tabfm_stale_weights_reconvert");
+	WriteStaleSafetensors(dir / "model.safetensors");
+	auto fs = FileSystem::CreateLocal();
+	const auto expected = TinyConvertedHeaderSha();
+	const auto sibling = (dir / "model.safetensors").string();
+	REQUIRE(WeightsHeaderSha(*fs, sibling) != expected); // the precondition of the bug
+
+	auto first = RefreshConvertedWeights(*fs, (dir / "model.ckpt").string(), expected, string());
+	REQUIRE(first.state == ConvertedWeightsState::CONVERTED);
+	REQUIRE(first.path == sibling);
+	REQUIRE(WeightsHeaderSha(*fs, sibling) == expected);
+	REQUIRE(first.bytes == NumericCast<int64_t>(stdfs::file_size(dir / "model.safetensors")));
+	REQUIRE(!stdfs::exists(dir / "model.safetensors.part"));
+
+	// Idempotent: a matching file is left alone.
+	auto second = RefreshConvertedWeights(*fs, (dir / "model.ckpt").string(), expected, string());
+	REQUIRE(second.state == ConvertedWeightsState::MATCHES);
+	stdfs::remove_all(dir);
+}
+
+TEST_CASE("tabfm_weights: a missing converted file is written from the checkpoint",
+          "[tabfm][weights][stale_weights]") {
+	const auto dir = CkptDir("tabfm_stale_weights_missing");
+	auto fs = FileSystem::CreateLocal();
+	const auto expected = TinyConvertedHeaderSha();
+	auto res = RefreshConvertedWeights(*fs, (dir / "model.ckpt").string(), expected, string());
+	REQUIRE(res.state == ConvertedWeightsState::CONVERTED);
+	REQUIRE(WeightsHeaderSha(*fs, (dir / "model.safetensors").string()) == expected);
+	stdfs::remove_all(dir);
+}
+
+TEST_CASE("tabfm_weights: a checkpoint that cannot produce the pinned header leaves the stale file alone",
+          "[tabfm][weights][stale_weights]") {
+	// TabPFN v2 / 2.5: their bundled graphs want the output of the Python convert step (split and transposed
+	// attention weights), which the native converter cannot produce. Overwriting the file with a conversion
+	// no graph reads would only make it worse; the caller reports STALE and says how to fix it.
+	const auto dir = CkptDir("tabfm_stale_weights_unconvertible");
+	WriteStaleSafetensors(dir / "model.safetensors");
+	const auto before = SlurpFile(dir / "model.safetensors");
+	auto fs = FileSystem::CreateLocal();
+	const string other(64, '0');
+	auto res = RefreshConvertedWeights(*fs, (dir / "model.ckpt").string(), other, string());
+	REQUIRE(res.state == ConvertedWeightsState::STALE);
+	REQUIRE(res.ckpt_present); // the remedy then names the Python step, not a re-download
+	REQUIRE(SlurpFile(dir / "model.safetensors") == before);
+	// Memoized by file sizes: asking again gives the same answer without reconverting.
+	REQUIRE(RefreshConvertedWeights(*fs, (dir / "model.ckpt").string(), other, string()).state ==
+	        ConvertedWeightsState::STALE);
+
+	// No checkpoint to reconvert from (convert_weights.py deletes its transient copy): STALE, not present.
+	stdfs::rename(dir / "model.ckpt", dir / "moved.bin");
+	res = RefreshConvertedWeights(*fs, (dir / "model.ckpt").string(), other, string());
+	REQUIRE(res.state == ConvertedWeightsState::STALE);
+	REQUIRE(!res.ckpt_present);
+	stdfs::rename(dir / "moved.bin", dir / "model.ckpt");
+
+	stdfs::remove(dir / "model.safetensors");
+	res = RefreshConvertedWeights(*fs, (dir / "model.ckpt").string(), other, string());
+	REQUIRE(res.state == ConvertedWeightsState::UNCONVERTIBLE);
+	REQUIRE(!stdfs::exists(dir / "model.safetensors"));
+	stdfs::remove_all(dir);
+}
+
+TEST_CASE("tabfm_weights: a declared safetensors or a model without a pinned header is not touched",
+          "[tabfm][weights][stale_weights]") {
+	const auto dir = CkptDir("tabfm_stale_weights_na");
+	WriteStaleSafetensors(dir / "model.safetensors");
+	auto fs = FileSystem::CreateLocal();
+	REQUIRE(RefreshConvertedWeights(*fs, (dir / "model.safetensors").string(), TinyConvertedHeaderSha(), string())
+	            .state == ConvertedWeightsState::NOT_APPLICABLE);
+	REQUIRE(RefreshConvertedWeights(*fs, (dir / "model.ckpt").string(), string(), string()).state ==
+	        ConvertedWeightsState::NOT_APPLICABLE);
+	REQUIRE(WeightsHeaderSha(*fs, (dir / "model.safetensors").string()) != TinyConvertedHeaderSha());
+	stdfs::remove_all(dir);
 }

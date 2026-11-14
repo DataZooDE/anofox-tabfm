@@ -152,6 +152,9 @@ struct ResolvedModel {
 	string source_dir;
 	//! size_regime.max_classes from the registry; -1 when the spec omits it.
 	int64_t max_classes = -1;
+	//! What RefreshConvertedWeights found beside a declared checkpoint (NOT_APPLICABLE otherwise).
+	ConvertedWeightsState converted_weights = ConvertedWeightsState::NOT_APPLICABLE;
+	bool converted_ckpt_present = false;
 };
 
 // {onnx initializer name -> safetensors key} from a tensor-map document: the
@@ -419,6 +422,21 @@ void ResolveModelArtifacts(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 	// weights first: "not downloaded" is the common, actionable error (§5).
 	resolved.weights_path =
 	    ResolveWeightsPath(fs, resolved.manifest, resolved.manifest_dir, ctx.cache_dir, task_name);
+	// A declared checkpoint's converted model.safetensors is what every GPU path (and the CPU external-data
+	// path) compares against the bundled graph's pinned header, and what the CPU path prefers. Bring it up
+	// to date before any of them looks: only tabfm_download used to, so a cache holding an older release's
+	// conversion was refused on every GPU with advice that could not help.
+	if (is_builtin) {
+		const auto declared = StringUtil::Split(resolved.manifest.files.front().path, "/").back();
+		auto converted = RefreshConvertedWeights(fs, fs.JoinPath(DirName(resolved.weights_path), declared),
+		                                         ExpectedWeightsHeaderShaFor(resolved.manifest.model, task_name),
+		                                         resolved.manifest.tensor_map_path);
+		resolved.converted_weights = converted.state;
+		resolved.converted_ckpt_present = converted.ckpt_present;
+		if (converted.state == ConvertedWeightsState::CONVERTED) {
+			resolved.weights_path = converted.path;
+		}
+	}
 	// Graph: for built-ins a bundled id ("graph_classification") resolves to
 	// embedded bytes; user manifests always resolve a path next to the manifest.
 	BundledResource bundled = is_builtin ? GetBundledResource(resolved.manifest.graph) : BundledResource {};
@@ -1148,6 +1166,17 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 //! this rules out cheaply is the case where the directory is absent
 //! altogether. The distinct reason string exists because reporting either as
 //! "no graph" would send the user to register one, which would not help.
+//! The fix to name when a bundled graph does not match the weights converted from this model's checkpoint
+//! (ConvertedWeightsRemedy); "" when its weights are not such a conversion, or the conversion matched.
+string ConvertedWeightsRemedyFor(const ResolvedModel &resolved, const string &task_name) {
+	const auto state = resolved.converted_weights;
+	if (state != ConvertedWeightsState::STALE && state != ConvertedWeightsState::UNCONVERTIBLE) {
+		return string();
+	}
+	return ConvertedWeightsRemedy(resolved.manifest.model, task_name, resolved.weights_path,
+	                              state == ConvertedWeightsState::STALE, resolved.converted_ckpt_present);
+}
+
 GpuServabilityResult GpuServabilityFor(FileSystem &fs, const ResolvedModel &resolved, const string &backend,
                                        const string &task_name, bool model_provides_graph, bool bundled_graph_exists,
                                        bool bundled_header_matches, const string &precision,
@@ -1162,6 +1191,7 @@ GpuServabilityResult GpuServabilityFor(FileSystem &fs, const ResolvedModel &reso
 	in.precision = precision;
 	in.unsupported_ops = std::move(unsupported_ops);
 	in.known_wrong = std::move(known_wrong);
+	in.weights_remedy = ConvertedWeightsRemedyFor(resolved, task_name);
 	// Only a bundled graph needs staging; a model-provided one runs where it
 	// already is, so do not fail it on someone else's directory.
 	in.weights_dir_stageable = true;
@@ -1467,6 +1497,12 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		}
 	}
 	if (graph_path.empty() && resolved.manifest.model != "mitra") {
+		const auto remedy = ConvertedWeightsRemedyFor(resolved, task_name);
+		if (graph.data && !bundled_matches && !remedy.empty()) {
+			throw InvalidInputException(GpuPostCommitFailure(
+			    device.device_id, ctx.device, resolved.manifest.model,
+			    "the bundled graph for task '" + task_name + "' does not match the weights", remedy + "."));
+		}
 		throw InvalidInputException(GpuPostCommitFailure(
 		    device.device_id, ctx.device, resolved.manifest.model,
 		    "no runnable graph for task '" + task_name +
@@ -2429,6 +2465,14 @@ vector<string> MlxUnsupportedOps(const char *bundled_graph, idx_t bundled_size, 
 	return memo.emplace(key, std::move(missing)).first->second;
 }
 
+string WeightsHeaderSha(FileSystem &fs, const string &weights_path) {
+	string header;
+	if (!ReadWeightsHeaderBytes(fs, weights_path, header)) {
+		return string();
+	}
+	return Sha256Hex(const_data_ptr_cast(header.data()), header.size());
+}
+
 bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task) {
 	const string expected = ExpectedWeightsHeaderShaFor(model, TabFMTaskName(task));
 	if (expected.empty()) {
@@ -2437,11 +2481,7 @@ bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const stri
 	if (StringUtil::Split(weights_path, "/").back() != "model.safetensors") {
 		return false;
 	}
-	string header;
-	if (!ReadWeightsHeaderBytes(fs, weights_path, header)) {
-		return false;
-	}
-	return Sha256Hex(const_data_ptr_cast(header.data()), header.size()) == expected;
+	return WeightsHeaderSha(fs, weights_path) == expected;
 }
 
 PredictEngine &GetPredictEngine() {

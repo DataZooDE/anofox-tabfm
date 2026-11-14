@@ -137,6 +137,7 @@ There is no macOS x86_64 build, and Windows is CPU-only.
 |---|---|
 | `no usable '<device>' device was discovered` | `SELECT * FROM tabfm_devices();` for the driver state, or `SET anofox_tabfm_device = 'auto';` |
 | a predict on a named device fails with the reason the model cannot be served | `SELECT * FROM tabfm_backends() WHERE NOT supported;`, then `auto` or `cpu` |
+| `cannot use its bundled <backend> graph ... the converted weights at '<path>' do not have the header` | the cached `model.safetensors` is an older conversion the extension could not replace from the checkpoint: do what the message says (re-run `tools/export_*/convert_weights.py`, or delete the file and `CALL tabfm_download(...)`) |
 | `tabfm_accelerate()` reports `verify failed` | install what `detail` names (e.g. MIGraphX), run `CALL tabfm_accelerate();` again; predictions continue on the CPU |
 | a GPU precision mode is rejected | `bf16` / `fp16` are ROCm-only, `tf32` CUDA-only |
 | the first ROCm predict takes minutes | the bucket compile: `CALL tabfm_gpu_precompile(...)` ahead of time |

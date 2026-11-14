@@ -115,6 +115,17 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   pins the ROCm side.
 
 ### Fixed
+- **A cache holding an older conversion of a checkpoint is no longer refused on the GPU.** For a model that
+  ships a `.ckpt`, the bundled GPU graphs read the `model.safetensors` converted beside it, and only
+  `tabfm_download` ran that conversion. A predict, `tabfm_gpu_precompile` or `tabfm_backends()` compared the
+  cached file's header with the graph's pinned one and refused a stale file with `it declares no
+  migraphx_graph and the bundled GPU graph does not match its weights`, advice that could not help. Resolving
+  the model now rewrites a missing or stale converted file from the checkpoint first (only when the result has
+  exactly the pinned header; a failed attempt is remembered per file sizes, so the checkpoint is read once).
+  When the checkpoint cannot produce it, the refusal names the stale file and says to re-run
+  `tools/export_*/convert_weights.py`, or to delete the file and `CALL tabfm_download` when the checkpoint is
+  gone. TabPFN v2 / 2.5, where a ROCm probe found this on 2026-11-12, are that case: their graphs want the
+  Python script's split and transposed attention weights, so for them only the message changes.
 - **LimiX-2M on ROCm no longer aborts DuckDB on a large table.** At 3000 rows x 100 features (the 4096 x 128
   bucket), the sample attention's score tensor is 24.4 GiB. MIGraphX's compile could not allocate it on a 16 GiB
   GPU, and its `hip.cpp:155` assertion killed the process, for both tasks. LimiX buckets larger than the largest

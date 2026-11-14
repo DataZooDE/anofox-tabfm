@@ -23,6 +23,7 @@
 #include "duckdb/main/client_context.hpp"
 
 #include "duckdb/common/numeric_utils.hpp"
+#include "duckdb/common/mutex.hpp"
 #include "duckdb_compat.hpp"
 
 #include "yyjson.hpp"
@@ -458,12 +459,6 @@ idx_t FetchFile(ClientContext &context, const DownloadItem &item) {
 // same file here. Only when the result matches the pinned header: a model whose graphs want RENAMED keys
 // (TabPFN's convert_weights.py) produces a different header, and writing that would only shadow the
 // checkpoint with a file no graph can use. Returns false when nothing applies to this file.
-struct ConvertedWeights {
-	string path;
-	int64_t bytes = 0;
-	string status;
-};
-
 //! The state_dict entries a bundled tensor map that declares itself complete names (its initializer
 //! values); empty when the map is not bundled, not complete, or names a key the checkpoint lacks.
 unordered_map<string, CkptTensor> TensorMapSubset(const string &tensor_map_id,
@@ -502,76 +497,18 @@ unordered_map<string, CkptTensor> TensorMapSubset(const string &tensor_map_id,
 
 bool WriteGpuWeights(FileSystem &fs, const WeightsManifest &manifest, const string &ckpt_path,
                      ConvertedWeights &result) {
-	if (!StringUtil::EndsWith(StringUtil::Lower(ckpt_path), ".ckpt")) {
+	if (manifest.task != "classification" && manifest.task != "regression") {
 		return false;
 	}
-	TabFMTask task;
-	if (manifest.task == "classification") {
-		task = TabFMTask::CLASSIFICATION;
-	} else if (manifest.task == "regression") {
-		task = TabFMTask::REGRESSION;
-	} else {
-		return false;
-	}
-	const auto expected = ExpectedWeightsHeaderShaFor(manifest.model, manifest.task);
-	if (expected.empty()) {
-		return false; // no bundled GPU graph to serve
-	}
-	result.path = ParentDirectory(ckpt_path) + "/model.safetensors";
-	if (WeightsHeaderMatches(fs, result.path, manifest.model, task)) {
-		auto handle = fs.OpenFile(result.path, FileFlags::FILE_FLAGS_READ);
-		result.bytes = fs.GetFileSize(*handle);
-		result.status = "cached";
+	result = RefreshConvertedWeights(fs, ckpt_path, ExpectedWeightsHeaderShaFor(manifest.model, manifest.task),
+	                                 manifest.tensor_map_path);
+	switch (result.state) {
+	case ConvertedWeightsState::MATCHES:
+	case ConvertedWeightsState::CONVERTED:
 		return true;
+	default:
+		return !result.status.empty(); // "not converted: <why>" is worth a row
 	}
-	string buffer;
-	{
-		auto handle = fs.OpenFile(ckpt_path, FileFlags::FILE_FLAGS_READ);
-		buffer.resize(NumericCast<idx_t>(fs.GetFileSize(*handle)));
-		fs.Read(*handle, (void *)buffer.data(), NumericCast<int64_t>(buffer.size()), 0);
-	}
-	const auto *bytes = reinterpret_cast<const uint8_t *>(buffer.data());
-	if (!IsTorchCkpt(bytes, buffer.size())) {
-		return false;
-	}
-	unordered_map<string, CkptTensor> state_dict;
-	string header;
-	try {
-		state_dict = ReadTorchCkpt(bytes, buffer.size());
-		auto map = GetBundledResource(manifest.tensor_map_path);
-		if (map.data) {
-			ApplyCkptAliases(ParseCkptAliases(map.data, map.size), state_dict);
-		}
-		header = CkptSafetensorsHeader(state_dict);
-	} catch (std::exception &ex) {
-		result.status = string("not converted: ") + ex.what();
-		return true;
-	}
-	if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected) {
-		// A checkpoint can also carry tensors its graph never reads (Orion-MSP); its tensor map then says
-		// "complete", and the file the graphs were pinned against holds exactly the map's tensors.
-		auto subset = TensorMapSubset(manifest.tensor_map_path, state_dict);
-		if (subset.empty()) {
-			return false; // these graphs were built from a renamed or retyped file; see above
-		}
-		header = CkptSafetensorsHeader(subset);
-		if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected) {
-			return false;
-		}
-		state_dict = std::move(subset);
-	}
-	const auto part = result.path + ".part";
-	{
-		auto dst = fs.OpenFile(part, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
-		WriteCkptAsSafetensors(state_dict, [&](const void *data, idx_t n) {
-			dst->Write(const_cast<void *>(data), n);
-			result.bytes += NumericCast<int64_t>(n);
-		});
-		dst->Sync();
-	}
-	fs.MoveFile(part, result.path);
-	result.status = "converted";
-	return true;
 }
 
 void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
@@ -1633,6 +1570,8 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 	// Real hardware, not a static matrix: a device absent from this machine
 	// gets no row at all, so the relation never implies a card is there.
 	auto devices = DiscoverDevices();
+	const bool any_gpu = std::any_of(devices.begin(), devices.end(),
+	                                 [](const TabFMDeviceInfo &d) { return d.device_id != "cpu"; });
 
 	for (auto &kv : registry.Models()) {
 		const auto &spec = kv.second;
@@ -1656,6 +1595,25 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 			// checkpoint) read as "not downloaded" while dispatch served it fine.
 			// The declared-size integrity check still applies when the declared
 			// file is what will be read.
+			// Dispatch brings a checkpoint's converted file up to date before comparing its header
+			// (ResolveModelArtifacts), so this must too, or it reports a stale conversion as a model with
+			// no GPU graph. Only when a GPU row will ask: the conversion reads the whole checkpoint.
+			ConvertedWeightsState converted_state = ConvertedWeightsState::NOT_APPLICABLE;
+			string converted_at;
+			bool ckpt_present = false;
+			if (wm.source_dir.empty() && any_gpu) {
+				const auto expected = ExpectedWeightsHeaderShaFor(spec.id, task_name);
+				for (auto &f : wm.files) {
+					const auto ckpt = base + "/" + f.path;
+					auto converted = RefreshConvertedWeights(fs, ckpt, expected, wm.tensor_map_path);
+					if (converted.state == ConvertedWeightsState::STALE ||
+					    converted.state == ConvertedWeightsState::UNCONVERTIBLE) {
+						converted_state = converted.state;
+						ckpt_present = converted.ckpt_present;
+						converted_at = converted.state == ConvertedWeightsState::STALE ? converted.path : ckpt;
+					}
+				}
+			}
 			vector<string> served_paths;
 			bool downloaded = !wm.files.empty();
 			for (auto &f : wm.files) {
@@ -1734,6 +1692,11 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 							break;
 						}
 					}
+				}
+				if (downloaded && !in.bundled_header_matches && converted_state != ConvertedWeightsState::NOT_APPLICABLE) {
+					in.weights_remedy = ConvertedWeightsRemedy(spec.id, task_name, converted_at,
+					                                           converted_state == ConvertedWeightsState::STALE,
+					                                           ckpt_present);
 				}
 				// A graph the backend runs but is measured to get wrong (or fail on) is refused by name.
 				in.known_wrong = GpuKnownWrong(row.backend, spec.id, task_name);
@@ -2465,6 +2428,124 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, UnregisterModelBind), OneRowInit, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, UnregisterModelExecute),
 	            "Remove a model registered with tabfm_register_model. Returns model, status.",
 	            "CALL tabfm_unregister_model('my_model');");
+}
+
+ConvertedWeights RefreshConvertedWeights(FileSystem &fs, const string &ckpt_path, const string &expected_header_sha,
+                                         const string &tensor_map_id) {
+	ConvertedWeights result;
+	if (!StringUtil::EndsWith(StringUtil::Lower(ckpt_path), ".ckpt") || expected_header_sha.empty()) {
+		return result;
+	}
+	result.path = ParentDirectory(ckpt_path) + "/model.safetensors";
+	const bool have_converted = fs.FileExists(result.path);
+	if (have_converted && WeightsHeaderSha(fs, result.path) == expected_header_sha) {
+		auto handle = fs.OpenFile(result.path, FileFlags::FILE_FLAGS_READ);
+		result.bytes = fs.GetFileSize(*handle);
+		result.status = "cached";
+		result.state = ConvertedWeightsState::MATCHES;
+		return result;
+	}
+	const auto failed = have_converted ? ConvertedWeightsState::STALE : ConvertedWeightsState::UNCONVERTIBLE;
+	result.ckpt_present = fs.FileExists(ckpt_path);
+	if (!result.ckpt_present) {
+		// Nothing to convert from (convert_weights.py deletes its transient checkpoint).
+		result.state = have_converted ? ConvertedWeightsState::STALE : ConvertedWeightsState::NOT_APPLICABLE;
+		return result;
+	}
+
+	// A checkpoint that cannot produce the pinned header (TabPFN v2 / 2.5 need the Python step) would
+	// otherwise be read in full on every query that resolves it. Keyed by both files' sizes, so replacing
+	// either one tries again.
+	static mutex memo_lock;
+	static unordered_map<string, string> memo; // key -> status of the failed attempt
+	string key;
+	string buffer;
+	try {
+		auto handle = fs.OpenFile(ckpt_path, FileFlags::FILE_FLAGS_READ);
+		const auto ckpt_bytes = fs.GetFileSize(*handle);
+		int64_t converted_bytes = -1;
+		if (have_converted) {
+			auto converted = fs.OpenFile(result.path, FileFlags::FILE_FLAGS_READ);
+			converted_bytes = fs.GetFileSize(*converted);
+		}
+		key = ckpt_path + "\n" + expected_header_sha + "\n" + std::to_string(ckpt_bytes) + "\n" +
+		      std::to_string(converted_bytes);
+		{
+			lock_guard<mutex> guard(memo_lock);
+			auto hit = memo.find(key);
+			if (hit != memo.end()) {
+				result.status = hit->second;
+				result.state = failed;
+				return result;
+			}
+		}
+		buffer.resize(NumericCast<idx_t>(ckpt_bytes));
+		fs.Read(*handle, (void *)buffer.data(), NumericCast<int64_t>(buffer.size()), 0);
+	} catch (std::exception &ex) {
+		result.status = string("not converted: ") + ex.what();
+		result.state = failed;
+		return result;
+	}
+	auto give_up = [&](string status) {
+		lock_guard<mutex> guard(memo_lock);
+		memo[key] = status;
+		result.status = std::move(status);
+		result.state = failed;
+		return result;
+	};
+
+	const auto *bytes = reinterpret_cast<const uint8_t *>(buffer.data());
+	if (!IsTorchCkpt(bytes, buffer.size())) {
+		return give_up(string());
+	}
+	unordered_map<string, CkptTensor> state_dict;
+	string header;
+	try {
+		state_dict = ReadTorchCkpt(bytes, buffer.size());
+		auto map = GetBundledResource(tensor_map_id);
+		if (map.data) {
+			ApplyCkptAliases(ParseCkptAliases(map.data, map.size), state_dict);
+		}
+		header = CkptSafetensorsHeader(state_dict);
+	} catch (std::exception &ex) {
+		return give_up(string("not converted: ") + ex.what());
+	}
+	if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected_header_sha) {
+		// A checkpoint can also carry tensors its graph never reads (Orion-MSP); its tensor map then says
+		// "complete", and the file the graphs were pinned against holds exactly the map's tensors.
+		auto subset = TensorMapSubset(tensor_map_id, state_dict);
+		if (subset.empty()) {
+			return give_up(string()); // these graphs were built from a renamed or retyped file
+		}
+		header = CkptSafetensorsHeader(subset);
+		if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected_header_sha) {
+			return give_up(string());
+		}
+		state_dict = std::move(subset);
+	}
+	// Written beside the old file and renamed over it: a process that has the stale file mapped keeps its
+	// pages, and a failed write leaves the old file as it was. Not memoized: a directory can become writable.
+	const auto part = result.path + ".part";
+	try {
+		{
+			auto dst = fs.OpenFile(part, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
+			WriteCkptAsSafetensors(state_dict, [&](const void *data, idx_t n) {
+				dst->Write(const_cast<void *>(data), n);
+				result.bytes += NumericCast<int64_t>(n);
+			});
+			dst->Sync();
+		}
+		fs.MoveFile(part, result.path);
+	} catch (std::exception &ex) {
+		fs.TryRemoveFile(part);
+		result.bytes = 0;
+		result.status = string("not converted: ") + ex.what();
+		result.state = failed;
+		return result;
+	}
+	result.status = "converted";
+	result.state = ConvertedWeightsState::CONVERTED;
+	return result;
 }
 
 } // namespace anofox
