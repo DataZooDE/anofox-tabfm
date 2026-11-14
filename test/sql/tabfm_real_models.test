@@ -1153,3 +1153,70 @@ ORDER BY 1
 ----
 model.ckpt	true
 model.safetensors	true
+
+# --- Mitra (AutoGluon) regression: the TARGET must be min-max scaled ---------------------------------------------
+#
+# Upstream's predictor normalises a regression target as (y - y_min) / (y_max - y_min), so the released regressor's
+# head was trained on targets in [0, 1] (autogluon.tabular.models.mitra._internal.data.preprocessor: normalize_y).
+# The engine used to z-score it instead (mean 0, sd 1). The model then saw targets on a scale it was never trained
+# for and answered with predictions shrunk toward the mean, the same shrinkage at every target scale and offset
+# (so it looked like a plain scaling bug but was not one). Measured on the real regressor weights, upstream's own
+# Tab2D forward in eager PyTorch, on a noise-free linear target:
+#     z-scored target   R2 0.61  slope(y on yhat) 1.87
+#     min-max target    R2 0.999 slope 1.005
+# Features do not matter (their embedding is quantile based), only the target scale does.
+#
+# A noise-free linear target is the sharpest oracle: any shrinkage shows as a slope above 1 and an R2 well below 1.
+# Features are unique per row (hashes), so predictions are joined back to the truth on the feature tuple.
+statement ok
+CREATE TABLE mit_all AS
+SELECT i, (hash(i * 3) % 1000) / 100.0 AS x1, (hash(i * 7) % 1000) / 100.0 AS x2, (hash(i * 11) % 1000) / 100.0 AS x3
+FROM range(450) t(i);
+
+statement ok
+CREATE TABLE mit_ctx AS SELECT x1, x2, x3, 3 * x1 + 2 * x2 - x3 AS y FROM mit_all WHERE i < 300;
+
+statement ok
+CREATE TABLE mit_qry AS SELECT x1, x2, x3 FROM mit_all WHERE i >= 300;
+
+statement ok
+CREATE TABLE mit_truth AS SELECT x1, x2, x3, 3 * x1 + 2 * x2 - x3 AS y FROM mit_all WHERE i >= 300;
+
+statement ok
+CREATE TABLE mit_pred AS SELECT * FROM tabfm_regress('mit_ctx', 'y', test := 'mit_qry', model := 'mitra');
+
+query II
+SELECT count(*), count(*) FILTER (WHERE p.yhat IS NULL OR NOT isfinite(p.yhat))
+FROM mit_pred p JOIN mit_truth t USING (x1, x2, x3);
+----
+150	0
+
+query I
+SELECT (1 - sum((t.y - p.yhat) ^ 2) / sum((t.y - (SELECT avg(y) FROM mit_truth)) ^ 2)) > 0.99
+FROM mit_pred p JOIN mit_truth t USING (x1, x2, x3);
+----
+true
+
+# the slope of the truth on the prediction is 1 when nothing is shrunk (it was 1.8 with the z-scored target)
+query I
+SELECT abs(regr_slope(t.y, p.yhat) - 1.0) < 0.05
+FROM mit_pred p JOIN mit_truth t USING (x1, x2, x3);
+----
+true
+
+# The same task at a very different scale and offset: min-max scaling is affine, so the answer must scale with it.
+statement ok
+CREATE TABLE mit_ctx_s AS SELECT x1, x2, x3, 1000 * (3 * x1 + 2 * x2 - x3) + 7000 AS y FROM mit_all WHERE i < 300;
+
+statement ok
+CREATE TABLE mit_truth_s AS SELECT x1, x2, x3, 1000 * (3 * x1 + 2 * x2 - x3) + 7000 AS y FROM mit_all WHERE i >= 300;
+
+statement ok
+CREATE TABLE mit_pred_s AS SELECT * FROM tabfm_regress('mit_ctx_s', 'y', test := 'mit_qry', model := 'mitra');
+
+query I
+SELECT (1 - sum((t.y - p.yhat) ^ 2) / sum((t.y - (SELECT avg(y) FROM mit_truth_s)) ^ 2)) > 0.99
+       AND abs(regr_slope(t.y, p.yhat) - 1.0) < 0.05
+FROM mit_pred_s p JOIN mit_truth_s t USING (x1, x2, x3);
+----
+true

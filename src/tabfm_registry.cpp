@@ -30,7 +30,7 @@ static const char *const BUILTIN_MITRA = R"json({
   "schema_version": 2, "id": "mitra", "display_name": "Mitra (AWS AutoGluon)",
   "family": "icl-transformer",
   "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null},
-  "preprocessing_profile": "mitra_v1_minimal",
+  "preprocessing_profile": "mitra_v1_minmax",
   "weights": {
     "classification": {"repo": "autogluon/mitra-classifier", "revision": "c425e9fa0910a6be1c494321792e7ba2a1367b1a",
       "files": [{"path": "model.safetensors", "bytes": 302717904,

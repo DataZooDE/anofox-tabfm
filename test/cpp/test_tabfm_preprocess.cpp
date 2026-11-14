@@ -789,3 +789,81 @@ TEST_CASE("preprocess feature: a date or timestamp infinity is imputed like NULL
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Regression TARGET scaling is a property of the model. Most models want a z-score; Mitra's released regressor was
+// trained on targets min-max scaled to [0, 1] (autogluon mitra preprocessor: (y - y_min) / (y_max - y_min)), and
+// given a z-scored target it answers with predictions shrunk toward the mean (R2 0.61 instead of 0.999 on a
+// noise-free linear target). Both are the same affine form, y_norm = (y - mean) / scale, so the engine's decode
+// (raw * scale + mean) is shared: MINMAX is mean = y_min, scale = y_max - y_min.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+unique_ptr<ColumnDataCollection> TargetsTable(const std::vector<Value> &targets) {
+	std::vector<std::vector<Value>> rows;
+	for (size_t i = 0; i < targets.size(); i++) {
+		rows.push_back({VDouble(1.0 + i), VDouble(10.0 - 0.5 * i), targets[i]});
+	}
+	return MakeCollection({LogicalType::DOUBLE, LogicalType::DOUBLE, LogicalType::DOUBLE}, rows);
+}
+
+} // namespace
+
+TEST_CASE("preprocess target scaling: MINMAX maps the train targets to [0, 1] and inverts exactly",
+          "[tabfm][preprocess][target]") {
+	auto table = TargetsTable({VDouble(10.0), VDouble(20.0), VDouble(40.0), VDouble(25.0), VNullDouble()});
+	auto batch = PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), PreprocessTask::REGRESSION, true,
+	                             TargetScaling::MINMAX);
+	REQUIRE(batch.train_size == 4);
+	REQUIRE(batch.target_mean == Approx(10.0));  // y_min
+	REQUIRE(batch.target_scale == Approx(30.0)); // y_max - y_min
+	REQUIRE(batch.y[0] == Approx(0.0));
+	REQUIRE(batch.y[1] == Approx(10.0 / 30.0));
+	REQUIRE(batch.y[2] == Approx(1.0));
+	REQUIRE(batch.y[3] == Approx(15.0 / 30.0));
+	// the engine's decode is raw * scale + mean: it must give the original targets back
+	const double originals[] = {10.0, 20.0, 40.0, 25.0};
+	for (int i = 0; i < 4; i++) {
+		REQUIRE(batch.y[i] * batch.target_scale + batch.target_mean == Approx(originals[i]));
+	}
+}
+
+TEST_CASE("preprocess target scaling: MINMAX handles negative targets, an offset and a constant target",
+          "[tabfm][preprocess][target]") {
+	// negative and far from zero: still [0, 1]
+	auto table = TargetsTable({VDouble(-5000.0), VDouble(-4000.0), VDouble(-3000.0), VNullDouble()});
+	auto batch = PreprocessBatch(*table, TargetCols(LogicalType::DOUBLE), PreprocessTask::REGRESSION, true,
+	                             TargetScaling::MINMAX);
+	REQUIRE(batch.target_mean == Approx(-5000.0));
+	REQUIRE(batch.target_scale == Approx(2000.0));
+	REQUIRE(batch.y[0] == Approx(0.0));
+	REQUIRE(batch.y[1] == Approx(0.5));
+	REQUIRE(batch.y[2] == Approx(1.0));
+	// a constant target has no range: scale 1 (like the z-score's zero-variance guard), normalised value 0, and the
+	// decode still returns the constant
+	auto flat = TargetsTable({VDouble(7.0), VDouble(7.0), VDouble(7.0), VNullDouble()});
+	auto fb = PreprocessBatch(*flat, TargetCols(LogicalType::DOUBLE), PreprocessTask::REGRESSION, true,
+	                          TargetScaling::MINMAX);
+	REQUIRE(fb.target_scale == Approx(1.0));
+	REQUIRE(fb.target_mean == Approx(7.0));
+	REQUIRE(fb.y[0] == Approx(0.0));
+}
+
+TEST_CASE("preprocess target scaling: STANDARD stays the default and RAW ignores the choice",
+          "[tabfm][preprocess][target]") {
+	auto table = TargetsTable({VDouble(10.0), VDouble(20.0), VDouble(40.0), VNullDouble()});
+	auto cols = TargetCols(LogicalType::DOUBLE);
+	auto dflt = PreprocessBatch(*table, cols, PreprocessTask::REGRESSION, true);
+	auto standard = PreprocessBatch(*table, cols, PreprocessTask::REGRESSION, true, TargetScaling::STANDARD);
+	REQUIRE(dflt.target_mean == Approx(70.0 / 3.0));
+	REQUIRE(dflt.target_mean == Approx(standard.target_mean));
+	REQUIRE(dflt.target_scale == Approx(standard.target_scale));
+	CheckVec(dflt.y, standard.y, 1e-12, 1e-12);
+	// a "*_raw" model feeds raw targets whatever the scaling choice says
+	auto raw = PreprocessBatch(*table, cols, PreprocessTask::REGRESSION, false, TargetScaling::MINMAX);
+	REQUIRE(raw.target_mean == 0.0);
+	REQUIRE(raw.target_scale == 1.0);
+	REQUIRE(raw.y[2] == Approx(40.0));
+	// classification has no target scaling at all
+}

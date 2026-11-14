@@ -2077,12 +2077,19 @@ public:
 		// relation that can never be scored says so before "not downloaded".
 		auto resolved = ResolveModelSpec(in.ctx, task, in.opts.model);
 		const bool standardize = !StringUtil::EndsWith(resolved.manifest.preprocessing_profile, "_raw");
+		// A regression target is z-scored unless the profile says otherwise: Mitra's regressor was trained on
+		// targets min-max scaled to [0, 1] and shrinks every prediction toward the mean on a z-scored one, so its
+		// profile ("mitra_v1_minmax") asks for MINMAX. Features are z-scored either way (Mitra's quantile embedding
+		// is invariant to a monotone feature transform; only the target scale matters to it).
+		const auto target_scaling = StringUtil::EndsWith(resolved.manifest.preprocessing_profile, "_minmax")
+		                                ? TargetScaling::MINMAX
+		                                : TargetScaling::STANDARD;
 
 		// 1. preprocess
 		vector<PreprocessColumnSpec> columns;
 		auto collection = BuildCollection(in.rows, in.row_type, columns, in.target_idx);
 		auto pp_task = task == TabFMTask::CLASSIFICATION ? PreprocessTask::CLASSIFICATION : PreprocessTask::REGRESSION;
-		auto batch = PreprocessBatch(collection, columns, pp_task, standardize);
+		auto batch = PreprocessBatch(collection, columns, pp_task, standardize, target_scaling);
 
 		// Nothing survived the unique-feature filter (no feature columns at all,
 		// or every one is constant on the training rows). The tensors would be
