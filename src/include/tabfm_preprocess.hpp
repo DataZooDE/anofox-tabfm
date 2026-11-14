@@ -241,6 +241,17 @@ PreprocessTask InferTask(const LogicalType &target_type);
 //! columns while the column name and type are still in hand (issue #17).
 bool IsUnsupportedNestedType(const LogicalType &type);
 
+//! How a REGRESSION target is scaled before it reaches a graph that does not normalise it itself (a profile that
+//! is not "*_raw"). Both forms are the same affine map, y_norm = (y - target_mean) / target_scale, so the engine's
+//! one decode (raw * target_scale + target_mean) serves both:
+//!   STANDARD  z-score: mean, population sd (zero sd -> 1). Right for TabFM and the other models trained on it.
+//!   MINMAX    target_mean = y_min, target_scale = y_max - y_min (zero range -> 1), so the train targets land in
+//!             [0, 1]. Mitra's released regressor was trained on exactly this scaling (upstream's preprocessor:
+//!             (y - y_min) / (y_max - y_min)); handed a z-scored target it shrinks every prediction toward the
+//!             mean (R2 0.61 and slope 1.87 on a noise-free linear target, against 0.999 and 1.005 with MINMAX).
+//! Chosen by the model's preprocessing profile ("*_minmax"); ignored for classification and for "*_raw" profiles.
+enum class TargetScaling : uint8_t { STANDARD, MINMAX };
+
 //! Run the minimal preprocessing pipeline over `data`, whose columns are
 //! described by `columns` (same order). Exactly one column must have
 //! is_target=true; feature columns are those with is_feature=true. Rows whose
@@ -254,7 +265,8 @@ bool IsUnsupportedNestedType(const LogicalType &type);
 //! and the scaler/outlier stages are identity.
 PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
                                   const vector<PreprocessColumnSpec> &columns,
-                                  PreprocessTask task, bool standardize = true);
+                                  PreprocessTask task, bool standardize = true,
+                                  TargetScaling target_scaling = TargetScaling::STANDARD);
 
 
 inline bool SkipMissingLabel(const Value &value, const char *function, const char *argument) {

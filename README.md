@@ -14,7 +14,7 @@ labelled rows as context and predicts the rest.
 
 ```sql
 SELECT customer_id, yhat AS will_churn, yhat_score
-FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra');
+FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['customer_id'], model := 'mitra');
 ```
 
 > **Built for AI pair-programming.** anofox-tabfm ships a [Claude Code plugin](#claude-code-skills): five
@@ -156,6 +156,10 @@ of that licence. Some Hugging Face repositories also need account approval and a
 step: [Getting Started](docs/guides/01-getting-started.md#licence-acknowledgement-and-gated-repositories).
 Which model to pick, and how they compared: [Choosing a model](docs/guides/02-choosing-a-model.md). Sizes,
 backends and attribution texts: [Models and weights](docs/api/02-models-and-weights.md).
+
+**Memory on the CPU.** `mitra`'s row attention grows with the square of the context: about 3 GB per 1,000
+context rows at 15 features, so 2,000 rows peak near 7 GB and 4,000 exceed 15 GB, well below the default
+`anofox_tabfm_max_rows` (10,000). Sample the context to fit your RAM ([#107](https://github.com/DataZooDE/anofox-tabfm/issues/107)).
 
 ## Claude Code skills
 

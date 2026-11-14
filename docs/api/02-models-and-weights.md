@@ -20,7 +20,7 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 
 | `model` | by | tasks | licence id | `commercial` | gated | weights | notes |
 |---|---|---|---|---|---|---|---|
-| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB per task | |
+| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB per task | CPU memory grows with the square of the context rows: peak RSS 3.5 GB at 1,000 rows x 15 features, 6.8 GB at 2,000, over 15 GB at 4,000 (#107) |
 | `mitra-v2` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB / ~307 MB | recommended up to 32,768 rows and 256 features; the classifier runs mitra's graph |
 | `tabdpt` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~254 MB, one file for both tasks | TabDPT v1.2 |
 | `tabdpt-v1-3` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~252 MB, one file for both tasks | TabDPT v1.3 |
@@ -37,8 +37,8 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 | `tabpfn-v2-5-real` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | `false` | yes | ~43 MB / ~41 MB | |
 | `tabpfn-v2-6` | Prior Labs | classify, regress | `tabpfn-2.6-license-v1.0` | `false` | yes | ~43 MB / ~52 MB | recommended up to 50,000 rows and 2,000 features |
 | `tabpfn-v3` | Prior Labs | classify, regress | `tabpfn-3-license-v1.0` | `false` | yes | ~213 MB / ~233 MB | |
-| `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~876 MB, one file for both tasks | no hosted service; refused on CUDA |
-| `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~334 MB, one file for both tasks | 3.5 with 8 instead of 24 layers; no hosted service; refused on CUDA |
+| `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~876 MB, one file for both tasks | no hosted service |
+| `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~334 MB, one file for both tasks | 3.5 with 8 instead of 24 layers; no hosted service |
 | `causilo` | Nums AI | classify, regress | `causilo-license-v1.0` | `false` | yes | ~144 MB / ~148 MB | hosted, API or SaaS use needs a separate licence |
 | `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | `false` | yes | ~83 MB / ~85 MB | EXAONE AI Model License 1.2 - NC; recommended at most 3,000 rows and 100 features; CPU and ROCm only |
 | `tabfm-v1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | `false` | yes | 6.56 GB (classification) | non-commercial, no redistribution |
@@ -120,7 +120,10 @@ against a fixed training table, cross-validation folds and per-segment `UNION AL
   up to 1.6e-4 in log-probability (5e-5 x std(y) for regression), more than the cache's exactness bound, so a
   hit in another order would not equal what the kill switch returns for your order
   ([CONTEXT_CACHE_PLAN.md](../CONTEXT_CACHE_PLAN.md#phase-1b-admission-on-the-second-sighting)). Keep the
-  support table's order stable (e.g. `ORDER BY` a key) to reuse a context.
+  support table's order stable with an `ORDER BY` on a key to reuse a context. A plain table or a filter is
+  **not** a stable order once DuckDB scans it on several threads (a table larger than one row group, 122,880
+  rows): measured with `threads = 8`, a 2,000-row context filtered from a 2M-row table never hit in 5 calls,
+  and the same context with `ORDER BY i` hit from the third call on, 1.8 s to 0.09 s per call.
 - **Kept on the second sighting.** `anofox_tabfm_context_cache_admit = 'second'` (default) keeps a context the
   second time its support rows are seen within the last 4096 contexts; the first call encodes it, answers, and
   drops it. A `GROUP BY` of single-use contexts therefore leaves nothing resident. `'first'` keeps every
@@ -176,9 +179,14 @@ The only external thing is the weight-free ONNX graph; every other field is a na
 `classification_weights_bytes` / `regression_weights_bytes`, `weights_repo`, `weights_revision`,
 `tensor_map` (or `classification_tensor_map` / `regression_tensor_map`), `license`, `commercial`,
 `gate_setting`, `preprocessing_profile`, `max_rows` / `max_features` / `max_classes`, `base_dir`,
-`contract_inputs` / `contract_outputs`, the GPU graph variants (`classification_ext_graph`,
+`fitted_second_pass` (a list of tasks, `['classification', 'regression']`: the engine scores the context rows a
+second time as queries to get their fitted values, for a model whose graph mixes a context row's own label into
+that row's output; the manifest field of the same name does the same), `contract_inputs` / `contract_outputs`, the GPU graph variants (`classification_ext_graph`,
 `regression_ext_graph`, `classification_migraphx_graph`, `regression_migraphx_graph`) and, for several files
 per task, the parallel lists `classification_files` / `classification_file_urls` /
-`classification_file_bytes` (and the `regression_` equivalents). A registration is kept in memory and is gone when the process ends. A
+`classification_file_bytes` (and the `regression_` equivalents). The `preprocessing_profile` suffix decides
+how the engine scales inputs: `_raw` passes features and target unscaled (the graph normalises them itself),
+`_minmax` z-scores the features and min-max scales a regression target to [0, 1] (what Mitra v1 was trained
+on), and any other suffix z-scores both. A registration is kept in memory and is gone when the process ends. A
 model registered with the id of a built-in shadows it; a single SQL-registered model becomes the implicit
 default.

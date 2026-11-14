@@ -47,6 +47,7 @@
 
 #include "yyjson.hpp"
 
+#include <algorithm>
 #include <openssl/evp.h>
 
 #include <chrono>
@@ -152,6 +153,9 @@ struct ResolvedModel {
 	string source_dir;
 	//! size_regime.max_classes from the registry; -1 when the spec omits it.
 	int64_t max_classes = -1;
+	//! The registry says this (model, task) needs its context rows evaluated a second time as queries to get
+	//! usable fitted values (ModelSpec::fitted_second_pass).
+	bool fitted_second_pass = false;
 };
 
 // {onnx initializer name -> safetensors key} from a tensor-map document: the
@@ -406,6 +410,7 @@ ResolvedModel ResolveModelSpec(const PredictContext &ctx, TabFMTask task, const 
 	resolved.is_builtin = spec.source_dir.empty();
 	resolved.source_dir = spec.source_dir;
 	resolved.max_classes = spec.size_regime.max_classes;
+	resolved.fitted_second_pass = spec.FittedSecondPass(task);
 	return resolved;
 }
 
@@ -2077,12 +2082,19 @@ public:
 		// relation that can never be scored says so before "not downloaded".
 		auto resolved = ResolveModelSpec(in.ctx, task, in.opts.model);
 		const bool standardize = !StringUtil::EndsWith(resolved.manifest.preprocessing_profile, "_raw");
+		// A regression target is z-scored unless the profile says otherwise: Mitra's regressor was trained on
+		// targets min-max scaled to [0, 1] and shrinks every prediction toward the mean on a z-scored one, so its
+		// profile ("mitra_v1_minmax") asks for MINMAX. Features are z-scored either way (Mitra's quantile embedding
+		// is invariant to a monotone feature transform; only the target scale matters to it).
+		const auto target_scaling = StringUtil::EndsWith(resolved.manifest.preprocessing_profile, "_minmax")
+		                                ? TargetScaling::MINMAX
+		                                : TargetScaling::STANDARD;
 
 		// 1. preprocess
 		vector<PreprocessColumnSpec> columns;
 		auto collection = BuildCollection(in.rows, in.row_type, columns, in.target_idx);
 		auto pp_task = task == TabFMTask::CLASSIFICATION ? PreprocessTask::CLASSIFICATION : PreprocessTask::REGRESSION;
-		auto batch = PreprocessBatch(collection, columns, pp_task, standardize);
+		auto batch = PreprocessBatch(collection, columns, pp_task, standardize, target_scaling);
 
 		// Nothing survived the unique-feature filter (no feature columns at all,
 		// or every one is constant on the training rows). The tensors would be
@@ -2109,13 +2121,23 @@ public:
 		const idx_t class_ceiling =
 		    resolved.max_classes > 0 ? NumericCast<idx_t>(resolved.max_classes) : 10;
 		if (task == TabFMTask::CLASSIFICATION && batch.label_decoder.size() > class_ceiling) {
+			// A numeric target with too many classes is usually a quantity that was classified by
+			// mistake (tabfm_cross_validate defaults to classification): say so, with the fix.
+			string numeric_hint;
+			const auto &target_type = in.target_type;
+			if (target_type.IsNumeric() && target_type.id() != LogicalTypeId::BOOLEAN) {
+				numeric_hint = StringUtil::Format(
+				    " '%s' is %s: to predict a quantity use tabfm_regress (in tabfm_cross_validate: task := "
+				    "'regression').",
+				    in.target_name, target_type.ToString());
+			}
 			throw InvalidInputException(
 			    "anofox_tabfm: '%s' supports at most %llu classes and '%s' has %llu. This is a property of the "
 			    "model, not of your data or your graph. Reduce the class count, or decompose the problem "
 			    "(one-vs-rest, hierarchical grouping) so each call stays within the limit; SELECT model, "
-			    "max_classes FROM tabfm_list_models(); shows the ceiling for every registered model.",
+			    "max_classes FROM tabfm_list_models(); shows the ceiling for every registered model.%s",
 			    resolved.manifest.model, static_cast<unsigned long long>(class_ceiling), in.target_name,
-			    static_cast<unsigned long long>(batch.label_decoder.size()));
+			    static_cast<unsigned long long>(batch.label_decoder.size()), numeric_hint);
 		}
 
 		// 2. materialize the input tensors (float32) — CPU-only work, done OUTSIDE
@@ -2149,6 +2171,33 @@ public:
 		// statements bound after it.
 		auto ctx = in.ctx;
 		ApplyInstanceContextCacheSettings(*ctx.db, ctx);
+
+		// Fitted values for the labelled rows. A graph that adds a context row's label to that row's own
+		// representation and decodes every row with a head trained only on rows without one returns, for the
+		// context rows, outputs the head never saw: measured on the real weights, tabfm-v1 regression corr -0.016
+		// and tabicl-v2 regression -0.364 against the labels (eager PyTorch agrees with this engine to four
+		// digits), where a second pass gives +0.93 and +0.86; kumo-tabular and tabfm-v1-1 likewise (the
+		// registry lists the measurements, test_tabfm_registry.cpp). So for a model the registry marks
+		// fitted_second_pass the context rows are appended AFTER the real rows, as queries, and their fitted
+		// values are read from there. Appending (not prepending) keeps the split at train_size, and a query row's
+		// answer depends only on the context, so every real query row is bit-identical (measured: max diff 0).
+		// Only the caller that returns those rows asks for it (opts.context_values). A split-context backend gets
+		// the same appended rows: its prepare graph's context_logits are the combined graph's context outputs, the
+		// same unusable values, while the appended rows go through its query graph against the cached context.
+		const idx_t fit_rows = batch.train_size;
+		const bool want_second_pass = resolved.fitted_second_pass && in.opts.context_values && fit_rows > 0;
+		if (want_second_pass) {
+			// x and y are this call's own copies: append the context rows to them as unlabelled queries.
+			const idx_t context_floats = fit_rows * batch.H;
+			const idx_t real_floats = x.size();
+			x.resize(real_floats + context_floats);
+			std::copy(x.begin(), x.begin() + NumericCast<int64_t>(context_floats),
+			          x.begin() + NumericCast<int64_t>(real_floats));
+			y.resize(batch.T + fit_rows, static_cast<float>(kTargetPadSentinel));
+			run_input.x = x.data();
+			run_input.y = y.data();
+			run_input.t = NumericCast<int64_t>(batch.T + fit_rows);
+		}
 
 		// 3. load + forward. Only the session load and the forward pass are
 		// serialized per device (the expensive, non-reentrant parts); the model was
@@ -2231,7 +2280,19 @@ public:
 			}
 		}
 
-		// 4. decode logits[1,T,C] -> per-source-row predictions
+		// 4. decode logits[1,T,C] -> per-source-row predictions. After a second pass the output is [1,T+S,C]: rows
+		// [0,S) are the context rows' un-trained values, [S,T) the real queries, [T,T+S) the fitted values. Fold them
+		// back into the [1,T,C] shape everything below expects, fitted values taking the place of rows [0,S).
+		if (want_second_pass && out.shape.size() == 3 && out.shape[1] == NumericCast<int64_t>(batch.T + fit_rows)) {
+			const idx_t c = NumericCast<idx_t>(out.shape.back());
+			for (idx_t t = 0; t < fit_rows; t++) {
+				std::copy(out.logits.begin() + NumericCast<idx_t>((batch.T + t) * c),
+				          out.logits.begin() + NumericCast<idx_t>((batch.T + t + 1) * c),
+				          out.logits.begin() + NumericCast<idx_t>(t * c));
+			}
+			out.logits.resize(NumericCast<idx_t>(batch.T * c));
+			out.shape[1] = NumericCast<int64_t>(batch.T);
+		}
 		return Decode(in, batch, out, task);
 	}
 

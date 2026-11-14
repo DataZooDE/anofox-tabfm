@@ -6,6 +6,11 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **`keep := [...]` on `tabfm_classify` / `tabfm_regress`** (#98): columns passed through to the result
+  unchanged and never used as features, so a row key comes back without becoming a model input. A kept
+  column may exist in the `test` relation only (it is exempt from the feature-column check), may have any
+  type, and is not part of the context-cache key. A misspelled name, the target, or a name also in
+  `features := [...]` is an error naming the fix.
 - **Claude Code plugin** (`plugins/anofox-tabfm`, marketplace `.claude-plugin/marketplace.json`): five skills,
   `anofox-tabfm-predict`, `-models`, `-evaluate`, `-generate` and `-gpu`, covering the full SQL surface.
   Install with `/plugin marketplace add DataZooDE/anofox-tabfm` and
@@ -63,10 +68,25 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 - **Docs list all 23 built-in models.** The README and docs/api/02 tables, the README feature list and the
   "which one to start with" table in docs/guides/02 stopped at 13: mitra-v2, tabdpt-v1-3, tabpfn-v3-5,
   tabpfn-v3-5-fast, tabfm-v1-1, nori-30m, exaone-tabular and the three Kumo-Tabular sizes were missing.
-- docs/api/01 and docs/api/06: `is_training` is in the train / test output too; with `features :=` the result
-  carries only those columns; a `test` relation that still contains the target fails with a `UNION (ALL) BY
-  NAME` binder error. docs/api/07: a numeric target needs `task := 'regression'` in `tabfm_cross_validate`,
-  and its summary row is `fold_id = -1`.
+- docs/api/01: `is_training` is in the train / test output too. docs/api/07: the summary row of
+  `tabfm_cross_validate` is `fold_id = -1`.
+- **A `test` relation may contain the target column.** Its values are ignored (they never reach the model and
+  come back `NULL`), so a labelled holdout is passed as it is. Before, the call failed with a `UNION (ALL) BY
+  NAME` duplicate-name binder error that named no fix.
+- **`tabfm_cross_validate`: neither the fold id nor the row key is a feature any more.** Every fold's
+  context and test rows carried the internal `_cv_fold_id` column as a feature, with the held-out fold's
+  value in every test row and in no context row, and the `row_key` was a feature too. Both now pass through
+  with `keep`, so each fold equals a hand-written `tabfm_fold_assign` loop that drops them: CV scores change.
+  `task` is validated (`'classification'`, the default, or `'regression'`, any case); `'auto'` or a typo
+  used to run a classification silently.
+- **Docs: `tabpfn-v3-5` and `tabpfn-v3-5-fast` run on CUDA** (since #95); docs/api/02 and docs/api/04 still
+  listed them as refused. Generation examples leave numeric keys out (a numeric id is generated like any
+  number, so it duplicated real keys) and append with fresh keys; `column_order` applies to
+  `tabfm_generate` only.
+- **The class-ceiling error names the regression fix for a numeric target** (`'price' is DOUBLE: to predict
+  a quantity use tabfm_regress (in tabfm_cross_validate: task := 'regression')`).
+- **`anofox_tabfm_accept_hf_license`'s description lists the gated models from the registry**, so it no longer
+  misses newer ones (it named only tabfm-v1, the tabpfn-* models, causilo and limix-2m).
 - **`anofox_tabfm_context_cache` defaults to `true` and is now the kill switch.** A session `SET` applies to
   statements bound after it; `SET GLOBAL ... = false` also stops prepared statements. It serves exact pairs
   only: the prepare graph emits `context_logits` and every state tensor the query graph reads, and the combined
@@ -115,6 +135,33 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   pins the ROCm side.
 
 ### Fixed
+- **Mitra regression was shrunk toward the mean.** The engine z-scored the regression target, but Mitra's
+  released regressor was trained on targets min-max scaled to [0, 1] (autogluon's `normalize_y`). On a
+  noise-free linear target upstream's own forward gives R2 0.61 and slope 1.87 (truth on prediction) with a
+  z-scored target and 0.999 / 1.005 with a min-max one; the engine now gives 0.999 / 1.007. The built-in `mitra`
+  entry uses the new `mitra_v1_minmax` profile, so classify, regress, impute and every GPU backend get the fix.
+  `mitra-v2` was not affected: its graph min-max scales the target itself.
+  This also removes the +0.34 sd mean offset on noisy targets reported in #110 (now 0.000 sd, slope equal
+  to mitra-v2's); a noisy-target bias and slope check joins the real-weights tests.
+- **Docs: CPU memory of `mitra` and what `anofox_tabfm_max_memory` does** (#107). The README, the models and
+  predict skills and docs/api/02 state that mitra's memory grows with the square of the context rows (about
+  3 GB per 1,000 rows at 15 features), and that `max_memory` guards only shapes (rows x features) it has
+  measured before, so the first call of a new size is unguarded.
+- **Docs: order the context for the cache, and what `query_batch` costs.** Measured at `threads = 8`: a context
+  filtered from a 2M-row table without `ORDER BY` never hit the `tabicl-v2` cache (0 of 5 calls), with `ORDER BY`
+  it hit from the third call (1.8 s to 0.09 s). `query_batch` re-runs the context per batch for every other
+  model: 2.4x the CPU time for `mitra` at 250, 4.1x at 100. The predict and models skills now say to always
+  `ORDER BY` the context.
+- **Fitted values (`is_training` rows) are fitted values for every model.** For tabfm-v1, tabfm-v1-1,
+  tabicl-v2 and kumo-tabular-small/-medium/-large a context row's own output was not what the model answers
+  for that row: their graphs mix a context row's label into its own representation and decode it with a head
+  trained only on rows without one. On an 80-row noisy table the context rows' `yhat` correlated -0.58
+  (tabicl-v2), -0.77 (kumo small) with the target, and classified 34-45% of them correctly (kumo, tabfm-v1-1).
+  The engine now scores those models' context rows a second time as queries: +0.90 / +0.69 and 84-100%. Query
+  rows are bit-identical either way. Only the single-relation form pays the extra pass (S more rows); the
+  two-table form, window calls, `tabfm_impute` and `tabfm_generate` do not, and `opts := MAP{'context_values':
+  'false'}` turns it off. A registered model declares the need with `fitted_second_pass` (manifest field and
+  `tabfm_register_model` argument). `tabfm_compare_models` scores fitted rows, so its tabfm-v1 RMSE changes.
 - **LimiX-2M on ROCm no longer aborts DuckDB on a large table.** At 3000 rows x 100 features (the 4096 x 128
   bucket), the sample attention's score tensor is 24.4 GiB. MIGraphX's compile could not allocate it on a 16 GiB
   GPU, and its `hip.cpp:155` assertion killed the process, for both tasks. LimiX buckets larger than the largest

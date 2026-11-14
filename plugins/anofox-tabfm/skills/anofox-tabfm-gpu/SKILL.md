@@ -30,7 +30,9 @@ ROCm come from the system.
    `rocm:0`, `mlx:0`).
 2. **`auto` never promises an accelerator a model cannot use.** `anofox_tabfm_device = 'auto'` (default)
    picks, per model, the best device whose plugin is present and that has a graph for it, else the CPU.
-   `tabfm_backends()` gives the choice and the reason.
+   `tabfm_backends()` gives the choice and the reason. One exception to "GPU is faster": repeated scoring
+   against the same context with `tabicl-v2` is fastest on the CPU, whose context cache a GPU session does
+   not use; pin `SET anofox_tabfm_device = 'cpu';` there.
 3. **Naming a device is a hard request.** `SET anofox_tabfm_device = 'cuda'` (or `'rocm'`, `'mlx'`) errors
    when the model cannot be served there instead of falling back.
 4. **ROCm compiles per shape bucket.** The first predict in a (GPU arch, precision, rows x features) bucket
@@ -38,8 +40,8 @@ ROCm come from the system.
    Later predicts in the bucket are sub-second. Precompile off the query path with `tabfm_gpu_precompile`.
 5. **Precision defaults to strict `fp32`** everywhere; `bf16` / `fp16` (ROCm) flip labels on some rows, and
    not only near-ties. Validate on your own data before switching.
-6. **Not every model runs on every backend.** CUDA refuses `nori-30m`, `exaone-tabular`, `tabpfn-v3-5` and
-   `tabpfn-v3-5-fast`; MLX refuses `nori-30m` and `exaone-tabular`; ROCm serves every built-in model but caps
+6. **Not every model runs on every backend.** CUDA and MLX refuse `nori-30m` and `exaone-tabular` (no GPU
+   graph); ROCm serves every built-in model but caps
    `limix-2m`'s bucket size. CoreML is dropped (MLX replaces it).
 
 ## Set up
@@ -80,7 +82,8 @@ SELECT model, task, device, backend, supported, reason FROM tabfm_backends() WHE
 Verify a query really ran on the GPU:
 
 ```sql
-SELECT customer_id, yhat FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra');
+SELECT customer_id, yhat
+FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['customer_id'], model := 'mitra');
 SELECT model, task, device FROM tabfm_models() WHERE loaded;
 ```
 
@@ -125,11 +128,13 @@ of them; switching back and forth does not rebuild them. `CALL tabfm_unload();` 
 | backend | platforms | models |
 |---|---|---|
 | CPU | Linux x64 / arm64, macOS arm64, Windows x64 | all |
-| CUDA | Linux x64, CUDA userspace 12.5 or later | all with a GPU graph, except `nori-30m`, `exaone-tabular`, `tabpfn-v3-5`, `tabpfn-v3-5-fast` |
+| CUDA | Linux x64, CUDA userspace 12.5 or later | all with a GPU graph, i.e. all except `nori-30m`, `exaone-tabular` |
 | ROCm | Linux x64; gfx1201 verified, others behind an allowlist | all built-in models (masked graphs for the TabPFN family and others) |
 | MLX | macOS arm64 | all with a GPU graph, except `nori-30m`, `exaone-tabular` |
 
-There is no macOS x86_64 build, and Windows is CPU-only.
+There is no macOS x86_64 build, and Windows is CPU-only. No GPU, or still slow on the CPU: a smaller
+context, `anofox_tabfm_threads`, and for repeated scoring the `tabicl-v2` context cache
+(`anofox-tabfm-predict`, "Large calls and repeated calls").
 
 ## Errors and fixes
 

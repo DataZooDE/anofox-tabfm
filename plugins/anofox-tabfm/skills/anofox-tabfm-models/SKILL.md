@@ -54,7 +54,7 @@ context size from `tabfm_list_models()`.
 
 | model | by | tasks | licence | commercial | gated | weights | rows / features | notes |
 |---|---|---|---|---|---|---|---|---|
-| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | yes | no | ~303 MB | 10k / 100 | the safe first choice |
+| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | yes | no | ~303 MB | 10k / 100 | the safe first choice; on the CPU ~3 GB per 1k context rows at 15 features, growing with rows², so keep it to ~2k rows on 16 GB |
 | `mitra-v2` | AWS AutoGluon | classify, regress | `apache-2.0` | yes | no | ~303 / ~307 MB | 32k / 256 | larger tables than `mitra` |
 | `tabdpt` | Layer 6 AI | classify, regress | `apache-2.0` | yes | no | ~254 MB, both tasks | 100k / 128 | TabDPT v1.2, up to 16 classes |
 | `tabdpt-v1-3` | Layer 6 AI | classify, regress | `apache-2.0` | yes | no | ~252 MB, both tasks | 100k / 128 | TabDPT v1.3, up to 16 classes |
@@ -71,8 +71,8 @@ context size from `tabfm_list_models()`.
 | `tabpfn-v2-5-real` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | **no** | yes | ~43 / ~41 MB | 10k / 500 | RealTabPFN 2.5 |
 | `tabpfn-v2-6` | Prior Labs | classify, regress | `tabpfn-2.6-license-v1.0` | **no** | yes | ~43 / ~52 MB | 50k / 2000 | widest tables |
 | `tabpfn-v3` | Prior Labs | classify, regress | `tabpfn-3-license-v1.0` | **no** | yes | ~213 / ~233 MB | 10k / 500 | |
-| `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~876 MB, both tasks | 10k / 500 | no hosted service; refused on CUDA |
-| `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~334 MB, both tasks | 10k / 500 | 8 of 3.5's 24 layers; refused on CUDA |
+| `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~876 MB, both tasks | 10k / 500 | no hosted service |
+| `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~334 MB, both tasks | 10k / 500 | 8 of 3.5's 24 layers |
 | `causilo` | Nums AI | classify, regress | `causilo-license-v1.0` | **no** | yes | ~144 / ~148 MB | 10k / 500 | hosted, API or SaaS use needs a separate licence |
 | `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | **no** | yes | ~83 / ~85 MB | 3k / 100 | CPU and ROCm only |
 | `tabfm-v1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | **no** | yes | 6.56 GB (classification) | — | the original; slow and large |
@@ -133,8 +133,9 @@ Precedence: `model :=` in the call → `anofox_tabfm_default_model` → a single
 
 ```sql
 SET anofox_tabfm_default_model = 'mitra';
-SELECT customer_id, yhat FROM tabfm_classify('history', 'churned', test := 'prospects');
-SELECT customer_id, yhat FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'tabicl-v2');
+SELECT customer_id, yhat FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['customer_id']);
+SELECT customer_id, yhat
+FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['customer_id'], model := 'tabicl-v2');
 ```
 
 ## Registering your own model
@@ -154,7 +155,8 @@ CALL tabfm_register_model(
 Other arguments: `display_name`, `family`, `regression_graph`, `regression_weights`,
 `classification_weights_url` / `regression_weights_url` (download instead of a local file) with their
 `_bytes`, `weights_repo`, `weights_revision`, per-task `classification_tensor_map` / `regression_tensor_map`,
-`commercial`, `gate_setting`, `preprocessing_profile`, `max_rows` / `max_features` / `max_classes`, `base_dir`
+`commercial`, `gate_setting`, `preprocessing_profile`, `max_rows` / `max_features` / `max_classes`,
+`fitted_second_pass` (the tasks whose context rows' own outputs are not fitted values, e.g. `['regression']`), `base_dir`
 (relative paths resolve against it), `contract_inputs` / `contract_outputs`, the GPU graph variants
 (`classification_ext_graph`, `regression_ext_graph`, `classification_migraphx_graph`,
 `regression_migraphx_graph`) and multi-file lists (`classification_files`, `classification_file_urls`,
@@ -164,6 +166,8 @@ Other arguments: `display_name`, `family`, `regression_graph`, `regression_weigh
 
 The encoded labelled context is cached and reused across calls, exactly: the key is the preprocessed support
 rows and labels, in order, so a changed or reordered table is a miss, never a stale answer.
+`ORDER BY` a key in the context relation: a table scanned on several threads comes back in a new order
+each call and never hits.
 
 - On by default. A context is kept on its **second** sighting (`anofox_tabfm_context_cache_admit = 'second'`),
   so the third identical call is the first fast one; `'first'` keeps every context at once.
@@ -188,7 +192,7 @@ FROM tabfm_models() WHERE context_cache;
 | `anofox_tabfm_max_rows` | `10000` | enforced rows per call or group |
 | `anofox_tabfm_max_features` | `500` | enforced features per call |
 | `anofox_tabfm_max_sessions` | `4` | cached sessions across models, devices and precisions |
-| `anofox_tabfm_max_memory` | `''` | refuse a call when resident memory is at or above this |
+| `anofox_tabfm_max_memory` | `''` | refuse a call when resident memory, plus the measured cost of an identical earlier shape, reaches this; a new shape is unguarded |
 | `anofox_tabfm_threads` | cores / 2 | ONNX Runtime CPU threads |
 | `anofox_tabfm_cpu_prepack` | `true` | faster CPU matmuls for about 16% more memory |
 | `anofox_tabfm_trace_level` | `warn` | `error` / `warn` / `info` / `debug` / `trace` |

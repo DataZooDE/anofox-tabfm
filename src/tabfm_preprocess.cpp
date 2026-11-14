@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <utility>
@@ -238,7 +239,7 @@ void ThrowInvalidTarget(const string &column, TargetValueKind kind, idx_t count,
 
 PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
                                   const vector<PreprocessColumnSpec> &columns,
-                                  PreprocessTask task, bool standardize) {
+                                  PreprocessTask task, bool standardize, TargetScaling target_scaling) {
 	if (data.ColumnCount() != columns.size()) {
 		throw InvalidInputException(
 		    "tabfm preprocess: column metadata count (%llu) does not match the "
@@ -703,6 +704,26 @@ PreprocessedBatch PreprocessBatch(const ColumnDataCollection &data,
 		batch.target_scale = 1.0;
 		for (idx_t i = 0; i < n_train; i++) {
 			batch.y[i] = rows.GetValue(target_col, train_rows[i]).GetValue<double>();
+		}
+	} else if (target_scaling == TargetScaling::MINMAX) {
+		// y_norm = (y - y_min) / (y_max - y_min), as the model was trained (see TargetScaling). The same affine
+		// form as the z-score, so the engine's decode is shared: mean = y_min, scale = range.
+		double lo = std::numeric_limits<double>::infinity();
+		double hi = -std::numeric_limits<double>::infinity();
+		for (idx_t i = 0; i < n_train; i++) {
+			const double yv = rows.GetValue(target_col, train_rows[i]).GetValue<double>();
+			lo = std::min(lo, yv);
+			hi = std::max(hi, yv);
+		}
+		double range = hi - lo;
+		if (range == 0.0) {
+			range = 1.0; // constant target: no range to divide by (the z-score has the same zero-variance guard)
+		}
+		batch.target_mean = lo;
+		batch.target_scale = range;
+		for (idx_t i = 0; i < n_train; i++) {
+			const double yv = rows.GetValue(target_col, train_rows[i]).GetValue<double>();
+			batch.y[i] = (yv - lo) / range;
 		}
 	} else {
 		double sum = 0.0;
