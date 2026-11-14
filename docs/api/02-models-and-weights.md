@@ -37,8 +37,8 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 | `tabpfn-v2-5-real` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | `false` | yes | ~43 MB / ~41 MB | |
 | `tabpfn-v2-6` | Prior Labs | classify, regress | `tabpfn-2.6-license-v1.0` | `false` | yes | ~43 MB / ~52 MB | recommended up to 50,000 rows and 2,000 features |
 | `tabpfn-v3` | Prior Labs | classify, regress | `tabpfn-3-license-v1.0` | `false` | yes | ~213 MB / ~233 MB | |
-| `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~876 MB, one file for both tasks | no hosted service; refused on CUDA |
-| `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~334 MB, one file for both tasks | 3.5 with 8 instead of 24 layers; no hosted service; refused on CUDA |
+| `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~876 MB, one file for both tasks | no hosted service |
+| `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~334 MB, one file for both tasks | 3.5 with 8 instead of 24 layers; no hosted service |
 | `causilo` | Nums AI | classify, regress | `causilo-license-v1.0` | `false` | yes | ~144 MB / ~148 MB | hosted, API or SaaS use needs a separate licence |
 | `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | `false` | yes | ~83 MB / ~85 MB | EXAONE AI Model License 1.2 - NC; recommended at most 3,000 rows and 100 features; CPU and ROCm only |
 | `tabfm-v1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | `false` | yes | 6.56 GB (classification) | non-commercial, no redistribution |

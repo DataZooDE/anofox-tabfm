@@ -9,7 +9,8 @@ tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
 ```
 
 ```sql
-SELECT * FROM tabfm_generate('customers', 500, opts := MAP{'seed': '7', 'temperature': '0.8'}, model := 'mitra');
+SELECT * FROM tabfm_generate('(SELECT * EXCLUDE (id) FROM customers)', 500,
+                             opts := MAP{'seed': '7', 'temperature': '0.8'}, model := 'mitra');
 SELECT * FROM tabfm_impute('raw', columns := ['income'], opts := MAP{'rounds': '3'}, model := 'mitra');
 ```
 
@@ -39,7 +40,7 @@ With `features` omitted, `tabfm_impute` returns **exactly** the columns of `data
 | `seed` | `42` | both | RNG seed; same seed → same rows within a build |
 | `temperature` | `1.0` | generate | diversity; higher explores more, lower hugs the data |
 | `bins` | `10` | generate | quantile buckets per continuous column, 2–10 (clamped to the model's class-head width) |
-| `column_order` | `random` | both | `random` \| `natural` \| `missingness` |
+| `column_order` | `random` | generate | `random` \| `natural` \| `missingness`; `tabfm_impute` ignores it and fills the column with the fewest NULLs first |
 | `rounds` | `1` | impute | MICE-style refinement sweeps, 1–16 |
 
 ## Cost and limits

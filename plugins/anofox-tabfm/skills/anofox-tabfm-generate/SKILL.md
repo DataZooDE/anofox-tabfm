@@ -27,9 +27,13 @@ column's marginal.
    `tabfm_generate` refuses it, `tabfm_impute` fills numeric columns only.
 2. **Values never leave the observed range.** Continuous columns are sampled through quantile bins
    (`bins`, at most 10): resolution is capped and extrapolation is impossible.
-3. **Exclude high-cardinality and temporal columns** (IDs, free text, timestamps) with `features := [...]`:
-   they cannot be generation targets.
-4. **Cost scales with columns, not rows.** One model call per column, sequentially; `n` is cheap.
+3. **Leave keys out.** A numeric id is generated like any number: plausible values inside the observed
+   range, so duplicates of real keys, and every other column is conditioned on it. Free-text ids,
+   timestamps and categoricals with more levels than the model's class head are errors. Name the columns to
+   model with `features := [...]` or pass a subquery without them, and mint fresh keys yourself.
+4. **Cost: one model call per column, sequentially, each over real rows + `n`.** `real rows + n` must stay
+   within `anofox_tabfm_max_rows` (default 10000): for more synthetic rows, sample the input or make several
+   calls with different seeds. Impute costs `rounds` x (columns with NULLs) calls; `columns := [...]` limits it.
 5. **Not a privacy mechanism.** Synthetic rows are conditioned on the real ones and can reproduce them.
 6. **`opts` values are strings**; an unknown key or an out-of-range value is an error.
 7. **Reproducible within a build**: the same `seed` gives the same rows.
@@ -57,7 +61,7 @@ tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
 | `seed` | `42` | both | RNG seed |
 | `temperature` | `1.0` | generate | diversity: higher explores more, lower hugs the data |
 | `bins` | `10` | generate | quantile buckets per continuous column, 2–10 (clamped to the model's class head) |
-| `column_order` | `random` | both | `random`, `natural` or `missingness` |
+| `column_order` | `random` | generate | `random`, `natural` or `missingness`; impute ignores it and always fills the column with the fewest NULLs first |
 | `rounds` | `1` | impute | MICE-style refinement sweeps, 1–16 |
 
 ## Output
@@ -71,26 +75,23 @@ tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
 ## Generate
 
 ```sql
-SELECT * FROM tabfm_generate('customers', 100, model := 'mitra');
+SELECT * FROM tabfm_generate('(SELECT * EXCLUDE (id) FROM customers)', 100, model := 'mitra');
 
 -- more diverse, reproducible
-SELECT * FROM tabfm_generate('customers', 100,
+SELECT * FROM tabfm_generate('(SELECT * EXCLUDE (id) FROM customers)', 100,
                              opts := MAP{'seed': '7', 'temperature': '1.3'}, model := 'mitra');
 
--- only some columns (e.g. leave the id out)
+-- only some columns
 SELECT * FROM tabfm_generate('customers', 50, features := ['age', 'plan', 'income', 'churned'],
                              model := 'mitra');
 ```
 
-Append to the source table:
+Append to the source table, with fresh keys:
 
 ```sql
 INSERT INTO customers
-SELECT * EXCLUDE (synthetic_id) FROM tabfm_generate('customers', 20, model := 'mitra');
-
-INSERT INTO customers (age, plan, income)
-SELECT age, plan, income
-FROM tabfm_generate('customers', 20, features := ['age', 'plan', 'income'], model := 'mitra');
+SELECT (SELECT max(id) FROM customers) + synthetic_id AS id, * EXCLUDE (synthetic_id)
+FROM tabfm_generate('(SELECT * EXCLUDE (id) FROM customers)', 20, model := 'mitra');
 ```
 
 **Conditional generation** is a filter on the input: generate from the segment you want more of.
@@ -115,7 +116,8 @@ Compare marginals and a relationship between the real and the synthetic table:
 
 ```sql
 CREATE TABLE synth AS
-SELECT * EXCLUDE (synthetic_id) FROM tabfm_generate('customers', 200, model := 'mitra');
+SELECT * EXCLUDE (synthetic_id) FROM tabfm_generate('(SELECT * EXCLUDE (id) FROM customers)', 200,
+                                                    model := 'mitra');
 
 SELECT 'real' AS src, avg(income) AS mean_income, avg(churned::INT) AS churn_rate,
        corr(age, income) AS corr_age_income
@@ -129,16 +131,28 @@ FROM (SELECT 'real' AS src, plan FROM customers UNION ALL SELECT 'synth', plan F
 GROUP BY plan ORDER BY plan;
 ```
 
-Train on synthetic, test on real (TSTR) is the stronger check: score real held-out rows with the synthetic
-table as context (`anofox-tabfm-predict` and `anofox-tabfm-evaluate`).
+Train on synthetic, test on real (TSTR) is the stronger check: generate from one part of the real data
+and score a held-out part the generator never saw, with the synthetic table as context
+(`anofox-tabfm-predict` and `anofox-tabfm-evaluate`). Compare with the same holdout scored from the real
+training part (TRTR).
 
 ```sql
--- id is NULL throughout the synthetic context, so it carries no signal there, yet it comes back
--- with every scored real row for the join
-SELECT tabfm_accuracy(c.churned, p.yhat) AS tstr_accuracy
-FROM tabfm_classify('(SELECT * REPLACE (NULL::BIGINT AS id) FROM synth)', 'churned',
-                    test := '(SELECT * EXCLUDE (churned) FROM customers)', model := 'mitra') p
-JOIN customers c USING (id);
+CREATE TABLE real_train AS SELECT * FROM customers WHERE hash(id) % 10 < 7;
+CREATE TABLE real_hold  AS SELECT * FROM customers WHERE hash(id) % 10 >= 7;
+CREATE TABLE synth_train AS
+SELECT * EXCLUDE (synthetic_id)
+FROM tabfm_generate('(SELECT * EXCLUDE (id) FROM real_train)', 100, model := 'mitra');
+
+-- keep := ['id'] brings the holdout's key back for the join (the synthetic context has none);
+-- the holdout's labels in `test` are ignored
+SELECT 'tstr' AS setup, tabfm_accuracy(h.churned, p.yhat) AS accuracy
+FROM tabfm_classify('synth_train', 'churned', test := 'real_hold', keep := ['id'], model := 'mitra') p
+JOIN real_hold h USING (id)
+UNION ALL
+SELECT 'trtr', tabfm_accuracy(h.churned, p.yhat)
+FROM tabfm_classify('(SELECT * EXCLUDE (id) FROM real_train)', 'churned',
+                    test := 'real_hold', keep := ['id'], model := 'mitra') p
+JOIN real_hold h USING (id);
 ```
 
 ## Canonical pipeline

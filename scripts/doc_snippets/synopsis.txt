@@ -4,5 +4,5 @@ docs/api/03-generation.md	tabfm_generate(data, n [, features] [, opts] [, model]
 docs/api/02-models-and-weights.md	CALL tabfm_register_model(id := 'my', classification_graph := '/p/g.onnx',
 plugins/anofox-tabfm/skills/anofox-tabfm-predict/SKILL.md	tabfm_classify(data, target [, test] [, features] [, opts] [, model] [, keep])
 plugins/anofox-tabfm/skills/anofox-tabfm-models/SKILL.md	CALL tabfm_register_model(
-plugins/anofox-tabfm/skills/anofox-tabfm-evaluate/SKILL.md	tabfm_cross_validate(data, target, row_key [, k := 5] [, seed := 42] [, task := 'auto'] [, metric])
+plugins/anofox-tabfm/skills/anofox-tabfm-evaluate/SKILL.md	tabfm_cross_validate(data, target, row_key [, k := 5] [, seed := 42] [, task := 'classification'] [, metric])
 plugins/anofox-tabfm/skills/anofox-tabfm-generate/SKILL.md	tabfm_generate(data, n [, features] [, opts] [, model])           -- sample n new rows

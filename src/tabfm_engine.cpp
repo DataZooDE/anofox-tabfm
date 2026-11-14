@@ -2121,13 +2121,23 @@ public:
 		const idx_t class_ceiling =
 		    resolved.max_classes > 0 ? NumericCast<idx_t>(resolved.max_classes) : 10;
 		if (task == TabFMTask::CLASSIFICATION && batch.label_decoder.size() > class_ceiling) {
+			// A numeric target with too many classes is usually a quantity that was classified by
+			// mistake (tabfm_cross_validate defaults to classification): say so, with the fix.
+			string numeric_hint;
+			const auto &target_type = in.target_type;
+			if (target_type.IsNumeric() && target_type.id() != LogicalTypeId::BOOLEAN) {
+				numeric_hint = StringUtil::Format(
+				    " '%s' is %s: to predict a quantity use tabfm_regress (in tabfm_cross_validate: task := "
+				    "'regression').",
+				    in.target_name, target_type.ToString());
+			}
 			throw InvalidInputException(
 			    "anofox_tabfm: '%s' supports at most %llu classes and '%s' has %llu. This is a property of the "
 			    "model, not of your data or your graph. Reduce the class count, or decompose the problem "
 			    "(one-vs-rest, hierarchical grouping) so each call stays within the limit; SELECT model, "
-			    "max_classes FROM tabfm_list_models(); shows the ceiling for every registered model.",
+			    "max_classes FROM tabfm_list_models(); shows the ceiling for every registered model.%s",
 			    resolved.manifest.model, static_cast<unsigned long long>(class_ceiling), in.target_name,
-			    static_cast<unsigned long long>(batch.label_decoder.size()));
+			    static_cast<unsigned long long>(batch.label_decoder.size()), numeric_hint);
 		}
 
 		// 2. materialize the input tensors (float32) — CPU-only work, done OUTSIDE

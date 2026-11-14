@@ -18,10 +18,10 @@ SELECT id AS customer_id, age, plan, usage_gb, signup_year FROM customers WHERE 
 
 -- regression pair
 CREATE TABLE sold_homes AS
-SELECT 50.0 + i * 7 AS sqft, 1 + i % 4 AS bedrooms, 100000.0 + i * 5300 + (i % 4) * 9000 AS price
+SELECT i AS home_id, 50.0 + i * 7 AS sqft, 1 + i % 4 AS bedrooms, 100000.0 + i * 5300 + (i % 4) * 9000 AS price
 FROM range(1, 31) t(i);
 CREATE TABLE listings AS
-SELECT 55.0 + i * 9 AS sqft, 1 + i % 3 AS bedrooms FROM range(1, 9) t(i);
+SELECT 100 + i AS home_id, 55.0 + i * 9 AS sqft, 1 + i % 3 AS bedrooms FROM range(1, 9) t(i);
 
 -- raw: NULL cells to impute
 CREATE TABLE raw AS

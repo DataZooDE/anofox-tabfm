@@ -71,8 +71,8 @@ context size from `tabfm_list_models()`.
 | `tabpfn-v2-5-real` | Prior Labs | classify, regress | `tabpfn-2.5-license-v1.1` | **no** | yes | ~43 / ~41 MB | 10k / 500 | RealTabPFN 2.5 |
 | `tabpfn-v2-6` | Prior Labs | classify, regress | `tabpfn-2.6-license-v1.0` | **no** | yes | ~43 / ~52 MB | 50k / 2000 | widest tables |
 | `tabpfn-v3` | Prior Labs | classify, regress | `tabpfn-3-license-v1.0` | **no** | yes | ~213 / ~233 MB | 10k / 500 | |
-| `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~876 MB, both tasks | 10k / 500 | no hosted service; refused on CUDA |
-| `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~334 MB, both tasks | 10k / 500 | 8 of 3.5's 24 layers; refused on CUDA |
+| `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~876 MB, both tasks | 10k / 500 | no hosted service |
+| `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~334 MB, both tasks | 10k / 500 | 8 of 3.5's 24 layers |
 | `causilo` | Nums AI | classify, regress | `causilo-license-v1.0` | **no** | yes | ~144 / ~148 MB | 10k / 500 | hosted, API or SaaS use needs a separate licence |
 | `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | **no** | yes | ~83 / ~85 MB | 3k / 100 | CPU and ROCm only |
 | `tabfm-v1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | **no** | yes | 6.56 GB (classification) | — | the original; slow and large |
@@ -133,8 +133,9 @@ Precedence: `model :=` in the call → `anofox_tabfm_default_model` → a single
 
 ```sql
 SET anofox_tabfm_default_model = 'mitra';
-SELECT customer_id, yhat FROM tabfm_classify('history', 'churned', test := 'prospects');
-SELECT customer_id, yhat FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'tabicl-v2');
+SELECT customer_id, yhat FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['customer_id']);
+SELECT customer_id, yhat
+FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['customer_id'], model := 'tabicl-v2');
 ```
 
 ## Registering your own model

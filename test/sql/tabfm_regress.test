@@ -74,6 +74,24 @@ SELECT count(*) FROM tabfm_regress('sold','price', test := 'listed')
 ----
 4
 
+# --- `test` may still carry the target: its values are ignored ---------------
+
+statement ok
+CREATE TABLE listed_priced AS SELECT sqft, beds, 1e9 AS price FROM houses WHERE price IS NULL;
+
+query I
+SELECT count(*) FROM (
+  SELECT sqft, yhat FROM tabfm_regress('sold','price', test := 'listed_priced')
+  EXCEPT
+  SELECT sqft, yhat FROM tabfm_regress('sold','price', test := 'listed'))
+----
+0
+
+query I
+SELECT count(*) FROM tabfm_regress('sold','price', test := 'listed_priced') WHERE price IS NOT NULL
+----
+0
+
 # --- Subselect training relation ---------------------------------------------
 
 query I

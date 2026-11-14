@@ -24,7 +24,8 @@ namespace anofox {
 //   * target   — the column to predict.
 //   * test     — optional relation of rows to score (predict(X_test)). When
 //                given, only those rows are returned, their `target` forced to
-//                NULL so it never contaminates the context. When omitted
+//                NULL so it never contaminates the context (a `test` that still
+//                has the target column is fine: the column is dropped first). When omitted
 //                (NULL), the call is single-relation: rows of `data` whose
 //                target IS NULL are the scored rows (and all rows come back,
 //                with is_training).
@@ -130,7 +131,12 @@ R"(
                       || '" IS NOT NULL AND NOT (typeof("' || replace(target, '"', '""')
                       || '") IN (''FLOAT'', ''DOUBLE'') AND isnan(TRY_CAST("' || replace(target, '"', '""')
                       || '" AS DOUBLE)))) UNION ALL BY NAME '
-                      || 'SELECT *, NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
+                      -- `test` may still carry the target (a labelled holdout): drop
+                      -- it whatever its case, then add it back as NULL. Its values
+                      -- never reach the model, and a plain `SELECT *, NULL AS t`
+                      -- would fail on the duplicate name instead.
+                      || 'SELECT COLUMNS(lambda c: lcase(c) <> lcase(''' || replace(target, '''', '''''')
+                      || ''')), NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
             END)
         ) anofox_tabfm_row
         -- Feature-column contract for the train/test form. Both column lists are
@@ -197,7 +203,7 @@ R"(
 )",
     "Zero-shot tabular classification with the TabFM foundation model. Uses the labelled rows of `data` as "
     "in-context examples to score the rows whose `target` is NULL (single-relation form) or every row of the "
-    "`test` relation (train/test form). Returns one row per scored row with yhat, yhat_score, is_training and "
+    "`test` relation (train/test form; a target column in `test` is ignored). Returns one row per scored row with yhat, yhat_score, is_training and "
     "(detail mode) a proba MAP. Optional `features` restricts the feature columns; `keep` passes columns (a row "
     "key) through to the result without making them features; `opts` is a MAP of options "
     "(seed, softmax_temperature, output_mode, ...).",
@@ -257,7 +263,12 @@ R"(
                       || '" IS NOT NULL AND NOT (typeof("' || replace(target, '"', '""')
                       || '") IN (''FLOAT'', ''DOUBLE'') AND isnan(TRY_CAST("' || replace(target, '"', '""')
                       || '" AS DOUBLE)))) UNION ALL BY NAME '
-                      || 'SELECT *, NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
+                      -- `test` may still carry the target (a labelled holdout): drop
+                      -- it whatever its case, then add it back as NULL. Its values
+                      -- never reach the model, and a plain `SELECT *, NULL AS t`
+                      -- would fail on the duplicate name instead.
+                      || 'SELECT COLUMNS(lambda c: lcase(c) <> lcase(''' || replace(target, '''', '''''')
+                      || ''')), NULL AS "' || replace(target, '"', '""') || '" FROM (FROM ' || test || ')'
             END)
         ) anofox_tabfm_row
         -- Feature-column contract for the train/test form. Both column lists are
@@ -324,7 +335,7 @@ R"(
 )",
     "Zero-shot tabular regression with the TabFM foundation model. Uses the rows of `data` with a known numeric "
     "`target` as in-context examples to predict the target for rows where it is NULL (single-relation form) or "
-    "every row of the `test` relation (train/test form). Returns one row per scored row with yhat (yhat_score is "
+    "every row of the `test` relation (train/test form; a target column in `test` is ignored). Returns one row per scored row with yhat (yhat_score is "
     "NULL for regression). Optional `features` restricts the feature columns; `keep` passes columns (a row key) "
     "through to the result without making them features; `opts` is a MAP of options.",
     "SELECT * FROM tabfm_regress('sold_homes', 'price', test := 'listings');"};

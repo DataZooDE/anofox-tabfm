@@ -50,10 +50,12 @@ If an error does not tell you what to do, please
 | You see | It means | Do this |
 |---|---|---|
 | ``the context relation and the `test` relation must expose the same feature columns, but only in ...`` | in the train / test form one relation has a column the other lacks, which would be filled with `NULL` and degrade the prediction silently | drop the column, add it to the other relation, or name the shared columns with `features := [...]` |
-| ``UNION (ALL) BY NAME operation doesn't support duplicate names ... the name "<target>" occurs multiple times`` | the `test` relation still contains the target column | `test := '(SELECT * EXCLUDE (<target>) FROM t)'` |
+| `keep := [...] names '<x>', which matched no column` | a typo, or the column is not in either relation | fix the name; matching is case-insensitive |
 | `features := [...] names '<x>', which matched no column` | a misspelled feature name | check it against the relation's columns (matching is case-insensitive) |
 | `input exceeds anofox_tabfm_max_rows` | more rows than the global guardrail allows in one call or group | send fewer rows, or raise it: `SET anofox_tabfm_max_rows = <n>;`. The per-model `max_rows` in `tabfm_list_models()` is a recommendation that is not enforced; to hold to it, set the guardrail to it (e.g. `5000` for `limix-2m`) |
 | `'<model>' supports at most N classes` | the target has more classes than the model's head | reduce the class count or decompose the problem; `SELECT model, max_classes FROM tabfm_list_models();` |
+| `... '<target>' is DOUBLE: to predict a quantity use tabfm_regress` | a numeric target was classified (in `tabfm_cross_validate`, the default `task`) | `tabfm_regress`, or `task := 'regression'` |
+| `tabfm_cross_validate: task must be 'classification' or 'regression'` | `task := 'auto'` or a typo | name the task |
 | `task 'regression' requires a numeric target` | `tabfm_regress` on a text or boolean column | cast the target, or use `tabfm_classify` |
 | `n_estimators > 1 (ensemble) is not available yet` | only a single estimator is implemented | use `n_estimators = '1'` or leave it out |
 | `unknown option '<key>'; valid options are ...` | a typo in `opts` | the message lists the keys ([Options](05-settings.md#options)) |

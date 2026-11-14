@@ -45,18 +45,19 @@ FROM scored_regression;
 held-out rows via the two-table form; returns per-fold plus aggregate
 (mean ± std) results. It takes no `model :=`: it uses `anofox_tabfm_default_model`, so set that first.
 `metric` is one of `tabfm_accuracy` (the classification default), `tabfm_rmse` (the regression default),
-`tabfm_mae` or `tabfm_r2`. For a numeric target pass `task := 'regression'`: `task` defaults to `'auto'`,
-which classifies the folds, so a continuous target fails on the model's class limit. The output has one row
-per fold (`fold_id, metric_value`, `metric_std` `NULL`) and a summary row with `fold_id = -1` holding the
-mean and the standard deviation. The `row_key` decides the folds and joins the labels back, so it stays in
-the data as a feature. The distribution scoring rules (`tabfm_crps`, `tabfm_log_score`,
+`tabfm_mae` or `tabfm_r2`. `task` is `'classification'` (the default) or `'regression'`, anything else is
+an error; for a numeric target that is a quantity pass `task := 'regression'`, or the folds are classified
+and the call fails on the model's class limit (the error says so). The output has one row per fold
+(`fold_id, metric_value`, `metric_std` `NULL`) and a summary row with `fold_id = -1` holding the mean and
+the standard deviation. The `row_key` column decides the folds and joins the labels back; it is passed
+through with `keep`, so it is not a feature. The distribution scoring rules (`tabfm_crps`, `tabfm_log_score`,
 `tabfm_interval_score`) are not usable in cross-validation yet: the folds produce point predictions.
 
 ```sql
 SET anofox_tabfm_default_model = 'mitra';
 -- positional: data, target, row_key; then optional named k / seed / task / metric
 SELECT * FROM tabfm_cross_validate('customers', 'churned', 'id', k := 5, seed := 42);
-SELECT * FROM tabfm_cross_validate('sold_homes', 'price', 'sqft', k := 3, task := 'regression', metric := 'tabfm_mae');
+SELECT * FROM tabfm_cross_validate('sold_homes', 'price', 'home_id', k := 3, task := 'regression', metric := 'tabfm_mae');
 -- tabfm_fold_assign('customers', 5, 'id', 42) exposes the fold ids directly (data, k, row_key, seed)
 ```
 

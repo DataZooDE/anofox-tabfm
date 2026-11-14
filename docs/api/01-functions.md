@@ -24,7 +24,9 @@ tabfm_classify(data, target [, test] [, features] [, opts] [, model] [, keep])
 tabfm_regress (data, target [, test] [, features] [, opts] [, model] [, keep])
 ```
 
-`data` and `test` are table names or `'(SELECT ...)'` strings; `target` is a column name. `model` names a
+`data` and `test` are table names or `'(SELECT ...)'` strings; `target` is a column name. A target column
+in `test` is ignored, so a labelled holdout can be passed as it is. `keep` lists pass-through columns
+(below). `model` names a
 model from the registry; without it the call uses `anofox_tabfm_default_model`, and fails naming both
 remedies when neither is set ([Choosing a model](../guides/02-choosing-a-model.md#selecting-a-model)).
 
@@ -103,16 +105,25 @@ SELECT * FROM tabfm_classify(
     model    := 'mitra');
 ```
 
-A name in `features` that matches no column is an error, not a quietly smaller model. With `features` the
-result carries only those columns plus the `keep` columns. `keep` names columns that come back unchanged
-and are never fed to the model: a row key to join the predictions back on, a label for a report. Any type
-works, and a kept column may exist in the `test` relation only. A `keep` name that matches no column, the
-target, or a name also in `features` is an error. The `test` relation must not contain the target
-column: `'(SELECT * EXCLUDE (churned) FROM t)'`; otherwise the call fails with a binder error about duplicate
-names in `UNION (ALL) BY NAME`. In the train / test form both relations must expose the same feature columns: a column on one side only is an error naming it,
-because it would otherwise be filled with `NULL` on the other side and degrade the prediction silently.
+A name in `features` that matches no column is an error, not a quietly smaller model. A `test` relation
+may still contain the target column (a labelled holdout): its values are ignored and come back as `NULL`.
+In the train / test form both relations must expose the same feature columns: a column on one side only is
+an error naming it, because it would otherwise be filled with `NULL` on the other side and degrade the prediction silently.
 The `opts` keys (`seed`, `softmax_temperature`, `output_mode`, `query_batch`, ...) are listed in
 [Settings](05-settings.md#options).
+
+**Keys: `keep`.** Every column except the target is a feature by default, so an `id` would go into the
+model, and with `features` it is dropped from the result. `keep` names columns that are returned unchanged
+with every row and never reach the model, so the predictions join back on them:
+
+```sql
+SELECT customer_id, yhat, yhat_score
+FROM tabfm_classify('history', 'churned', test := 'prospects',
+                    features := ['age', 'plan', 'usage_gb'], keep := ['customer_id'], model := 'mitra');
+```
+
+A kept column may have any type and may exist in `test` only. A `keep` name that matches no column, the
+target, or a name also in `features` is an error: a column is either modelled or passed through.
 
 ## Output columns
 

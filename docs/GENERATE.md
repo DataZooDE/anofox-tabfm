@@ -125,7 +125,7 @@ truth.
 | `seed` | `42` | both | RNG seed for the column order and every draw |
 | `temperature` | `1.0` | generate | sampling diversity; higher explores more, lower hugs the observed data |
 | `bins` | `10` | generate | quantile buckets per continuous column, 2–10, further clamped to the model's `max_classes` |
-| `column_order` | `random` | both | `random` \| `natural` \| `missingness` — the chain-rule order |
+| `column_order` | `random` | generate | `random` \| `natural` \| `missingness` — the chain-rule order; `tabfm_impute` ignores it and fills the column with the fewest NULLs first |
 | `rounds` | `1` | impute | MICE-style refinement sweeps, 1–16 |
 | `model` | — | both | registry model id (or use the `model :=` argument) |
 

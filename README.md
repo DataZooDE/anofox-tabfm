@@ -14,7 +14,7 @@ labelled rows as context and predicts the rest.
 
 ```sql
 SELECT customer_id, yhat AS will_churn, yhat_score
-FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra');
+FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['customer_id'], model := 'mitra');
 ```
 
 > **Built for AI pair-programming.** anofox-tabfm ships a [Claude Code plugin](#claude-code-skills): five
