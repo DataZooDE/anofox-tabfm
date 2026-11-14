@@ -155,6 +155,7 @@ struct ResolvedModel {
 	//! What RefreshConvertedWeights found beside a declared checkpoint (NOT_APPLICABLE otherwise).
 	ConvertedWeightsState converted_weights = ConvertedWeightsState::NOT_APPLICABLE;
 	bool converted_ckpt_present = false;
+	string converted_status;
 };
 
 // {onnx initializer name -> safetensors key} from a tensor-map document: the
@@ -433,6 +434,7 @@ void ResolveModelArtifacts(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 		                                         resolved.manifest.tensor_map_path);
 		resolved.converted_weights = converted.state;
 		resolved.converted_ckpt_present = converted.ckpt_present;
+		resolved.converted_status = converted.status;
 		if (converted.state == ConvertedWeightsState::CONVERTED) {
 			resolved.weights_path = converted.path;
 		}
@@ -1153,6 +1155,19 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 // migraphx-ready graph (external-data + Shape-rewrite) directly and compiles
 // per shape-bucket (cached to .mxr). Engages only when the resolved device is
 // a rocm GPU and a bundled migraphx graph + matching weights exist; nullptr
+//! The fix to name when a bundled graph does not match the weights converted from this model's checkpoint
+//! (ConvertedWeightsRemedy); "" when its weights are not such a conversion, or the conversion matched.
+string ConvertedWeightsRemedyFor(const ResolvedModel &resolved, const string &task_name) {
+	const auto state = resolved.converted_weights;
+	if (state != ConvertedWeightsState::STALE && state != ConvertedWeightsState::UNCONVERTIBLE &&
+	    state != ConvertedWeightsState::FAILED) {
+		return string();
+	}
+	return ConvertedWeightsRemedy(resolved.manifest.model, task_name, resolved.weights_path,
+	                              state == ConvertedWeightsState::STALE, resolved.converted_ckpt_present,
+	                              state == ConvertedWeightsState::FAILED ? resolved.converted_status : string());
+}
+
 //! Servability for a resolved model on a backend: the pure predicate in
 //! tabfm_model_spec.hpp plus the one fact only the filesystem can answer —
 //! whether the directory a BUNDLED graph must be staged into is even there.
@@ -1166,17 +1181,6 @@ shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state
 //! this rules out cheaply is the case where the directory is absent
 //! altogether. The distinct reason string exists because reporting either as
 //! "no graph" would send the user to register one, which would not help.
-//! The fix to name when a bundled graph does not match the weights converted from this model's checkpoint
-//! (ConvertedWeightsRemedy); "" when its weights are not such a conversion, or the conversion matched.
-string ConvertedWeightsRemedyFor(const ResolvedModel &resolved, const string &task_name) {
-	const auto state = resolved.converted_weights;
-	if (state != ConvertedWeightsState::STALE && state != ConvertedWeightsState::UNCONVERTIBLE) {
-		return string();
-	}
-	return ConvertedWeightsRemedy(resolved.manifest.model, task_name, resolved.weights_path,
-	                              state == ConvertedWeightsState::STALE, resolved.converted_ckpt_present);
-}
-
 GpuServabilityResult GpuServabilityFor(FileSystem &fs, const ResolvedModel &resolved, const string &backend,
                                        const string &task_name, bool model_provides_graph, bool bundled_graph_exists,
                                        bool bundled_header_matches, const string &precision,

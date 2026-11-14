@@ -125,7 +125,10 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   When the checkpoint cannot produce it, the refusal names the stale file and says to re-run
   `tools/export_*/convert_weights.py`, or to delete the file and `CALL tabfm_download` when the checkpoint is
   gone. TabPFN v2 / 2.5, where a ROCm probe found this on 2026-11-12, are that case: their graphs want the
-  Python script's split and transposed attention weights, so for them only the message changes.
+  Python script's split and transposed attention weights, so for them only the message changes. A cache that
+  will not take the rewritten file (read-only, full) is reported as that, with the write error. Concurrent
+  queries convert once (one at a time per process, a per-process temp name), so none can publish a truncated
+  file.
 - **LimiX-2M on ROCm no longer aborts DuckDB on a large table.** At 3000 rows x 100 features (the 4096 x 128
   bucket), the sample attention's score tensor is 24.4 GiB. MIGraphX's compile could not allocate it on a 16 GiB
   GPU, and its `hip.cpp:155` assertion killed the process, for both tasks. LimiX buckets larger than the largest

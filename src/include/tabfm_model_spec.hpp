@@ -289,7 +289,8 @@ struct GpuServabilityInputs {
 	//! graphs op by op (tabfm_mlx_ops.hpp); the other backends hand the whole graph to a runtime.
 	vector<string> unsupported_ops;
 	//! Non-empty when the backend executes this graph but is known to get it wrong (GpuKnownWrong).
-	string known_wrong;	//! The fix for a bundled graph whose header does not match weights converted from a checkpoint
+	string known_wrong;
+	//! The fix for a bundled graph whose header does not match weights converted from a checkpoint
 	//! (ConvertedWeightsRemedy); "" when the weights are not a conversion. Replaces the "declares no graph"
 	//! wording, which sent the user to register a graph when the cached file was the problem.
 	string weights_remedy;
@@ -299,9 +300,15 @@ struct GpuServabilityInputs {
 //! checkpoint, after the native converter has already tried (RefreshConvertedWeights). `converted_present`:
 //! a model.safetensors is there but has another header (most often a conversion left by an older release);
 //! otherwise only the checkpoint is. `ckpt_present`: the checkpoint is on disk, so the native converter has
-//! already failed on it and only the Python step can help.
+//! already failed on it and only the Python step can help. `failure`: the checkpoint could not be read or the
+//! converted file not written (RefreshConvertedWeights' status), which no conversion step fixes.
 inline string ConvertedWeightsRemedy(const string &model, const string &task_name, const string &weights_path,
-                                     bool converted_present, bool ckpt_present) {
+                                     bool converted_present, bool ckpt_present, const string &failure = string()) {
+	if (!failure.empty()) {
+		return "the weights the bundled GPU graph needs at '" + weights_path +
+		       "' could not be brought up to date from the checkpoint (" + failure +
+		       "). Make the cache directory writable, or SET anofox_tabfm_cache_dir to one that is";
+	}
 	const string python = "tools/export_*/convert_weights.py for this model (docs/REAL_MODELS.md)";
 	if (!converted_present) {
 		return "its checkpoint at '" + weights_path +

@@ -162,7 +162,8 @@ enum class ConvertedWeightsState : uint8_t {
 	MATCHES,        //!< the converted file already has the pinned header
 	CONVERTED,      //!< it was missing or stale and has been (re)written from the checkpoint
 	STALE,          //!< it is there, does not match, and the checkpoint cannot replace it
-	UNCONVERTIBLE   //!< it is not there, and the checkpoint cannot be converted to the pinned header
+	UNCONVERTIBLE,  //!< it is not there, and the checkpoint cannot be converted to the pinned header
+	FAILED          //!< the checkpoint could not be read, or the converted file not written (status says why)
 };
 
 struct ConvertedWeights {

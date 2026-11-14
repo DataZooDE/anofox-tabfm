@@ -31,6 +31,11 @@
 
 #include <algorithm>
 #include <cstdlib>
+#ifdef _WIN32
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 #include "anofox_tabfm_banner.hpp"
 
 namespace duckdb {
@@ -1601,16 +1606,20 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 			ConvertedWeightsState converted_state = ConvertedWeightsState::NOT_APPLICABLE;
 			string converted_at;
 			bool ckpt_present = false;
+			string converted_failure;
 			if (wm.source_dir.empty() && any_gpu) {
 				const auto expected = ExpectedWeightsHeaderShaFor(spec.id, task_name);
 				for (auto &f : wm.files) {
 					const auto ckpt = base + "/" + f.path;
 					auto converted = RefreshConvertedWeights(fs, ckpt, expected, wm.tensor_map_path);
 					if (converted.state == ConvertedWeightsState::STALE ||
-					    converted.state == ConvertedWeightsState::UNCONVERTIBLE) {
+					    converted.state == ConvertedWeightsState::UNCONVERTIBLE ||
+					    converted.state == ConvertedWeightsState::FAILED) {
 						converted_state = converted.state;
 						ckpt_present = converted.ckpt_present;
-						converted_at = converted.state == ConvertedWeightsState::STALE ? converted.path : ckpt;
+						converted_failure =
+						    converted.state == ConvertedWeightsState::FAILED ? converted.status : string();
+						converted_at = converted.state == ConvertedWeightsState::UNCONVERTIBLE ? ckpt : converted.path;
 					}
 				}
 			}
@@ -1696,7 +1705,7 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				if (downloaded && !in.bundled_header_matches && converted_state != ConvertedWeightsState::NOT_APPLICABLE) {
 					in.weights_remedy = ConvertedWeightsRemedy(spec.id, task_name, converted_at,
 					                                           converted_state == ConvertedWeightsState::STALE,
-					                                           ckpt_present);
+					                                           ckpt_present, converted_failure);
 				}
 				// A graph the backend runs but is measured to get wrong (or fail on) is refused by name.
 				in.known_wrong = GpuKnownWrong(row.backend, spec.id, task_name);
@@ -2430,6 +2439,30 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            "CALL tabfm_unregister_model('my_model');");
 }
 
+namespace {
+
+//! The model.safetensors beside `ckpt_path`, if its header is `expected`.
+bool ConvertedMatches(FileSystem &fs, ConvertedWeights &result, const string &expected) {
+	if (!fs.FileExists(result.path) || WeightsHeaderSha(fs, result.path) != expected) {
+		return false;
+	}
+	auto handle = fs.OpenFile(result.path, FileFlags::FILE_FLAGS_READ);
+	result.bytes = fs.GetFileSize(*handle);
+	result.status = "cached";
+	result.state = ConvertedWeightsState::MATCHES;
+	return true;
+}
+
+int64_t CurrentProcessId() {
+#ifdef _WIN32
+	return static_cast<int64_t>(_getpid());
+#else
+	return static_cast<int64_t>(getpid());
+#endif
+}
+
+} // namespace
+
 ConvertedWeights RefreshConvertedWeights(FileSystem &fs, const string &ckpt_path, const string &expected_header_sha,
                                          const string &tensor_map_id) {
 	ConvertedWeights result;
@@ -2437,14 +2470,21 @@ ConvertedWeights RefreshConvertedWeights(FileSystem &fs, const string &ckpt_path
 		return result;
 	}
 	result.path = ParentDirectory(ckpt_path) + "/model.safetensors";
-	const bool have_converted = fs.FileExists(result.path);
-	if (have_converted && WeightsHeaderSha(fs, result.path) == expected_header_sha) {
-		auto handle = fs.OpenFile(result.path, FileFlags::FILE_FLAGS_READ);
-		result.bytes = fs.GetFileSize(*handle);
-		result.status = "cached";
-		result.state = ConvertedWeightsState::MATCHES;
+	if (ConvertedMatches(fs, result, expected_header_sha)) {
+		return result; // the common case, and lock-free
+	}
+	// One conversion at a time in this process: two connections resolving the same stale model would
+	// otherwise both write the file, and the loser finds it current once the lock is its own.
+	static mutex convert_lock;
+	// A checkpoint that cannot produce the pinned header (TabPFN v2 / 2.5 need the Python step), or a file
+	// that cannot be written, would otherwise be read in full on every query that resolves it. Keyed by both
+	// files' sizes, so replacing either one tries again.
+	static unordered_map<string, ConvertedWeights> memo;
+	lock_guard<mutex> guard(convert_lock);
+	if (ConvertedMatches(fs, result, expected_header_sha)) {
 		return result;
 	}
+	const bool have_converted = fs.FileExists(result.path);
 	const auto failed = have_converted ? ConvertedWeightsState::STALE : ConvertedWeightsState::UNCONVERTIBLE;
 	result.ckpt_present = fs.FileExists(ckpt_path);
 	if (!result.ckpt_present) {
@@ -2453,11 +2493,6 @@ ConvertedWeights RefreshConvertedWeights(FileSystem &fs, const string &ckpt_path
 		return result;
 	}
 
-	// A checkpoint that cannot produce the pinned header (TabPFN v2 / 2.5 need the Python step) would
-	// otherwise be read in full on every query that resolves it. Keyed by both files' sizes, so replacing
-	// either one tries again.
-	static mutex memo_lock;
-	static unordered_map<string, string> memo; // key -> status of the failed attempt
 	string key;
 	string buffer;
 	try {
@@ -2470,33 +2505,28 @@ ConvertedWeights RefreshConvertedWeights(FileSystem &fs, const string &ckpt_path
 		}
 		key = ckpt_path + "\n" + expected_header_sha + "\n" + std::to_string(ckpt_bytes) + "\n" +
 		      std::to_string(converted_bytes);
-		{
-			lock_guard<mutex> guard(memo_lock);
-			auto hit = memo.find(key);
-			if (hit != memo.end()) {
-				result.status = hit->second;
-				result.state = failed;
-				return result;
-			}
+		auto hit = memo.find(key);
+		if (hit != memo.end()) {
+			return hit->second;
 		}
 		buffer.resize(NumericCast<idx_t>(ckpt_bytes));
 		fs.Read(*handle, (void *)buffer.data(), NumericCast<int64_t>(buffer.size()), 0);
 	} catch (std::exception &ex) {
 		result.status = string("not converted: ") + ex.what();
-		result.state = failed;
+		result.state = ConvertedWeightsState::FAILED;
 		return result;
 	}
-	auto give_up = [&](string status) {
-		lock_guard<mutex> guard(memo_lock);
-		memo[key] = status;
+	auto give_up = [&](ConvertedWeightsState state, string status) {
+		result.bytes = 0;
 		result.status = std::move(status);
-		result.state = failed;
+		result.state = state;
+		memo[key] = result;
 		return result;
 	};
 
 	const auto *bytes = reinterpret_cast<const uint8_t *>(buffer.data());
 	if (!IsTorchCkpt(bytes, buffer.size())) {
-		return give_up(string());
+		return give_up(failed, string());
 	}
 	unordered_map<string, CkptTensor> state_dict;
 	string header;
@@ -2508,24 +2538,24 @@ ConvertedWeights RefreshConvertedWeights(FileSystem &fs, const string &ckpt_path
 		}
 		header = CkptSafetensorsHeader(state_dict);
 	} catch (std::exception &ex) {
-		return give_up(string("not converted: ") + ex.what());
+		return give_up(failed, string("not converted: ") + ex.what());
 	}
 	if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected_header_sha) {
 		// A checkpoint can also carry tensors its graph never reads (Orion-MSP); its tensor map then says
 		// "complete", and the file the graphs were pinned against holds exactly the map's tensors.
 		auto subset = TensorMapSubset(tensor_map_id, state_dict);
 		if (subset.empty()) {
-			return give_up(string()); // these graphs were built from a renamed or retyped file
+			return give_up(failed, string()); // these graphs were built from a renamed or retyped file
 		}
 		header = CkptSafetensorsHeader(subset);
 		if (Sha256Hex(const_data_ptr_cast(header.data()), header.size()) != expected_header_sha) {
-			return give_up(string());
+			return give_up(failed, string());
 		}
 		state_dict = std::move(subset);
 	}
-	// Written beside the old file and renamed over it: a process that has the stale file mapped keeps its
-	// pages, and a failed write leaves the old file as it was. Not memoized: a directory can become writable.
-	const auto part = result.path + ".part";
+	// Written beside the old file under a name no other process uses, then renamed over it: a process that
+	// has the stale file mapped keeps its pages, and a failed write leaves the old file as it was.
+	const auto part = result.path + ".part." + std::to_string(CurrentProcessId());
 	try {
 		{
 			auto dst = fs.OpenFile(part, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
@@ -2538,10 +2568,9 @@ ConvertedWeights RefreshConvertedWeights(FileSystem &fs, const string &ckpt_path
 		fs.MoveFile(part, result.path);
 	} catch (std::exception &ex) {
 		fs.TryRemoveFile(part);
-		result.bytes = 0;
-		result.status = string("not converted: ") + ex.what();
-		result.state = failed;
-		return result;
+		// The checkpoint converts; the cache would not take the file (read-only, full, or on Windows a
+		// file still mapped). Say that, not "needs the Python step".
+		return give_up(ConvertedWeightsState::FAILED, string("could not write '") + result.path + "': " + ex.what());
 	}
 	result.status = "converted";
 	result.state = ConvertedWeightsState::CONVERTED;
