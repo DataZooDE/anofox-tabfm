@@ -2465,8 +2465,12 @@ int64_t CurrentProcessId() {
 
 } // namespace
 
+// Keeps the checkpoint's own separator, so a Windows path stays all '\\' and compares equal to one the
+// caller joins the same way.
 string ConvertedSiblingPath(const string &ckpt_path) {
-	return ParentDirectory(ckpt_path) + "/model.safetensors";
+	const auto pos = ckpt_path.find_last_of("/\\");
+	const char sep = pos == string::npos ? '/' : ckpt_path[pos];
+	return ParentDirectory(ckpt_path) + sep + "model.safetensors";
 }
 
 ConvertedWeights RefreshConvertedWeights(FileSystem &fs, const string &ckpt_path, const string &expected_header_sha,

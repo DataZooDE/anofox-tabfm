@@ -326,11 +326,11 @@ TEST_CASE("tabfm_weights: the converted file sits beside the checkpoint whicheve
 	// Windows CI: FileSystem::JoinPath writes '\\', so a resolved checkpoint path held no '/', and the
 	// sibling came out as "./model.safetensors" -- the current directory, not the cache.
 	REQUIRE(ConvertedSiblingPath("C:\\cache\\slug@rev\\classification\\model.ckpt") ==
-	        "C:\\cache\\slug@rev\\classification/model.safetensors");
+	        "C:\\cache\\slug@rev\\classification\\model.safetensors");
 	REQUIRE(ConvertedSiblingPath("C:/cache\\slug@rev\\classification/model.ckpt") ==
 	        "C:/cache\\slug@rev\\classification/model.safetensors");
 	REQUIRE(ConvertedSiblingPath("C:\\cache/slug@rev/classification\\model.ckpt") ==
-	        "C:\\cache/slug@rev/classification/model.safetensors");
+	        "C:\\cache/slug@rev/classification\\model.safetensors");
 	REQUIRE(ConvertedSiblingPath("/home/u/.cache/slug@rev/model.ckpt") == "/home/u/.cache/slug@rev/model.safetensors");
 	REQUIRE(ConvertedSiblingPath("model.ckpt") == "./model.safetensors");
 }
