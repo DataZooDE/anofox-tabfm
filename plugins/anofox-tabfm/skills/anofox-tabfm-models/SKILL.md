@@ -166,6 +166,8 @@ Other arguments: `display_name`, `family`, `regression_graph`, `regression_weigh
 
 The encoded labelled context is cached and reused across calls, exactly: the key is the preprocessed support
 rows and labels, in order, so a changed or reordered table is a miss, never a stale answer.
+`ORDER BY` a key in the context relation: a table scanned on several threads comes back in a new order
+each call and never hits.
 
 - On by default. A context is kept on its **second** sighting (`anofox_tabfm_context_cache_admit = 'second'`),
   so the third identical call is the first fast one; `'first'` keeps every context at once.

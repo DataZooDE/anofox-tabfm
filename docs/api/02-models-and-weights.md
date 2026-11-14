@@ -120,7 +120,10 @@ against a fixed training table, cross-validation folds and per-segment `UNION AL
   up to 1.6e-4 in log-probability (5e-5 x std(y) for regression), more than the cache's exactness bound, so a
   hit in another order would not equal what the kill switch returns for your order
   ([CONTEXT_CACHE_PLAN.md](../CONTEXT_CACHE_PLAN.md#phase-1b-admission-on-the-second-sighting)). Keep the
-  support table's order stable (e.g. `ORDER BY` a key) to reuse a context.
+  support table's order stable with an `ORDER BY` on a key to reuse a context. A plain table or a filter is
+  **not** a stable order once DuckDB scans it on several threads (a table larger than one row group, 122,880
+  rows): measured with `threads = 8`, a 2,000-row context filtered from a 2M-row table never hit in 5 calls,
+  and the same context with `ORDER BY i` hit from the third call on, 1.8 s to 0.09 s per call.
 - **Kept on the second sighting.** `anofox_tabfm_context_cache_admit = 'second'` (default) keeps a context the
   second time its support rows are seen within the last 4096 contexts; the first call encodes it, answers, and
   drops it. A `GROUP BY` of single-use contexts therefore leaves nothing resident. `'first'` keeps every

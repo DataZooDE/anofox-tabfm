@@ -158,7 +158,8 @@ distinct segment values) rather than writing it by hand, and materialise a filte
   Attention cost grows with the square of the rows: `mitra` on the CPU needs about 3 GB per 1,000 context
   rows at 15 features, and 4,000 rows are OOM-killed on 16 GB although `anofox_tabfm_max_rows` allows 10,000.
   `opts := MAP{'query_batch': 'N'}` scores the test rows in batches with the same answers, but re-runs the
-  whole context per batch (except `tabicl-v2` on the CPU): a last resort against an OOM, not a speed-up.
+  whole context per batch (except `tabicl-v2` on the CPU): a last resort against an OOM, not a speed-up
+  (`mitra`, 1,000 + 1,000 rows: 2.4x the CPU time at `query_batch` 250, 4.1x at 100).
   `SET anofox_tabfm_max_memory = '16GB'` refuses a call when the process is already that large, or when a
   pass of exactly the same rows x features was measured to cross it; a shape not seen before is unguarded,
   so it cannot stop the first large call of a new size from being OOM-killed.
@@ -167,7 +168,9 @@ distinct segment values) rather than writing it by hand, and materialise a filte
 - **Scoring against the same training table again and again** is fastest with `tabicl-v2` on the CPU: its
   encoded context is cached and reused from the third identical call on (details in the models skill).
   A GPU runs without the cache, so with a GPU plugin installed pin `SET anofox_tabfm_device = 'cpu';` for
-  this pattern. The cache key is the support rows in order: give the context a stable order and confirm
+  this pattern. The cache key is the support rows in order, and a plain table or filter scanned on several
+  threads comes back in a new order each call and never hits (measured: 0 hits in 5 calls; with
+  `ORDER BY` a key, hits from the third call, 20x faster). Always `ORDER BY` the context, and confirm
   hits with `SELECT model, context_hits, context_misses FROM tabfm_models() WHERE loaded;`.
 
 ```sql

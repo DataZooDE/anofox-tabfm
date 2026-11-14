@@ -147,6 +147,11 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   predict skills and docs/api/02 state that mitra's memory grows with the square of the context rows (about
   3 GB per 1,000 rows at 15 features), and that `max_memory` guards only shapes (rows x features) it has
   measured before, so the first call of a new size is unguarded.
+- **Docs: order the context for the cache, and what `query_batch` costs.** Measured at `threads = 8`: a context
+  filtered from a 2M-row table without `ORDER BY` never hit the `tabicl-v2` cache (0 of 5 calls), with `ORDER BY`
+  it hit from the third call (1.8 s to 0.09 s). `query_batch` re-runs the context per batch for every other
+  model: 2.4x the CPU time for `mitra` at 250, 4.1x at 100. The predict and models skills now say to always
+  `ORDER BY` the context.
 - **Fitted values (`is_training` rows) are fitted values for every model.** For tabfm-v1, tabfm-v1-1,
   tabicl-v2 and kumo-tabular-small/-medium/-large a context row's own output was not what the model answers
   for that row: their graphs mix a context row's label into its own representation and decode it with a head
