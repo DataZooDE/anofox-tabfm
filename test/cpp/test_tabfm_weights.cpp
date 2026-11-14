@@ -320,3 +320,17 @@ TEST_CASE("tabfm_weights: a cache that will not take the converted file reports 
 	REQUIRE(remedy.find("convert_weights.py") == string::npos);
 }
 #endif
+
+TEST_CASE("tabfm_weights: the converted file sits beside the checkpoint whichever separator the path uses",
+          "[tabfm][weights][stale_weights]") {
+	// Windows CI: FileSystem::JoinPath writes '\\', so a resolved checkpoint path held no '/', and the
+	// sibling came out as "./model.safetensors" -- the current directory, not the cache.
+	REQUIRE(ConvertedSiblingPath("C:\\cache\\slug@rev\\classification\\model.ckpt") ==
+	        "C:\\cache\\slug@rev\\classification/model.safetensors");
+	REQUIRE(ConvertedSiblingPath("C:/cache\\slug@rev\\classification/model.ckpt") ==
+	        "C:/cache\\slug@rev\\classification/model.safetensors");
+	REQUIRE(ConvertedSiblingPath("C:\\cache/slug@rev/classification\\model.ckpt") ==
+	        "C:\\cache/slug@rev/classification/model.safetensors");
+	REQUIRE(ConvertedSiblingPath("/home/u/.cache/slug@rev/model.ckpt") == "/home/u/.cache/slug@rev/model.safetensors");
+	REQUIRE(ConvertedSiblingPath("model.ckpt") == "./model.safetensors");
+}

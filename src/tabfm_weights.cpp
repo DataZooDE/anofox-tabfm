@@ -274,8 +274,10 @@ string FileUrl(const WeightsManifest &manifest, const WeightsFileEntry &file, co
 	return "";
 }
 
+// Either separator: on Windows FileSystem::JoinPath writes '\\', so a path can hold no '/' at all (the engine's
+// DirName agrees).
 string ParentDirectory(const string &path) {
-	auto pos = path.find_last_of('/');
+	auto pos = path.find_last_of("/\\");
 	return pos == string::npos ? string(".") : path.substr(0, pos);
 }
 
@@ -2463,13 +2465,17 @@ int64_t CurrentProcessId() {
 
 } // namespace
 
+string ConvertedSiblingPath(const string &ckpt_path) {
+	return ParentDirectory(ckpt_path) + "/model.safetensors";
+}
+
 ConvertedWeights RefreshConvertedWeights(FileSystem &fs, const string &ckpt_path, const string &expected_header_sha,
                                          const string &tensor_map_id) {
 	ConvertedWeights result;
 	if (!StringUtil::EndsWith(StringUtil::Lower(ckpt_path), ".ckpt") || expected_header_sha.empty()) {
 		return result;
 	}
-	result.path = ParentDirectory(ckpt_path) + "/model.safetensors";
+	result.path = ConvertedSiblingPath(ckpt_path);
 	if (ConvertedMatches(fs, result, expected_header_sha)) {
 		return result; // the common case, and lock-free
 	}

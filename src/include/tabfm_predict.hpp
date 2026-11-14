@@ -156,6 +156,11 @@ bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const stri
 //! SHA-256 (hex) of a safetensors file's JSON header; "" when it cannot be read. Defined in tabfm_engine.cpp.
 string WeightsHeaderSha(FileSystem &fs, const string &weights_path);
 
+//! The model.safetensors RefreshConvertedWeights keeps beside the checkpoint at `ckpt_path`. Either
+//! separator ends the directory: on Windows FileSystem::JoinPath writes '\\', so a resolved path can hold
+//! no '/' at all. Defined in tabfm_weights.cpp.
+string ConvertedSiblingPath(const string &ckpt_path);
+
 //! What RefreshConvertedWeights found for the model.safetensors beside a declared .ckpt.
 enum class ConvertedWeightsState : uint8_t {
 	NOT_APPLICABLE, //!< not a .ckpt, no pinned header to match, or neither file is there
