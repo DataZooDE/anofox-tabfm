@@ -115,6 +115,13 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   pins the ROCm side.
 
 ### Fixed
+- **`tabfm_generate` no longer mixes clusters across a gap in a continuous column.** A quantile bin could
+  straddle an empty stretch (iris petal length: nothing between 1.9 and 3.0), and a value is drawn from all of
+  the bin's observations, so a setosa row came out versicolor-sized or inside the gap: generated setosa petal
+  length sd 0.51 vs a real 0.17, with every model. A gap wider than an average bin (never wider than a tenth of
+  the range) is now always a bin edge when both sides hold a cluster, and no draw interpolates across one. Iris
+  setosa now 1.45 ± 0.19 (real 1.46 ± 0.17) with mitra and tabpfn-v2-6; wine is unchanged. A column with a few
+  distinct levels gets one bin per level and is drawn at those levels.
 - **LimiX-2M on ROCm no longer aborts DuckDB on a large table.** At 3000 rows x 100 features (the 4096 x 128
   bucket), the sample attention's score tensor is 24.4 GiB. MIGraphX's compile could not allocate it on a 16 GiB
   GPU, and its `hip.cpp:155` assertion killed the process, for both tasks. LimiX buckets larger than the largest
