@@ -290,7 +290,42 @@ struct GpuServabilityInputs {
 	vector<string> unsupported_ops;
 	//! Non-empty when the backend executes this graph but is known to get it wrong (GpuKnownWrong).
 	string known_wrong;
+	//! The fix for a bundled graph whose header does not match weights converted from a checkpoint
+	//! (ConvertedWeightsRemedy); "" when the weights are not a conversion. Replaces the "declares no graph"
+	//! wording, which sent the user to register a graph when the cached file was the problem.
+	string weights_remedy;
 };
+
+//! What to do when a bundled GPU graph does not match the weights the engine would serve from a declared
+//! checkpoint, after the native converter has already tried (RefreshConvertedWeights). `converted_present`:
+//! a model.safetensors is there but has another header (most often a conversion left by an older release);
+//! otherwise only the checkpoint is. `ckpt_present`: the checkpoint is on disk, so the native converter has
+//! already failed on it and only the Python step can help. `failure`: the checkpoint could not be read or the
+//! converted file not written (RefreshConvertedWeights' status), which no conversion step fixes.
+inline string ConvertedWeightsRemedy(const string &model, const string &task_name, const string &weights_path,
+                                     bool converted_present, bool ckpt_present, const string &failure = string()) {
+	if (!failure.empty()) {
+		return "the weights the bundled GPU graph needs at '" + weights_path +
+		       "' could not be brought up to date from the checkpoint (" + failure +
+		       "). Make the cache directory writable, or SET anofox_tabfm_cache_dir to one that is";
+	}
+	const string python = "tools/export_*/convert_weights.py for this model (docs/REAL_MODELS.md)";
+	if (!converted_present) {
+		return "its checkpoint at '" + weights_path +
+		       "' cannot be converted natively to the weights the bundled GPU graph was built against. Run " +
+		       python + " once; it writes the model.safetensors the graph needs beside the checkpoint";
+	}
+	const string stale = "the converted weights at '" + weights_path +
+	                     "' do not have the header the bundled GPU graph was built against (most likely a "
+	                     "conversion left by an older release). ";
+	if (ckpt_present) {
+		return stale + "This model's checkpoint needs the one-time Python conversion: re-run " + python +
+		       ", which replaces that file";
+	}
+	return stale + "Delete that file and run CALL tabfm_download('" + task_name + "', model := '" + model +
+	       "'), which fetches the checkpoint and converts it again; if this model's checkpoint needs the one-time "
+	       "Python step, re-run " + python + " instead";
+}
 
 struct GpuServabilityResult {
 	bool supported = false;
@@ -458,6 +493,12 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		return out;
 	case GpuGraphSource::NONE:
 	default:
+		// The graph is there and the cached conversion is what does not fit it: name that file and its fix.
+		if (in.bundled_graph_exists && !in.weights_remedy.empty()) {
+			out.reason = "model '" + in.model + "' cannot use its bundled " + in.backend + " graph for task '" +
+			             in.task_name + "': " + in.weights_remedy;
+			return out;
+		}
 		// The case worth being precise about: a model whose context split is
 		// positional (it reads the split from y's length), which a fixed-shape
 		// compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). tabdpt and the

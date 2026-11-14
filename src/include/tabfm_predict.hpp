@@ -153,6 +153,44 @@ inline string ResolveEpPath(const string &setting_value, const string &cache_dir
 //! must ask the identical question dispatch asks, not a lookalike.
 bool WeightsHeaderMatches(FileSystem &fs, const string &weights_path, const string &model, TabFMTask task);
 
+//! SHA-256 (hex) of a safetensors file's JSON header; "" when it cannot be read. Defined in tabfm_engine.cpp.
+string WeightsHeaderSha(FileSystem &fs, const string &weights_path);
+
+//! The model.safetensors RefreshConvertedWeights keeps beside the checkpoint at `ckpt_path`. Either
+//! separator ends the directory: on Windows FileSystem::JoinPath writes '\\', so a resolved path can hold
+//! no '/' at all. Defined in tabfm_weights.cpp.
+string ConvertedSiblingPath(const string &ckpt_path);
+
+//! What RefreshConvertedWeights found for the model.safetensors beside a declared .ckpt.
+enum class ConvertedWeightsState : uint8_t {
+	NOT_APPLICABLE, //!< not a .ckpt, no pinned header to match, or neither file is there
+	MATCHES,        //!< the converted file already has the pinned header
+	CONVERTED,      //!< it was missing or stale and has been (re)written from the checkpoint
+	STALE,          //!< it is there, does not match, and the checkpoint cannot replace it
+	UNCONVERTIBLE,  //!< it is not there, and the checkpoint cannot be converted to the pinned header
+	FAILED          //!< the checkpoint could not be read, or the converted file not written (status says why)
+};
+
+struct ConvertedWeights {
+	string path; //!< the model.safetensors beside the checkpoint
+	int64_t bytes = 0;
+	//! "cached" | "converted" | "not converted: <why>" for a failure worth reporting; "" otherwise.
+	string status;
+	ConvertedWeightsState state = ConvertedWeightsState::NOT_APPLICABLE;
+	//! The checkpoint is on disk (so a STALE file could not be replaced from it).
+	bool ckpt_present = false;
+};
+
+//! Brings the model.safetensors beside the checkpoint at `ckpt_path` up to date BEFORE anything compares
+//! its header against a bundled GPU graph's: when it is missing or its header is not `expected_header_sha`
+//! (ExpectedWeightsHeaderShaFor), the checkpoint is converted natively (applying the bundled tensor map's
+//! ckpt_aliases, and its "complete" subset), and the result is written only if it has exactly that header.
+//! tabfm_download did this once, at download time, so a cache holding a conversion from an older release
+//! stayed refused by every GPU path. A failed attempt is memoized per file sizes, so a checkpoint that needs
+//! the Python convert step is read once per process, not on every query. Defined in tabfm_weights.cpp.
+ConvertedWeights RefreshConvertedWeights(FileSystem &fs, const string &ckpt_path, const string &expected_header_sha,
+                                         const string &tensor_map_id);
+
 //! The ops of a GPU graph that the 'mlx' backend cannot execute (sorted; empty = runnable): the bundled
 //! graph when `bundled_graph` is non-null, else the file at `graph_path`. Memoized per graph. Defined in
 //! tabfm_engine.cpp, for the same reason as WeightsHeaderMatches.
