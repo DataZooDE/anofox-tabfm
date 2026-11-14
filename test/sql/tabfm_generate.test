@@ -211,3 +211,20 @@ query I
 SELECT count(*) FROM tabfm_generate('(SELECT f1, f2, grp FROM customers)', 3)
 ----
 3
+
+# --- Nothing is generated inside an empty stretch of a column ---------------
+# Two clusters with nothing between 1.9 and 3.0 (the shape of iris petal length). A quantile bin used to
+# straddle the gap, and a draw from it could land in the other cluster or inside the gap: real iris through
+# mitra gave 2 of 150 setosa rows a petal length in (1.9, 3.0) and tripled setosa's spread. The gap is a bin
+# edge now and no draw interpolates across it, whatever the model says, so this holds on random weights too.
+
+statement ok
+CREATE TABLE clusters AS
+SELECT CASE WHEN i < 10 THEN 1.0 + i * 0.1 ELSE 3.0 + (i - 10) * 0.2 END AS len,
+       CASE WHEN i < 10 THEN 'small' ELSE 'large' END AS kind
+FROM range(30) t(i);
+
+query I
+SELECT count(*) FILTER (WHERE len > 1.9 AND len < 3.0) FROM tabfm_generate('clusters', 400, opts := MAP{'seed': '3'})
+----
+0

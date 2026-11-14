@@ -60,6 +60,23 @@ and bent the top 15% of its CDF away from the real curve. Interpolating between
 observed neighbours keeps the bucket's internal shape and still emits novel
 values, since a draw lands strictly between two real ones.
 
+**Gaps are bucket edges.** A bucket is chosen by the model, but the value inside
+it is drawn from *all* of the bucket's observations, whatever the row was
+conditioned on. So a bucket must not straddle two clusters. Iris petal length
+has nothing between 1.9 and 3.0 (setosa below, the other species above), and its
+decile bucket `[1.7, 3.9)` used to hold both sides: a setosa row the model
+rightly put there came out versicolor-sized or inside the gap, which tripled
+setosa's generated spread (sd 0.51 vs a real 0.17, with every model alike). Now
+any stretch between neighbouring observations wider than an average bucket (and
+never wider than a tenth of the column's range) is a bucket edge, as long as
+each side has enough observations to be a cluster rather than an outlier; the
+`bins` budget is shared over the clusters by size. A draw never interpolates
+across such a stretch, so nothing is generated where the column has no data;
+an observation isolated on both sides is emitted as is. On iris setosa now comes
+out at 1.45 ± 0.19 (real 1.46 ± 0.17); on wine, which has no such gaps, the
+output is unchanged. A column with only a few distinct levels gets one bucket
+per level and is drawn at those levels.
+
 What you get:
 
 - a genuine, potentially **multi-modal** conditional density — something a point
@@ -68,7 +85,8 @@ What you get:
   every model in the registry can generate;
 - values are **novel**, not copied: a draw is interpolated strictly between two
   observations, so a synthetic number is essentially never a verbatim real one
-  (the exception is tied neighbours, where the interpolation has nowhere to go).
+  (the exceptions are tied neighbours, where the interpolation has nowhere to go,
+  an observation with a gap on both sides, and few-level columns).
 
 What it costs:
 

@@ -26,7 +26,8 @@ column's marginal.
    Imputing a **numeric** column also needs its **regression** weights. `nori-30m` is regress-only:
    `tabfm_generate` refuses it, `tabfm_impute` fills numeric columns only.
 2. **Values never leave the observed range.** Continuous columns are sampled through quantile bins
-   (`bins`, at most 10): resolution is capped and extrapolation is impossible.
+   (`bins`, at most 10): resolution is capped and extrapolation is impossible. A wide empty stretch
+   (iris petal length 1.9-3.0) is always a bin edge and never filled in.
 3. **Exclude high-cardinality and temporal columns** (IDs, free text, timestamps) with `features := [...]`:
    they cannot be generation targets.
 4. **Cost scales with columns, not rows.** One model call per column, sequentially; `n` is cheap.

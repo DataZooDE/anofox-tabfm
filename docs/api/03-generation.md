@@ -47,5 +47,7 @@ With `features` omitted, `tabfm_impute` returns **exactly** the columns of `data
 Cost is one model call per column, run sequentially — it scales with the number
 of **columns**, not with `n`. Continuous columns are sampled through quantile
 bins, so generated values never leave the observed range and resolution is
-capped at `bins` levels; high-cardinality and temporal columns cannot be
+capped at `bins` levels. A wide empty stretch in a column is always a bin edge and
+is never interpolated across, so nothing is generated where the data has none;
+high-cardinality and temporal columns cannot be
 generation targets and must be excluded with `features :=`.
