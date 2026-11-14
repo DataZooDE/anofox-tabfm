@@ -121,6 +121,71 @@ Value CoerceNumeric(double v, const LogicalType &type, double lo, double hi) {
 // Sampling primitives
 //===--------------------------------------------------------------------===//
 
+namespace {
+
+idx_t DistinctCount(const vector<double> &sorted, idx_t begin, idx_t end) {
+	if (end <= begin) {
+		return 0;
+	}
+	idx_t distinct = 1;
+	for (idx_t i = begin + 1; i < end; i++) {
+		if (sorted[i] != sorted[i - 1]) {
+			distinct++;
+		}
+	}
+	return distinct;
+}
+
+// Plain order-statistic quantile edges over sorted[begin, end), k bins: strictly increasing, first = min,
+// last = max. Fewer than 2 distinct values -> just {min}.
+vector<double> SortedQuantileEdges(const vector<double> &sorted, idx_t begin, idx_t end, idx_t k) {
+	vector<double> edges;
+	const idx_t n = end - begin;
+	edges.push_back(sorted[begin]);
+	if (n < 2 || k < 2 || sorted[end - 1] == sorted[begin]) {
+		if (sorted[end - 1] > edges.back()) {
+			edges.push_back(sorted[end - 1]);
+		}
+		return edges;
+	}
+	for (idx_t i = 1; i < k; i++) {
+		auto pos = static_cast<idx_t>((static_cast<double>(i) * static_cast<double>(n)) / static_cast<double>(k));
+		if (pos >= n) {
+			pos = n - 1;
+		}
+		auto candidate = sorted[begin + pos];
+		// Ties collapse: keep the edge list strictly increasing so every bin has
+		// a non-empty span and BinOf stays unambiguous.
+		if (candidate > edges.back()) {
+			edges.push_back(candidate);
+		}
+	}
+	if (sorted[end - 1] > edges.back()) {
+		edges.push_back(sorted[end - 1]);
+	}
+	return edges;
+}
+
+} // namespace
+
+double GenerateGapThreshold(const vector<double> &sorted, idx_t bins) {
+	if (sorted.size() < 2 || bins < 1) {
+		return std::numeric_limits<double>::infinity();
+	}
+	const idx_t k = MinValue<idx_t>(bins, DistinctCount(sorted, 0, sorted.size()));
+	const double range = sorted.back() - sorted.front();
+	if (k < 2 || !(range > 0)) {
+		return std::numeric_limits<double>::infinity();
+	}
+	// Never coarser than a tenth of the range: a model with few classes gets few, wide bins, and a gap is MORE
+	// harmful there, not less (the 3-class fixture would otherwise miss a gap as wide as iris's).
+	return range / static_cast<double>(MaxValue<idx_t>(k, kDefaultGenerateBins));
+}
+
+idx_t GenerateGapMinSide(idx_t n, idx_t bins) {
+	return MaxValue<idx_t>(2, bins == 0 ? n : n / (4 * bins));
+}
+
 vector<double> QuantileEdges(vector<double> values, idx_t bins) {
 	vector<double> edges;
 	// Drop NULL-ish entries; a column of all NaN has no distribution.
@@ -133,34 +198,80 @@ vector<double> QuantileEdges(vector<double> values, idx_t bins) {
 	std::sort(values.begin(), values.end());
 	const idx_t n = values.size();
 
-	// Order-statistic quantiles. More bins than distinct values is pointless —
-	// the duplicate edges would collapse below anyway — so cap up front.
-	idx_t distinct = 1;
-	for (idx_t i = 1; i < n; i++) {
-		if (values[i] != values[i - 1]) {
-			distinct++;
-		}
-	}
+	// More bins than distinct values is pointless -- the duplicate edges would
+	// collapse anyway -- so cap up front.
+	const idx_t distinct = DistinctCount(values, 0, n);
 	if (distinct < 2) {
 		return edges;
 	}
 	const idx_t k = MinValue<idx_t>(bins, distinct);
 
-	edges.push_back(values.front());
-	for (idx_t i = 1; i < k; i++) {
-		auto pos = static_cast<idx_t>((static_cast<double>(i) * static_cast<double>(n)) / static_cast<double>(k));
-		if (pos >= n) {
-			pos = n - 1;
-		}
-		auto candidate = values[pos];
-		// Ties collapse: keep the edge list strictly increasing so every bin has
-		// a non-empty span and BinOf stays unambiguous.
-		if (candidate > edges.back()) {
-			edges.push_back(candidate);
+	// The gaps that become edges: wider than an average bin, with enough observations on both sides to be a
+	// cluster rather than an outlier; the widest first, at most k - 1 of them (every cluster needs a bin).
+	const double threshold = GenerateGapThreshold(values, k);
+	const idx_t min_side = GenerateGapMinSide(n, k);
+	vector<std::pair<double, idx_t>> gaps; // (width, index of the first value after the gap)
+	for (idx_t i = 1; i < n; i++) {
+		const double width = values[i] - values[i - 1];
+		if (width > threshold && i >= min_side && n - i >= min_side) {
+			gaps.emplace_back(width, i);
 		}
 	}
-	if (values.back() > edges.back()) {
-		edges.push_back(values.back());
+	std::sort(gaps.begin(), gaps.end(), [](const std::pair<double, idx_t> &a, const std::pair<double, idx_t> &b) {
+		return a.first > b.first || (a.first == b.first && a.second < b.second);
+	});
+	if (gaps.size() > k - 1) {
+		gaps.resize(k - 1);
+	}
+	vector<idx_t> cuts = {0};
+	for (auto &gap : gaps) {
+		cuts.push_back(gap.second);
+	}
+	std::sort(cuts.begin(), cuts.end());
+	cuts.push_back(n);
+	const idx_t segments = cuts.size() - 1;
+
+	// Share the k bins: one per cluster, the rest by cluster size (largest remainder), never more bins in a
+	// cluster than it has distinct values.
+	vector<idx_t> share(segments, 1);
+	vector<idx_t> capacity(segments);
+	for (idx_t s = 0; s < segments; s++) {
+		capacity[s] = DistinctCount(values, cuts[s], cuts[s + 1]);
+	}
+	idx_t left = k - segments;
+	while (left > 0) {
+		idx_t best = segments;
+		double best_need = -1;
+		for (idx_t s = 0; s < segments; s++) {
+			if (share[s] >= capacity[s]) {
+				continue;
+			}
+			const double size = static_cast<double>(cuts[s + 1] - cuts[s]);
+			const double need = size * static_cast<double>(k) / static_cast<double>(n) - static_cast<double>(share[s]);
+			if (need > best_need) {
+				best_need = need;
+				best = s;
+			}
+		}
+		if (best == segments) {
+			break;
+		}
+		share[best]++;
+		left--;
+	}
+
+	// Each cluster's own quantile edges, minus its maximum: the next cluster's first value closes its last bin.
+	for (idx_t s = 0; s < segments; s++) {
+		auto local = SortedQuantileEdges(values, cuts[s], cuts[s + 1], share[s]);
+		const bool last = s + 1 == segments;
+		if (!last && local.size() > 1) {
+			local.pop_back();
+		}
+		edges.insert(edges.end(), local.begin(), local.end());
+	}
+	// A last cluster of one distinct value contributed only {value}: close its bin just above it.
+	if (segments > 1 && capacity[segments - 1] == 1) {
+		edges.push_back(std::nextafter(edges.back(), std::numeric_limits<double>::infinity()));
 	}
 	if (edges.size() < 2) {
 		edges.clear();
@@ -196,7 +307,7 @@ Value ExpandBin(const ColumnPlan &plan, idx_t bin, TabFMRandom &rng) {
 		bin = bin_count - 1;
 	}
 	const double lo = edges[bin];
-	const double hi = edges[bin + 1];
+	const double hi = MinValue<double>(edges[bin + 1], plan.ObservedMax());
 
 	// Empirical inverse CDF within the bin, when we know which observations fell
 	// in it: pick a uniform position among them and interpolate between
@@ -218,7 +329,17 @@ Value ExpandBin(const ColumnPlan &plan, idx_t bin, TabFMRandom &rng) {
 			// Interpolate toward the next observation, or toward the bin's upper
 			// edge for the last one, so the top of the bin stays reachable.
 			const double b = (start + offset + 1 < end) ? plan.sorted_values[start + offset + 1] : hi;
-			return CoerceNumeric(a + fraction * (b - a), plan.type, lo, hi);
+			if (b - a <= plan.gap_threshold) {
+				return CoerceNumeric(a + fraction * (b - a), plan.type, lo, hi);
+			}
+			// The next observation is a gap away: never draw inside it. Lean back toward the previous
+			// observation instead (still a novel value), or keep this one when it is isolated on both sides.
+			const idx_t index = start + offset;
+			const double p = index > 0 ? plan.sorted_values[index - 1] : a;
+			if (a - p <= plan.gap_threshold) {
+				return CoerceNumeric(a - fraction * (a - p), plan.type, lo, hi);
+			}
+			return CoerceNumeric(a, plan.type, lo, hi);
 		}
 	}
 	// No observations recorded for this bin (degenerate plan): fall back to a
@@ -336,7 +457,7 @@ Value DecodePointEstimate(const ColumnPlan &plan, const Value &yhat) {
 	}
 	if (plan.kind == GenColumnKind::CONTINUOUS) {
 		const double lo = plan.edges.empty() ? -std::numeric_limits<double>::infinity() : plan.edges.front();
-		const double hi = plan.edges.empty() ? std::numeric_limits<double>::infinity() : plan.edges.back();
+		const double hi = plan.edges.empty() ? std::numeric_limits<double>::infinity() : plan.ObservedMax();
 		auto raw = AsDouble(yhat);
 		if (!std::isfinite(raw)) {
 			return Value(plan.type);
@@ -428,6 +549,7 @@ ColumnPlan PlanColumn(const string &name, const LogicalType &type, const vector<
 		// SORTED values contiguously (BinOf is monotone in value), so the offsets
 		// are just the running counts.
 		std::sort(plan.sorted_values.begin(), plan.sorted_values.end());
+		plan.gap_threshold = GenerateGapThreshold(plan.sorted_values, MinValue<idx_t>(bins, max_labels));
 		plan.bin_offsets.assign(plan.BinCount() + 1, 0);
 		for (idx_t b = 0; b < plan.BinCount(); b++) {
 			plan.bin_offsets[b + 1] = plan.bin_offsets[b] + plan.bin_counts[b];
