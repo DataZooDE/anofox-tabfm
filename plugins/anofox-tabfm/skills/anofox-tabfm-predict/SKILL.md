@@ -155,10 +155,13 @@ distinct segment values) rather than writing it by hand, and materialise a filte
 ## Large calls and repeated calls
 
 - **Memory:** the context dominates memory, so the first lever is a smaller context (sample it, below).
+  Attention cost grows with the square of the rows: `mitra` on the CPU needs about 3 GB per 1,000 context
+  rows at 15 features, and 4,000 rows are OOM-killed on 16 GB although `anofox_tabfm_max_rows` allows 10,000.
   `opts := MAP{'query_batch': 'N'}` scores the test rows in batches with the same answers, but re-runs the
   whole context per batch (except `tabicl-v2` on the CPU): a last resort against an OOM, not a speed-up.
-  `SET anofox_tabfm_max_memory = '16GB'` refuses a call when the process is already that large, instead of
-  an OOM kill; it learns each shape's cost, so the first call of a new shape is not guarded.
+  `SET anofox_tabfm_max_memory = '16GB'` refuses a call when the process is already that large, or when a
+  pass of exactly the same rows x features was measured to cross it; a shape not seen before is unguarded,
+  so it cannot stop the first large call of a new size from being OOM-killed.
 - **More rows than the guardrail:** `SET anofox_tabfm_max_rows = 20000;` (and check the model's recommended
   `max_rows`), or sample the context: `'(SELECT * FROM big USING SAMPLE 5000 ROWS (reservoir, 42))'`.
 - **Scoring against the same training table again and again** is fastest with `tabicl-v2` on the CPU: its

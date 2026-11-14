@@ -20,7 +20,7 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 
 | `model` | by | tasks | licence id | `commercial` | gated | weights | notes |
 |---|---|---|---|---|---|---|---|
-| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB per task | |
+| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB per task | CPU memory grows with the square of the context rows: peak RSS 3.5 GB at 1,000 rows x 15 features, 6.8 GB at 2,000, over 15 GB at 4,000 (#107) |
 | `mitra-v2` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB / ~307 MB | recommended up to 32,768 rows and 256 features; the classifier runs mitra's graph |
 | `tabdpt` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~254 MB, one file for both tasks | TabDPT v1.2 |
 | `tabdpt-v1-3` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~252 MB, one file for both tasks | TabDPT v1.3 |

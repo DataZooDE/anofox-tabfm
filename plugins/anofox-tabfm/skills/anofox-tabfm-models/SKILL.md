@@ -54,7 +54,7 @@ context size from `tabfm_list_models()`.
 
 | model | by | tasks | licence | commercial | gated | weights | rows / features | notes |
 |---|---|---|---|---|---|---|---|---|
-| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | yes | no | ~303 MB | 10k / 100 | the safe first choice |
+| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | yes | no | ~303 MB | 10k / 100 | the safe first choice; on the CPU ~3 GB per 1k context rows at 15 features, growing with rows², so keep it to ~2k rows on 16 GB |
 | `mitra-v2` | AWS AutoGluon | classify, regress | `apache-2.0` | yes | no | ~303 / ~307 MB | 32k / 256 | larger tables than `mitra` |
 | `tabdpt` | Layer 6 AI | classify, regress | `apache-2.0` | yes | no | ~254 MB, both tasks | 100k / 128 | TabDPT v1.2, up to 16 classes |
 | `tabdpt-v1-3` | Layer 6 AI | classify, regress | `apache-2.0` | yes | no | ~252 MB, both tasks | 100k / 128 | TabDPT v1.3, up to 16 classes |
@@ -190,7 +190,7 @@ FROM tabfm_models() WHERE context_cache;
 | `anofox_tabfm_max_rows` | `10000` | enforced rows per call or group |
 | `anofox_tabfm_max_features` | `500` | enforced features per call |
 | `anofox_tabfm_max_sessions` | `4` | cached sessions across models, devices and precisions |
-| `anofox_tabfm_max_memory` | `''` | refuse a call when resident memory is at or above this |
+| `anofox_tabfm_max_memory` | `''` | refuse a call when resident memory, plus the measured cost of an identical earlier shape, reaches this; a new shape is unguarded |
 | `anofox_tabfm_threads` | cores / 2 | ONNX Runtime CPU threads |
 | `anofox_tabfm_cpu_prepack` | `true` | faster CPU matmuls for about 16% more memory |
 | `anofox_tabfm_trace_level` | `warn` | `error` / `warn` / `info` / `debug` / `trace` |

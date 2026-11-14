@@ -157,6 +157,10 @@ step: [Getting Started](docs/guides/01-getting-started.md#licence-acknowledgemen
 Which model to pick, and how they compared: [Choosing a model](docs/guides/02-choosing-a-model.md). Sizes,
 backends and attribution texts: [Models and weights](docs/api/02-models-and-weights.md).
 
+**Memory on the CPU.** `mitra`'s row attention grows with the square of the context: about 3 GB per 1,000
+context rows at 15 features, so 2,000 rows peak near 7 GB and 4,000 exceed 15 GB, well below the default
+`anofox_tabfm_max_rows` (10,000). Sample the context to fit your RAM ([#107](https://github.com/DataZooDE/anofox-tabfm/issues/107)).
+
 ## Claude Code skills
 
 **Tabular ML is easier when your AI assistant knows the API.** anofox-tabfm ships an installable

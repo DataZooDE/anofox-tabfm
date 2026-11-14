@@ -141,6 +141,12 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   z-scored target and 0.999 / 1.005 with a min-max one; the engine now gives 0.999 / 1.007. The built-in `mitra`
   entry uses the new `mitra_v1_minmax` profile, so classify, regress, impute and every GPU backend get the fix.
   `mitra-v2` was not affected: its graph min-max scales the target itself.
+  This also removes the +0.34 sd mean offset on noisy targets reported in #110 (now 0.000 sd, slope equal
+  to mitra-v2's); a noisy-target bias and slope check joins the real-weights tests.
+- **Docs: CPU memory of `mitra` and what `anofox_tabfm_max_memory` does** (#107). The README, the models and
+  predict skills and docs/api/02 state that mitra's memory grows with the square of the context rows (about
+  3 GB per 1,000 rows at 15 features), and that `max_memory` guards only shapes (rows x features) it has
+  measured before, so the first call of a new size is unguarded.
 - **Fitted values (`is_training` rows) are fitted values for every model.** For tabfm-v1, tabfm-v1-1,
   tabicl-v2 and kumo-tabular-small/-medium/-large a context row's own output was not what the model answers
   for that row: their graphs mix a context row's label into its own representation and decode it with a head

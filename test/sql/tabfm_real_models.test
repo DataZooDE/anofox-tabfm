@@ -1226,6 +1226,35 @@ FROM mit_pred_s p JOIN mit_truth_s t USING (x1, x2, x3);
 ----
 true
 
+# A NOISY target (#110): the noise-free oracle above shows shrinkage but cannot show a constant offset. With the
+# z-scored target mitra's mean was off by +0.34 sd and its slope (yhat on y) was 0.16; the conditional mean's
+# slope is about corr^2 (0.29 here), which mitra-v2 matches. Context rows are scored as the test set.
+statement ok
+SELECT setseed(0.42);
+
+statement ok
+CREATE TABLE mit_nx AS SELECT i,
+  sqrt(-2 * ln(random())) * cos(2 * pi() * random()) AS f0, sqrt(-2 * ln(random())) * cos(2 * pi() * random()) AS f1,
+  sqrt(-2 * ln(random())) * cos(2 * pi() * random()) AS f2, sqrt(-2 * ln(random())) * cos(2 * pi() * random()) AS f3,
+  sqrt(-2 * ln(random())) * cos(2 * pi() * random()) AS f4, sqrt(-2 * ln(random())) * cos(2 * pi() * random()) AS f5,
+  sqrt(-2 * ln(random())) * cos(2 * pi() * random()) AS f6, sqrt(-2 * ln(random())) * cos(2 * pi() * random()) AS f7,
+  sqrt(-2 * ln(random())) * cos(2 * pi() * random()) AS e
+FROM range(600) t(i);
+
+statement ok
+CREATE TABLE mit_nctx AS SELECT * EXCLUDE (e), 0.02 * f0 + 0.03 * e AS y FROM mit_nx;
+
+statement ok
+CREATE TABLE mit_npred AS
+SELECT * FROM tabfm_regress('mit_nctx', 'y', test := '(SELECT * EXCLUDE (e) FROM mit_nx)', keep := ['i'], model := 'mitra');
+
+query II
+SELECT abs(avg(p.yhat) - avg(c.y)) / stddev(c.y) < 0.05,
+       abs(regr_slope(p.yhat, c.y) - corr(p.yhat, c.y) ^ 2) < 0.08
+FROM mit_npred p JOIN mit_nctx c USING (i);
+----
+true	true
+
 # ---------------------------------------------------------------------------
 # Fitted values on NOISY data: tabfm-v1, tabfm-v1-1, tabicl-v2, kumo-tabular (fitted_second_pass).
 #
