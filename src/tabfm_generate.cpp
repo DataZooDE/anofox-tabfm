@@ -484,6 +484,8 @@ TabFMPredictOptions StepOptions(const TabFMGenerateOptions &opts, TabFMTask task
 	popts.n_estimators = 1;
 	popts.seed = opts.seed;
 	popts.softmax_temperature = opts.temperature;
+	// generate and impute never read a labelled row's own output, so they never pay for a second pass over them
+	popts.context_values = false;
 	popts.model = opts.model;
 	return popts;
 }

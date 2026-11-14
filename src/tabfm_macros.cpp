@@ -86,7 +86,8 @@ R"(
                  map_concat(
                    map_concat(
                      map_concat(MAP{'output_mode':'detail'}, CAST(opts AS MAP(VARCHAR, VARCHAR))),
-                     MAP{'task':'classification'}),
+                     map_concat(MAP{'task':'classification'},
+                                CASE WHEN test IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR) ELSE MAP{'context_values':'false'} END)),
                    map_concat(
                      CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
                           ELSE MAP{'model': model::VARCHAR} END,
@@ -211,7 +212,9 @@ R"(
         SELECT __anofox_tabfm_predict_agg(
                  anofox_tabfm_row, target,
                  map_concat(
-                   map_concat(CAST(opts AS MAP(VARCHAR, VARCHAR)), MAP{'task':'regression'}),
+                   map_concat(CAST(opts AS MAP(VARCHAR, VARCHAR)),
+                              map_concat(MAP{'task':'regression'},
+                                         CASE WHEN test IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR) ELSE MAP{'context_values':'false'} END)),
                    map_concat(
                      CASE WHEN model IS NULL THEN MAP{}::MAP(VARCHAR, VARCHAR)
                           ELSE MAP{'model': model::VARCHAR} END,

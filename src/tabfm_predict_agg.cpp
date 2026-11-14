@@ -244,6 +244,15 @@ void ParseOneOption(const string &fname, PredictBindData &bind, const string &ke
 			                      fname, val);
 		}
 		opts.query_batch = NumericCast<idx_t>(n);
+	} else if (key == "context_values") {
+		auto flag = StringUtil::Lower(val);
+		if (flag == "true") {
+			opts.context_values = true;
+		} else if (flag == "false") {
+			opts.context_values = false;
+		} else {
+			throw BinderException("%s: context_values must be 'true' or 'false', got '%s'", fname, val);
+		}
 	} else if (key == "model") {
 		opts.model = val;
 	} else if (key == "__features") {
@@ -255,7 +264,7 @@ void ParseOneOption(const string &fname, PredictBindData &bind, const string &ke
 		bind.requested_keep = val;
 	} else {
 		throw BinderException("%s: unknown option '%s'; valid options are task, n_estimators, seed, output_mode, "
-		                      "context_rows, softmax_temperature, query_batch, model",
+		                      "context_rows, softmax_temperature, query_batch, context_values, model",
 		                      fname, key_raw);
 	}
 }
@@ -943,8 +952,11 @@ void PredictWinWindow(AggregateInputData &aggr_input_data, const WindowPartition
 	CheckMemoryCeiling(bind);
 	DropKeptColumns(bind, rows);
 
+	// Only the scored row's answer is read, never a context row's own value: no second pass for them.
+	auto window_options = bind.options;
+	window_options.context_values = false;
 	PredictInput engine_input {rows,        bind.engine_row_type, bind.engine_target_idx, bind.target_type,
-	                           bind.target, bind.options,         bind.context};
+	                           bind.target, window_options,       bind.context};
 	auto predictions = GetPredictEngine().Predict(engine_input);
 	const auto last = rows.size() - 1;
 	WriteWindowResult(result, rid, bind, predictions.yhat[last], predictions.yhat_score[last],

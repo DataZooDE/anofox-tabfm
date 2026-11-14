@@ -176,7 +176,9 @@ The only external thing is the weight-free ONNX graph; every other field is a na
 `classification_weights_bytes` / `regression_weights_bytes`, `weights_repo`, `weights_revision`,
 `tensor_map` (or `classification_tensor_map` / `regression_tensor_map`), `license`, `commercial`,
 `gate_setting`, `preprocessing_profile`, `max_rows` / `max_features` / `max_classes`, `base_dir`,
-`contract_inputs` / `contract_outputs`, the GPU graph variants (`classification_ext_graph`,
+`fitted_second_pass` (a list of tasks, `['classification', 'regression']`: the engine scores the context rows a
+second time as queries to get their fitted values, for a model whose graph mixes a context row's own label into
+that row's output; the manifest field of the same name does the same), `contract_inputs` / `contract_outputs`, the GPU graph variants (`classification_ext_graph`,
 `regression_ext_graph`, `classification_migraphx_graph`, `regression_migraphx_graph`) and, for several files
 per task, the parallel lists `classification_files` / `classification_file_urls` /
 `classification_file_bytes` (and the `regression_` equivalents). The `preprocessing_profile` suffix decides

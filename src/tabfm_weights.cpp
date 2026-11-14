@@ -2152,6 +2152,13 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	// built-in): graph/weights/tensor_map paths resolve against it (default: CWD).
 	spec.source_dir = NamedStr(input, "base_dir", ".");
 
+	// Tasks whose context rows need a second pass to carry usable fitted values (see ModelSpec).
+	if (input.named_parameters.count("fitted_second_pass") && !input.named_parameters.at("fitted_second_pass").IsNull()) {
+		for (auto &entry : ListValue::GetChildren(input.named_parameters.at("fitted_second_pass"))) {
+			spec.fitted_second_pass.push_back(ParseFittedSecondPassTask(entry.ToString(), "(tabfm_register_model)"));
+		}
+	}
+
 	auto shared_tmap = NamedStr(input, "tensor_map");
 	auto weights_repo = NamedStr(input, "weights_repo");
 	auto weights_revision = NamedStr(input, "weights_revision", "main");
@@ -2438,7 +2445,7 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 		}
 		// Multi-file-per-task (e.g. weights + config): parallel LISTs.
 		for (auto *k : {"classification_files", "regression_files", "classification_file_urls",
-		                "regression_file_urls"}) {
+		                "regression_file_urls", "fitted_second_pass"}) {
 			duckdb_compat::AddNamedParameter(f, k, LogicalType::LIST(LogicalType::VARCHAR));
 		}
 		for (auto *k : {"classification_file_bytes", "regression_file_bytes"}) {

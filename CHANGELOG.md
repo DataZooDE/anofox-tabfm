@@ -126,6 +126,16 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   z-scored target and 0.999 / 1.005 with a min-max one; the engine now gives 0.999 / 1.007. The built-in `mitra`
   entry uses the new `mitra_v1_minmax` profile, so classify, regress, impute and every GPU backend get the fix.
   `mitra-v2` was not affected: its graph min-max scales the target itself.
+- **Fitted values (`is_training` rows) are fitted values for every model.** For tabfm-v1, tabfm-v1-1,
+  tabicl-v2 and kumo-tabular-small/-medium/-large a context row's own output was not what the model answers
+  for that row: their graphs mix a context row's label into its own representation and decode it with a head
+  trained only on rows without one. On an 80-row noisy table the context rows' `yhat` correlated -0.58
+  (tabicl-v2), -0.77 (kumo small) with the target, and classified 34-45% of them correctly (kumo, tabfm-v1-1).
+  The engine now scores those models' context rows a second time as queries: +0.90 / +0.69 and 84-100%. Query
+  rows are bit-identical either way. Only the single-relation form pays the extra pass (S more rows); the
+  two-table form, window calls, `tabfm_impute` and `tabfm_generate` do not, and `opts := MAP{'context_values':
+  'false'}` turns it off. A registered model declares the need with `fitted_second_pass` (manifest field and
+  `tabfm_register_model` argument). `tabfm_compare_models` scores fitted rows, so its tabfm-v1 RMSE changes.
 - **LimiX-2M on ROCm no longer aborts DuckDB on a large table.** At 3000 rows x 100 features (the 4096 x 128
   bucket), the sample attention's score tensor is 24.4 GiB. MIGraphX's compile could not allocate it on a 16 GiB
   GPU, and its `hip.cpp:155` assertion killed the process, for both tasks. LimiX buckets larger than the largest

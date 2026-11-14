@@ -76,7 +76,8 @@ FROM tabfm_regress('sold_homes', 'price', test := 'listings', model := 'mitra');
 ```
 
 **Single relation**: the rows whose target is `NULL` are scored; every row comes back, and the context rows
-carry in-context fitted values (a quick sanity check).
+carry in-context fitted values (in-sample, a sanity check only). For tabfm-v1, tabfm-v1-1, tabicl-v2 and
+kumo-tabular-* they cost a second pass over the context rows; `opts := MAP{'context_values': 'false'}` skips it.
 
 ```sql
 CREATE TABLE customers_masked AS
@@ -126,6 +127,7 @@ ones otherwise), the `keep` columns, the target column (`NULL` on scored rows), 
 | `task` | `auto`, `classification`, `regression` | set by the function | leave it to `tabfm_classify` / `tabfm_regress` |
 | `n_estimators` | `1` | `1` | ensembles are not available yet; above 1 is an error |
 | `context_rows` | integer | `''` | accepted, no effect today |
+| `context_values` | `true`, `false` | `true` | single-relation form: compute the context rows' fitted values (a second pass for the models that need one); query rows are unchanged either way |
 | `model` | model id | | same as `model :=` |
 
 There is no `dist` output mode yet: `tabfm_regress` returns point predictions.

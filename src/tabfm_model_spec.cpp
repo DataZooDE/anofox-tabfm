@@ -381,6 +381,23 @@ void ParseV2(yyjson_val *root, ModelSpec &spec, const string &path) {
 		}
 	}
 
+	// fitted_second_pass: the tasks whose context rows need a second pass to get usable fitted values
+	if (auto fsp = yyjson_obj_get(root, "fitted_second_pass")) {
+		if (!yyjson_is_arr(fsp)) {
+			Fail(path, "\"fitted_second_pass\" must be an array of task names, e.g. [\"regression\"]");
+		}
+		yyjson_arr_iter fit;
+		yyjson_arr_iter_init(fsp, &fit);
+		yyjson_val *f;
+		while ((f = yyjson_arr_iter_next(&fit))) {
+			if (!yyjson_is_str(f)) {
+				Fail(path, "\"fitted_second_pass\" entries must be strings: \"classification\" or \"regression\"");
+			}
+			spec.fitted_second_pass.push_back(
+			    ParseFittedSecondPassTask(string(yyjson_get_str(f), yyjson_get_len(f)), path));
+		}
+	}
+
 	// size_regime
 	if (auto sr = yyjson_obj_get(root, "size_regime")) {
 		spec.size_regime.max_rows = OptInt(sr, "max_rows", -1);
@@ -408,6 +425,19 @@ void ParseV2(yyjson_val *root, ModelSpec &spec, const string &path) {
 }
 
 } // anonymous namespace
+
+TabFMTask ParseFittedSecondPassTask(const string &name, const string &where) {
+	if (name == "classification") {
+		return TabFMTask::CLASSIFICATION;
+	}
+	if (name == "regression") {
+		return TabFMTask::REGRESSION;
+	}
+	throw InvalidInputException("Model manifest %s: fitted_second_pass names '%s', which is not a task. Use "
+	                            "\"classification\" or \"regression\" (a model whose labelled rows' own outputs are "
+	                            "not usable fitted values for that task).",
+	                            where, name);
+}
 
 ModelSpec ParseModelSpec(const string &json, const string &manifest_path) {
 	yyjson_read_err error;

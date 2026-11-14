@@ -61,6 +61,11 @@ struct TabFMPredictOptions {
 	//! opts['query_batch']: score the query rows at most N per forward pass,
 	//! against one encoded context (0 = all query rows in one pass).
 	idx_t query_batch = 0;
+	//! Compute the labelled rows' own FITTED values (the `is_training` rows of the single-relation form). Default
+	//! true. A model that declares `fitted_second_pass` pays for them with a second pass over its context rows;
+	//! callers that throw those values away (the two-table form, the window path, impute and generate) set this
+	//! false, so only the one form that returns them pays. Query rows are identical either way.
+	bool context_values = true;
 	//! Selected model id (from opts['model'] / model :=). Empty = "not specified"
 	//! → the registry resolves it (default model → single-file manifest → sole).
 	string model;
