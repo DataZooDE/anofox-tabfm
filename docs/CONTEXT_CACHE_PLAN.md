@@ -200,6 +200,21 @@ If row-order reuse is wanted later, two exact routes remain:
   its own exactness decision;
 - or define exactness as "within the model's own order sensitivity" and say so in the docs.
 
+**Measured 2026-11-14 (#108): the miss is the common case, not a corner case.** With `threads = 8`, a context
+filtered from a table of several row groups without `ORDER BY` never hit the tabicl-v2 cache: 0 of 5 identical
+calls, because the parallel scan hands the rows over in a different order each time. With `ORDER BY` the same
+calls hit from the third (1.8 s -> 0.09 s). The docs and skills now tell users to order the context. The first
+route above (canonical sort before the prepare graph, on every call) is planned for Phase 3:
+
+- the sort runs before label encoding (first-appearance class codes) and before the cache key is built, cache on
+  or off, so the kill switch and a hit see the same sequence and Phase 1's bound still holds between them;
+- the cost is a one-time shift of every answer by up to 1.6e-4 in log-probability / 5.2e-05 x std(y) against the
+  caller's order (the table above), which is inside the model's own order sensitivity. It needs the user's
+  exactness decision and a CHANGELOG line;
+- context rows' outputs are permuted back to the caller's order; the C++ admission test and
+  `tabfm_context_cache_kv.test` change from "a shuffle misses" to "a shuffle hits";
+- per model: only models whose pair is exact under the sort (tabicl-v2 today; each Phase 4 pair re-measured).
+
 ## Summary
 
 - **The cost is real.** On `tabicl-v2`, re-encoding the labelled context is most of a `tabfm_classify`
@@ -448,9 +463,9 @@ The options considered:
    - With a cached context, chunking becomes nearly free, and it no longer needs one SQL call per chunk.
 5. **Row order.** DuckDB may hand the support rows over in a different order between calls. A
    different order is a different key, so that call misses: safe, but slower.
-   - Sorting the support rows into a canonical order before encoding would make those calls hit. Do it
-     only if a model's answer is provably order-invariant, which holds for TabICL (attention over the
-     rows, no positional term).
+   - Sorting the support rows into a canonical order before encoding would make those calls hit. TabICL
+     is order-invariant in exact arithmetic (attention over the rows, no positional term) but not in
+     float32 (up to 1.6e-4 log-prob, Phase 1b part 2), so the sort must run on every call, cache on or off.
    - Class codes are assigned in order of first appearance, so the sort has to come before the label
      encoding.
    - Phase 3, measured first.
@@ -576,7 +591,7 @@ to the combined graph instead, because the cache becomes default-on and must not
 | 0 (#89) | This document. The spike module. The engine reads `context_logits` from prepare when present (prototype, behind the existing off-by-default setting), with a kv-contract CI fixture and its test | spike numbers in this doc; test green |
 | 1 (shipped, Phase 1 PR) | `export_tabicl --split-context` emits the **kv** pair (classification), and the regression pair with the target scaler. Bundle both for `tabicl-v2` in `resources/`. Real-weights parity in CI's real-model job | `tabicl-v2` ships an exact pair |
 | 2 (shipped, Phase 1 PR) | `anofox_tabfm_context_cache_memory`, LRU over several contexts, `context_bytes` in `tabfm_models()`. Default the setting to `true` for exact pairs. Non-ORT devices fall back to the combined graph instead of erroring | the reporter's harness runs unchanged and gets the warm-call numbers |
-| 3 (query_batch shipped in Phase 1; row order open) | `opts.query_batch`: query chunking inside one call. Canonical row order, if measured worthwhile | chunked scoring costs one encode per call, not one per chunk |
+| 3 (query_batch shipped in Phase 1; row order planned) | `opts.query_batch`: query chunking inside one call. Canonical row order before encoding, on every call (measured worthwhile: an unordered context at `threads = 8` never hits; needs the exactness decision in Phase 1b part 2) | chunked scoring costs one encode per call, not one per chunk |
 | 4 | Further models, in the order in [Per model](#per-model), each with its own parity row | per model |
 | 5 | CUDA device-resident state (IoBinding); ROCm masked S-buckets; MLX named-state ABI | per backend |
 
