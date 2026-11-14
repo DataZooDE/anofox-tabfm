@@ -2153,8 +2153,9 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	spec.source_dir = NamedStr(input, "base_dir", ".");
 
 	// Tasks whose context rows need a second pass to carry usable fitted values (see ModelSpec).
-	if (input.named_parameters.count("fitted_second_pass") && !input.named_parameters.at("fitted_second_pass").IsNull()) {
-		for (auto &entry : ListValue::GetChildren(input.named_parameters.at("fitted_second_pass"))) {
+	auto fitted = duckdb_compat::FindNamedParameter(input.named_parameters, "fitted_second_pass");
+	if (fitted && !fitted->IsNull()) {
+		for (auto &entry : ListValue::GetChildren(*fitted)) {
 			spec.fitted_second_pass.push_back(ParseFittedSecondPassTask(entry.ToString(), "(tabfm_register_model)"));
 		}
 	}
