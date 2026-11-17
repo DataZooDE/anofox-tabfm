@@ -1,5 +1,6 @@
 #include "tabfm_registration.hpp"
 #include "tabfm_cpu_budget.hpp"
+#include "tabfm_registry.hpp"
 
 #include "duckdb/main/config.hpp"
 #include "duckdb/common/string_util.hpp"
@@ -8,6 +9,20 @@ namespace duckdb {
 namespace anofox {
 
 namespace {
+
+//! The gated models are read from the registry, not listed by hand: a hand-written list went stale
+//! as soon as new gated models were added.
+string AcceptHfLicenseDescription() {
+	vector<string> gated;
+	for (auto &spec : BuiltinModelSpecs()) {
+		if (spec.license.gate_setting == "accept_hf_license") {
+			gated.push_back(spec.id);
+		}
+	}
+	return "Accept the upstream licence of the gated models (" + StringUtil::Join(gated, ", ") +
+	       "; several are non-commercial, see the license and commercial columns of tabfm_list_models()). "
+	       "Downloads of those weights fail without this; the other models need no acknowledgement.";
+}
 
 void ValidateDevice(ClientContext &context, SetScope scope, Value &parameter) {
 	if (parameter.IsNull()) {
@@ -135,11 +150,8 @@ void ValidateContextCacheAdmit(ClientContext &context, SetScope scope, Value &pa
 void RegisterTabfmSettings(ExtensionLoader &loader) {
 	auto &config = DBConfig::GetConfig(loader.GetDatabaseInstance());
 
-	config.AddExtensionOption("anofox_tabfm_accept_hf_license",
-	                          "Accept the upstream licence of the gated models (tabfm-v1, the tabpfn-* models, causilo, "
-	                          "limix-2m; several are non-commercial, see the license column of tabfm_list_models()). "
-	                          "Downloads of those weights fail without this; the other models need no acknowledgement.",
-	                          LogicalType::BOOLEAN, Value::BOOLEAN(false));
+	config.AddExtensionOption("anofox_tabfm_accept_hf_license", AcceptHfLicenseDescription(), LogicalType::BOOLEAN,
+	                          Value::BOOLEAN(false));
 
 	config.AddExtensionOption("anofox_tabfm_cache_dir",
 	                          "Weight cache root directory (default ~/.cache/anofox-tabfm)", LogicalType::VARCHAR,

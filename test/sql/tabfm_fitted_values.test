@@ -1,0 +1,204 @@
+# name: test/sql/tabfm_fitted_values.test
+# description: The `is_training` rows of the single-relation form are documented as in-context FITTED VALUES.
+#              The property that makes them meaningful, and that needs no real weights to state:
+#
+#                a context row's fitted value is what the model says when you ask about THAT row as a query
+#
+#              Some graphs break it. They add a context row's label to that row's own representation and then
+#              decode every row with a head that was only ever trained on rows WITHOUT one, so the context
+#              rows' outputs come from inputs the head never saw. Measured on the real weights (eager
+#              PyTorch agrees with the engine to four digits): tabfm-v1 regression fitted corr -0.016,
+#              tabicl-v2 regression -0.364, tabfm-v1 classification 76% on iris, against +0.93 / +0.86 / 100%
+#              once the context rows are evaluated a second time as queries. Query rows do not move.
+#
+#              `fitted_second_pass` declares that a model needs the second pass. Registered twice from the same
+#              random-init fixture, 'fv-off' (as shipped before) and 'fv-on', so the effect and its absence
+#              are both pinned. A fixture cannot show the QUALITY gain (random weights fit nothing); that is
+#              the gated real-weights block in tabfm_real_models.test. Here the property is exact, so it is
+#              checked exactly.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fv-off', base_dir := 'test/fixtures/tabicl',
+  classification_graph := 'graph_tabicl_classification.onnx', regression_graph := 'graph_tabicl_regression.onnx',
+  classification_weights := 'model_classification.safetensors', regression_weights := 'model_regression.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json', license := 'bsd-3-clause', commercial := true,
+  weights_repo := 'local:test/fixtures/tabicl', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'tabicl_v2_raw', max_rows := 4096, max_features := 64, max_classes := 3)
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fv-on', base_dir := 'test/fixtures/tabicl',
+  classification_graph := 'graph_tabicl_classification.onnx', regression_graph := 'graph_tabicl_regression.onnx',
+  classification_weights := 'model_classification.safetensors', regression_weights := 'model_regression.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json', license := 'bsd-3-clause', commercial := true,
+  weights_repo := 'local:test/fixtures/tabicl', weights_revision := 'fixture-v1',
+  preprocessing_profile := 'tabicl_v2_raw', max_rows := 4096, max_features := 64, max_classes := 3,
+  fitted_second_pass := ['classification', 'regression'])
+
+# 20 rows, the first 12 labelled; features are unique per row so rows can be matched on their feature tuple
+statement ok
+CREATE TABLE base AS SELECT i AS id,
+  ((i*7) % 11) * 0.25 AS f1, ((i*3) % 7) * 0.5 AS f2, ((i*5) % 13) * 0.5 AS f3,
+  (i % 3)::DOUBLE AS lab, ((i*5) % 13) * 0.5 + (i % 3) AS tgt
+FROM range(20) r(i);
+
+query II
+SELECT count(*), count(DISTINCT (f1, f2, f3)) FROM base
+----
+20	20
+
+statement ok
+CREATE TABLE reg_one AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN tgt END AS y FROM base;
+
+statement ok
+CREATE TABLE cls_one AS SELECT f1, f2, f3, CASE WHEN id < 12 THEN lab END AS y FROM base;
+
+# what the model says about the 12 labelled rows when they are asked about as QUERIES: the reference
+statement ok
+CREATE TABLE reg_ctx AS SELECT f1, f2, f3, y FROM reg_one WHERE y IS NOT NULL;
+
+statement ok
+CREATE TABLE reg_ctx_x AS SELECT f1, f2, f3 FROM reg_one WHERE y IS NOT NULL;
+
+statement ok
+CREATE TABLE cls_ctx AS SELECT f1, f2, f3, y FROM cls_one WHERE y IS NOT NULL;
+
+statement ok
+CREATE TABLE cls_ctx_x AS SELECT f1, f2, f3 FROM cls_one WHERE y IS NOT NULL;
+
+# ---------------------------------------------------------------------------------------------
+# REGRESSION
+# ---------------------------------------------------------------------------------------------
+
+# The premise, with the flag OFF: the context rows' values are NOT what a query about them returns. On this
+# random-init fixture the effect is small (measured against the unfixed engine: max 6.2e-4, mean 2.6e-4 on 12
+# rows, because random weights barely read the label embedding) but it is 60 times the 1e-5 tolerance used below,
+# so the exact property still discriminates. If this ever reads false the fixture no longer shows the defect and
+# the rest of the file proves nothing.
+query I
+SELECT count(*) FILTER (WHERE abs(a.yhat - q.yhat) > 1e-5) > 0
+FROM tabfm_regress('reg_one', 'y', model := 'fv-off') a
+JOIN tabfm_regress('reg_ctx', 'y', test := 'reg_ctx_x', model := 'fv-off') q
+  ON a.f1 = q.f1 AND a.f2 = q.f2 AND a.f3 = q.f3
+WHERE a.is_training
+----
+true
+
+# Flag ON: every one of the 12 context rows equals its query-pass value, and all 12 are returned.
+query II
+SELECT count(*), count(*) FILTER (WHERE abs(a.yhat - q.yhat) > 1e-5)
+FROM tabfm_regress('reg_one', 'y', model := 'fv-on') a
+JOIN tabfm_regress('reg_ctx', 'y', test := 'reg_ctx_x', model := 'fv-on') q
+  ON a.f1 = q.f1 AND a.f2 = q.f2 AND a.f3 = q.f3
+WHERE a.is_training
+----
+12	0
+
+# The rows to predict are NOT touched: a query row's answer depends only on the context.
+query II
+SELECT count(*), count(*) FILTER (WHERE abs(a.yhat - b.yhat) > 1e-5)
+FROM tabfm_regress('reg_one', 'y', model := 'fv-off') a
+JOIN tabfm_regress('reg_one', 'y', model := 'fv-on') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+WHERE NOT a.is_training
+----
+8	0
+
+# The shape of the answer is unchanged: 20 rows, 12 flagged as context, none NULL or non-finite.
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL OR NOT isfinite(yhat))
+FROM tabfm_regress('reg_one', 'y', model := 'fv-on')
+----
+20	12	0
+
+# The two-table form returns only the test rows and is unchanged by the flag (it never reads the context
+# rows' own values).
+query II
+SELECT count(*), count(*) FILTER (WHERE abs(a.yhat - b.yhat) > 1e-5)
+FROM tabfm_regress('reg_ctx', 'y', test := '(SELECT f1, f2, f3 FROM reg_one WHERE y IS NULL)', model := 'fv-off') a
+JOIN tabfm_regress('reg_ctx', 'y', test := '(SELECT f1, f2, f3 FROM reg_one WHERE y IS NULL)', model := 'fv-on') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+----
+8	0
+
+# ---------------------------------------------------------------------------------------------
+# CLASSIFICATION
+# ---------------------------------------------------------------------------------------------
+
+# (classification, flag off: label unchanged but the score differs by up to 6.3e-4 on this fixture)
+query I
+SELECT count(*) FILTER (WHERE a.yhat <> q.yhat OR abs(a.yhat_score - q.yhat_score) > 1e-5) > 0
+FROM tabfm_classify('cls_one', 'y', model := 'fv-off') a
+JOIN tabfm_classify('cls_ctx', 'y', test := 'cls_ctx_x', model := 'fv-off') q
+  ON a.f1 = q.f1 AND a.f2 = q.f2 AND a.f3 = q.f3
+WHERE a.is_training
+----
+true
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat <> q.yhat OR abs(a.yhat_score - q.yhat_score) > 1e-5)
+FROM tabfm_classify('cls_one', 'y', model := 'fv-on') a
+JOIN tabfm_classify('cls_ctx', 'y', test := 'cls_ctx_x', model := 'fv-on') q
+  ON a.f1 = q.f1 AND a.f2 = q.f2 AND a.f3 = q.f3
+WHERE a.is_training
+----
+12	0
+
+query II
+SELECT count(*), count(*) FILTER (WHERE a.yhat <> b.yhat OR abs(a.yhat_score - b.yhat_score) > 1e-5)
+FROM tabfm_classify('cls_one', 'y', model := 'fv-off') a
+JOIN tabfm_classify('cls_one', 'y', model := 'fv-on') b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+WHERE NOT a.is_training
+----
+8	0
+
+# ---------------------------------------------------------------------------------------------
+# the option and the declaration
+# ---------------------------------------------------------------------------------------------
+
+# context_values := false skips the second pass (the two-table form sets it itself, since it throws the context
+# rows away). The rows to predict are unchanged and every row is still answered.
+query III
+SELECT count(*), count(*) FILTER (WHERE is_training), count(*) FILTER (WHERE yhat IS NULL OR NOT isfinite(yhat))
+FROM tabfm_regress('reg_one', 'y', model := 'fv-on', opts := MAP{'context_values': 'false'})
+----
+20	12	0
+
+query I
+SELECT count(*) FILTER (WHERE abs(a.yhat - b.yhat) > 1e-5)
+FROM tabfm_regress('reg_one', 'y', model := 'fv-on') a
+JOIN tabfm_regress('reg_one', 'y', model := 'fv-on', opts := MAP{'context_values': 'false'}) b
+  ON a.f1 = b.f1 AND a.f2 = b.f2 AND a.f3 = b.f3
+WHERE NOT a.is_training
+----
+0
+
+statement error
+SELECT count(*) FROM tabfm_regress('reg_one', 'y', model := 'fv-on', opts := MAP{'context_values': 'maybe'})
+----
+context_values
+
+# a typo in the declaration is an error naming the fix, not a silently ignored word
+statement error
+CALL tabfm_register_model(id := 'fv-typo', base_dir := 'test/fixtures/tabicl',
+  classification_graph := 'graph_tabicl_classification.onnx', classification_weights := 'model_classification.safetensors',
+  tensor_map := 'tensor_map_tabicl_classification.json', license := 'bsd-3-clause',
+  fitted_second_pass := ['regresion'])
+----
+fitted_second_pass
+
+# impute and generate never read a context row's own value, so they pay nothing for it and still work
+query I
+SELECT count(*) FROM tabfm_impute('(SELECT f1, CASE WHEN f2 > 2 THEN NULL ELSE f2 END AS f2, f3 FROM base)', model := 'fv-on')
+----
+20

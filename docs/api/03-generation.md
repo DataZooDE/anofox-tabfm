@@ -5,16 +5,20 @@ what binning preserves and why this is not a privacy mechanism: [docs/GENERATE.m
 
 ```sql
 tabfm_generate(data, n [, features] [, opts] [, model])           -- sample new rows
-tabfm_impute  (data [, columns] [, features] [, opts] [, model])  -- fill NULLs
+tabfm_impute  (data [, columns] [, features] [, opts] [, model] [, keep])  -- fill NULLs
 ```
 
 ```sql
-SELECT * FROM tabfm_generate('customers', 500, opts := MAP{'seed': '7', 'temperature': '0.8'}, model := 'mitra');
+SELECT * FROM tabfm_generate('(SELECT * EXCLUDE (id) FROM customers)', 500,
+                             opts := MAP{'seed': '7', 'temperature': '0.8'}, model := 'mitra');
 SELECT * FROM tabfm_impute('raw', columns := ['income'], opts := MAP{'rounds': '3'}, model := 'mitra');
 ```
 
 `n` is a positive constant. `columns` limits which columns are filled (default: every column with a NULL);
-`features` limits which columns are used at all. Generation needs only classification weights, so it works
+`features` limits which columns are used at all. `keep` (impute only) passes columns, such as a row key, through
+unchanged: they are never features and never filled, and a NULL in them stays NULL. A `keep` name that matches no
+column, or that is also in `columns` or `features`, is an error. `tabfm_generate` has no `keep`: a synthetic row has
+no source row to carry a key from. Generation needs only classification weights, so it works
 with classify-only models; imputing a numeric column also needs the model's regression weights. A `NaN` in
 a `FLOAT`/`DOUBLE` column being filled counts as missing, like `NULL`; `+/-Infinity` there is an error.
 
@@ -28,7 +32,7 @@ With `features` omitted, `tabfm_generate` returns every column of `data`, plus t
 | `synthetic_id` | `1..n` in generation order — joinable and reproducible |
 
 With `features` omitted, `tabfm_impute` returns **exactly** the columns of `data`, so it round-trips; with
-`features`, only the selected columns.
+`features`, only the selected columns plus any `keep` columns, in the order of `data`.
 
 ## Options
 
@@ -39,7 +43,7 @@ With `features` omitted, `tabfm_impute` returns **exactly** the columns of `data
 | `seed` | `42` | both | RNG seed; same seed → same rows within a build |
 | `temperature` | `1.0` | generate | diversity; higher explores more, lower hugs the data |
 | `bins` | `10` | generate | quantile buckets per continuous column, 2–10 (clamped to the model's class-head width) |
-| `column_order` | `random` | both | `random` \| `natural` \| `missingness` |
+| `column_order` | `random` | generate | `random` \| `natural` \| `missingness`; `tabfm_impute` ignores it and fills the column with the fewest NULLs first |
 | `rounds` | `1` | impute | MICE-style refinement sweeps, 1–16 |
 
 ## Cost and limits
@@ -47,5 +51,7 @@ With `features` omitted, `tabfm_impute` returns **exactly** the columns of `data
 Cost is one model call per column, run sequentially — it scales with the number
 of **columns**, not with `n`. Continuous columns are sampled through quantile
 bins, so generated values never leave the observed range and resolution is
-capped at `bins` levels; high-cardinality and temporal columns cannot be
+capped at `bins` levels. A wide empty stretch in a column is always a bin edge and
+is never interpolated across, so nothing is generated where the data has none;
+high-cardinality and temporal columns cannot be
 generation targets and must be excluded with `features :=`.

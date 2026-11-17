@@ -9,7 +9,7 @@
     "redistributable": true,
     "gate_setting": null
   },
-  "preprocessing_profile": "mitra_v1_minimal",
+  "preprocessing_profile": "mitra_v1_minmax",
   "weights": {
     "classification": {
       "repo": "autogluon/mitra-classifier",

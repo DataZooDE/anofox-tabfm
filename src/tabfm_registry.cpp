@@ -30,7 +30,7 @@ static const char *const BUILTIN_MITRA = R"json({
   "schema_version": 2, "id": "mitra", "display_name": "Mitra (AWS AutoGluon)",
   "family": "icl-transformer",
   "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null},
-  "preprocessing_profile": "mitra_v1_minimal",
+  "preprocessing_profile": "mitra_v1_minmax",
   "weights": {
     "classification": {"repo": "autogluon/mitra-classifier", "revision": "c425e9fa0910a6be1c494321792e7ba2a1367b1a",
       "files": [{"path": "model.safetensors", "bytes": 302717904,
@@ -319,6 +319,7 @@ static const char *const BUILTIN_TABICL = R"json({
     "tensor_map": {"classification": "tensor_map_tabicl_classification.json",
                    "regression": "tensor_map_tabicl_regression.json"}},
   "capabilities": ["classify", "regress"],
+  "fitted_second_pass": ["classification", "regression"],
   "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
                       "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
   "size_regime": {"max_rows": 100000, "max_features": 512, "max_classes": 10}
@@ -572,6 +573,7 @@ static const char *const BUILTIN_TABFM_V1_1 = R"json({
     "tensor_map": {"classification": "tensor_map_classification.json",
                    "regression": "tensor_map_regression.json"}},
   "capabilities": ["classify", "regress"],
+  "fitted_second_pass": ["classification", "regression"],
   "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
                                  "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
                       "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
@@ -820,6 +822,7 @@ static const char *const BUILTIN_KUMO_SMALL = R"json({
     "tensor_map": {"classification": "tensor_map_kumo_small_classification.json",
                    "regression": "tensor_map_kumo_small_regression.json"}},
   "capabilities": ["classify", "regress"],
+  "fitted_second_pass": ["classification", "regression"],
   "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
                                  "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
                       "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
@@ -845,6 +848,7 @@ static const char *const BUILTIN_KUMO_MEDIUM = R"json({
     "tensor_map": {"classification": "tensor_map_kumo_medium_classification.json",
                    "regression": "tensor_map_kumo_medium_regression.json"}},
   "capabilities": ["classify", "regress"],
+  "fitted_second_pass": ["classification", "regression"],
   "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
                                  "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
                       "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
@@ -870,6 +874,7 @@ static const char *const BUILTIN_KUMO_LARGE = R"json({
     "tensor_map": {"classification": "tensor_map_kumo_large_classification.json",
                    "regression": "tensor_map_kumo_large_regression.json"}},
   "capabilities": ["classify", "regress"],
+  "fitted_second_pass": ["classification", "regression"],
   "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"},
                                  "train_size": {"name": "train_size", "dtype": "i64"}, "n_features": {"name": "d", "dtype": "i64"}},
                       "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
@@ -885,6 +890,10 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	    ParseModelSpec(BuiltinTabFMManifestJson(TabFMTask::REGRESSION), "(built-in tabfm-v1 regression)");
 	spec.tasks.emplace(TabFMTask::REGRESSION, reg_spec.tasks.at(TabFMTask::REGRESSION));
 	spec.capabilities = {"classify", "regress"};
+	// tabfm-v1 adds a context row's label to every cell of that row at the entry, so a context row's own output is
+	// not a fitted value for either task (measured: regression corr -0.016, classification 76% on iris). Evaluate
+	// the context rows a second time as queries; query rows are unchanged to the last bit.
+	spec.fitted_second_pass = {TabFMTask::CLASSIFICATION, TabFMTask::REGRESSION};
 	spec.display_name = "Google TabFM v1";
 	spec.family = "icl-transformer";
 	// Non-commercial weights → the license gate fires (unchanged behavior).

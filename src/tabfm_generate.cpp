@@ -121,6 +121,71 @@ Value CoerceNumeric(double v, const LogicalType &type, double lo, double hi) {
 // Sampling primitives
 //===--------------------------------------------------------------------===//
 
+namespace {
+
+idx_t DistinctCount(const vector<double> &sorted, idx_t begin, idx_t end) {
+	if (end <= begin) {
+		return 0;
+	}
+	idx_t distinct = 1;
+	for (idx_t i = begin + 1; i < end; i++) {
+		if (sorted[i] != sorted[i - 1]) {
+			distinct++;
+		}
+	}
+	return distinct;
+}
+
+// Plain order-statistic quantile edges over sorted[begin, end), k bins: strictly increasing, first = min,
+// last = max. Fewer than 2 distinct values -> just {min}.
+vector<double> SortedQuantileEdges(const vector<double> &sorted, idx_t begin, idx_t end, idx_t k) {
+	vector<double> edges;
+	const idx_t n = end - begin;
+	edges.push_back(sorted[begin]);
+	if (n < 2 || k < 2 || sorted[end - 1] == sorted[begin]) {
+		if (sorted[end - 1] > edges.back()) {
+			edges.push_back(sorted[end - 1]);
+		}
+		return edges;
+	}
+	for (idx_t i = 1; i < k; i++) {
+		auto pos = static_cast<idx_t>((static_cast<double>(i) * static_cast<double>(n)) / static_cast<double>(k));
+		if (pos >= n) {
+			pos = n - 1;
+		}
+		auto candidate = sorted[begin + pos];
+		// Ties collapse: keep the edge list strictly increasing so every bin has
+		// a non-empty span and BinOf stays unambiguous.
+		if (candidate > edges.back()) {
+			edges.push_back(candidate);
+		}
+	}
+	if (sorted[end - 1] > edges.back()) {
+		edges.push_back(sorted[end - 1]);
+	}
+	return edges;
+}
+
+} // namespace
+
+double GenerateGapThreshold(const vector<double> &sorted, idx_t bins) {
+	if (sorted.size() < 2 || bins < 1) {
+		return std::numeric_limits<double>::infinity();
+	}
+	const idx_t k = MinValue<idx_t>(bins, DistinctCount(sorted, 0, sorted.size()));
+	const double range = sorted.back() - sorted.front();
+	if (k < 2 || !(range > 0)) {
+		return std::numeric_limits<double>::infinity();
+	}
+	// Never coarser than a tenth of the range: a model with few classes gets few, wide bins, and a gap is MORE
+	// harmful there, not less (the 3-class fixture would otherwise miss a gap as wide as iris's).
+	return range / static_cast<double>(MaxValue<idx_t>(k, kDefaultGenerateBins));
+}
+
+idx_t GenerateGapMinSide(idx_t n, idx_t bins) {
+	return MaxValue<idx_t>(2, bins == 0 ? n : n / (4 * bins));
+}
+
 vector<double> QuantileEdges(vector<double> values, idx_t bins) {
 	vector<double> edges;
 	// Drop NULL-ish entries; a column of all NaN has no distribution.
@@ -133,34 +198,80 @@ vector<double> QuantileEdges(vector<double> values, idx_t bins) {
 	std::sort(values.begin(), values.end());
 	const idx_t n = values.size();
 
-	// Order-statistic quantiles. More bins than distinct values is pointless —
-	// the duplicate edges would collapse below anyway — so cap up front.
-	idx_t distinct = 1;
-	for (idx_t i = 1; i < n; i++) {
-		if (values[i] != values[i - 1]) {
-			distinct++;
-		}
-	}
+	// More bins than distinct values is pointless -- the duplicate edges would
+	// collapse anyway -- so cap up front.
+	const idx_t distinct = DistinctCount(values, 0, n);
 	if (distinct < 2) {
 		return edges;
 	}
 	const idx_t k = MinValue<idx_t>(bins, distinct);
 
-	edges.push_back(values.front());
-	for (idx_t i = 1; i < k; i++) {
-		auto pos = static_cast<idx_t>((static_cast<double>(i) * static_cast<double>(n)) / static_cast<double>(k));
-		if (pos >= n) {
-			pos = n - 1;
-		}
-		auto candidate = values[pos];
-		// Ties collapse: keep the edge list strictly increasing so every bin has
-		// a non-empty span and BinOf stays unambiguous.
-		if (candidate > edges.back()) {
-			edges.push_back(candidate);
+	// The gaps that become edges: wider than an average bin, with enough observations on both sides to be a
+	// cluster rather than an outlier; the widest first, at most k - 1 of them (every cluster needs a bin).
+	const double threshold = GenerateGapThreshold(values, k);
+	const idx_t min_side = GenerateGapMinSide(n, k);
+	vector<std::pair<double, idx_t>> gaps; // (width, index of the first value after the gap)
+	for (idx_t i = 1; i < n; i++) {
+		const double width = values[i] - values[i - 1];
+		if (width > threshold && i >= min_side && n - i >= min_side) {
+			gaps.emplace_back(width, i);
 		}
 	}
-	if (values.back() > edges.back()) {
-		edges.push_back(values.back());
+	std::sort(gaps.begin(), gaps.end(), [](const std::pair<double, idx_t> &a, const std::pair<double, idx_t> &b) {
+		return a.first > b.first || (a.first == b.first && a.second < b.second);
+	});
+	if (gaps.size() > k - 1) {
+		gaps.resize(k - 1);
+	}
+	vector<idx_t> cuts = {0};
+	for (auto &gap : gaps) {
+		cuts.push_back(gap.second);
+	}
+	std::sort(cuts.begin(), cuts.end());
+	cuts.push_back(n);
+	const idx_t segments = cuts.size() - 1;
+
+	// Share the k bins: one per cluster, the rest by cluster size (largest remainder), never more bins in a
+	// cluster than it has distinct values.
+	vector<idx_t> share(segments, 1);
+	vector<idx_t> capacity(segments);
+	for (idx_t s = 0; s < segments; s++) {
+		capacity[s] = DistinctCount(values, cuts[s], cuts[s + 1]);
+	}
+	idx_t left = k - segments;
+	while (left > 0) {
+		idx_t best = segments;
+		double best_need = -1;
+		for (idx_t s = 0; s < segments; s++) {
+			if (share[s] >= capacity[s]) {
+				continue;
+			}
+			const double size = static_cast<double>(cuts[s + 1] - cuts[s]);
+			const double need = size * static_cast<double>(k) / static_cast<double>(n) - static_cast<double>(share[s]);
+			if (need > best_need) {
+				best_need = need;
+				best = s;
+			}
+		}
+		if (best == segments) {
+			break;
+		}
+		share[best]++;
+		left--;
+	}
+
+	// Each cluster's own quantile edges, minus its maximum: the next cluster's first value closes its last bin.
+	for (idx_t s = 0; s < segments; s++) {
+		auto local = SortedQuantileEdges(values, cuts[s], cuts[s + 1], share[s]);
+		const bool last = s + 1 == segments;
+		if (!last && local.size() > 1) {
+			local.pop_back();
+		}
+		edges.insert(edges.end(), local.begin(), local.end());
+	}
+	// A last cluster of one distinct value contributed only {value}: close its bin just above it.
+	if (segments > 1 && capacity[segments - 1] == 1) {
+		edges.push_back(std::nextafter(edges.back(), std::numeric_limits<double>::infinity()));
 	}
 	if (edges.size() < 2) {
 		edges.clear();
@@ -196,7 +307,7 @@ Value ExpandBin(const ColumnPlan &plan, idx_t bin, TabFMRandom &rng) {
 		bin = bin_count - 1;
 	}
 	const double lo = edges[bin];
-	const double hi = edges[bin + 1];
+	const double hi = MinValue<double>(edges[bin + 1], plan.ObservedMax());
 
 	// Empirical inverse CDF within the bin, when we know which observations fell
 	// in it: pick a uniform position among them and interpolate between
@@ -218,7 +329,17 @@ Value ExpandBin(const ColumnPlan &plan, idx_t bin, TabFMRandom &rng) {
 			// Interpolate toward the next observation, or toward the bin's upper
 			// edge for the last one, so the top of the bin stays reachable.
 			const double b = (start + offset + 1 < end) ? plan.sorted_values[start + offset + 1] : hi;
-			return CoerceNumeric(a + fraction * (b - a), plan.type, lo, hi);
+			if (b - a <= plan.gap_threshold) {
+				return CoerceNumeric(a + fraction * (b - a), plan.type, lo, hi);
+			}
+			// The next observation is a gap away: never draw inside it. Lean back toward the previous
+			// observation instead (still a novel value), or keep this one when it is isolated on both sides.
+			const idx_t index = start + offset;
+			const double p = index > 0 ? plan.sorted_values[index - 1] : a;
+			if (a - p <= plan.gap_threshold) {
+				return CoerceNumeric(a - fraction * (a - p), plan.type, lo, hi);
+			}
+			return CoerceNumeric(a, plan.type, lo, hi);
 		}
 	}
 	// No observations recorded for this bin (degenerate plan): fall back to a
@@ -336,7 +457,7 @@ Value DecodePointEstimate(const ColumnPlan &plan, const Value &yhat) {
 	}
 	if (plan.kind == GenColumnKind::CONTINUOUS) {
 		const double lo = plan.edges.empty() ? -std::numeric_limits<double>::infinity() : plan.edges.front();
-		const double hi = plan.edges.empty() ? std::numeric_limits<double>::infinity() : plan.edges.back();
+		const double hi = plan.edges.empty() ? std::numeric_limits<double>::infinity() : plan.ObservedMax();
 		auto raw = AsDouble(yhat);
 		if (!std::isfinite(raw)) {
 			return Value(plan.type);
@@ -428,6 +549,7 @@ ColumnPlan PlanColumn(const string &name, const LogicalType &type, const vector<
 		// SORTED values contiguously (BinOf is monotone in value), so the offsets
 		// are just the running counts.
 		std::sort(plan.sorted_values.begin(), plan.sorted_values.end());
+		plan.gap_threshold = GenerateGapThreshold(plan.sorted_values, MinValue<idx_t>(bins, max_labels));
 		plan.bin_offsets.assign(plan.BinCount() + 1, 0);
 		for (idx_t b = 0; b < plan.BinCount(); b++) {
 			plan.bin_offsets[b + 1] = plan.bin_offsets[b] + plan.bin_counts[b];
@@ -484,6 +606,8 @@ TabFMPredictOptions StepOptions(const TabFMGenerateOptions &opts, TabFMTask task
 	popts.n_estimators = 1;
 	popts.seed = opts.seed;
 	popts.softmax_temperature = opts.temperature;
+	// generate and impute never read a labelled row's own output, so they never pay for a second pass over them
+	popts.context_values = false;
 	popts.model = opts.model;
 	return popts;
 }
@@ -785,6 +909,10 @@ struct GenerateBindData : public FunctionData {
 	idx_t max_rows = 10000;
 	//! What `features := [...]` asked for, unit-separated, as the macro saw it.
 	string requested_features;
+	//! impute: what `keep := [...]` asked for, unit-separated, and the column indices it resolved to
+	//! (ascending). Kept columns ride along in the row but are never features and never filled.
+	string requested_keep;
+	vector<idx_t> keep_columns;
 	PredictContext context;
 
 	unique_ptr<FunctionData> Copy() const override {
@@ -797,7 +925,7 @@ struct GenerateBindData : public FunctionData {
 		       options.seed == other.options.seed && options.temperature == other.options.temperature &&
 		       options.bins == other.options.bins && options.column_order == other.options.column_order &&
 		       options.rounds == other.options.rounds && options.model == other.options.model &&
-		       max_rows == other.max_rows;
+		       max_rows == other.max_rows && keep_columns == other.keep_columns;
 	}
 
 	//! generate: LIST(STRUCT(cols, synthetic_id)); impute: LIST(STRUCT(cols)).
@@ -869,6 +997,9 @@ void ParseOneOption(const string &fname, GenerateBindData &bind, const string &k
 			throw BinderException("%s: rounds must be an integer between 1 and 16, got '%s'", fname, val);
 		}
 		opts.rounds = NumericCast<idx_t>(n);
+	} else if (key == "__keep") {
+		// Internal: impute's `keep := [...]`, forwarded by the macro.
+		bind.requested_keep = val;
 	} else if (key == "__features") {
 		// Internal: what `features := [...]` asked for, so bind can tell a
 		// misspelled column from one deliberately excluded.
@@ -953,6 +1084,68 @@ void CaptureContext(ClientContext &context, GenerateBindData &bind) {
 	}
 }
 
+vector<string> SplitUnitSeparated(const string &joined) {
+	vector<string> out;
+	size_t start = 0;
+	while (start <= joined.size()) {
+		auto end = joined.find('\x1f', start);
+		if (end == string::npos) {
+			end = joined.size();
+		}
+		auto name = joined.substr(start, end - start);
+		if (!name.empty()) {
+			out.push_back(std::move(name));
+		}
+		start = end + 1;
+	}
+	return out;
+}
+
+bool IsKept(const GenerateBindData &bind, idx_t column) {
+	return std::find(bind.keep_columns.begin(), bind.keep_columns.end(), column) != bind.keep_columns.end();
+}
+
+//! impute's keep := [...]: resolve the names to column indices. A column is either modelled or passed
+//! through, so a kept name must exist and must not also be a fill target or a listed feature.
+void ResolveKeep(GenerateBindData &bind, const child_list_t<LogicalType> &fields, const string &fname) {
+	if (bind.requested_keep.empty()) {
+		return;
+	}
+	const auto features = SplitUnitSeparated(bind.requested_features);
+	for (auto &wanted : SplitUnitSeparated(bind.requested_keep)) {
+		idx_t found = DConstants::INVALID_INDEX;
+		for (idx_t i = 0; i < fields.size(); i++) {
+			if (StringUtil::CIEquals(duckdb_compat::Str(fields[i].first), wanted)) {
+				found = i;
+				break;
+			}
+		}
+		if (found == DConstants::INVALID_INDEX) {
+			throw BinderException("%s: keep := [...] names '%s', which matched no column. Check it against the "
+			                      "relation's columns (matching is case-insensitive)",
+			                      fname, wanted);
+		}
+		for (auto &f : features) {
+			if (StringUtil::CIEquals(f, wanted)) {
+				throw BinderException("%s: '%s' is in both features := [...] and keep := [...]; a column is either "
+				                      "modelled or passed through",
+				                      fname, wanted);
+			}
+		}
+		for (auto t : bind.targets) {
+			if (t == found) {
+				throw BinderException("%s: '%s' is in both columns := [...] and keep := [...]; a kept column is "
+				                      "passed through, never filled",
+				                      fname, wanted);
+			}
+		}
+		if (!IsKept(bind, found)) {
+			bind.keep_columns.push_back(found);
+		}
+	}
+	std::sort(bind.keep_columns.begin(), bind.keep_columns.end());
+}
+
 unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, duckdb_compat::AggregateBindFunction &function,
                                               vector<unique_ptr<Expression>> &arguments, const string &fname,
                                               bool is_impute) {
@@ -970,19 +1163,6 @@ unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, duckdb_com
 	if (fields.empty()) {
 		throw BinderException("%s: the input relation has no columns", fname);
 	}
-	// Every column is both a feature and (in turn) a target of the chain rule, so
-	// a nested column is unusable in either role: it would be ordinal-encoded as
-	// garbage and — for generate — SAMPLED, silently emitting meaningless values
-	// in that column. Reject it here (issue #17).
-	for (auto &field : fields) {
-		if (!IsUnsupportedNestedType(field.second)) {
-			continue;
-		}
-		throw BinderException("%s: column '%s' has unsupported type %s; columns must be scalar — project it into "
-		                      "scalar columns (e.g. %s[1] AS f1, %s[2] AS f2) or exclude it with features := [...]",
-		                      fname, duckdb_compat::Str(field.first), field.second.ToString(), duckdb_compat::Str(field.first), duckdb_compat::Str(field.first));
-	}
-
 	// arg 1: generate -> n (BIGINT); impute -> columns (VARCHAR[] or NULL)
 	if (!arguments[1]->IsFoldable()) {
 		throw BinderException("%s: %s must be a constant", fname, is_impute ? "columns" : "n");
@@ -1088,13 +1268,34 @@ unique_ptr<FunctionData> GenerateBindInternal(ClientContext &context, duckdb_com
 		}
 	}
 
+	ResolveKeep(*bind, fields, fname);
+
+	// Every column is both a feature and (in turn) a target of the chain rule, so
+	// a nested column is unusable in either role: it would be ordinal-encoded as
+	// garbage and — for generate — SAMPLED, silently emitting meaningless values
+	// in that column. Reject it here (issue #17).
+	// A kept column is neither, so it may be of any type.
+	for (idx_t c = 0; c < fields.size(); c++) {
+		auto &field = fields[c];
+		if (IsKept(*bind, c) || !IsUnsupportedNestedType(field.second)) {
+			continue;
+		}
+		throw BinderException("%s: column '%s' has unsupported type %s; columns must be scalar — project it into "
+		                      "scalar columns (e.g. %s[1] AS f1, %s[2] AS f2) or exclude it with features := [...]",
+		                      fname, duckdb_compat::Str(field.first), field.second.ToString(), duckdb_compat::Str(field.first), duckdb_compat::Str(field.first));
+	}
+
 	bind->max_rows = ReadSettingUBigint(context, "anofox_tabfm_max_rows", 10000);
 	const auto max_features = ReadSettingUBigint(context, "anofox_tabfm_max_features", 500);
-	if (fields.size() > max_features) {
+	const idx_t modelled = fields.size() - bind->keep_columns.size();
+	if (modelled == 0) {
+		throw BinderException("%s: every column is in keep := [...]; there is nothing left to model", fname);
+	}
+	if (modelled > max_features) {
 		throw BinderException("%s: %llu columns exceed anofox_tabfm_max_features (%llu). Raise it with "
 		                      "SET anofox_tabfm_max_features = %llu; or pass a feature list",
-		                      fname, (unsigned long long)fields.size(), (unsigned long long)max_features,
-		                      (unsigned long long)fields.size());
+		                      fname, (unsigned long long)modelled, (unsigned long long)max_features,
+		                      (unsigned long long)modelled);
 	}
 	if (!is_impute && bind->n > bind->max_rows) {
 		throw BinderException("%s: n (%llu) exceeds anofox_tabfm_max_rows (%llu). Raise it with "
@@ -1353,10 +1554,42 @@ void GenerateAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_da
 		}
 
 		if (bind.is_impute) {
-			vector<idx_t> targets = bind.targets;
+			// keep := [...]: the model sees only the other columns; kept cells are spliced back below.
+			const bool has_keep = !bind.keep_columns.empty();
+			vector<idx_t> modelled_of; // projected index -> original index
+			child_list_t<LogicalType> model_fields;
+			vector<vector<Value>> kept_rows;
+			if (has_keep) {
+				for (idx_t c = 0; c < fields.size(); c++) {
+					if (!IsKept(bind, c)) {
+						modelled_of.push_back(c);
+						model_fields.push_back(fields[c]);
+					}
+				}
+				kept_rows.reserve(rows.size());
+				for (auto &row : rows) {
+					vector<Value> projected;
+					projected.reserve(modelled_of.size());
+					for (auto c : modelled_of) {
+						projected.push_back(row[c]);
+					}
+					kept_rows.push_back(std::move(row));
+					row = std::move(projected);
+				}
+			}
+			const auto &mfields = has_keep ? model_fields : fields;
+			vector<idx_t> targets;
+			for (auto t : bind.targets) {
+				if (!has_keep) {
+					targets.push_back(t);
+					continue;
+				}
+				targets.push_back(NumericCast<idx_t>(
+				    std::find(modelled_of.begin(), modelled_of.end(), t) - modelled_of.begin()));
+			}
 			if (!bind.targets_explicit) {
 				// Default: every column that actually has a gap (NULL or NaN) to fill.
-				for (idx_t c = 0; c < fields.size(); c++) {
+				for (idx_t c = 0; c < mfields.size(); c++) {
 					bool has_gap = false;
 					for (idx_t r = 0; r < rows.size() && !has_gap; r++) {
 						has_gap = ClassifyTargetValue(rows[r][c]) == TargetValueKind::MISSING;
@@ -1366,9 +1599,17 @@ void GenerateAggFinalize(Vector &state_vector, AggregateInputData &aggr_input_da
 					}
 				}
 			}
-			NormalizeMissingCells(rows, fields, targets);
-			auto plans = PlanAll(rows, fields, bind.options, bind.function_name, &targets);
-			auto filled = RunImpute(rows, fields, plans, targets, bind.options, bind.context);
+			NormalizeMissingCells(rows, mfields, targets);
+			auto plans = PlanAll(rows, mfields, bind.options, bind.function_name, &targets);
+			auto filled = RunImpute(rows, mfields, plans, targets, bind.options, bind.context);
+			if (has_keep) {
+				for (idx_t r = 0; r < filled.size(); r++) {
+					for (idx_t j = 0; j < modelled_of.size(); j++) {
+						kept_rows[r][modelled_of[j]] = std::move(filled[r][j]);
+					}
+					filled[r] = std::move(kept_rows[r]);
+				}
+			}
 			for (auto &row : filled) {
 				child_list_t<Value> outer;
 				outer.emplace_back("cols", Value::STRUCT(bind.row_type, row));

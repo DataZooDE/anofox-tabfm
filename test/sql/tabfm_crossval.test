@@ -234,9 +234,31 @@ SELECT count(*) FROM tabfm_cross_validate('cv_reg', 'price', 'id',
 ----
 0
 
+# task is validated: 'auto' (which tabfm_classify's opts accept) and typos used to run
+# a CLASSIFICATION silently. The error names the regression fix.
+statement error
+SELECT * FROM tabfm_cross_validate('cv_reg', 'price', 'id', k := 2, task := 'auto')
+----
+<REGEX>:.*tabfm_cross_validate: task must be 'classification' or 'regression', got 'auto'.*task := 'regression'.*
+
+statement error
+SELECT * FROM tabfm_cross_validate('cv_reg', 'price', 'id', k := 2, task := 'regresion')
+----
+<REGEX>:.*task must be 'classification' or 'regression', got 'regresion'.*
+
 # Restore classification fixture for the leakage golden test (uses classification model).
 statement ok
 SET anofox_tabfm_default_model = 'cv-fixture'
+
+# A numeric target CLASSIFIED (the default task) with more distinct values than the
+# model's class head: the ceiling error now says it looks like a quantity.
+statement ok
+CREATE TABLE cv_reg_many AS SELECT i AS id, i * 0.1 AS f1, i * 1.37 AS price FROM range(24) t(i);
+
+statement error
+SELECT * FROM tabfm_cross_validate('cv_reg_many', 'price', 'id', k := 2)
+----
+<REGEX>:.*supports at most.*'price' is DECIMAL.*tabfm_regress.*task := 'regression'.*
 
 # ============================================================================
 # CV-02 GATE: NON-NEGOTIABLE leakage-detecting golden test
@@ -376,6 +398,57 @@ tabfm_cross_validate
 # Reset to no model (clean state for other tests)
 statement ok
 SET anofox_tabfm_default_model = ''
+
+# --- Neither the row key nor the fold id is a feature -------------------------
+# Every per-fold metric equals a hand-written fold loop over tabfm_fold_assign that
+# drops fold_id/_cv_rk and passes the key through keep. Before, every fold's rows
+# carried the internal _cv_fold_id as a feature (each test row holding the held-out
+# fold's value, which no context row has), and the key was a feature too.
+# k = 3 and regression on purpose: with k = 2 the fold column is constant within the
+# context and the engine drops it, and RMSE (unlike accuracy) moves with any change
+# in the predictions, so a leaked column cannot hide.
+statement ok
+SET anofox_tabfm_default_model = 'cv-reg'
+
+statement ok
+CREATE TABLE cv_reg30 AS
+SELECT i AS id, (i * 0.37) % 3 AS f1, (i * 1.7) % 2 - 1 AS f2, 10 + i * 0.5 + (i % 4) AS price
+FROM range(1, 31) t(i);
+
+statement ok
+CREATE TABLE cv_fa AS SELECT * FROM tabfm_fold_assign('cv_reg30', 3, 'id', 42);
+
+query I
+SELECT count(*) FROM (
+  SELECT fold_id, round(metric_value, 9)
+  FROM tabfm_cross_validate('cv_reg30', 'price', 'id', k := 3, seed := 42, task := 'regression')
+  WHERE fold_id >= 0
+  EXCEPT (
+  SELECT 0, round(tabfm_rmse(c.price, p.yhat), 9)
+  FROM tabfm_regress('(SELECT * EXCLUDE (fold_id, _cv_rk) FROM cv_fa WHERE fold_id <> 0)', 'price',
+                     test := '(SELECT * EXCLUDE (fold_id, _cv_rk) FROM cv_fa WHERE fold_id = 0)',
+                     keep := ['id']) p JOIN cv_reg30 c USING (id)
+  UNION ALL
+  SELECT 1, round(tabfm_rmse(c.price, p.yhat), 9)
+  FROM tabfm_regress('(SELECT * EXCLUDE (fold_id, _cv_rk) FROM cv_fa WHERE fold_id <> 1)', 'price',
+                     test := '(SELECT * EXCLUDE (fold_id, _cv_rk) FROM cv_fa WHERE fold_id = 1)',
+                     keep := ['id']) p JOIN cv_reg30 c USING (id)
+  UNION ALL
+  SELECT 2, round(tabfm_rmse(c.price, p.yhat), 9)
+  FROM tabfm_regress('(SELECT * EXCLUDE (fold_id, _cv_rk) FROM cv_fa WHERE fold_id <> 2)', 'price',
+                     test := '(SELECT * EXCLUDE (fold_id, _cv_rk) FROM cv_fa WHERE fold_id = 2)',
+                     keep := ['id']) p JOIN cv_reg30 c USING (id)))
+----
+0
+
+statement ok
+SET anofox_tabfm_default_model = 'cv-fixture'
+
+# task is matched case-insensitively, like the predict functions' opts
+query I
+SELECT count(*) FROM tabfm_cross_validate('cv_clf', 'label', 'id', k := 2, task := 'Classification')
+----
+3
 
 statement ok
 CALL tabfm_unregister_model('cv-fixture')

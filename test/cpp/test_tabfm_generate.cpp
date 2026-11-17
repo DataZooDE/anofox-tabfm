@@ -90,7 +90,12 @@ TEST_CASE("generate: ties collapse instead of producing empty bins", "[tabfm][ge
 		REQUIRE(edges[i] > edges[i - 1]);
 	}
 	REQUIRE(edges.front() == 1.0);
-	REQUIRE(edges.back() == 9.0);
+	// Three levels this far apart are three clusters: each its own bin, the top one closed just above 9.
+	REQUIRE(edges.size() == 4);
+	REQUIRE(edges[1] == 5.0);
+	REQUIRE(edges[2] == 9.0);
+	REQUIRE(edges.back() >= 9.0);
+	REQUIRE(edges.back() < 9.0 + 1e-9);
 }
 
 TEST_CASE("generate: degenerate columns have no edges", "[tabfm][generate]") {
@@ -151,8 +156,9 @@ TEST_CASE("generate: ExpandBin rounds integer columns instead of truncating", "[
 	REQUIRE(plan.kind == GenColumnKind::CONTINUOUS);
 	TabFMRandom rng(1);
 	bool saw_three = false, saw_four = false;
+	// Two levels: each is its own bin now (the step between them is a gap), so draw from every bin.
 	for (int i = 0; i < 500; i++) {
-		auto v = ExpandBin(plan, 0, rng);
+		auto v = ExpandBin(plan, i % plan.BinCount(), rng);
 		REQUIRE(v.type().id() == LogicalTypeId::INTEGER);
 		auto n = IntegerValue::Get(v);
 		REQUIRE(n >= 3);
@@ -221,6 +227,104 @@ TEST_CASE("generate: ExpandBin follows the bin's shape, not its span",
 	// deliberate trade, not an oversight. 2x fails the old behaviour by a wide
 	// margin while leaving room for RNG wobble.
 	REQUIRE(sampled_mean < real_mean * 2.0);
+}
+
+//===--------------------------------------------------------------------===//
+// Gaps: a bin must not straddle an empty stretch of the column
+//
+// Iris petal length: setosa 1.0-1.9, the others 3.0-6.9, nothing between. Its decile bin [1.7, 3.9) held
+// setosa's top values AND versicolor's bottom ones, and ExpandBin draws from all of a bin's observations
+// whatever the row was conditioned on: so a setosa row the model correctly put in that bin came out with a
+// versicolor-sized petal (or one inside the gap, by interpolating across it). Measured through tabfm_generate
+// on the real iris table, identically with mitra, tabpfn-v2-6 and tabicl-v2: generated setosa petal length
+// sd 0.51 vs real 0.17, 7 of 98 setosa rows at 2.0-3.9 cm.
+//===--------------------------------------------------------------------===//
+
+namespace {
+// Two clusters with a wide empty stretch between them: 50 values in [1.0, 1.98], 100 in [3.0, 6.96].
+vector<Value> TwoClusters() {
+	vector<Value> values;
+	for (int i = 0; i < 50; i++) {
+		values.push_back(Value::DOUBLE(1.0 + i * 0.02));
+	}
+	for (int i = 0; i < 100; i++) {
+		values.push_back(Value::DOUBLE(3.0 + i * 0.04));
+	}
+	return values;
+}
+} // namespace
+
+TEST_CASE("generate: a wide gap is a bin edge, so no bin holds both sides", "[tabfm][generate][gaps]") {
+	auto plan = PlanColumn("petal", LogicalType::DOUBLE, TwoClusters(), 10);
+	REQUIRE(plan.kind == GenColumnKind::CONTINUOUS);
+	REQUIRE(plan.BinCount() <= 10);
+	REQUIRE(BinOf(1.98, plan.edges) != BinOf(3.0, plan.edges));
+	// 3.0, the first value after the gap, starts a bin.
+	REQUIRE(std::find(plan.edges.begin(), plan.edges.end(), 3.0) != plan.edges.end());
+	// The bins still tile the observed range.
+	REQUIRE(plan.edges.front() == 1.0);
+	REQUIRE(plan.edges.back() >= 6.96);
+}
+
+TEST_CASE("generate: nothing is drawn inside a gap", "[tabfm][generate][gaps]") {
+	auto plan = PlanColumn("petal", LogicalType::DOUBLE, TwoClusters(), 10);
+	TabFMRandom rng(42);
+	for (idx_t b = 0; b < plan.BinCount(); b++) {
+		for (int i = 0; i < 2000; i++) {
+			auto d = DoubleValue::Get(ExpandBin(plan, b, rng));
+			INFO("bin " << b << " drew " << d);
+			REQUIRE_FALSE((d > 1.98 && d < 3.0));
+		}
+	}
+}
+
+TEST_CASE("generate: the bin budget is shared across the clusters a gap separates", "[tabfm][generate][gaps]") {
+	// Three clusters of 40 (0-3.9, 20-23.9, 40-43.9): both gaps become edges and the 10 bins are spread over
+	// the clusters by their size, never more than requested.
+	vector<Value> values;
+	for (int c = 0; c < 3; c++) {
+		for (int i = 0; i < 40; i++) {
+			values.push_back(Value::DOUBLE(c * 20.0 + i * 0.1));
+		}
+	}
+	auto plan = PlanColumn("x", LogicalType::DOUBLE, values, 10);
+	REQUIRE(plan.BinCount() <= 10);
+	REQUIRE(plan.BinCount() >= 8);
+	REQUIRE(BinOf(3.9, plan.edges) != BinOf(20.0, plan.edges));
+	REQUIRE(BinOf(23.9, plan.edges) != BinOf(40.0, plan.edges));
+	for (idx_t b = 0; b < plan.BinCount(); b++) {
+		REQUIRE(plan.bin_counts[b] > 0);
+	}
+}
+
+TEST_CASE("generate: a lone outlier does not take a bin of its own, and is not bridged to", "[tabfm][generate][gaps]") {
+	// 99 values in [0, 9.8] and one at 1000. Splitting there would spend one of the 10 bins on a single row, so
+	// the outlier stays in the top bin; but a draw must not interpolate across the empty 9.8..1000 stretch,
+	// which used to put draws anywhere in between (the mean overshoot the shape test above allows for).
+	vector<Value> values;
+	for (int i = 0; i < 99; i++) {
+		values.push_back(Value::DOUBLE(i / 10.0));
+	}
+	values.push_back(Value::DOUBLE(1000.0));
+	auto plan = PlanColumn("skewed", LogicalType::DOUBLE, values, 10);
+	REQUIRE(plan.BinCount() == 10);
+	REQUIRE(BinOf(1000.0, plan.edges) == BinOf(9.8, plan.edges));
+	TabFMRandom rng(7);
+	const idx_t top = plan.BinCount() - 1;
+	for (int i = 0; i < 5000; i++) {
+		auto d = DoubleValue::Get(ExpandBin(plan, top, rng));
+		INFO("drew " << d);
+		REQUIRE_FALSE((d > 9.8 && d < 1000.0));
+	}
+}
+
+TEST_CASE("generate: evenly spread data keeps its plain quantile bins", "[tabfm][generate][gaps]") {
+	vector<double> raw;
+	for (int i = 0; i < 100; i++) {
+		raw.push_back(i);
+	}
+	auto edges = QuantileEdges(raw, 10);
+	REQUIRE(edges == vector<double>({0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 99}));
 }
 
 //===--------------------------------------------------------------------===//

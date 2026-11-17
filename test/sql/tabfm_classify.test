@@ -101,6 +101,58 @@ SELECT count(*) FROM tabfm_classify('train_q','class label', test := 'score')
 ----
 4
 
+# --- `test` may still carry the target: its values are ignored ---------------
+# A labelled holdout passed straight as `test` (the usual evaluation case) used to
+# fail with a UNION BY NAME duplicate-name binder error. The target is now dropped
+# from `test` before the union, so the call equals the EXCLUDE'd one and the
+# output target stays NULL: a test label can never reach the model.
+statement ok
+CREATE TABLE holdout AS SELECT f1,f2,f3,f4,f5, 'c9' AS label FROM t WHERE label IS NULL;
+
+query I
+SELECT count(*) FROM tabfm_classify('train','label', test := 'holdout') WHERE label IS NOT NULL
+----
+0
+
+query I
+SELECT count(*) FROM (
+  SELECT f1, yhat, proba FROM tabfm_classify('train','label', test := 'holdout')
+  EXCEPT
+  SELECT f1, yhat, proba FROM tabfm_classify('train','label', test := 'score'))
+----
+0
+
+# a label value never seen in the context does not become a class
+query I
+SELECT count(*) FROM tabfm_classify('train','label', test := 'holdout') WHERE list_contains(map_keys(proba), 'c9')
+----
+0
+
+# case-insensitive match, and target names that need quoting either way
+query I
+SELECT count(*) FROM tabfm_classify('train','LABEL', test := 'holdout')
+----
+4
+
+statement ok
+CREATE TABLE holdout_q AS SELECT f1,f2,f3,f4,f5, 'c0' AS "class label" FROM score;
+
+query I
+SELECT count(*) FROM tabfm_classify('train_q','class label', test := 'holdout_q')
+----
+4
+
+statement ok
+CREATE TABLE train_odd AS SELECT f1,f2,f3,f4,f5, label AS "it's ""odd""" FROM train;
+
+statement ok
+CREATE TABLE holdout_odd AS SELECT f1,f2,f3,f4,f5, 'c0' AS "it's ""odd""" FROM score;
+
+query I
+SELECT count(*) FROM tabfm_classify('train_odd','it''s "odd"', test := 'holdout_odd')
+----
+4
+
 # --- output_mode = compact drops proba ---------------------------------------
 
 query I
@@ -118,6 +170,15 @@ statement error
 SELECT * FROM tabfm_classify('many','y')
 ----
 <REGEX>:.*at most 10.*
+
+# a numeric target over the ceiling is probably a quantity: the error says so
+statement ok
+CREATE TABLE many_num AS SELECT (i*0.1) AS x, (i * 1.5)::DOUBLE AS y FROM range(28) t(i);
+
+statement error
+SELECT * FROM tabfm_classify('many_num','y')
+----
+<REGEX>:.*at most 10 classes.*'y' is DOUBLE: to predict a quantity use tabfm_regress.*
 
 # ... and the limit comes from the SELECTED model's registry entry, not a
 # hardcoded 10, so a model declaring a narrower head says so before running a

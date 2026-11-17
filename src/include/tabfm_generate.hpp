@@ -109,6 +109,9 @@ struct ColumnPlan {
 	//! CONTINUOUS: where each bin starts in `sorted_values`; size bin_count + 1,
 	//! so bin b owns [bin_offsets[b], bin_offsets[b + 1]).
 	vector<idx_t> bin_offsets;
+	//! CONTINUOUS: a stretch between two neighbouring observations wider than this is a GAP
+	//! (GenerateGapThreshold); ExpandBin never interpolates across one. Infinity = no gaps.
+	double gap_threshold = std::numeric_limits<double>::infinity();
 
 	//! CONSTANT: the value every row gets.
 	Value constant_value;
@@ -121,6 +124,11 @@ struct ColumnPlan {
 
 	idx_t BinCount() const {
 		return edges.empty() ? 0 : edges.size() - 1;
+	}
+	//! CONTINUOUS: the largest observed value. Usually edges.back(); not when the last bin is a single value's
+	//! own, closed just above it (QuantileEdges), so nothing may be clamped to edges.back() itself.
+	double ObservedMax() const {
+		return sorted_values.empty() ? (edges.empty() ? 0.0 : edges.back()) : sorted_values.back();
 	}
 	//! How many labels the engine will see for this column as a target.
 	idx_t ClassCount() const {
@@ -145,7 +153,28 @@ ColumnPlan PlanColumn(const string &name, const LogicalType &type, const vector<
 //! bins+1 strictly increasing edges; ties collapse, so a column with 3 distinct
 //! values yields 3 bins however many were requested. Empty when `values` has
 //! fewer than 2 distinct entries (that column is CONSTANT).
+//!
+//! GAPS. A stretch between two neighbouring observations wider than
+//! GenerateGapThreshold, with at least GenerateGapMinSide observations on each
+//! side, is always a bin edge: the first value after it starts a bin, and the
+//! bin budget is shared over the clusters such gaps separate, in proportion to
+//! their size. Without that a quantile bin can straddle two clusters (iris
+//! petal length: setosa 1.0-1.9, the rest from 3.0), and since ExpandBin draws
+//! from all of a bin's observations, a row conditioned into that bin could come
+//! out with the other cluster's value. A lone outlier is not worth a bin of its
+//! own (the min-side rule); it shares the top bin and ExpandBin simply never
+//! bridges to it. When the last cluster has a single distinct value the final
+//! edge is the next double above it, so that value keeps its own closed bin.
 vector<double> QuantileEdges(vector<double> values, idx_t bins);
+
+//! Width above which the stretch between two neighbouring observations is a gap:
+//! the range divided by max(bin count, kDefaultGenerateBins), i.e. wider than an
+//! average bin and never coarser than a tenth of the range. `sorted` ascending
+//! and finite; infinity when there is nothing to bin.
+double GenerateGapThreshold(const vector<double> &sorted, idx_t bins);
+
+//! Observations a gap needs on EACH side to become a bin edge: max(2, n / (4 * bins)).
+idx_t GenerateGapMinSide(idx_t n, idx_t bins);
 
 //! Index of the bin containing `value` (edges half-open except the last, which
 //! is closed so the maximum lands in the top bin). Clamped into range.
@@ -164,6 +193,11 @@ idx_t BinOf(double value, const vector<double> &edges);
 //! of its CDF. Interpolating between observed neighbours still produces novel
 //! values (it lands strictly between two real ones), so nothing is copied
 //! verbatim unless the neighbours are tied.
+//!
+//! Never across a gap (ColumnPlan::gap_threshold): when the next observation is
+//! a gap away, the draw interpolates back toward the previous one instead, and
+//! an observation with gaps on both sides is returned as is. Nothing is drawn
+//! where the column has no data.
 Value ExpandBin(const ColumnPlan &plan, idx_t bin, TabFMRandom &rng);
 
 //! Draw one value from the column's empirical marginal — used for the first

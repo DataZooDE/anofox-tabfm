@@ -1,0 +1,63 @@
+# name: test/sql/tabfm_stale_converted_weights.test
+# description: A checkpoint's converted model.safetensors that is stale (here: overwritten with bytes that
+#              are not a safetensors file at all) is rewritten from the checkpoint when the model is
+#              resolved, not only by tabfm_download. Before, every GPU path compared the stale header and
+#              refused the model, and the CPU path served the stale file (which here fails to load). Uses
+#              tabpfn-v2-6's regressor (about 50 MB, CPU), whose checkpoint the engine converts natively.
+#
+#                TABFM_REAL_WEIGHTS=1 ./build/release/test/unittest test/sql/tabfm_stale_converted_weights.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_REAL_WEIGHTS
+
+# downloads need httpfs; the unittest binary does not link it, so load the installed one
+statement ok
+INSTALL httpfs;
+
+statement ok
+LOAD httpfs;
+
+statement ok
+SET anofox_tabfm_cache_dir = '__TEST_DIR__/stale_cache';
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+SET anofox_tabfm_accept_hf_license = true;
+
+statement ok
+CREATE TABLE t AS SELECT i AS row_id, sin(i * 0.37) + (i % 3) AS a, cos(i * 0.11) * (i % 3) AS b,
+  (i * 7 % 11)::DOUBLE AS c FROM range(200) r(i);
+
+statement ok
+CREATE TABLE rctx AS SELECT row_id, 2 * a + 0.5 * c AS target, b, c, (row_id % 3)::DOUBLE AS k FROM t WHERE row_id < 150;
+
+statement ok
+CREATE TABLE rqry AS SELECT row_id, b, c, (row_id % 3)::DOUBLE AS k FROM t WHERE row_id >= 150;
+
+query T
+SELECT parse_filename(file) || ' ' || status FROM tabfm_download('regression', model := 'tabpfn-v2-6') ORDER BY 1
+----
+model.ckpt downloaded
+model.safetensors converted
+
+# Replace the converted file with something that has no safetensors header.
+statement ok
+COPY (SELECT 'stale') TO '__TEST_DIR__/stale_cache/Prior-Labs__tabpfn_2_6@24148873a9a5992b429833d07363690dcffd02a8/regression/model.safetensors' (FORMAT csv, HEADER false);
+
+# Resolving the model reconverts it first, so the predict reads a good file (0.885, as from a fresh download).
+query T
+SELECT corr(p.yhat, 2 * t.a + 0.5 * t.c) > 0.8
+FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabpfn-v2-6') p JOIN t USING (row_id)
+----
+true
+
+# ...and the file on disk is the pinned one again: the download now finds both files current.
+query T
+SELECT parse_filename(file) || ' ' || status FROM tabfm_download('regression', model := 'tabpfn-v2-6') ORDER BY 1
+----
+model.ckpt cached
+model.safetensors cached

@@ -20,11 +20,13 @@ Both functions have the same signature; the task (classification vs
 regression) is fixed by which one you call.
 
 ```sql
-tabfm_classify(data, target [, test] [, features] [, opts] [, model])
-tabfm_regress (data, target [, test] [, features] [, opts] [, model])
+tabfm_classify(data, target [, test] [, features] [, opts] [, model] [, keep])
+tabfm_regress (data, target [, test] [, features] [, opts] [, model] [, keep])
 ```
 
-`data` and `test` are table names or `'(SELECT ...)'` strings; `target` is a column name. `model` names a
+`data` and `test` are table names or `'(SELECT ...)'` strings; `target` is a column name. A target column
+in `test` is ignored, so a labelled holdout can be passed as it is. `keep` lists pass-through columns
+(below). `model` names a
 model from the registry; without it the call uses `anofox_tabfm_default_model`, and fails naming both
 remedies when neither is set ([Choosing a model](../guides/02-choosing-a-model.md#selecting-a-model)).
 
@@ -37,8 +39,12 @@ SELECT * FROM tabfm_regress('sold_homes', 'price', test := 'listings', model := 
 ```
 
 **Single relation** — rows whose target is missing are the ones to score; every
-row comes back with an `is_training` flag (context rows get in-context fitted
-values, handy for a sanity check).
+row comes back with an `is_training` flag. A context row's `yhat` is its in-context fitted value: what the
+model answers when asked about that row as a query, against the same context. Some models' graphs give a
+context row an output that is not that (its own label is mixed into its representation), and for those the
+engine scores the context rows a second time as queries; see `context_values` under
+[Settings](05-settings.md). Fitted values are in-sample: use them as a sanity check, not as an accuracy
+estimate.
 
 ```sql
 SELECT * FROM tabfm_classify('customers', 'churned', model := 'mitra');
@@ -94,23 +100,35 @@ SELECT * FROM tabfm_classify(
     'history', 'churned',
     test     := 'prospects',
     features := ['age', 'plan', 'usage_gb'],   -- default: all other columns
+    keep     := ['customer_id'],               -- passed through, never a feature
     opts     := MAP{'seed': '42', 'output_mode': 'detail'},
     model    := 'mitra');
 ```
 
-A name in `features` that matches no column is an error, not a quietly smaller model. With `features` the
-result carries only those columns, so a key you want to join the predictions back on has to be one of them
-(keep it in both relations), or leave `features` out. The `test` relation must not contain the target
-column: `'(SELECT * EXCLUDE (churned) FROM t)'`; otherwise the call fails with a binder error about duplicate
-names in `UNION (ALL) BY NAME`. In the train / test form both relations must expose the same feature columns: a column on one side only is an error naming it,
-because it would otherwise be filled with `NULL` on the other side and degrade the prediction silently.
+A name in `features` that matches no column is an error, not a quietly smaller model. A `test` relation
+may still contain the target column (a labelled holdout): its values are ignored and come back as `NULL`.
+In the train / test form both relations must expose the same feature columns: a column on one side only is
+an error naming it, because it would otherwise be filled with `NULL` on the other side and degrade the prediction silently.
 The `opts` keys (`seed`, `softmax_temperature`, `output_mode`, `query_batch`, ...) are listed in
 [Settings](05-settings.md#options).
 
+**Keys: `keep`.** Every column except the target is a feature by default, so an `id` would go into the
+model, and with `features` it is dropped from the result. `keep` names columns that are returned unchanged
+with every row and never reach the model, so the predictions join back on them:
+
+```sql
+SELECT customer_id, yhat, yhat_score
+FROM tabfm_classify('history', 'churned', test := 'prospects',
+                    features := ['age', 'plan', 'usage_gb'], keep := ['customer_id'], model := 'mitra');
+```
+
+A kept column may have any type and may exist in `test` only. A `keep` name that matches no column, the
+target, or a name also in `features` is an error: a column is either modelled or passed through.
+
 ## Output columns
 
-The scored rows' feature columns (every column when `features` is omitted, only the listed ones otherwise)
-and the target column (`NULL` on the scored rows), plus:
+The scored rows' feature columns (every column when `features` is omitted, only the listed ones otherwise),
+the `keep` columns and the target column (`NULL` on the scored rows), plus:
 
 | column | meaning |
 |---|---|

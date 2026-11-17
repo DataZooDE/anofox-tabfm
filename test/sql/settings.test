@@ -14,6 +14,14 @@ SELECT current_setting('anofox_tabfm_accept_hf_license')
 ----
 false
 
+# The help text names every gated built-in, derived from the registry so a newly added gated model can
+# never be missing from it (it once listed only the older ones).
+query III
+SELECT description LIKE '%exaone-tabular%', description LIKE '%tabfm-v1-1%', description LIKE '%mitra-v2%'
+FROM duckdb_settings() WHERE name = 'anofox_tabfm_accept_hf_license'
+----
+true	true	false
+
 query I
 SELECT current_setting('anofox_tabfm_cache_dir')
 ----

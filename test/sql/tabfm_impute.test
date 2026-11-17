@@ -180,3 +180,52 @@ SELECT count(*) FROM tabfm_impute('(SELECT x, g FROM raw)') WHERE g IS NULL
 
 statement ok
 SELECT * FROM tabfm_impute('raw', model := 'fixture');
+
+# --- keep := [...]: pass-through columns, never features, never filled -----
+# A row key with a NULL: kept, it comes back untouched (NULL stays NULL) and is
+# not a feature, so the fills equal those of the same call without the key.
+
+statement ok
+CREATE TABLE raw_keyed AS SELECT row_number() OVER () AS id, * FROM raw;
+
+statement ok
+UPDATE raw_keyed SET id = NULL WHERE id = 12;
+
+query I
+SELECT list(column_name) FROM (DESCRIBE SELECT * FROM tabfm_impute('raw_keyed', keep := ['id']))
+----
+[id, x, y, g]
+
+query I
+SELECT count(*) FROM tabfm_impute('raw_keyed', keep := ['ID']) WHERE id IS NULL
+----
+1
+
+query I
+SELECT count(*) FROM (
+  SELECT x, y, g FROM tabfm_impute('raw_keyed', keep := ['id'], opts := MAP{'seed': '3'})
+  EXCEPT ALL
+  SELECT x, y, g FROM tabfm_impute('raw', opts := MAP{'seed': '3'}))
+----
+0
+
+# keep + features: the output is the features plus the kept columns
+query I
+SELECT list(column_name) FROM (DESCRIBE SELECT * FROM tabfm_impute('raw_keyed', features := ['x', 'y'], keep := ['id']))
+----
+[id, x, y]
+
+statement error
+SELECT * FROM tabfm_impute('raw_keyed', keep := ['nope'])
+----
+tabfm_impute: keep := [...] names 'nope', which matched no column
+
+statement error
+SELECT * FROM tabfm_impute('raw_keyed', columns := ['id'], keep := ['id'])
+----
+tabfm_impute: 'id' is in both columns := [...] and keep := [...]
+
+statement error
+SELECT * FROM tabfm_impute('raw_keyed', features := ['id', 'x'], keep := ['id'])
+----
+tabfm_impute: 'id' is in both features := [...] and keep := [...]

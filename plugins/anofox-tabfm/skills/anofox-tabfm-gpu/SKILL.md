@@ -10,13 +10,13 @@ description: >
   `anofox_tabfm_gpu_precision`, `anofox_tabfm_ep_path` or
   `anofox_tabfm_mxr_source`, checking which device actually served a query, or
   troubleshooting a GPU that is not used.
-version: 2026.11.01
+version: 2026.11.17
 user-invocable: false
 ---
 
 # Anofox TabFM — GPU Cheat Sheet
 
-**Extension:** anofox_tabfm v2026.11.01 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
+**Extension:** anofox_tabfm v2026.11.17 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
 
 A GPU is not a separate build. Every published build is the CPU build, and each accelerator is a plugin it
 loads at runtime: `cuda` (NVIDIA, Linux x64, its own ONNX Runtime GPU libraries), `rocm` (AMD, Linux x64, a
@@ -30,7 +30,9 @@ ROCm come from the system.
    `rocm:0`, `mlx:0`).
 2. **`auto` never promises an accelerator a model cannot use.** `anofox_tabfm_device = 'auto'` (default)
    picks, per model, the best device whose plugin is present and that has a graph for it, else the CPU.
-   `tabfm_backends()` gives the choice and the reason.
+   `tabfm_backends()` gives the choice and the reason. One exception to "GPU is faster": repeated scoring
+   against the same context with `tabicl-v2` is fastest on the CPU, whose context cache a GPU session does
+   not use; pin `SET anofox_tabfm_device = 'cpu';` there.
 3. **Naming a device is a hard request.** `SET anofox_tabfm_device = 'cuda'` (or `'rocm'`, `'mlx'`) errors
    when the model cannot be served there instead of falling back.
 4. **ROCm compiles per shape bucket.** The first predict in a (GPU arch, precision, rows x features) bucket
@@ -38,8 +40,8 @@ ROCm come from the system.
    Later predicts in the bucket are sub-second. Precompile off the query path with `tabfm_gpu_precompile`.
 5. **Precision defaults to strict `fp32`** everywhere; `bf16` / `fp16` (ROCm) flip labels on some rows, and
    not only near-ties. Validate on your own data before switching.
-6. **Not every model runs on every backend.** CUDA refuses `nori-30m`, `exaone-tabular`, `tabpfn-v3-5` and
-   `tabpfn-v3-5-fast`; MLX refuses `nori-30m` and `exaone-tabular`; ROCm serves every built-in model but caps
+6. **Not every model runs on every backend.** CUDA and MLX refuse `nori-30m` and `exaone-tabular` (no GPU
+   graph); ROCm serves every built-in model but caps
    `limix-2m`'s bucket size. CoreML is dropped (MLX replaces it).
 
 ## Set up
@@ -80,7 +82,8 @@ SELECT model, task, device, backend, supported, reason FROM tabfm_backends() WHE
 Verify a query really ran on the GPU:
 
 ```sql
-SELECT customer_id, yhat FROM tabfm_classify('history', 'churned', test := 'prospects', model := 'mitra');
+SELECT customer_id, yhat
+FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['customer_id'], model := 'mitra');
 SELECT model, task, device FROM tabfm_models() WHERE loaded;
 ```
 
@@ -125,11 +128,13 @@ of them; switching back and forth does not rebuild them. `CALL tabfm_unload();` 
 | backend | platforms | models |
 |---|---|---|
 | CPU | Linux x64 / arm64, macOS arm64, Windows x64 | all |
-| CUDA | Linux x64, CUDA userspace 12.5 or later | all with a GPU graph, except `nori-30m`, `exaone-tabular`, `tabpfn-v3-5`, `tabpfn-v3-5-fast` |
+| CUDA | Linux x64, CUDA userspace 12.5 or later | all with a GPU graph, i.e. all except `nori-30m`, `exaone-tabular` |
 | ROCm | Linux x64; gfx1201 verified, others behind an allowlist | all built-in models (masked graphs for the TabPFN family and others) |
 | MLX | macOS arm64 | all with a GPU graph, except `nori-30m`, `exaone-tabular` |
 
-There is no macOS x86_64 build, and Windows is CPU-only.
+There is no macOS x86_64 build, and Windows is CPU-only. No GPU, or still slow on the CPU: a smaller
+context, `anofox_tabfm_threads`, and for repeated scoring the `tabicl-v2` context cache
+(`anofox-tabfm-predict`, "Large calls and repeated calls").
 
 ## Errors and fixes
 
@@ -137,6 +142,7 @@ There is no macOS x86_64 build, and Windows is CPU-only.
 |---|---|
 | `no usable '<device>' device was discovered` | `SELECT * FROM tabfm_devices();` for the driver state, or `SET anofox_tabfm_device = 'auto';` |
 | a predict on a named device fails with the reason the model cannot be served | `SELECT * FROM tabfm_backends() WHERE NOT supported;`, then `auto` or `cpu` |
+| `cannot use its bundled <backend> graph ... the converted weights at '<path>' do not have the header` | the cached `model.safetensors` is an older conversion the extension could not replace from the checkpoint: do what the message says (re-run `tools/export_*/convert_weights.py`, or delete the file and `CALL tabfm_download(...)`) |
 | `tabfm_accelerate()` reports `verify failed` | install what `detail` names (e.g. MIGraphX), run `CALL tabfm_accelerate();` again; predictions continue on the CPU |
 | a GPU precision mode is rejected | `bf16` / `fp16` are ROCm-only, `tf32` CUDA-only |
 | the first ROCm predict takes minutes | the bucket compile: `CALL tabfm_gpu_precompile(...)` ahead of time |

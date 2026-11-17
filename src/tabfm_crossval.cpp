@@ -167,6 +167,14 @@ R"(
       -- CV-04: replace(target, '"', '""') at EVERY interpolation.
       -- T-01-04-01: replace(target,'"','""') protects double-quote injection.
       -- T-01-04-02: test := held-out fold ensures no preprocessing leakage.
+      -- task is validated up front: any other value ('auto', a typo) used to fall
+      -- through the CASEs below as a classification, without a word. error() on
+      -- constants is folded while query() binds, like the metric whitelist.
+      CASE WHEN lower(COALESCE(CAST(task AS VARCHAR), '')) IN ('classification', 'regression') THEN ''
+           ELSE error('tabfm_cross_validate: task must be ''classification'' or ''regression'', got '''
+                      || COALESCE(CAST(task AS VARCHAR), 'NULL') || '''. A numeric target that is a quantity '
+                      || '(a price, a count) needs task := ''regression''.')
+      END ||
       'WITH _cv_folds AS ('
       || array_to_string(
            list_transform(
@@ -181,7 +189,7 @@ R"(
                -- Unknown metric names raise a named error at macro execution time.
                CASE
                  WHEN metric IS NULL OR CAST(metric AS VARCHAR) = ''
-                   THEN CASE WHEN CAST(task AS VARCHAR) = 'regression'
+                   THEN CASE WHEN lower(CAST(task AS VARCHAR)) = 'regression'
                               THEN 'tabfm_rmse' ELSE 'tabfm_accuracy' END
                  WHEN CAST(metric AS VARCHAR) IN (
                    'tabfm_rmse', 'tabfm_accuracy', 'tabfm_crps',
@@ -194,7 +202,7 @@ R"(
                '(orig.__cv_actual, p.yhat) AS m'
                ' FROM ' ||
                -- predict function (classify or regress based on task)
-               (CASE WHEN CAST(task AS VARCHAR) = 'regression'
+               (CASE WHEN lower(CAST(task AS VARCHAR)) = 'regression'
                      THEN 'tabfm_regress' ELSE 'tabfm_classify' END) ||
                '(' ||
                -- first arg: training subquery (all folds EXCEPT the held-out fold f)
@@ -229,6 +237,13 @@ R"(
                || ')::INTEGER AS _cv_fold_id FROM (FROM ' || replace(CAST(data AS VARCHAR), '''', '''''') || '))'
                || ' WHERE _cv_fold_id = ' || CAST(f AS VARCHAR) || ')' ||
                '''' ||
+               -- keep := [row_key, _cv_fold_id] (#98): the key comes back for the
+               -- JOIN below without being a feature (an id carries no signal, only
+               -- noise), and the fold id must never be one either: every test row
+               -- carries the held-out fold's value, which no context row has.
+               -- row_key is a column name, optionally "quoted" ("" unescaped).
+               ', keep := [' || '''' || replace(replace(trim(CAST(row_key AS VARCHAR), '"'), '""', '"'), '''', '''''')
+               || '''' || ', ''_cv_fold_id'']' ||
                ') p JOIN ('
                -- JOIN back to original fold data to recover actual labels (lost when
                -- tabfm_classify forces label=NULL for test rows in two-table form).
