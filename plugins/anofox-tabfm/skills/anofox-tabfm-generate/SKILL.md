@@ -8,13 +8,13 @@ description: >
   augmented rows, upsampling a rare segment, filling NULLs in a table, choosing
   generation options (seed, temperature, bins, column_order, rounds), or checking
   the fidelity and limits of generated data.
-version: 2026.11.01
+version: 2026.11.17
 user-invocable: false
 ---
 
 # Anofox TabFM — Generate and Impute Cheat Sheet
 
-**Extension:** anofox_tabfm v2026.11.01 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
+**Extension:** anofox_tabfm v2026.11.17 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
 
 The in-context engine used backwards: instead of predicting one column it models the table as a joint
 distribution, one column at a time (the chain rule), so relationships between columns survive, not only each

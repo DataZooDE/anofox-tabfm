@@ -5,6 +5,8 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+## [v2026.11.17] - 2026-11-17
+
 ### Added
 - **`keep := [...]` on `tabfm_classify` / `tabfm_regress`** (#98): columns passed through to the result
   unchanged and never used as features, so a row key comes back without becoming a model input. A kept
@@ -214,6 +216,11 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   1.8e-05 / 4.0e-05. CPU results are bit-identical; weights layout and header shas are unchanged.
   `CudaKnownWrong` now lists nothing. Not yet re-run through the extension with `cuda_catalog.sh`. Draft
   upstream issue: docs/UPSTREAM_ORT_ISSUES.md, Draft 3.
+
+### Known issues
+- **ROCm: models without a measured bucket ceiling can still abort DuckDB on a large table**, as in
+  v2026.11.01 (for example `nori-30m`). The per-model ceilings ship in a later release. Until then, keep ROCm
+  calls of those models small, or run them on the CPU. CPU, CUDA and MLX are not affected.
 
 ### Documentation
 - docs/api/04-gpu.md "ROCm compile time": cold-compile time, warm call against the CPU, VRAM and CPU agreement

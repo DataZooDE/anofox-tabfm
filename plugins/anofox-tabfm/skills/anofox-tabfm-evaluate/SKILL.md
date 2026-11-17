@@ -11,13 +11,13 @@ description: >
   `tabfm_f1` / `tabfm_roc_auc` / `tabfm_rmse` aggregates, or plotting ROC,
   calibration, confusion-matrix or model-comparison charts with
   `tabfm_classification_metrics_by` and friends.
-version: 2026.11.01
+version: 2026.11.17
 user-invocable: false
 ---
 
 # Anofox TabFM — Evaluation Cheat Sheet
 
-**Extension:** anofox_tabfm v2026.11.01 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
+**Extension:** anofox_tabfm v2026.11.17 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
 
 The metrics are model-agnostic SQL aggregates over plain `(actual, predicted[, proba])` columns: they score
 any model's output, not only this extension's.
