@@ -219,3 +219,55 @@ def test_the_graph_is_dynamic_weight_free_and_runs_on_every_backend_op_set(tmp_p
     export.assert_weight_free(graph, tensor_map)
     # every checkpoint tensor is a graph initializer (the engine injects them all by name)
     assert set(tensor_map["initializers"].values()) == set(model.state_dict())
+
+
+# ---- the weights file ---------------------------------------------------------------------------------
+
+
+def _write_ckpt(tmp_path, model, key):
+    sd = {k: v.detach().contiguous().clone() for k, v in sorted(model.state_dict().items())}
+    path = tmp_path / "nori.pt"
+    torch.save({"model_config": configs.fixture15().model_config, key: sd,
+                "inference_config": {"name": "model_v3_inference.json", "members": []}}, str(path))
+    return path
+
+
+def test_convert_reads_a_model_v3_checkpoint(tmp_path, model):
+    """nori.pt of Nori 1.5 keeps its weights under ``model_state_dict`` (no EMA copy: the 30M file's
+    ``ema_state_dict``). The converter writes the same bare, sorted, float32 safetensors either way."""
+    from safetensors import safe_open
+
+    from export_nori import convert
+
+    src = _write_ckpt(tmp_path, model, "model_state_dict")
+    out = tmp_path / "model.safetensors"
+    assert convert.convert(src, out) == len(model.state_dict())
+    with safe_open(str(out), "pt") as f:
+        assert list(f.keys()) == sorted(model.state_dict())
+        for name, value in model.state_dict().items():
+            assert torch.equal(f.get_tensor(name), value.to(torch.float32)), name
+
+
+def test_convert_still_prefers_the_ema_weights(tmp_path, model):
+    from safetensors import safe_open
+
+    from export_nori import convert
+
+    sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
+    ema = {k: v + 1.0 for k, v in sd.items()}
+    path = tmp_path / "both.pt"
+    torch.save({"model_config": {}, "model_state_dict": sd, "ema_state_dict": ema}, str(path))
+    out = tmp_path / "both.safetensors"
+    convert.convert(path, out)
+    with safe_open(str(out), "pt") as f:
+        key = sorted(sd)[0]
+        assert torch.equal(f.get_tensor(key), ema[key].to(torch.float32))
+
+
+def test_convert_refuses_a_checkpoint_with_no_weights(tmp_path):
+    from export_nori import convert
+
+    path = tmp_path / "empty.pt"
+    torch.save({"model_config": {}}, str(path))
+    with pytest.raises(ValueError, match="ema_state_dict.*model_state_dict"):
+        convert.convert(path, tmp_path / "x.safetensors")
