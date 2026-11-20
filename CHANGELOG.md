@@ -20,10 +20,10 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   patches shared with `nori-30m`; an offline fixture and `tools/export_nori/tests/test_real_weights_v15.py`.
 
 ### Fixed
-- **`tools/gpu_test/runpod_run.py` talks to RunPod REST v2**: it moved from the dead `rest.runpod.io/v1` to
-  `api.runpod.io/v2`.
-- **`medae` and `f1` error paths no longer leak** (#111, #112), and the `tabfm_accelerate` message for the
-  CPU case is reworded.
+- **`tools/gpu_test/runpod_run.py` talks to RunPod REST v2** (#112): it moved from the dead
+  `rest.runpod.io/v1` to `api.runpod.io/v2`.
+- **`medae` and `f1` error paths no longer leak** (#111), and the `tabfm_accelerate` message for the CPU case
+  is reworded (#111).
 
 ## [v2026.11.17] - 2026-11-17
 
