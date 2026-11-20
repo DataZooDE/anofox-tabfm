@@ -28,6 +28,7 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 | `orion-bix` | Lexsi Labs | classify | `mit` | `true` | no | ~315 MB | classify only |
 | `orion-msp` | Lexsi Labs | classify | `mit` | `true` | no | ~336 MB | classify only |
 | `nori-30m` | Synthefy | regress | `apache-2.0` | `true` | no | ~117 MB | regress only, so `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only; recommended at most 5,000 rows and 100 features |
+| `nori-1-5` | Synthefy | regress | `apache-2.0` | `true` | no | ~83 MB | Nori 1.5 ("Model v3"), ~20.8 M parameters; regress only, so `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only; a two-phase encoder; recommended limits are provisional (being measured) |
 | `kumo-tabular-small` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~110 MB / ~114 MB | OpenMDW-1.1: keep the agreement and NVIDIA's notice when you distribute ([THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)); recommended at most 5,000 rows |
 | `kumo-tabular-medium` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~246 MB / ~250 MB | as `kumo-tabular-small` |
 | `kumo-tabular-large` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~855 MB / ~863 MB | as `kumo-tabular-small` |

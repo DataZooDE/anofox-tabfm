@@ -5,6 +5,26 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **`nori-1-5`** (Synthefy Nori 1.5, "Model v3", Apache-2.0 for code and weights, ungated): the second
+  REGRESSION-ONLY built-in, ~20.8 M parameters, a two-phase encoder (9 cell layers at width 128, 12 row layers
+  at width 256). The engine reads the released `nori.pt` natively (`{model_config, model_state_dict,
+  inference_config}`, no EMA copy); the 999-quantile head is reduced in-graph to its mean and the engine runs
+  one forward on the raw table. `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only.
+  Verified on the real weights on the CPU, on CUDA (RTX 3090, through a model registered in SQL with the
+  graph_ext_nori15_regression ext graph, not the built-in) and on MLX (Apple M3). No masked ROCm graph is
+  bundled yet, so ROCm does not serve it and `tabfm_backends()` says so. Its registry size limits are
+  provisional until measured. See docs/REAL_MODELS.md.
+- **`tools/export_nori` exports Nori 1.5**: patch 5 (drops `int(eval_pos)` from `PromptQuantilePLEEncoder`)
+  and patch 6 (`nn.ReLU` becomes `clamp(x, min=0)`, keeping the graph inside MLX's op set), beside the four
+  patches shared with `nori-30m`; an offline fixture and `tools/export_nori/tests/test_real_weights_v15.py`.
+
+### Fixed
+- **`tools/gpu_test/runpod_run.py` talks to RunPod REST v2**: it moved from the dead `rest.runpod.io/v1` to
+  `api.runpod.io/v2`.
+- **`medae` and `f1` error paths no longer leak** (#111, #112), and the `tabfm_accelerate` message for the
+  CPU case is reworded.
+
 ## [v2026.11.17] - 2026-11-17
 
 ### Added

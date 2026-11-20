@@ -217,6 +217,6 @@ FROM pred;
 | `predict group exceeds anofox_tabfm_max_rows` | sample the context, or `SET anofox_tabfm_max_rows = <n>;` |
 | `'<model>' supports at most N classes` | fewer classes, or decompose (one-vs-rest); when it adds `'<target>' is DOUBLE: to predict a quantity use tabfm_regress`, do that |
 | `task 'regression' requires a numeric target` | cast the target, or use `tabfm_classify` |
-| `model '<id>' does not support task '<task>'` | e.g. `orion-bix` is classify-only, `nori-30m` regress-only |
+| `model '<id>' does not support task '<task>'` | e.g. `orion-bix` is classify-only, `nori-30m` and `nori-1-5` regress-only |
 | `unknown option '<key>'` | the message lists the valid keys |
 | `... is refused rather than risking an OOM kill` | a smaller context, `CALL tabfm_unload();`, or as a last resort `query_batch` |

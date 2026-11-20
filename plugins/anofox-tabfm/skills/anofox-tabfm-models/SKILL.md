@@ -2,7 +2,7 @@
 name: anofox-tabfm-models
 description: >
   Choosing, downloading and managing models for the anofox_tabfm DuckDB extension:
-  the 23 built-in tabular foundation models (Mitra, TabPFN 2 / 2.5 / 2.6 / 3 / 3.5,
+  the 24 built-in tabular foundation models (Mitra, TabPFN 2 / 2.5 / 2.6 / 3 / 3.5,
   TabICL v2, TabDPT, LimiX-2M, Kumo-Tabular, EXAONE, Nori, Orion, Causilo, Google
   TabFM), their licences and commercial use, the licence gate, Hugging Face
   tokens, and registering your own ONNX model. Use when picking a model,
@@ -47,7 +47,7 @@ ORDER BY model;
 Columns: `model, family, capabilities, license, commercial, max_rows, max_features, max_classes, downloaded,
 attribution`. `capabilities` is `'classify, regress'`, `'classify'` or `'regress'`.
 
-## Model catalogue (23 built-in)
+## Model catalogue (24 built-in)
 
 Sizes are per task (classification / regression) unless one file serves both. "rows" is the recommended
 context size from `tabfm_list_models()`.
@@ -62,6 +62,7 @@ context size from `tabfm_list_models()`.
 | `orion-bix` | Lexsi Labs | classify | `mit` | yes | no | ~315 MB | 100k / 512 | classify only |
 | `orion-msp` | Lexsi Labs | classify | `mit` | yes | no | ~336 MB | 100k / 512 | classify only |
 | `nori-30m` | Synthefy | regress | `apache-2.0` | yes | no | ~117 MB | 5k / 100 | regress only; `tabfm_generate` refuses it |
+| `nori-1-5` | Synthefy | regress | `apache-2.0` | yes | no | ~83 MB | 5k / 100 (provisional) | regress only; `tabfm_generate` refuses it; `tabfm_impute` fills numeric columns only |
 | `kumo-tabular-small` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no | ~110 / ~114 MB | 5k / 500 | keep the OpenMDW agreement and NVIDIA's notice when distributing |
 | `kumo-tabular-medium` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no | ~246 / ~250 MB | 5k / 500 | as small |
 | `kumo-tabular-large` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no | ~855 / ~863 MB | 5k / 500 | as small |
