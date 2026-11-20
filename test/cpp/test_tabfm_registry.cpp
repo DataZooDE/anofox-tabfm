@@ -451,6 +451,11 @@ TEST_CASE("registry: Nori 1.5 ships built in next to Nori-30M, Apache-2.0 and un
 	// the profile only matters by its suffix: the model standardises its own features and the graph the target
 	REQUIRE(m.preprocessing_profile == "nori_v15_raw");
 	REQUIRE(m.tasks.at(TabFMTask::REGRESSION).graph == "graph_nori15_regression");
+	// measured caps (CPU, 200 query rows, docs/REAL_MODELS.md): peak RSS grows with rows^2 x features, about twice
+	// Nori-30M's at the same size, so the 5000 x 100 that nori-30m carries would need ~100 GB here. Each limit ALONE
+	// stays within ~13 GB: 2000 x 20 peaks at 7.5 GB, 1000 x 100 at 12.8 GB (both together do not fit).
+	REQUIRE(m.size_regime.max_rows == 2000);
+	REQUIRE(m.size_regime.max_features == 100);
 
 	// the released nori.pt (Model v3 layout: model_config, model_state_dict, inference_config), pinned to the
 	// commit the graph was exported from. 83,176,401 bytes; the engine reads it natively.

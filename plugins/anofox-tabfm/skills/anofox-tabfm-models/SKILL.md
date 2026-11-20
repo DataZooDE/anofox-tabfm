@@ -62,7 +62,7 @@ context size from `tabfm_list_models()`.
 | `orion-bix` | Lexsi Labs | classify | `mit` | yes | no | ~315 MB | 100k / 512 | classify only |
 | `orion-msp` | Lexsi Labs | classify | `mit` | yes | no | ~336 MB | 100k / 512 | classify only |
 | `nori-30m` | Synthefy | regress | `apache-2.0` | yes | no | ~117 MB | 5k / 100 | regress only; `tabfm_generate` refuses it |
-| `nori-1-5` | Synthefy | regress | `apache-2.0` | yes | no | ~83 MB | 5k / 100 (provisional) | regress only; `tabfm_generate` refuses it; `tabfm_impute` fills numeric columns only |
+| `nori-1-5` | Synthefy | regress | `apache-2.0` | yes | no | ~83 MB | 2k / 100 | regress only; `tabfm_generate` refuses it; `tabfm_impute` fills numeric columns only |
 | `kumo-tabular-small` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no | ~110 / ~114 MB | 5k / 500 | keep the OpenMDW agreement and NVIDIA's notice when distributing |
 | `kumo-tabular-medium` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no | ~246 / ~250 MB | 5k / 500 | as small |
 | `kumo-tabular-large` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no | ~855 / ~863 MB | 5k / 500 | as small |

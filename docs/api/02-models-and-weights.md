@@ -28,7 +28,7 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 | `orion-bix` | Lexsi Labs | classify | `mit` | `true` | no | ~315 MB | classify only |
 | `orion-msp` | Lexsi Labs | classify | `mit` | `true` | no | ~336 MB | classify only |
 | `nori-30m` | Synthefy | regress | `apache-2.0` | `true` | no | ~117 MB | regress only, so `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only; recommended at most 5,000 rows and 100 features |
-| `nori-1-5` | Synthefy | regress | `apache-2.0` | `true` | no | ~83 MB | Nori 1.5 ("Model v3"), ~20.8 M parameters; regress only, so `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only; a two-phase encoder; recommended limits are provisional (being measured) |
+| `nori-1-5` | Synthefy | regress | `apache-2.0` | `true` | no | ~83 MB | Nori 1.5 ("Model v3"), ~20.8 M parameters; regress only, so `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only; a two-phase encoder; recommended at most 2,000 rows and 100 features, one at a time: CPU memory grows with rows² x features (2,000 x 20 peaks at 7.5 GB, 1,000 x 100 at 12.8 GB) |
 | `kumo-tabular-small` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~110 MB / ~114 MB | OpenMDW-1.1: keep the agreement and NVIDIA's notice when you distribute ([THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)); recommended at most 5,000 rows |
 | `kumo-tabular-medium` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~246 MB / ~250 MB | as `kumo-tabular-small` |
 | `kumo-tabular-large` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~855 MB / ~863 MB | as `kumo-tabular-small` |
@@ -68,7 +68,7 @@ Every lifecycle function takes the task first and `model :=` (or falls back to
 
 | Call | What it does |
 |---|---|
-| `CALL tabfm_download(task [, revision], model := '<id>')` | fetch the weights into the cache; one row per file (`file, url, bytes, status`). For `nori-30m` and the Kumo models a second row (`url` NULL) is the `model.safetensors` it writes from the checkpoint for the GPU graphs: `converted`, or `cached` when already there. A missing or outdated converted file is also rewritten from the checkpoint the next time a predict, `tabfm_gpu_precompile` or `tabfm_backends()` resolves the model, so a cache left by an older release is not refused on the GPU |
+| `CALL tabfm_download(task [, revision], model := '<id>')` | fetch the weights into the cache; one row per file (`file, url, bytes, status`). For `nori-30m`, `nori-1-5` and the Kumo models a second row (`url` NULL) is the `model.safetensors` it writes from the checkpoint for the GPU graphs: `converted`, or `cached` when already there. A missing or outdated converted file is also rewritten from the checkpoint the next time a predict, `tabfm_gpu_precompile` or `tabfm_backends()` resolves the model, so a cache left by an older release is not refused on the GPU |
 | `CALL tabfm_load(task, model := '<id>')` | check that the weights are downloaded and fail with the fix if not; the session itself is built on the first predict |
 | `CALL tabfm_unload([task], model := '<id>')` | free a loaded session (all of them without a task); memory returns to baseline |
 | `CALL tabfm_remove(task [, revision], model := '<id>')` | delete the weights from the cache |

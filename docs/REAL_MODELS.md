@@ -1178,7 +1178,30 @@ upstream code at run time: patches 1-4 are shared with `nori-30m`, patch 5 drops
   byte-identical to `tools/export_nori`'s `convert_nori_weights`; `tabfm_regress(model := 'nori-1-5')` on a
   smooth 100-row table gives R² 0.9999.
 
-Size and speed: being measured (the registry limits are provisional).
+**Size and speed** (CPU, default threads, 24 cores, 200 query rows; each point is a fresh process, wall time
+includes the process start and the model load). Peak memory grows with rows² x features, and at the same size it
+is about twice Nori-30M's (2000 x 20: 7.5 GB against 3.3 GB), while the run is a little faster (22.7 s against
+28 s). The registry therefore recommends at most 2,000 rows and 100 features, which are limits for ONE dimension
+at a time: 2000 x 20 peaks at 7.5 GB and 1000 x 100 at 12.8 GB, but 2000 x 100 (not run) extrapolates to roughly 40 GB from the rows² x features scaling. The
+limits are recommended, not enforced.
+
+| rows x features | wall | peak RSS |
+|---|---|---|
+| 500 x 20 | 5.4 s | 1.2 GB |
+| 1000 x 20 | 10.2 s | 2.9 GB |
+| 2000 x 20 | 22.7 s | 7.5 GB |
+| 3000 x 20 | 36.9 s | 14.8 GB |
+| 500 x 100 | 13.2 s | 5.2 GB |
+| 1000 x 100 | 28.7 s | 12.8 GB |
+| 1000 x 1 | 1.7 s | 0.6 GB |
+| 5000 x 1 | 13.3 s | 4.1 GB |
+
+The machine was also running other jobs (load average 1.6 at the start, about 15 by the end), so the wall times
+are upper bounds. Larger points were not run: the series stops once a point passes 12 GB. On MLX (Apple M3, 16
+GB, the same tables) every point ran in seconds: 500 x 20 in 1.1 s, 1000 x 20 in 1.5 s, 2000 x 20 in 3.9 s,
+500 x 100 in 2.6 s, 1000 x 100 in 6.0 s, 1000 x 1 in 0.8 s and 5000 x 1 in 3.1 s. No MLX memory figure is
+claimed: the process's resident set (0.25 to 0.34 GB throughout) does not include the GPU's buffers, and the
+larger CPU points were not run on the 16 GB machine.
 
 **Platforms.**
 - **CPU:** verified on Linux x86-64.

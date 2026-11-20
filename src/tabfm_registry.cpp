@@ -722,6 +722,9 @@ static const char *const BUILTIN_NORI30M = R"json({
 // estimate is the mean of the quantile head) but a different architecture, so its own stem, graphs and header.
 // Source of every number below: tools/export_nori (configs.real15, test_real_weights_v15.py) and
 // docs/REAL_MODELS.md. The checkpoint is read natively (model_state_dict; it ships no EMA copy).
+// size_regime (CPU, 200 query rows): peak RSS grows with rows^2 x features, about twice Nori-30M's at the same
+// size (2000 x 20: 7.5 GB, 3000 x 20: 14.8 GB, 1000 x 100: 12.8 GB, 5000 x 1: 4.1 GB), so each cap is the point
+// where ONE dimension alone stays near 13 GB; both together do not fit. Not enforced (docs/api/02).
 static const char *const BUILTIN_NORI15 = R"json({
   "schema_version": 2, "id": "nori-1-5", "display_name": "Nori 1.5 (Synthefy)",
   "family": "icl-transformer",
@@ -738,7 +741,7 @@ static const char *const BUILTIN_NORI15 = R"json({
   "capabilities": ["regress"],
   "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
                       "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
-  "size_regime": {"max_rows": 5000, "max_features": 100, "max_classes": 10}
+  "size_regime": {"max_rows": 2000, "max_features": 100, "max_classes": 10}
 })json";
 
 // EXAONE Tabular v1 (LG AI Research; TabArena v0.1.4 classification Elo 1759, regression 1883 per the model

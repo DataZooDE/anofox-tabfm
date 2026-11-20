@@ -13,8 +13,9 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   one forward on the raw table. `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only.
   Verified on the real weights on the CPU, on CUDA (RTX 3090, through a model registered in SQL with the
   graph_ext_nori15_regression ext graph, not the built-in) and on MLX (Apple M3). No masked ROCm graph is
-  bundled yet, so ROCm does not serve it and `tabfm_backends()` says so. Its registry size limits are
-  provisional until measured. See docs/REAL_MODELS.md.
+  bundled yet, so ROCm does not serve it and `tabfm_backends()` says so. Its recommended limits are 2,000 rows
+  and 100 features, one at a time (CPU memory grows with rows² x features, about twice Nori-30M's). See
+  docs/REAL_MODELS.md.
 - **`tools/export_nori` exports Nori 1.5**: patch 5 (drops `int(eval_pos)` from `PromptQuantilePLEEncoder`)
   and patch 6 (`nn.ReLU` becomes `clamp(x, min=0)`, keeping the graph inside MLX's op set), beside the four
   patches shared with `nori-30m`; an offline fixture and `tools/export_nori/tests/test_real_weights_v15.py`.
