@@ -516,6 +516,8 @@ true
 # Nori 1.5 (Synthefy Model v3, regression only): a two-phase encoder, served from graph_ext_nori15_regression.
 # Its ops are all in MlxImplementedOps() (test_tabfm_mlx_ops.cpp), which is necessary but not sufficient: this
 # block is the check that the interpreter's ANSWER agrees with the CPU's.
+# Measured (Apple M3, 100 rows x 8 features, 2026-11-20): regression max |diff| 1.2e-5 (8.8e-7 of the CPU's
+# range), corr 0.9999999999996, a second MLX call identical; CPU 649 ms, MLX 312 ms cold / 215 ms warm.
 
 statement ok
 CALL tabfm_unload();
