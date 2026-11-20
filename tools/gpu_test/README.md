@@ -220,6 +220,12 @@ script header. Use `--secure` (see below).
 
 ## `runpod_run.py` — rent a GPU, run, destroy
 
+Talks to RunPod's **REST API v2** (`https://api.runpod.io/v2`). It used to use
+`https://rest.runpod.io/v1`, whose host no longer resolves, so every verb failed on DNS. The v2 request and
+response shapes differ (pod body, `ssh.direct` instead of `publicIp`/`portMappings`, `/network-volumes`);
+`tests/test_runpod_run.py` pins them, offline and free:
+`python3 -m unittest discover -s tools/gpu_test/tests -v`.
+
 ```bash
 # the issue #21 regression: pre-pin graphs must fail, pinned graphs must pass
 tools/gpu_test/runpod_run.py --check-scatternd

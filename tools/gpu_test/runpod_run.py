@@ -38,7 +38,10 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-API = "https://rest.runpod.io/v1"
+# REST API v2. This used to be https://rest.runpod.io/v1, a host that no longer resolves (NXDOMAIN from
+# every resolver tried); RunPod's own SDK (runpod>=2) and reference (docs.runpod.io/api-reference-v2) use
+# api.runpod.io/v2, whose pod body and response differ from v1 (see pod_spec / pod_endpoint).
+API = "https://api.runpod.io/v2"
 # CUDA 12.8 + python 3.11; sshd starts when PUBLIC_KEY is set.
 #
 # NOT 12.4, which this default used to be and which is known not to work for
@@ -86,7 +89,70 @@ def call(method: str, path: str, key: str, body=None, timeout=60):
             raw = resp.read().decode()
             return json.loads(raw) if raw.strip() else None
     except urllib.error.HTTPError as exc:
-        raise SystemExit(f"RunPod {method} {path} -> {exc.code}: {exc.read().decode()[:400]}")
+        text = exc.read().decode()
+        try:  # v2 errors are application/problem+json: title, status, detail
+            problem = json.loads(text)
+            text = ": ".join(str(problem[k]) for k in ("title", "detail") if problem.get(k)) or text
+        except (ValueError, AttributeError, TypeError):
+            pass
+        raise SystemExit(f"RunPod {method} {path} -> {exc.code}: {text[:400]}")
+
+
+# --- pods ---------------------------------------------------------------------------------------------------
+
+
+def list_pods(key: str) -> list:
+    return (call("GET", "/pods", key) or {}).get("pods") or []
+
+
+def get_pod(key: str, pod_id: str) -> dict:
+    return call("GET", f"/pods/{pod_id}", key) or {}
+
+
+def create_pod(key: str, spec: dict) -> dict:
+    return call("POST", "/pods", key, spec)
+
+
+def terminate_pod(pod_id: str, key: str) -> None:
+    call("DELETE", f"/pods/{pod_id}", key)
+
+
+def pod_endpoint(pod: dict):
+    """(host, port) for SSH to the pod's 22/tcp, or None until RunPod has assigned one.
+
+    v1 had ``publicIp`` and ``portMappings``; v2 has ``ssh.direct`` (plain ssh/scp, which is what this script
+    needs; ``ssh.proxy`` is an interactive shell only) and, as a fallback, the runtime port table."""
+    direct = (pod.get("ssh") or {}).get("direct")
+    if direct and direct.get("host") and direct.get("port"):
+        return direct["host"], int(direct["port"])
+    for port in (pod.get("runtime") or {}).get("ports") or []:
+        if port.get("private") == 22 and port.get("public") and port.get("ip"):
+            return port["ip"], int(port["public"])
+    return None
+
+
+# --- network volumes ----------------------------------------------------------------------------------------
+
+
+def list_volumes(key: str) -> list:
+    return (call("GET", "/network-volumes", key) or {}).get("networkVolumes") or []
+
+
+def get_volume(key: str, volume_id: str) -> dict:
+    # v2 documents no GET-by-id for a volume, so pick it out of the list.
+    for volume in list_volumes(key):
+        if volume.get("id") == volume_id:
+            return volume
+    raise SystemExit(f"no network volume {volume_id!r} on this account (see --list-volumes)")
+
+
+def create_volume(key: str, size_gb: int, data_center: str) -> dict:
+    return call("POST", "/network-volumes", key,
+                {"name": "anofox-tabfm-gpu", "size": size_gb, "dataCenter": data_center})
+
+
+def delete_volume(key: str, volume_id: str) -> None:
+    call("DELETE", f"/network-volumes/{volume_id}", key)
 
 
 def gpus_by_price(key: str, min_vram: int = MIN_VRAM_GB):
@@ -131,17 +197,18 @@ def wait_for_ssh(pod_id: str, key: str, timeout: int):
     last = None
     start = time.time()
     while time.time() < deadline:
-        pod = call("GET", f"/pods/{pod_id}", key) or {}
-        # desiredStatus is what we ASKED for and is RUNNING immediately; the
-        # container may still be pulling a multi-GB image behind it.
-        status = f"{pod.get('desiredStatus')}/{pod.get('lastStatus')}"
-        ip = pod.get("publicIp")
-        ports = pod.get("portMappings") or {}
+        pod = get_pod(key, pod_id)
+        # RUNNING can precede SSH by minutes (the container may still be pulling a
+        # multi-GB image), so the real signal is the direct endpoint appearing.
+        status = pod.get("status")
+        endpoint = pod_endpoint(pod)
         if status != last:
-            print(f"  [{int(time.time() - start):4d}s] {status} ip={ip} ports={list(ports)}", flush=True)
+            print(f"  [{int(time.time() - start):4d}s] {status} ssh={endpoint}", flush=True)
             last = status
-        if ip and ports.get("22"):
-            return ip, int(ports["22"])
+        if status in ("ERROR", "EXITED", "TERMINATED"):
+            raise SystemExit(f"pod {pod_id} is {status}; it will not expose SSH")
+        if endpoint:
+            return endpoint
         time.sleep(5)
     raise SystemExit("timed out waiting for the pod to expose SSH")
 
@@ -182,6 +249,11 @@ CAPACITY_ERRORS = (
     "no instances currently available",
     "no longer any instances available",
     "not enough free gpus",
+    # v2 wording is not documented; these are the plausible phrasings. A miss is not silent: main() prints
+    # the last error when every candidate failed, so an unrecognised capacity message is visible, not lost.
+    "insufficient capacity",
+    "no capacity",
+    "out of stock",
 )
 
 
@@ -226,17 +298,19 @@ def ort_preamble(version: str) -> str:
     )
 
 
-def _pod_spec(args, gpu_ids, cloud, pub, volume=None):
+def pod_spec(args, gpu_id, cloud, pub, volume=None):
+    """The v2 CreatePodRequest (unevaluatedProperties:false: an unknown key is a 400, not ignored).
+
+    No ``startSsh``: it needs SSH keys registered on the ACCOUNT (PUT /v2/account/ssh-keys), which would change
+    the account. The pytorch images start sshd themselves when PUBLIC_KEY is in the environment, which is what
+    this script has always relied on, and ``ports`` keeps 22/tcp mapped so ``ssh.direct`` gets assigned."""
     spec = {
         "name": "anofox-tabfm-gpu-test",
-        "imageName": args.image,
-        "gpuTypeIds": gpu_ids,
-        "gpuCount": 1,
-        "cloudType": cloud,
-        "containerDiskInGb": 30,
-        "volumeInGb": 0,
+        "image": args.image,
+        "gpu": {"id": gpu_id, "count": 1},
+        "cloud": cloud,
+        "disk": 30,
         "ports": ["22/tcp"],
-        "supportPublicIp": True,
         "env": {"PUBLIC_KEY": pub},
     }
     if volume:
@@ -246,10 +320,9 @@ def _pod_spec(args, gpu_ids, cloud, pub, volume=None):
         # iteration into minutes. Volumes are datacenter-pinned, so the pod is
         # restricted to the volume's datacenter -- capacity misses there are a
         # real possibility the caller sees as the usual "no capacity" fallback.
-        spec["networkVolumeId"] = volume["id"]
-        spec["volumeMountPath"] = "/workspace"
-        spec["dataCenterIds"] = [volume["dataCenterId"]]
-        spec["cloudType"] = "SECURE"  # network volumes live in secure DCs
+        spec["mounts"] = {"network": [{"volumeId": volume["id"], "path": "/workspace"}]}
+        spec["dataCenterIds"] = [volume["dataCenter"]]
+        spec["cloud"] = "SECURE"  # network volumes live in secure DCs
     return spec
 
 
@@ -299,25 +372,24 @@ def main() -> int:
     key = api_key()
 
     if args.create_volume:
-        volume = call("POST", "/networkvolumes", key,
-                      {"name": "anofox-tabfm-gpu", "size": args.create_volume, "dataCenterId": args.volume_dc})
+        volume = create_volume(key, args.create_volume, args.volume_dc)
         print(f"created volume {volume['id']} ({args.create_volume} GB, {args.volume_dc}) — "
               f"RECURRING COST until --delete-volume {volume['id']}")
         return 0
     if args.list_volumes:
-        for volume in call("GET", "/networkvolumes", key) or []:
-            print(f"{volume['id']}\t{volume.get('size')}GB\t{volume.get('dataCenterId')}\t{volume.get('name')}")
+        for volume in list_volumes(key):
+            print(f"{volume['id']}\t{volume.get('size')}GB\t{volume.get('dataCenter')}\t{volume.get('name')}")
         return 0
     if args.delete_volume:
-        call("DELETE", f"/networkvolumes/{args.delete_volume}", key)
+        delete_volume(key, args.delete_volume)
         print(f"deleted volume {args.delete_volume}")
         return 0
     if args.list:
-        for pod in call("GET", "/pods", key) or []:
-            print(f"{pod['id']}\t{pod.get('desiredStatus')}\t{pod.get('name')}\t{pod.get('machine', {}).get('gpuTypeId', '')}")
+        for pod in list_pods(key):
+            print(f"{pod['id']}\t{pod.get('status')}\t{pod.get('name')}\t{(pod.get('gpu') or {}).get('id', '')}")
         return 0
     if args.terminate:
-        call("DELETE", f"/pods/{args.terminate}", key)
+        terminate_pod(args.terminate, key)
         print(f"terminated {args.terminate}")
         return 0
 
@@ -371,9 +443,10 @@ def main() -> int:
     print(f"image={args.image}")
     volume = None
     if args.volume_id:
-        volume = call("GET", f"/networkvolumes/{args.volume_id}", key)
-        print(f"volume={volume['id']} ({volume.get('size')}GB, {volume['dataCenterId']}) mounted at /workspace")
+        volume = get_volume(key, args.volume_id)
+        print(f"volume={volume['id']} ({volume.get('size')}GB, {volume['dataCenter']}) mounted at /workspace")
     pod = None
+    last_error = None
     # Cheapest first, each on both clouds: capacity is transient and per-cloud,
     # so falling through the list beats failing on one sold-out card. With a
     # volume attached the cloud is forced to SECURE and the datacenter to the
@@ -381,18 +454,19 @@ def main() -> int:
     for price, gpu_id, vram in candidates:
         for cloud in (("SECURE",) if (volume or args.secure) else ("COMMUNITY", "SECURE")):
             try:
-                pod = call("POST", "/pods", key, _pod_spec(args, [gpu_id], cloud, pub, volume))
+                pod = create_pod(key, pod_spec(args, gpu_id, cloud, pub, volume))
                 tag = f"${price}/hr" if price is not None else "?"
                 print(f"  got {gpu_id} ({tag}, {vram}GB) on {cloud}")
                 break
             except SystemExit as exc:
                 if not _is_capacity_error(exc):
                     raise
+                last_error = exc
         if pod is not None:
             break
         print(f"  no capacity: {gpu_id}")
     if pod is None:
-        raise SystemExit("no capacity for any candidate GPU")
+        raise SystemExit(f"no capacity for any candidate GPU (last answer: {last_error})")
     pod_id = pod["id"]
     print(f"pod {pod_id} created")
 
@@ -407,7 +481,7 @@ def main() -> int:
         terminated = True
         print(f"\nterminating pod {pod_id}...")
         try:
-            call("DELETE", f"/pods/{pod_id}", key)
+            terminate_pod(pod_id, key)
             print("terminated")
         except SystemExit as exc:
             print(f"TERMINATION FAILED ({exc}) — terminate manually: --terminate {pod_id}")
