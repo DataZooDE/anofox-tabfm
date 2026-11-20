@@ -1133,7 +1133,7 @@ void AccelerateExecute(ClientContext &context, TableFunctionInput &data, DataChu
 			    bind.unsupported.empty()
 			        ? "no supported accelerator was discovered — predictions run on the CPU, which every model "
 			          "supports. SELECT * FROM tabfm_devices() shows what was probed."
-			        : bind.unsupported);
+			        : bind.unsupported + " Predictions run on the CPU, which every model supports.");
 			add("device", "cpu", "SET anofox_tabfm_device stays 'auto', which resolves to the CPU here.");
 		} else {
 			add("hardware", "found", bind.device_name + " → '" + bind.backend + "' backend");

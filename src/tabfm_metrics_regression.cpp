@@ -513,6 +513,21 @@ void MedAEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vec
 	inputs[1].ToUnifiedFormat(count, predicted_data);
 	auto slots = reinterpret_cast<MedAEStateSlot *const *>(sdata.data);
 
+	// Pass 1 validates the whole chunk BEFORE any state is allocated. Infinity throws, and DuckDB does not
+	// run StateDestroy for states touched by an Update that throws, so a vector allocated for an earlier
+	// row of this chunk would leak.
+	for (idx_t i = 0; i < count; i++) {
+		idx_t aidx = actual_data.sel->get_index(i);
+		idx_t pidx = predicted_data.sel->get_index(i);
+		if (!actual_data.validity.RowIsValid(aidx) || !predicted_data.validity.RowIsValid(pidx)) {
+			continue;
+		}
+		// Both operands are checked before deciding to skip: an Infinity in one must not be hidden by a
+		// NaN in the other.
+		SkipMissingOperand(UnifiedVectorFormat::GetData<double>(actual_data)[aidx], "tabfm_medae", "actual");
+		SkipMissingOperand(UnifiedVectorFormat::GetData<double>(predicted_data)[pidx], "tabfm_medae", "predicted");
+	}
+
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
 		idx_t aidx = actual_data.sel->get_index(i);
@@ -522,19 +537,15 @@ void MedAEUpdate(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vec
 			continue;
 		}
 
+		double a = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
+		double p = UnifiedVectorFormat::GetData<double>(predicted_data)[pidx];
+		if (std::isnan(a) || std::isnan(p)) {
+			continue; // NaN is missing, like NULL (Infinity was rejected in pass 1)
+		}
+
 		auto &slot = *slots[sidx];
 		if (!slot.data) {
 			slot.data = new std::vector<double>();
-		}
-
-		double a = UnifiedVectorFormat::GetData<double>(actual_data)[aidx];
-		double p = UnifiedVectorFormat::GetData<double>(predicted_data)[pidx];
-		// Both operands are checked before deciding to skip: an Infinity in one must not be hidden by a
-		// NaN in the other.
-		const bool actual_missing = SkipMissingOperand(a, "tabfm_medae", "actual");
-		const bool predicted_missing = SkipMissingOperand(p, "tabfm_medae", "predicted");
-		if (actual_missing || predicted_missing) {
-			continue; // NaN is missing, like NULL; Infinity throws
 		}
 		slot.data->push_back(std::abs(a - p));
 	}

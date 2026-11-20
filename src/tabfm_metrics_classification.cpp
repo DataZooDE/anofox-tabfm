@@ -277,6 +277,18 @@ void F1Update(Vector inputs[], AggregateInputData &, idx_t, Vector &state_vector
 	inputs[1].ToUnifiedFormat(count, predicted_data);
 	auto slots = reinterpret_cast<F1StateSlot *const *>(sdata.data);
 
+	// Pass 1 validates the whole chunk BEFORE any state is allocated: Infinity throws, and DuckDB does not
+	// run StateDestroy for states touched by an Update that throws, so a map allocated for an earlier row
+	// of this chunk would leak.
+	for (idx_t i = 0; i < count; i++) {
+		if (!actual_data.validity.RowIsValid(actual_data.sel->get_index(i)) ||
+		    !predicted_data.validity.RowIsValid(predicted_data.sel->get_index(i))) {
+			continue;
+		}
+		SkipMissingLabel(inputs[0].GetValue(i), "tabfm_precision/recall/f1", "actual");
+		SkipMissingLabel(inputs[1].GetValue(i), "tabfm_precision/recall/f1", "predicted");
+	}
+
 	for (idx_t i = 0; i < count; i++) {
 		idx_t sidx = sdata.sel->get_index(i);
 		idx_t aidx = actual_data.sel->get_index(i);
