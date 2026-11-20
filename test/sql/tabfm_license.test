@@ -165,3 +165,10 @@ query TT
 SELECT license, commercial FROM tabfm_list_models() WHERE model = 'nori-30m'
 ----
 apache-2.0	true
+
+# Nori 1.5 (Model v3) is Apache-2.0 too (card front matter, body and repo LICENSE agree), ungated, so the same:
+# no gate, the download needs no acknowledgement.
+query TT
+SELECT license, commercial FROM tabfm_list_models() WHERE model = 'nori-1-5'
+----
+apache-2.0	true
