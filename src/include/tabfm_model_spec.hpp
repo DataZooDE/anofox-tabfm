@@ -582,6 +582,9 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 		stem = "exaone_tabular";
 	} else if (model == "nori-30m") {
 		stem = "nori30m";
+	} else if (model == "nori-1-5") {
+		// a different architecture (two-phase encoder) at a different size: never nori30m's graphs
+		stem = "nori15";
 	}
 	return "graph_" + kind + "_" + stem + "_" + task_name;
 }
@@ -734,6 +737,12 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	// CPU path reads the .ckpt natively either way.
 	if (model == "nori-30m" && task_name == "regression") {
 		return "49797138da9ce6d7bb76895cb00514bc6967732051811c217548f32c75a02363";
+	}
+	// Nori 1.5: the ext graph (CUDA and MLX; tools/make_external_graph.py) bakes offsets into the safetensors
+	// tabfm_download writes from nori.pt (381 tensors, sorted keys, float32: byte-deterministic; the same bytes
+	// as tools/export_nori's convert_nori_weights). The CPU path reads the .ckpt natively either way.
+	if (model == "nori-1-5" && task_name == "regression") {
+		return "6da735b26d65fd2281525b127938f45c48d9eeef7bc20156ba6a87caaeed6029";
 	}
 	// EXAONE Tabular: the masked ROCm graphs (tools/export_exaone, --contract mask) bake offsets into LG's
 	// released safetensors at the revision the registry pins (093ad1c2). The classifier and the regressor are

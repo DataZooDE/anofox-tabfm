@@ -758,6 +758,23 @@ TEST_CASE("model_spec: EXAONE Tabular and Nori-30M bundle masked ROCm graphs, ke
 	REQUIRE(ExpectedWeightsHeaderShaFor("nori-30m", "classification") == "");
 }
 
+TEST_CASE("model_spec: Nori 1.5 has its own stem, so it is never handed Nori-30M's graphs, and pins its converted-weights header",
+          "[tabfm][model_spec]") {
+	using duckdb::anofox::BundledGpuGraphId;
+	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
+	// ext (CUDA and MLX) and migraphx (ROCm) graphs bake byte offsets into the safetensors convert_nori_weights
+	// writes from nori.pt (381 tensors, sorted, float32: byte-deterministic). The stems differ from nori30m's.
+	REQUIRE(BundledGpuGraphId("nori-1-5", "ext", "regression") == "graph_ext_nori15_regression");
+	REQUIRE(BundledGpuGraphId("nori-1-5", "migraphx", "regression") == "graph_migraphx_nori15_regression");
+	REQUIRE(BundledGpuGraphId("nori-1-5", "ext", "regression") != BundledGpuGraphId("nori-30m", "ext", "regression"));
+	REQUIRE(ExpectedWeightsHeaderShaFor("nori-1-5", "regression") ==
+	        "6da735b26d65fd2281525b127938f45c48d9eeef7bc20156ba6a87caaeed6029");
+	REQUIRE(ExpectedWeightsHeaderShaFor("nori-1-5", "classification") == "");
+	// and 30M's pin is untouched
+	REQUIRE(ExpectedWeightsHeaderShaFor("nori-30m", "regression") ==
+	        "49797138da9ce6d7bb76895cb00514bc6967732051811c217548f32c75a02363");
+}
+
 TEST_CASE("model_spec: Kumo-Tabular sizes map to their own stems and pin their converted-weights headers",
           "[tabfm][model_spec]") {
 	using duckdb::anofox::BundledGpuGraphId;
