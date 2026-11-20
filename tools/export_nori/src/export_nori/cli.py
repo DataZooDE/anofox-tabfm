@@ -40,6 +40,9 @@ def main(argv=None) -> int:
     ap.add_argument("--contract", choices=["positional", "mask"], default="positional",
                     help="positional: (x, y) with the split = len(y) (the CPU graph). mask: x, y (full length), "
                          "train_size, d, n_rows -- the ROCm/MIGraphX contract (nori_mask.py).")
+    ap.add_argument("--gate", action="store_true",
+                    help="with --contract mask on a Nori 1.5 config: also run the torch-level padded-vs-positional "
+                         "gate with its negative controls (mask_parity15.gate) before exporting")
     args = ap.parse_args(argv)
     masked = args.contract == "mask"
 
@@ -54,6 +57,24 @@ def main(argv=None) -> int:
     model = build_model(cfg.model_config, seed=args.seed)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[export_nori] {n_params:,} params ({time.time()-t0:.1f}s)", flush=True)
+
+    if masked and args.gate:
+        if not model.two_phase_config:
+            ap.error("--gate is implemented for the Nori 1.5 configs (mask_parity15)")
+        import copy
+
+        from export_nori.fixture15 import sensitive
+        from export_nori.mask_parity15 import gate
+        t0 = time.time()
+        # A default-initialised stack is nearly input-blind, so a broken mask would not show: the gate runs on a
+        # copy woken up the way the CI fixture is (the exported graph keeps the unmodified random weights).
+        res = gate(sensitive(copy.deepcopy(model)))
+        print(f"[export_nori] masked gate ({time.time()-t0:.1f}s): worst {res['worst']:.2e}, controls caught "
+              f"{sum(res['controls_caught'].values())}/{len(res['controls_caught'])} -> "
+              f"{'OK' if res['ok'] else 'FAIL'}", flush=True)
+        if not res["ok"]:
+            print("[export_nori] MASK GATE FAILED", file=sys.stderr)
+            return 1
 
     t0 = time.time()
     if masked:
