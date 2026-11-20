@@ -22,11 +22,18 @@ from export_nori import configs, export
 from export_nori.nori_patches import build_model
 
 TASK = "regression"
+CHECKPOINTS = {
+    "fixture": "Synthefy/Nori-30M@63c9f7facf9fb32c37ce3fc2fba331d524696318 :: nori.pt",
+    "real": "Synthefy/Nori-30M@63c9f7facf9fb32c37ce3fc2fba331d524696318 :: nori.pt",
+    "fixture15": "Synthefy/Nori-1-5@79afc5a65b2775d0c62977211a63620ce87846c7 :: nori.pt",
+    "real15": "Synthefy/Nori-1-5@79afc5a65b2775d0c62977211a63620ce87846c7 :: nori.pt",
+}
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="export_nori")
-    ap.add_argument("--config", required=True, choices=["fixture", "real"])
+    ap.add_argument("--config", required=True, choices=["fixture", "real", "fixture15", "real15"],
+                    help="fixture/real: Nori-30M. fixture15/real15: Nori 1.5 (Model v3, two-phase encoder).")
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
@@ -101,10 +108,10 @@ def main(argv=None) -> int:
             "repo": "https://github.com/Synthefy/synthefy-nori",
             "code_license": "Apache-2.0",
             "weights_license": "Apache-2.0",
-            "checkpoint": "Synthefy/Nori-30M@63c9f7facf9fb32c37ce3fc2fba331d524696318 :: nori.pt",
+            "checkpoint": CHECKPOINTS[cfg.name],
         },
         "input_signature": {"x": "[1,T,H] f32", "y": "[1,S] f32 (S=eval_pos, RAW training targets only)"},
-        "output": {"logits": "[1,T,1] RAW-space point estimate per row: the mean of the 999-quantile "
+        "output": {"logits": "[1,T,1] RAW-space point estimate per row: the mean of the quantile "
                              "head (upstream's default quantile_collapse='mean')"},
         "H_dynamic": True, "train_size": "runtime (implicit = len(y))",
         "dim_rows": list(cfg.dim_rows), "dim_train": list(cfg.dim_train),

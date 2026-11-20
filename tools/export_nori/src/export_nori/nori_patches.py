@@ -8,9 +8,10 @@ Upstream's ``FeaturesTransformer.forward(x, y, eval_pos, task_type="reg")`` alre
 table plus a label prefix and a split point, so the graph maps onto the engine's ``(x, y)``-only
 contract (the split is ``len(y)``) with no engine change, like LimiX-2M, whose fork it is.
 
-Patches (each the identical function on the inference path):
+Patches (each the identical function on the inference path; the numbering is stable, patch 5 is Nori 1.5's):
 
-  1. ``FeaturesTransformer.forward`` -> a regression-only forward without three trace hazards:
+  1. ``FeaturesTransformer.forward`` -> a regression-only forward without three trace hazards (and, for a
+     ``two_phase_config`` model, upstream's ``_forward_two_phase`` path, minus the y-token embedding it discards):
      the feature-group pad is a Python branch on the symbolic width (``if feature_to_add > 0``); the
      label pad is ``nan * zeros(B, T - S, 1)``, whose length torch.export concretises; and the
      mask-prediction dict branch (off for inference). Same operations, same order, otherwise.
@@ -81,6 +82,15 @@ def apply() -> None:
             torch.tensor(float("nan"), device=y_col.device, dtype=y_col.dtype),
             y_col,
         )
+        if self.two_phase_config is not None:
+            # Nori 1.5 (Model v3). Upstream builds the single y-token embedding and then ignores it
+            # (``_forward_two_phase`` takes the masked y itself), so it is not built here: the same output,
+            # and the reg_y_encoder tensors stay in the checkpoint as unread (keep_alive) initializers.
+            embedded_x = self.add_embeddings(x_emb_result)
+            embedded_x = self.apply_target_aware_embedding(embedded_x, target_aware_y, task_type="reg",
+                                                           eval_pos=eval_pos)
+            row_states, _ = self.transformer_encoder(embedded_x, y_data_masked.squeeze(-1), eval_pos)
+            return self.reg_y_decoder(row_states[:, eval_pos:])
         embedded_y = self.reg_y_encoder({"data": y_data_masked, "eval_pos": eval_pos})["data"]
         # Upstream `.squeeze(2)`s this for a 4-D [B, T, 1, E] encoder output. The regression encoder's
         # output is 3-D [B, T, E], where torch's squeeze of a non-unit dim is a no-op but the ONNX
@@ -164,6 +174,28 @@ def apply() -> None:
 
     emod.NormalizationEncoder.forward = _norm_forward
 
+    # --- Patch 5 (Nori 1.5): PromptQuantilePLEEncoder without int(eval_pos) -------------------------------
+    # Upstream reads ``int(input["eval_pos"])`` to range-check the context prefix, which specialises the
+    # symbolic context length S to the trace's (the export then insists T >= S_example), and validates the
+    # reference's shape against a tuple of symbolic sizes. The reference is built from the context rows
+    # only, exactly as upstream does; the checks are dropped (the export's Dim keeps 2 <= S <= T) and the
+    # shape holds by construction: [B, groups, features, n_bins + 1].
+    emod.PromptQuantilePLEEncoder._upstream_forward = emod.PromptQuantilePLEEncoder.forward
+
+    def _ple_forward(self, input):
+        x = input["data"]
+        mask = input["mask"]
+        frozen = input.get(self.frozen_reference_key)
+        if frozen is not None:
+            raise ValueError("the export path builds the PLE reference from the context; a frozen one is a "
+                             "context-cache feature")
+        valid = torch.isfinite(x) & ~mask.to(torch.bool)
+        reference = self._build_reference(x, valid, input["eval_pos"])
+        input[self.reference_key] = {"edges": reference["edges"].to(device=x.device, dtype=x.dtype)}
+        return input
+
+    emod.PromptQuantilePLEEncoder.forward = _ple_forward
+
     _APPLIED = True
 
 
@@ -230,13 +262,32 @@ class ExportWrapper(torch.nn.Module):
         return point * std_y.unsqueeze(-1) + mean_y.unsqueeze(-1)
 
 
+def replace_relu(model) -> None:
+    """Patch 6: every nn.ReLU instance computes ``clamp(x, min=0)`` instead (same as tools/export_limix, patch 7).
+
+    The MLX interpreter's op table has no ``Relu``, so a one-node activation would get the whole model refused
+    on MLX by name. ``clamp(x, min=0)`` is the same function (NaN stays NaN; only the sign of a zero may differ,
+    and -0.0 == 0.0 cannot change a downstream value) and exports as ``Clip``, which the interpreter has.
+    Per INSTANCE, not on ``nn.ReLU``: the class is shared with every other library in the process."""
+    import types
+
+    def _forward(self, input):
+        return torch.clamp(input, min=0.0)
+
+    for module in model.modules():
+        if type(module) is torch.nn.ReLU:
+            module.forward = types.MethodType(_forward, module)
+
+
 def build_model(config: dict, seed: int = 0):
     """Random-weight Nori at the given config. No checkpoint bytes anywhere."""
     apply()
     from synthefy_nori.utils.loading import build_model as _build
 
     torch.manual_seed(seed)
-    return _build(dict(config)).eval()
+    model = _build(dict(config))
+    replace_relu(model)
+    return model.eval()
 
 
 def load_real(ckpt_path: str):
@@ -246,7 +297,9 @@ def load_real(ckpt_path: str):
     from synthefy_nori.utils.loading import load_model
 
     apply()
-    return load_model(ckpt_path, mask_prediction=False, native_rms_norm=False).eval()
+    model = load_model(ckpt_path, mask_prediction=False, native_rms_norm=False)
+    replace_relu(model)
+    return model.eval()
 
 
 class unpatched:
@@ -261,7 +314,7 @@ class unpatched:
 
         apply()
         self._targets = [tmod.FeaturesTransformer, lmod.QASSMaxScaling, emod.ValidFeatureEncoder,
-                         emod.NormalizationEncoder]
+                         emod.NormalizationEncoder, emod.PromptQuantilePLEEncoder]
         self._saved = [cls.forward for cls in self._targets]
         for cls in self._targets:
             cls.forward = cls._upstream_forward
