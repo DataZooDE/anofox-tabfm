@@ -115,7 +115,8 @@ the same engine the CPU runs, on a CUDA or HIP device. It is the file `libanofox
 directory `anofox_tabfm_ep_path` names, the extension uses it instead of the ONNX Runtime / MIGraphX plugin** for `cuda` and `rocm`, and otherwise nothing
 changes. It takes the plain external-data graph, so one graph serves both vendors, and honours `anofox_tabfm_gpu_precision` (`fp32` disables TF32, `tf32`
 keeps it; `bf16`/`fp16` are errors). Float32 checkpoints only. Measured on Nori 1.5 it agrees with ONNX Runtime to 1.5e-3 (ROCm gfx1150) and 3.4e-3
-(RTX 4090) on logits of scale 11. Not a release asset yet. Apple GPUs stay on MLX: ggml's Metal matmul is half-precision internally and was 3 logit units off.
+(RTX 4090) on logits of scale 11. On CUDA, matmuls of 16 or fewer columns (small tables) still use ggml's own TF32 tensor-core kernel regardless of `fp32`: a 100-row, 4-feature
+regression differed from the CPU by 0.4% of its scale there. Not a release asset yet. Apple GPUs stay on MLX: ggml's Metal matmul is half-precision internally and was 3 logit units off.
 
 ## Platform limits
 

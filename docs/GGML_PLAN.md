@@ -192,7 +192,10 @@ five real dimensions (max 5) after dropping size-1 dims: those need an op-aware 
   when that plugin is installed (MIGraphX's arch allowlist excludes e.g. the gfx1150 iGPU). **End to end through SQL on ROCm** (`tools/gpu_test/scenarios/ggml_plugin_gpu.sql`,
   Nori 1.5, real weights): `tabfm_models()` reports `rocm:0` and the regression agrees with the CPU engine to 6.6e-5 at scale 7.0. **CUDA plugin binary** built on an RTX 4090
   (CUDA 12.4, sm_89) and checked through the ABI: fp32 3.4e-3, tf32 0.2 (so the precision switch works), bf16 refused.
-- **Still open.** The SQL path on a CUDA machine (the host code is shared with ROCm and the ABI check passes, but the extension was not built there); the plugin is not a release
+- **SQL on CUDA (done).** The extension was built on the RTX 4090 pod and `ggml_plugin_gpu.sql` run: `tabfm_models()` reports `cuda:0` and the 100-row Nori regression agrees with the
+  CPU engine to **0.031 at scale 7** (0.4%), looser than ROCm's 6.6e-5. Cause: this table has 4 features, so its small matmuls take ggml's own tensor-core kernel
+  (`mul_mat_f`, 16 or fewer columns), which `NVIDIA_TF32_OVERRIDE=0` does not reach; the large-matmul runs above are 3.4e-3. Strict fp32 on CUDA for small tables needs a ggml change.
+- **Still open.** The plugin is not a release
   asset and has no CI job; `tabfm_devices()`/`tabfm_backends()` do not list the ggml lane (explicit `cuda`/`rocm` only, `auto` never picks it); device weights upload at the first
   run, not at create; Windows and Vulkan plugins; fp32 is not strict for matmuls of 16 or fewer columns on CUDA (ggml's own TF32 kernel has no switch).
 
