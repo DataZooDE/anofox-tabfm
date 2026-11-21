@@ -250,7 +250,10 @@ def export_mask_graph(model, graph_path: pathlib.Path, *, dim_rows=("rows", 4, 1
                       dim_features=("features", 1, 512), example=(20, 5, 12), opset: int = OPSET):
     """The ROCm / MIGraphX contract (nori_mask.MaskExportWrapper): x[1,T,H], y[1,T] full length,
     train_size[1], d[1], n_rows[1] -> logits[1,T,1]. Only T and H are dynamic."""
-    from export_nori.nori_mask import MaskExportWrapper
+    if getattr(model, "two_phase_config", None):        # Nori 1.5 (Model v3): its own masked forward
+        from export_nori.nori15_mask import MaskExportWrapper15 as MaskExportWrapper
+    else:
+        from export_nori.nori_mask import MaskExportWrapper
 
     wrapper = MaskExportWrapper(model).eval()
     T = torch.export.Dim(dim_rows[0], min=dim_rows[1], max=dim_rows[2])

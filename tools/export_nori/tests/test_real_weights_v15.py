@@ -117,3 +117,22 @@ def test_the_converter_is_deterministic_and_matches_the_pinned_header(tmp_path, 
             shas.append(hashlib.sha256(f.read(n)).hexdigest())
     assert (tmp_path / "a.safetensors").read_bytes() == (tmp_path / "b.safetensors").read_bytes()
     assert shas[0] == SAFETENSORS_HEADER_SHA256
+
+
+def test_the_masked_contract_on_the_real_weights(tmp_path, model):
+    """The ROCm masked graph (mask_parity15): padded + masked == positional on the released weights with every
+    negative control caught, and ORT on the exported masked graph (real weights in it) == positional, on tables
+    padded to a larger bucket. The real model is input-sensitive, so the controls are measured here on the real
+    thing, not on a woken-up random one."""
+    from export_nori.mask_parity15 import TOL, check_onnx, gate
+
+    res = gate(model)
+    print(f"masked gate on the real weights: worst {res['worst']:.2e}; controls {res['controls_caught']}")
+    assert res["ok"], res
+    cfg = configs.real15()
+    graph = tmp_path / "mask.onnx"
+    export.export_mask_graph(model, graph, dim_rows=cfg.dim_rows, dim_features=cfg.dim_features,
+                             example=cfg.example)
+    onnx_res = check_onnx(graph, model)
+    print(f"masked ORT graph on the real weights: worst {onnx_res['worst']:.2e} (tol {TOL})")
+    assert onnx_res["ok"], onnx_res
