@@ -322,12 +322,19 @@ FROM tabfm_models() WHERE model = 'tabicl-kv-fixture' AND task = 'classification
 ----
 40	40	80	40
 
+# The cache never changes an answer: every label is identical and every score agrees to 1e-6. (Not bit-for-bit: the split prepare/query graphs and the
+# one-pass graph sum their matmuls in a different order on some CPUs, e.g. Apple silicon differs in the last bits, ~1e-9.)
+statement ok
+CREATE MACRO seg_rows(t) AS TABLE SELECT seg, i, t.res[i].yhat AS yh, t.res[i].yhat_score AS sc FROM (SELECT seg, res FROM query_table(t)) t, LATERAL generate_series(1, len(t.res)) g(i);
+
 query IIII
-SELECT count(*), count(*) FILTER (WHERE o.res IS DISTINCT FROM a.res), count(*) FILTER (WHERE o.res IS DISTINCT FROM b.res),
-  count(*) FILTER (WHERE o.res IS DISTINCT FROM c.res)
-FROM seg_off o JOIN seg_1 a USING (seg) JOIN seg_2 b USING (seg) JOIN seg_3 c USING (seg)
+SELECT count(*),
+  count(*) FILTER (WHERE o.yh IS DISTINCT FROM a.yh OR abs(o.sc - a.sc) > 1e-6),
+  count(*) FILTER (WHERE o.yh IS DISTINCT FROM b.yh OR abs(o.sc - b.sc) > 1e-6),
+  count(*) FILTER (WHERE o.yh IS DISTINCT FROM c.yh OR abs(o.sc - c.sc) > 1e-6)
+FROM seg_rows('seg_off') o JOIN seg_rows('seg_1') a USING (seg, i) JOIN seg_rows('seg_2') b USING (seg, i) JOIN seg_rows('seg_3') c USING (seg, i)
 ----
-40	0	0	0
+400	0	0	0
 
 statement ok
 RESET threads
