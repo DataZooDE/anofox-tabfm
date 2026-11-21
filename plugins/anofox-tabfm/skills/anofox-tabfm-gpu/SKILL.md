@@ -41,8 +41,8 @@ ROCm come from the system.
 5. **Precision defaults to strict `fp32`** everywhere; `bf16` / `fp16` (ROCm) flip labels on some rows, and
    not only near-ties. Validate on your own data before switching.
 6. **Not every model runs on every backend.** CUDA and MLX refuse `nori-30m` and `exaone-tabular` (no GPU
-   graph); `nori-1-5` runs on CUDA and MLX (ext graph) but not yet on ROCm (no masked ROCm graph is bundled yet;
-   `tabfm_backends()` says so); ROCm otherwise serves every built-in model but caps
+   graph); `nori-1-5` runs on CUDA and MLX (ext graph) and on ROCm (masked graph; only the 128 x 16 bucket is
+   verified); ROCm serves every built-in model but caps
    `limix-2m`'s bucket size. CoreML is dropped (MLX replaces it).
 
 ## Set up
@@ -130,7 +130,7 @@ of them; switching back and forth does not rebuild them. `CALL tabfm_unload();` 
 |---|---|---|
 | CPU | Linux x64 / arm64, macOS arm64, Windows x64 | all |
 | CUDA | Linux x64, CUDA userspace 12.5 or later | all with a GPU graph, i.e. all except `nori-30m`, `exaone-tabular` (`nori-1-5` included) |
-| ROCm | Linux x64; gfx1201 verified, others behind an allowlist | all built-in models except `nori-1-5` (no masked ROCm graph is bundled yet); masked graphs for the TabPFN family and others |
+| ROCm | Linux x64; gfx1201 verified, others behind an allowlist | all built-in models (`nori-1-5` verified on one bucket); masked graphs for the TabPFN family and others |
 | MLX | macOS arm64 | all with a GPU graph, except `nori-30m`, `exaone-tabular` (`nori-1-5` included) |
 
 There is no macOS x86_64 build, and Windows is CPU-only. No GPU, or still slow on the CPU: a smaller

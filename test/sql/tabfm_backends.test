@@ -97,7 +97,7 @@ true
 # structural "positional context split" reason — that reason means "no fixed
 # shape can be bucketed for this architecture", which is false for every one of
 # these: tabfm-v1, tabfm-v1-1, mitra, mitra-v2 and kumo-tabular-* (train_size-scalar family), and tabdpt, tabdpt-v1-3, tabpfn-v2,
-# tabpfn-v2-5, tabpfn-v2-6, tabpfn-v3, tabpfn-v3-5(-fast), exaone-tabular, nori-30m, tabicl-v2, limix-2m, orion-bix,
+# tabpfn-v2-5, tabpfn-v2-6, tabpfn-v3, tabpfn-v3-5(-fast), exaone-tabular, nori-30m, nori-1-5, tabicl-v2, limix-2m, orion-bix,
 # orion-msp and causilo, whose split was converted to a value (see docs/ROCM_TABDPT_SPIKE.md, docs/ROCM_TABPFN_PLAN.md,
 # tools/export_exaone, tools/export_nori, tools/export_tabicl, tools/export_limix, tools/export_orion_* and
 # tools/export_causilo: *_mask.py). They may still be
@@ -112,7 +112,7 @@ query I
 SELECT count(*) FROM tabfm_backends()
 WHERE backend = 'rocm'
   AND model IN ('tabfm-v1', 'tabfm-v1-1', 'mitra', 'tabdpt', 'tabpfn-v2', 'tabpfn-v2-5', 'tabpfn-v2-6', 'tabpfn-v3',
-                'mitra-v2', 'tabdpt-v1-3', 'tabpfn-v3-5', 'tabpfn-v3-5-fast', 'exaone-tabular', 'nori-30m',
+                'mitra-v2', 'tabdpt-v1-3', 'tabpfn-v3-5', 'tabpfn-v3-5-fast', 'exaone-tabular', 'nori-30m', 'nori-1-5',
                 'tabicl-v2', 'limix-2m', 'orion-bix', 'orion-msp', 'causilo',
                 'kumo-tabular-small', 'kumo-tabular-medium', 'kumo-tabular-large')
   AND reason IS NOT NULL AND reason LIKE '%ROCM_SINGLE_EVAL_POS%';

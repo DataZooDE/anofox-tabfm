@@ -1177,6 +1177,11 @@ upstream code at run time: patches 1-4 are shared with `nori-30m`, patch 5 drops
   `model.safetensors` with header sha256 `6da735b26d65fd2281525b127938f45c48d9eeef7bc20156ba6a87caaeed6029`,
   byte-identical to `tools/export_nori`'s `convert_nori_weights`; `tabfm_regress(model := 'nori-1-5')` on a
   smooth 100-row table gives R² 0.9999.
+- `test/sql/tabfm_real_models.test` (the shared tables, CPU): split query R² **0.99995**; `reg_t` context corr
+  0.99999; `reg_in` query corr 0.99997, worst error 0.36. **It extrapolates a linear trend worse than Nori-30M**:
+  on `reg_t` (queries outside the context's range) the query corr(yhat, f1) is **0.51** with predictions reaching
+  58.7 against a truth of 72.3, where Nori-30M gets 0.9955 and 74.2. Inside the context's range it is as good or
+  better, so prefer `nori-30m` when the queries lie well outside the training range.
 
 **Size and speed** (CPU, default threads, 24 cores, 200 query rows; each point is a fresh process, wall time
 includes the process start and the model load). Peak memory grows with rows² x features, and at the same size it
@@ -1213,7 +1218,17 @@ larger CPU points were not run on the 16 GB machine.
 - **MLX:** verified on an Apple M3 (macOS 27.2, mlx 0.32.4): served by `mlx:0`, max |diff| against the CPU
   1.2e-5 (8.8e-7 of the range), corr 0.9999999999996, repeat identical; CPU 649 ms against MLX 312 ms cold and
   215 ms warm (100 rows x 8 features).
-- **ROCm:** not done yet. No masked ROCm graph is bundled yet; `tabfm_backends()` says so.
+- **ROCm: served on `rocm:0`, verified on a real gfx1201 (RX 9070 XT, ROCm 10.1) with the real weights**, through
+  a second, MASKED graph (`graph_migraphx_nori15_regression.onnx`: `x, y_full, train_size, d, n_rows`;
+  `tools/export_nori --config real15 --contract mask`, then `tools/make_migraphx_graph.py --dynamic`). The
+  quantile PLE tokenizer's sort and gather were rewritten for MIGraphX as a stable rank by comparison plus a
+  one-hot selection GEMM, bit-equal to upstream on decades, zero, constants, duplicates, NaN and infinities
+  (`tools/export_nori/tests/test_mask_v15.py`, eight negative controls). Through SQL with the model registered
+  (not the built-in), 100 rows x 8 features (the 128 x 16 bucket), fp32, against the CPU: **max |diff| 6.3e-5**
+  on a scale of 8.0 (7.9e-6 relative), corr 0.9999999999937. The first call on a bucket compiles for **794.7 s
+  (13.2 minutes)**; warm calls take **107 ms on ROCm against 411 ms on the CPU** (about 4x; `tools/gpu_test/
+  nori15_rocm.sh`). Only that bucket was compiled: larger ones are untested, and the PLE compare matrix is
+  O(T² x H) in memory, so a large row bucket may need a cap.
 
 ## EXAONE Tabular (LG AI Research) — shipped (classify + regress)
 

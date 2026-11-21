@@ -12,8 +12,8 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   inference_config}`, no EMA copy); the 999-quantile head is reduced in-graph to its mean and the engine runs
   one forward on the raw table. `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only.
   Verified on the real weights on the CPU, on CUDA (RTX 3090, through a model registered in SQL with the
-  graph_ext_nori15_regression ext graph, not the built-in) and on MLX (Apple M3). No masked ROCm graph is
-  bundled yet, so ROCm does not serve it and `tabfm_backends()` says so. Its recommended limits are 2,000 rows
+  graph_ext_nori15_regression ext graph, not the built-in), on MLX (Apple M3) and on ROCm (RX 9070 XT, a
+  bundled masked graph, one bucket verified). Its recommended limits are 2,000 rows
   and 100 features, one at a time (CPU memory grows with rows² x features, about twice Nori-30M's). See
   docs/REAL_MODELS.md.
 - **`tools/export_nori` exports Nori 1.5**: patch 5 (drops `int(eval_pos)` from `PromptQuantilePLEEncoder`)
