@@ -1,0 +1,4 @@
+# op GreaterOrEqual
+in a f32 3,4 7fc00000 f149f2ca 0da24260 00000000 3e2ca2ee 3ed7c970 7f800000 7149f2ca 80000000 ff800000 3fabfcc6 bfd51932
+in b f32 - 00000000
+out y bool 3,4 0 0 1 1 1 1 1 1 1 0 1 0

@@ -1,0 +1,4 @@
+# op Add
+in a f32 - 3fc00000
+in b f32 - c0100000
+out y f32 - bf400000

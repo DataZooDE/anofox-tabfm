@@ -594,6 +594,10 @@ struct OrtBackend : public TabFMBackend {
 	string weights;             // fallback: full read (f32 tensors point in here)
 	MappedFile mapping;         // preferred: mmap of the cache file
 	F32Arena arena;             // owns bf16->f32 upcast copies (empty for f32 models)
+	//! A torch checkpoint's state_dict: a strided (transposed) view is gathered into a copy it owns, and the injected initializers point
+	//! into it, so it lives as long as the session does. (ORT copies small weights at creation and hid this; the ggml engine reads the
+	//! buffers on every run.)
+	unordered_map<string, CkptTensor> ckpt;
 	TabFMSessionHandle session; // last: destroyed first, before the buffers
 
 	TabFMRunOutput Run(const TabFMRunInput &input) override {
@@ -778,6 +782,7 @@ struct SplitOrtBackend : public TabFMBackend {
 	string weights;
 	MappedFile mapping;
 	F32Arena arena;
+	unordered_map<string, CkptTensor> ckpt; // see OrtBackend::ckpt
 	//! The query graph's non-x inputs -- what prepare has to supply.
 	vector<string> context_inputs;
 	//! Counters shared with the LoadedModel, so tabfm_models() can report them.
@@ -1431,6 +1436,98 @@ shared_ptr<LoadedModel> TryCudaBackend(FileSystem &fs, TabFMState &state, const 
 	                       ctx.gpu_precision, NumericCast<idx_t>(ctx.max_sessions));
 }
 
+//! Is the ggml GPU plugin for `backend` ("cuda" | "rocm") installed AND loadable in ep_path? The one probe dispatch, device resolution and tabfm_backends() share
+//! for this lane (tabfm_weights.cpp asks PluginAvailableCached with the same "ggml-<backend>" name).
+bool GgmlPluginAvailable(const string &ep_path, const string &backend) {
+	return !ep_path.empty() && PluginAvailableCached(ep_path, "ggml-" + backend);
+}
+
+//! Marks a session served by the ggml plugin (part of its cache identity).
+static const char *const kGgmlEngineSuffix = "+ggml";
+
+//! Would the ggml GPU plugin serve this (model, device) call? The one predicate TryGgmlGpuBackend and the session-cache key share, so a session built by one
+//! lane is never reused as the other's. Plugin installed and loadable for the device's vendor, and the plain ext graph servable under the plugin's rules.
+bool GgmlLaneServes(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx, const string &device_id) {
+	const bool is_cuda = StringUtil::StartsWith(device_id, "cuda");
+	const bool is_rocm = StringUtil::StartsWith(device_id, "rocm");
+	if ((!is_cuda && !is_rocm) || !GgmlPluginAvailable(ctx.ep_path, is_cuda ? "cuda" : "rocm")) {
+		return false;
+	}
+	const string task_name = TabFMTaskName(resolved.manifest.task);
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
+	const bool bundled_matches =
+	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
+	// "cuda" is the graph kind here ("ext"), and its precision rule is the one this plugin implements (fp32 | tf32).
+	return GpuServabilityFor(fs, resolved, "cuda", task_name, !resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches,
+	                         ctx.gpu_precision)
+	    .supported;
+}
+
+// The ggml GPU plugin (src/tabfm_ggml_plugin.cpp, tools/ggml_plugin; docs/GGML_PLAN.md "P8 result"): the same engine as the CPU build on a CUDA or HIP
+// device. It is opt-in by presence: it engages only when the plugin file libanofox_tabfm_ggml-{cuda,rocm}_plugin.so sits in anofox_tabfm_ep_path, and
+// otherwise returns nullptr so the ORT/MIGraphX plugins above and below are reached exactly as before. It takes the plain external-data ("ext")
+// graph the CUDA path uses (not the fixed-shape MIGraphX graph), so one graph serves both vendors. Like the paths it sits beside, once the plugin
+// is present and the graph exists it must succeed or throw: a silent fall back to the CPU is the failure the equivalence suite exists to catch.
+shared_ptr<LoadedModel> TryGgmlGpuBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved, const PredictContext &ctx) {
+	auto devices = DiscoverDevices();
+	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
+	const bool is_cuda = StringUtil::StartsWith(device.device_id, "cuda");
+	const bool is_rocm = StringUtil::StartsWith(device.device_id, "rocm");
+	if ((!is_cuda && !is_rocm) || ctx.ep_path.empty()) {
+		return nullptr;
+	}
+	const string vendor = is_cuda ? "cuda" : "rocm";
+	// The same probe device resolution and tabfm_backends() use: a file that is there but will not load is "no ggml lane", not a hard error that
+	// would shadow a working ORT/MIGraphX plugin.
+	if (!GgmlPluginAvailable(ctx.ep_path, vendor)) {
+		return nullptr;
+	}
+	const auto plugin_path = fs.JoinPath(ctx.ep_path, PluginFileName("ggml-" + vendor));
+	const string task_name = TabFMTaskName(resolved.manifest.task);
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
+	const bool bundled_matches =
+	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
+	// "cuda" is the graph kind here ("ext"), and its precision rule is the one this plugin implements (fp32 | tf32).
+	auto servability = GpuServabilityFor(fs, resolved, "cuda", task_name, !resolved.ext_graph_path.empty(), graph.data != nullptr,
+	                                     bundled_matches, ctx.gpu_precision);
+	if (!servability.supported) {
+		// Another lane may serve this call (bf16/fp16 and the MIGraphX graph are ROCm-plugin features): fall through to it. Only when no other plugin for
+		// this device is installed is the ggml refusal the one the user needs to see.
+		if (IsExplicitGpuRequest(ctx.device, vendor) && !PluginAvailableCached(ctx.ep_path, vendor)) {
+			throw InvalidInputException(GpuRefusalMessage(vendor, "the ggml GPU plugin cannot serve it: " + servability.reason));
+		}
+		return nullptr;
+	}
+	string graph_path;
+	string weights_dir;
+	if (servability.source == GpuGraphSource::MODEL_PROVIDED) {
+		graph_path = resolved.ext_graph_path;
+		weights_dir = DirName(graph_path); // external data sits beside the graph
+	} else {
+		weights_dir = DirName(resolved.weights_path);
+		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
+		if (!StageBundledGraph(fs, graph, graph_path)) {
+			throw IOException(GpuPostCommitFailure(device.device_id, ctx.device, resolved.manifest.model,
+			                                       "the bundled GPU graph could not be staged beside the weights at '" + graph_path +
+			                                           "' (read-only weights directory?)",
+			                                       "Make that directory writable."));
+		}
+	}
+	TabFMPluginCreateParams params {};
+	params.graph_path = graph_path.c_str();
+	params.weights_dir = weights_dir.c_str();
+	params.cache_dir = ctx.cache_dir.c_str();
+	params.arch = device.arch.c_str();
+	params.precision = ctx.gpu_precision.c_str();
+	params.mxr_source = "";
+	params.device_ordinal = device.device_ordinal;
+	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
+	// The engine is part of the session's identity (CanReuseSession compares it): a ggml session must not be reused after the plugin is removed, nor
+	// an ORT/MIGraphX one after it is installed.
+	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0, false, ctx.gpu_precision + kGgmlEngineSuffix,
+	                       NumericCast<idx_t>(ctx.max_sessions));
+}
+
 // Apple MLX backend (docs/MLX_PLAN.md; spike verdicts in
 // docs/MLX_SPIKE_RESULTS.md). A plugin like the two above, but the resemblance
 // stops at the loader: MLX has no ONNX importer and none exists, so the plugin
@@ -1619,6 +1716,18 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
 	if (StringUtil::Lower(ctx.device) != "auto") {
+		// An explicit cuda/rocm request is served by the ggml plugin when it is installed (TryGgmlGpuBackend), whatever MIGraphX's arch allowlist says
+		// about the card: ggml-HIP supports the architectures it was built for, and a card it cannot drive fails at plugin create with ggml's own message.
+		string requested = StringUtil::Lower(ctx.device);
+		if (requested == "migraphx") {
+			requested = "rocm";
+		}
+		for (auto &device : devices) {
+			if (!device.usable && (requested == "cuda" || requested == "rocm") && BackendOfDeviceId(device.device_id) == requested &&
+			    GgmlPluginAvailable(ctx.ep_path, requested)) {
+				device.usable = true;
+			}
+		}
 		return ResolveDevice(ctx.device, devices).device_id;
 	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
@@ -1719,7 +1828,8 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	const string &wanted_device = ResolvedDeviceCached(fs, resolved, ctx);
 	// gpu_precision only shapes GPU sessions; for CPU it is "" so flipping the
 	// setting does not rebuild a session it never influenced.
-	const string wanted_precision = SessionPrecisionFor(wanted_device, ctx.gpu_precision);
+	const string wanted_precision = SessionPrecisionFor(wanted_device, ctx.gpu_precision) +
+	                                (!StringUtil::StartsWith(wanted_device, "cpu") && GgmlLaneServes(fs, resolved, ctx, wanted_device) ? kGgmlEngineSuffix : "");
 
 	// Does this call take the context cache? An exact pair, the setting on (the default), and the CPU
 	// (UseContextCache). Decided BEFORE the session lookup, because a session already built the other way
@@ -1760,6 +1870,10 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	// split form. want_split is only ever true on the CPU, so they are reached exactly as before; the
 	// guard keeps a CPU split session from being shadowed by the low-memory external-data path.
 	if (!want_split) {
+		// ggml GPU plugin, when one is installed in ep_path (opt-in by presence; CUDA and ROCm).
+		if (auto gpu = TryGgmlGpuBackend(fs, state, resolved, ctx)) {
+			return gpu;
+		}
 		// ROCm GPU: direct MIGraphX backend (bypasses ORT's unusable MIGraphX EP).
 		if (auto gpu = TryMIGraphXBackend(fs, state, resolved, ctx)) {
 			return gpu;
@@ -1987,6 +2101,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		backend->weights = std::move(weights);
 		backend->mapping = std::move(mapping);
 		backend->arena = std::move(arena);
+		backend->ckpt = std::move(sd);
 		auto stats = backend->stats;
 		return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, true,
 		                       SessionPrecisionFor(config.device_id, ctx.gpu_precision),
@@ -2003,6 +2118,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	backend->weights = std::move(weights);
 	backend->mapping = std::move(mapping);
 	backend->arena = std::move(arena);
+	backend->ckpt = std::move(sd);
 	backend->session = std::move(session);
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, weight_bytes, false,
 	                       SessionPrecisionFor(config.device_id, ctx.gpu_precision),

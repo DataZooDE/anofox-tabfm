@@ -1,0 +1,4 @@
+# op Expand
+in x f32 3,1 bd16a1ed bf1c5b21 7fc00000
+in r f32 3,4 bfe5300c 3f71e303 3fba423e bf894ccb befafedf 3d428e99 3fa7429a bf310d7f 3e26e1e3 3f061f59 bf31c08f bedbb78f
+out y f32 3,4 bd16a1ed bd16a1ed bd16a1ed bd16a1ed bf1c5b21 bf1c5b21 bf1c5b21 bf1c5b21 7fc00000 7fc00000 7fc00000 7fc00000

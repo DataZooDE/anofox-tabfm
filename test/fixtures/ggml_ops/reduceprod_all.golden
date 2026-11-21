@@ -1,0 +1,3 @@
+# op ReduceProd
+in x f32 2,3,4 beec36eb 3f4d0d16 3fbeab05 bebe5fac bfaf916b 3e2c0bce bf71acc7 bf2a36fa bf9ebd52 3e8c5adc 3eb032b0 bd827b9a 3f88c3a9 bf4f0413 bf77fd78 3f182e0c be99e093 3f7723dd 3efbeca9 3f14b75d bf25996e bf84dbaa bf90b108 bf90fefd
+out y f32 1,1,1 37035a6e

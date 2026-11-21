@@ -3,10 +3,12 @@
 # One codebase, three flavors (HLD D9): the flavor only decides which ONNX
 # Runtime build is linked and which execution providers it carries.
 #
-#   TABFM_FLAVOR=cpu   (default)  ORT CPU EP.
-#                                 Source: vcpkg port (manifest feature
-#                                 "ort-vcpkg", CI default) or the official
-#                                 prebuilt release archive (local default).
+#   TABFM_FLAVOR=cpu   (default)  The CPU engine is ggml and this file is not
+#                                 used at all (cmake/ CMakeLists.txt: TABFM_WITH_ORT
+#                                 is OFF). Only the oracle build,
+#                                 TABFM_CPU_ENGINE=ort, comes here: a prebuilt ORT
+#                                 archive given by TABFM_ORT_URL. The vcpkg ORT
+#                                 port was removed (upstream source is gone).
 #   TABFM_FLAVOR=cuda             Prebuilt ORT-GPU archive (CUDA EP + CPU EP).
 #                                 CUDA/cuDNN resolve from the user's system at
 #                                 runtime; never linked into this build.
@@ -14,15 +16,14 @@
 #                                 (no official prebuilt exists). Point
 #                                 TABFM_ORT_ROCM_DIR at that install tree.
 #
-# Prebuilt archives default to the official GitHub release URLs but are
-# mirror-configurable (S02/S05: GitHub may be blocked; NuGet payloads work
-# too) via TABFM_ORT_URL.
+# Prebuilt archives: the official GitHub release URLs these used to default to
+# no longer exist, so TABFM_ORT_URL is REQUIRED (a mirror or a local archive,
+# file:// works; NuGet payloads work too).
 #
 # Outputs: tabfm_onnxruntime INTERFACE target (includes + libs) and
 # TABFM_ORT_PROVIDERS (list of provider compile definitions).
 
 set(TABFM_FLAVOR "cpu" CACHE STRING "anofox_tabfm flavor: cpu | cuda | rocm")
-# The CPU prebuilt archive is used by default; the ort-vcpkg manifest feature builds the port instead.
 set(TABFM_ORT_VERSION "1.29.0" CACHE STRING "ONNX Runtime version for prebuilt archives")
 set(TABFM_ORT_CUDA_MAJOR "12" CACHE STRING "CUDA major version for the ORT GPU archive (>= 1.28: 12 | 13)")
 set(TABFM_ORT_URL "" CACHE STRING "Override URL for the prebuilt ONNX Runtime archive (mirror support)")
@@ -63,8 +64,8 @@ endif()
 
 function(_tabfm_fetch_prebuilt_ort archive_stem)
     # Only this path needs a per-arch macOS archive to exist; a vcpkg/system ORT
-    # (the cpu release default, see Makefile TABFM_ORT_VCPKG) never gets here, so
-    # the check belongs to the fetch rather than to the platform mapping above.
+    # never gets here, so the check belongs to the fetch rather than to the
+    # platform mapping above.
     #
     # OSX_BUILD_ARCH is set-but-EMPTY for a normal host build and only carries a
     # value when the DuckDB matrix cross-compiles, so test it for truthiness --
@@ -79,13 +80,16 @@ function(_tabfm_fetch_prebuilt_ort archive_stem)
             "ONNX Runtime ships no macOS x86_64 or universal2 prebuilt archive "
             "after v1.23.2, so Intel macOS cannot be built at ORT "
             "${TABFM_ORT_VERSION}. Build for arm64, set TABFM_ORT_URL to a "
-            "self-hosted archive, or use the ort-vcpkg manifest feature.")
+            "self-hosted archive.")
     endif()
-    if(TABFM_ORT_URL)
-        set(_url "${TABFM_ORT_URL}")
-    else()
-        set(_url "https://github.com/microsoft/onnxruntime/releases/download/v${TABFM_ORT_VERSION}/${archive_stem}-${TABFM_ORT_VERSION}.${_ort_ext}")
+    if(NOT TABFM_ORT_URL)
+        # The default used to be microsoft/onnxruntime's GitHub release archive, which no longer exists: fail with the decision, not a 404.
+        message(FATAL_ERROR
+            "anofox_tabfm: this configuration needs an ONNX Runtime archive (${archive_stem}-${TABFM_ORT_VERSION}.${_ort_ext}) and the upstream "
+            "release URL it used to download no longer exists. Set TABFM_ORT_URL to a mirror or a local archive "
+            "(make release TABFM_ORT_URL=file:///path/to/archive), or use the default ggml CPU engine, which needs no ONNX Runtime.")
     endif()
+    set(_url "${TABFM_ORT_URL}")
     include(FetchContent)
     FetchContent_Declare(ort_prebuilt URL "${_url}")
     FetchContent_MakeAvailable(ort_prebuilt)
@@ -99,24 +103,9 @@ function(_tabfm_fetch_prebuilt_ort archive_stem)
 endfunction()
 
 if(TABFM_FLAVOR STREQUAL "cpu")
-    # Prefer a config package (vcpkg port via manifest feature, or system).
-    find_package(onnxruntime CONFIG QUIET)
-    if(onnxruntime_FOUND)
-        message(STATUS "anofox_tabfm: ONNX Runtime from vcpkg/system package (CPU EP)")
-        target_link_libraries(tabfm_onnxruntime INTERFACE onnxruntime::onnxruntime)
-        # vcpkg installs the public ORT headers under include/onnxruntime/, but our
-        # sources include them flat (<onnxruntime_cxx_api.h>) to match the prebuilt
-        # archive layout. The imported target's include dir does not reliably reach
-        # our INTERFACE IMPORTED target, so add the subdir explicitly.
-        find_path(TABFM_ORT_VCPKG_INCLUDE_DIR
-            NAMES onnxruntime_cxx_api.h PATH_SUFFIXES onnxruntime)
-        if(TABFM_ORT_VCPKG_INCLUDE_DIR)
-            target_include_directories(tabfm_onnxruntime INTERFACE "${TABFM_ORT_VCPKG_INCLUDE_DIR}")
-        endif()
-    else()
-        message(STATUS "anofox_tabfm: ONNX Runtime from prebuilt archive v${TABFM_ORT_VERSION} (CPU EP)")
-        _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}")
-    endif()
+    # Only the oracle engine (TABFM_CPU_ENGINE=ort) reaches here.
+    message(STATUS "anofox_tabfm: ONNX Runtime from the archive at TABFM_ORT_URL (CPU EP, oracle engine)")
+    _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}")
 elseif(TABFM_FLAVOR STREQUAL "coreml")
     # Apple Silicon acceleration via ORT's CoreML EP (docs/COREML_PLAN.md).
     # Same osx-universal2 prebuilt as the cpu flavor — the CoreML EP is compiled

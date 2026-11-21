@@ -34,15 +34,14 @@ jobs:
       duckdb_version: v1.5.6
       ci_tools_version: v1.5-variegata
       extension_name: anofox_tabfm
-      # ONNX Runtime comes from the prebuilt release archive by default
-      # (cmake/ort.cmake); enable the "ort-vcpkg" manifest feature to build the
-      # vcpkg port instead (S05 decision: both paths wired, prebuilt default).
-      # Exclude WASM/musl (NFR-C1: explicitly out — ORT + multi-GB inference),
-      # MinGW (vcpkg OpenSSL build issues, house pattern), and osx_amd64:
-      # ONNX Runtime published its last macOS x86_64 / universal2 archive at
-      # v1.23.2, so there is nothing to link Intel macOS against at the version
-      # this project needs. cmake/ort.cmake fails with that explanation if the
-      # arch is requested anyway.
+      # The cpu flavor runs on the vendored ggml engine (vendor/ggml, a git submodule: checked out with the others, no
+      # third-party download at build time) and does not link ONNX Runtime at all (TABFM_CPU_ENGINE=ggml, TABFM_WITH_ORT=OFF
+      # are the defaults, see CMakeLists.txt and docs/GGML_PLAN.md). ONNX Runtime is only built for the flavors that still use
+      # it (TABFM_FLAVOR=cuda|rocm|coreml, or TABFM_CPU_ENGINE=ort, the oracle engine). The GitHub ORT release archive the old
+      # default downloaded no longer exists, which is what turned this pipeline red.
+      # Exclude WASM/musl (NFR-C1: explicitly out - multi-GB inference) and MinGW (vcpkg OpenSSL build issues, house
+      # pattern). osx_amd64 stays excluded until the ggml engine has been verified there (it was dropped because ONNX
+      # Runtime stopped publishing Intel macOS archives; ggml itself has no such limit).
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
 
   duckdb-v1_5_6-smoke-test:

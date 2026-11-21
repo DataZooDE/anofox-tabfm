@@ -29,7 +29,9 @@
 #include <fstream>
 #include "anofox_tabfm_banner.hpp"
 
+#ifdef TABFM_WITH_ORT
 #include <onnxruntime_cxx_api.h>
+#endif
 
 #ifdef _WIN32
 // NOMINMAX and WIN32_LEAN_AND_MEAN before <windows.h>: without them it defines
@@ -102,11 +104,15 @@ TabFMDeviceInfo MakeCpuDevice() {
 }
 
 bool OrtProviderAvailable(const char *provider_name) {
+#ifdef TABFM_WITH_ORT
 	for (auto &provider : Ort::GetAvailableProviders()) {
 		if (provider == provider_name) {
 			return true;
 		}
 	}
+#else
+	(void)provider_name; // no ONNX Runtime in this build: no ORT execution provider is available
+#endif
 	return false;
 }
 

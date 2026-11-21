@@ -20,3 +20,6 @@
 [submodule "duckdb-compat"]
 	path = duckdb-compat
 	url = https://github.com/DataZooDE/duckdb-compat.git
+[submodule "vendor/ggml"]
+	path = vendor/ggml
+	url = https://github.com/ggml-org/ggml.git

@@ -8,12 +8,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "tabfm_ort_engine.hpp"
+#include "tabfm_ggml_session.hpp"
+#include "tabfm_onnx_reader.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/numeric_utils.hpp"
 #include "duckdb/common/string_util.hpp"
 
+#ifdef TABFM_WITH_ORT
 #include <onnxruntime_cxx_api.h>
+#endif
 
 #include <array>
 #include <cstring>
@@ -119,6 +123,8 @@ vector<float> CastBF16ToF32(const uint16_t *src, idx_t count) {
 	}
 	return result;
 }
+
+#ifdef TABFM_WITH_ORT
 
 //===----------------------------------------------------------------------===//
 // Process-wide Ort::Env
@@ -359,6 +365,16 @@ void AppendExecutionProviders(Ort::SessionOptions &options, const TabFMSessionCo
 
 } // anonymous namespace
 
+#else // !TABFM_WITH_ORT: a build without ONNX Runtime has no env to create
+
+void EnsureOrtEnv() {
+}
+
+#endif // TABFM_WITH_ORT
+
+//! ORT's OrtErrorCode ORT_NO_SUCHFILE (the value is part of ORT's ABI), so the message mapping can be tested without ORT.
+static constexpr int kOrtNoSuchFile = 3;
+
 bool IsMissingWeightsMessage(const string &message, int ort_error_code) {
 	// Missing injection: the weight-free graph's external-data stubs cannot be
 	// resolved because no initializers were injected. The signature depends on
@@ -378,7 +394,7 @@ bool IsMissingWeightsMessage(const string &message, int ort_error_code) {
 	// "No such file". Missing the Windows shape sent every Windows user who
 	// forgot tabfm_load to ThrowMappedCreateError's generic fallthrough
 	// instead of the remediation.
-	return ort_error_code == ORT_NO_SUCHFILE ||                              //
+	return ort_error_code == kOrtNoSuchFile ||                              //
 	       message.find("No such file") != string::npos ||                   //
 	       message.find("cannot get file size") != string::npos ||           // POSIX, from a path
 	       message.find("file_size") != string::npos ||                      // Windows env stat
@@ -397,6 +413,7 @@ bool IsMissingWeightsMessage(const string &message, int ort_error_code) {
 
 class TabFMSession {
 public:
+#ifdef TABFM_WITH_ORT
 	TabFMSession(Ort::Session session_p, TabFMSessionConfig config_p, std::vector<std::string> injected_names_p,
 	             std::vector<Ort::Value> injected_values_p)
 	    : config(std::move(config_p)), injected_names(std::move(injected_names_p)),
@@ -411,6 +428,7 @@ public:
 			output_names.push_back(session.GetOutputNameAllocated(i, allocator).get());
 		}
 	}
+#endif
 
 	// Member DECLARATION ORDER is the destruction contract here. ORT's
 	// AddExternalInitializers keeps references to the injected OrtValues (and
@@ -423,11 +441,29 @@ public:
 	TabFMSessionConfig config;
 	vector<string> input_names;
 	vector<string> output_names;
+#ifdef TABFM_WITH_ORT
 	std::vector<std::string> injected_names;
 	std::vector<Ort::Value> injected_values;
+#endif
+	//! Set when the ggml CPU engine serves this session (TABFM_CPU_ENGINE=ggml, docs/GGML_PLAN.md); with ONNX Runtime compiled in, `session`
+	//! is then an empty handle. Declared before `session`, which must be destroyed first.
+	std::unique_ptr<GgmlSessionState> ggml;
+#ifdef TABFM_WITH_ORT
 	Ort::Session session;
+#endif
+
+	//! A session served by the ggml engine instead of ONNX Runtime.
+	TabFMSession(TabFMSessionConfig config_p, std::unique_ptr<GgmlSessionState> ggml_p, vector<string> inputs_p, vector<string> outputs_p)
+	    : config(std::move(config_p)), input_names(std::move(inputs_p)), output_names(std::move(outputs_p)), ggml(std::move(ggml_p))
+#ifdef TABFM_WITH_ORT
+	      ,
+	      session(nullptr)
+#endif
+	{
+	}
 };
 
+#ifdef TABFM_WITH_ORT
 namespace {
 
 // Shared SessionOptions setup + external-initializer injection. Returns the
@@ -485,6 +521,7 @@ void PrepareSessionOptions(Ort::SessionOptions &options, const vector<TabFMTenso
 }
 
 } // namespace
+#endif // TABFM_WITH_ORT
 
 // P4: verify the graph's actual input/output names match the manifest-declared
 // tensor_contract (when one is declared), so a manifest that lies about its
@@ -533,11 +570,65 @@ static void ValidateDeclaredContract(const TabFMSession &session, const TabFMSes
 	check(config.contract_outputs, session.output_names, "output");
 }
 
+namespace {
+
+//! A build without ONNX Runtime (TABFM_WITH_ORT=OFF) serves the CPU device through ggml and the GPU devices through the backend plugins; a request that
+//! would reach ORT says so, and names the way out.
+[[noreturn, maybe_unused]] void ThrowNoOrt(const TabFMSessionConfig &config) {
+	if (config.device_id == "cpu") {
+		throw InvalidInputException("anofox_tabfm: this build selected the ONNX Runtime CPU engine but contains no ONNX Runtime. Rebuild with "
+		                            "TABFM_CPU_ENGINE=ggml, or with TABFM_CPU_ENGINE=ort TABFM_WITH_ORT=ON.");
+	}
+	throw InvalidInputException("anofox_tabfm: device '" + config.device_id +
+	                            "' needs ONNX Runtime, which this build does not contain (built with TABFM_WITH_ORT=OFF). The CPU device runs on the "
+	                            "ggml engine; for a GPU device SET anofox_tabfm_ep_path to the directory holding its backend plugin, or "
+	                            "SET anofox_tabfm_device='cpu'.");
+}
+
+//! The ggml engine serves the CPU device when the build or the config says so; every other device keeps its own path.
+bool UseGgmlEngine(const TabFMSessionConfig &config) {
+	if (config.device_id != "cpu") {
+		return false;
+	}
+	bool ggml = config.cpu_engine == TabFMCpuEngine::GGML;
+#ifdef TABFM_CPU_ENGINE_GGML
+	ggml = ggml || config.cpu_engine == TabFMCpuEngine::DEFAULT;
+#endif
+#ifndef TABFM_HAVE_GGML
+	if (ggml) {
+		throw InvalidInputException("anofox_tabfm: this build does not contain the ggml CPU engine (built with TABFM_WITH_GGML=OFF).");
+	}
+#endif
+	return ggml;
+}
+
+TabFMSessionHandle MakeGgmlSession(::anofox::onnxread::Graph graph, const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config) {
+#ifdef TABFM_HAVE_GGML
+	auto state = CreateGgmlSessionState(std::move(graph), initializers, config);
+	auto inputs = state->input_names;
+	auto outputs = state->output_names;
+	auto handle = make_shared_ptr<TabFMSession>(config, std::move(state), std::move(inputs), std::move(outputs));
+	ValidateDeclaredContract(*handle, config);
+	return handle;
+#else
+	throw InvalidInputException("anofox_tabfm: this build does not contain the ggml CPU engine.");
+#endif
+}
+
+} // namespace
+
 TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
                                  const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config) {
 	if (!graph_bytes || graph_size == 0) {
 		throw InvalidInputException("anofox_tabfm: cannot create a session from empty model graph bytes");
 	}
+	if (UseGgmlEngine(config)) {
+		return MakeGgmlSession(::anofox::onnxread::ParseModelBytes(static_cast<const uint8_t *>(graph_bytes), graph_size, "model graph"),
+		                       initializers, config);
+	}
+#ifndef TABFM_WITH_ORT
+	ThrowNoOrt(config);
+#else
 	EnsureUsableOrtApi();
 	Ort::SessionOptions options;
 	std::vector<std::string> names;
@@ -551,10 +642,17 @@ TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
 	} catch (const Ort::Exception &error) {
 		ThrowMappedCreateError(error, config);
 	}
+#endif // TABFM_WITH_ORT
 }
 
 TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<TabFMTensorRef> &initializers,
                                          const TabFMSessionConfig &config) {
+	if (UseGgmlEngine(config)) {
+		return MakeGgmlSession(::anofox::onnxread::ParseModelFile(graph_path), initializers, config);
+	}
+#ifndef TABFM_WITH_ORT
+	ThrowNoOrt(config);
+#else
 	EnsureUsableOrtApi();
 	Ort::SessionOptions options;
 	std::vector<std::string> names;
@@ -575,6 +673,7 @@ TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<
 	} catch (const Ort::Exception &error) {
 		ThrowMappedCreateError(error, config);
 	}
+#endif // TABFM_WITH_ORT
 }
 
 //===----------------------------------------------------------------------===//
@@ -590,6 +689,12 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 		                            std::to_string(input.t) + " H=" + std::to_string(input.h));
 	}
 
+#ifdef TABFM_HAVE_GGML
+	if (session.ggml) {
+		return GgmlRun(*session.ggml, input);
+	}
+#endif
+#ifdef TABFM_WITH_ORT
 	auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 
 	// Scalars must outlive session.Run — keep them on this frame.
@@ -680,6 +785,9 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 		throw InvalidInputException("anofox_tabfm: inference failed (ORT error code " +
 		                            std::to_string(error.GetOrtErrorCode()) + "): " + string(error.what()));
 	}
+#else
+	ThrowNoOrt(session.config);
+#endif // TABFM_WITH_ORT
 }
 
 //===----------------------------------------------------------------------===//
@@ -720,6 +828,12 @@ TabFMPreparedContext RunPrepare(TabFMSession &session, const float *x, const flo
 		    "anofox_tabfm: the query graph takes no context tensors, so it is not the query half of a split pair.");
 	}
 
+#ifdef TABFM_HAVE_GGML
+	if (session.ggml) {
+		return GgmlRunPrepare(*session.ggml, x, y, s, h, wanted);
+	}
+#endif
+#ifdef TABFM_WITH_ORT
 	auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 	const std::array<int64_t, 3> x_shape {1, s, h};
 	const std::array<int64_t, 2> y_shape {1, s};
@@ -778,6 +892,9 @@ TabFMPreparedContext RunPrepare(TabFMSession &session, const float *x, const flo
 		throw InvalidInputException("anofox_tabfm: encoding the labelled context failed (ORT error code " +
 		                            std::to_string(error.GetOrtErrorCode()) + "): " + string(error.what()));
 	}
+#else
+	ThrowNoOrt(session.config);
+#endif // TABFM_WITH_ORT
 }
 
 TabFMRunOutput RunQuery(TabFMSession &session, const float *x, int64_t q, int64_t h, const float *y, int64_t s,
@@ -790,6 +907,12 @@ TabFMRunOutput RunQuery(TabFMSession &session, const float *x, int64_t q, int64_
 		                            " H=" + std::to_string(h) + " S=" + std::to_string(s));
 	}
 
+#ifdef TABFM_HAVE_GGML
+	if (session.ggml) {
+		return GgmlRunQuery(*session.ggml, x, q, h, y, s, context);
+	}
+#endif
+#ifdef TABFM_WITH_ORT
 	auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 	const std::array<int64_t, 3> x_shape {1, q, h};
 	const std::array<int64_t, 2> y_shape {1, s};
@@ -855,6 +978,9 @@ TabFMRunOutput RunQuery(TabFMSession &session, const float *x, int64_t q, int64_
 		throw InvalidInputException("anofox_tabfm: inference against the cached context failed (ORT error code " +
 		                            std::to_string(error.GetOrtErrorCode()) + "): " + string(error.what()));
 	}
+#else
+	ThrowNoOrt(session.config);
+#endif // TABFM_WITH_ORT
 }
 
 TabFMRunOutput TabFMBackend::RunBatched(const TabFMRunInput &input, int64_t query_batch) {

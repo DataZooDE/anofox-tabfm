@@ -158,7 +158,7 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	                          Value("~/.cache/anofox-tabfm"));
 
 	const auto default_threads = MaxValue<int64_t>(1, static_cast<int64_t>(UsableCoreCount()) / 2);
-	config.AddExtensionOption("anofox_tabfm_threads", "ONNX Runtime intra-op thread count for CPU inference",
+	config.AddExtensionOption("anofox_tabfm_threads", "Thread count for CPU inference (the ggml engine's threads, or ONNX Runtime's intra-op threads on an ort build)",
 	                          LogicalType::BIGINT, Value::BIGINT(default_threads), ValidateThreads);
 
 	config.AddExtensionOption("anofox_tabfm_max_rows", "Maximum rows per predict call or group",
@@ -237,7 +237,7 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_cpu_prepack",
-	    "Enable ONNX Runtime weight prepacking on the CPU EP: faster matmuls at ~+16% resident memory.",
+	    "ONNX Runtime engine only: weight prepacking on the CPU EP, faster matmuls at ~+16% resident memory. No effect on the default ggml engine, which reads weights in place.",
 	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
 
 	config.AddExtensionOption("anofox_tabfm_device",

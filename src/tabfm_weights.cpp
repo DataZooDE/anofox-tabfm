@@ -1666,19 +1666,23 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 					state->rows.push_back(std::move(row));
 					continue;
 				}
-				if (!device.usable) {
+				// The ggml GPU plugin, when installed, serves an explicit cuda/rocm request on the plain ext graph (TryGgmlGpuBackend in tabfm_engine.cpp):
+				// the row is judged as that lane (ext graph, the plugin's precision rule), whatever MIGraphX's arch allowlist says about the card.
+				const bool ggml_lane = (row.backend == "cuda" || row.backend == "rocm") && !ep_path.empty() &&
+				                       PluginAvailableCached(ep_path, "ggml-" + row.backend);
+				if (!device.usable && !ggml_lane) {
 					row.reason = "the device was discovered but is not usable on this machine — see SELECT * FROM "
 					             "tabfm_devices() for its driver state";
 					state->rows.push_back(std::move(row));
 					continue;
 				}
-				const bool is_rocm = row.backend == "rocm";
+				const bool is_rocm = row.backend == "rocm" && !ggml_lane;
 				const string kind = is_rocm ? "migraphx" : "ext";
 				const string &model_graph = is_rocm ? artifacts.migraphx_graph : artifacts.ext_graph;
 				auto bundled = GetBundledResource(BundledGpuGraphId(spec.id, kind, task_name));
 
 				GpuServabilityInputs in;
-				in.backend = row.backend;
+				in.backend = ggml_lane ? "cuda" : row.backend; // "cuda" names the ext-graph kind and the fp32|tf32 precision rule the ggml plugin implements
 				in.model = spec.id;
 				in.task_name = task_name;
 				in.precision = precision;
@@ -1710,7 +1714,7 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 					                                           ckpt_present, converted_failure);
 				}
 				// A graph the backend runs but is measured to get wrong (or fail on) is refused by name.
-				in.known_wrong = GpuKnownWrong(row.backend, spec.id, task_name);
+				in.known_wrong = ggml_lane ? string() : GpuKnownWrong(row.backend, spec.id, task_name);
 				// MLX executes the graph op by op: the same question 'auto' asks, about the graph that
 				// would be served -- the model's own, else the bundled one once it matches the weights.
 				if (row.backend == "mlx") {
@@ -1724,7 +1728,7 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				row.supported = verdict.supported;
 				row.reason = verdict.reason;
 				// Served, but only up to a shape-bucket ceiling: say so, because a larger table is refused.
-				if (row.supported && row.backend == "rocm") {
+				if (row.supported && row.backend == "rocm" && !ggml_lane) {
 					row.reason = RocmBucketCeilingNote(spec.id);
 				}
 				// Plugin presence is checked AFTER servability, and only when
@@ -1734,7 +1738,7 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				// install one and then be disappointed, because the structural
 				// reason is the permanent one. So: say what cannot change
 				// first, and only offer the fix that would actually work.
-				if (row.supported && (row.backend == "cuda" || row.backend == "rocm" || row.backend == "mlx") &&
+				if (row.supported && !ggml_lane && (row.backend == "cuda" || row.backend == "rocm" || row.backend == "mlx") &&
 				    !PluginAvailableCached(ep_path, row.backend)) {
 					row.supported = false;
 					// A file that is there but will not load (most often a plugin left over from an older

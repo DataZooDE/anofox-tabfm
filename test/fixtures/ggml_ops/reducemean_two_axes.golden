@@ -1,0 +1,3 @@
+# op ReduceMean
+in x f32 2,3,4 bf8440a3 3f0de183 3f67264a becb0c6a bed5339b 3c0d9030 3f9f629c 3f5e00cd 3f220bb0 bea9e626 bf9a9b2d bf095ee4 bf6e943f bf86b4c8 bff97941 bfc063a8 be7bf19c 3f4114ab bfd657fa 3f6b314b bef15c41 3f290917 3f296acb bfcd5a4b
+out y f32 3 bf2d16ea 3e3a7e0a be8c9add

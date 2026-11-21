@@ -5,7 +5,17 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **The CPU engine is now ggml, not ONNX Runtime.** The vendored ggml (`vendor/ggml`, a git submodule) runs all bundled graphs: every one of the 72 ops is lowered to a
+  ggml graph and checked against ONNX Runtime (455 per-op goldens, all 45 bundled graphs, Nori 1.5 on its real weights). A default CPU build no longer links or downloads ONNX
+  Runtime (`TABFM_CPU_ENGINE=ggml`, `TABFM_WITH_ORT=OFF`); `make release TABFM_CPU_ENGINE=ort` still builds the old engine as the oracle. Warm Nori 1.5 is within about
+  1.2x of ONNX Runtime at 200 rows and faster at small sizes. The x86 build needs AVX2, FMA, F16C and BMI2 and refuses to run (naming the way out) on an older CPU.
+  The vcpkg ONNX Runtime port (and its `ort-vcpkg` feature) is removed; `TABFM_CPU_ENGINE=ort` now needs a supplied `TABFM_ORT_URL` archive. Differences you can see: out-of-range `Gather` indices give NaN where ONNX Runtime raised, and one loaded model runs one prediction at a time. See docs/GGML_PLAN.md.
+
 ### Added
+- **Experimental ggml GPU plugin** (`tools/ggml_plugin`, CUDA or HIP): the CPU engine on a GPU. Used instead of the ONNX Runtime/MIGraphX plugin when
+  `libanofox_tabfm_ggml-cuda_plugin.so` (or `ggml-rocm`) is in `anofox_tabfm_ep_path`. Verified on Nori 1.5 against ONNX Runtime on ROCm (Radeon 890M, end to end through SQL)
+  and CUDA (RTX 4090, through the plugin ABI); float32 checkpoints only. Not a release asset yet. See docs/api/04-gpu.md.
 - **`nori-1-5`** (Synthefy Nori 1.5, "Model v3", Apache-2.0 for code and weights, ungated): the second
   REGRESSION-ONLY built-in, ~20.8 M parameters, a two-phase encoder (9 cell layers at width 128, 12 row layers
   at width 256). The engine reads the released `nori.pt` natively (`{model_config, model_state_dict,

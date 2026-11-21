@@ -166,7 +166,11 @@ struct TabFMTensorRef {
 	idx_t size_bytes = 0;
 };
 
+//! Which engine runs the CPU device. DEFAULT is the build's choice (CMake TABFM_CPU_ENGINE=ort|ggml); tests force one to compare both in one process.
+enum class TabFMCpuEngine : uint8_t { DEFAULT, ORT, GGML };
+
 struct TabFMSessionConfig {
+	TabFMCpuEngine cpu_engine = TabFMCpuEngine::DEFAULT;
 	//! ORT intra-op threads (from anofox_tabfm_threads); inter-op is fixed to 1
 	//! because inference runs inside a single DuckDB task (HLD §4.4).
 	int64_t intra_op_threads = 1;

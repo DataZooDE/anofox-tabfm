@@ -22,8 +22,112 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Dependencies ---
 
-# ONNX Runtime, flavor-aware (cpu | cuda | rocm) — defines tabfm_onnxruntime.
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort.cmake)
+# --- ggml CPU engine (docs/GGML_PLAN.md) ---
+#
+# TABFM_CPU_ENGINE picks which engine the extension's CPU device uses. It is a build option, not a setting: one
+# binary, one engine. 'ort' stays the default (and the oracle) until every bundled model passes on 'ggml'.
+# TABFM_WITH_GGML builds the ggml engine into the binary regardless, so the test binary can hold BOTH engines and
+# compare them in-process.
+# Default ON when the submodule is present (a checkout without it still configures and builds the ORT engine),
+# and OFF on MSVC arm64, where ggml's CPU backend refuses to configure without GGML_NATIVE (ggml-cpu/CMakeLists.txt).
+set(_tabfm_ggml_default ON)
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml/CMakeLists.txt")
+    set(_tabfm_ggml_default OFF)
+endif()
+if(MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
+    set(_tabfm_ggml_default OFF)
+endif()
+# ggml is the CPU engine wherever it can be built; 'ort' remains selectable (and is the fallback without the submodule).
+set(_tabfm_engine_default "ort")
+if(_tabfm_ggml_default)
+    set(_tabfm_engine_default "ggml")
+endif()
+set(TABFM_CPU_ENGINE "${_tabfm_engine_default}" CACHE STRING "CPU inference engine used by the extension: ort | ggml")
+set_property(CACHE TABFM_CPU_ENGINE PROPERTY STRINGS ort ggml)
+if(NOT TABFM_CPU_ENGINE STREQUAL "ort" AND NOT TABFM_CPU_ENGINE STREQUAL "ggml")
+    message(FATAL_ERROR "TABFM_CPU_ENGINE must be 'ort' or 'ggml', got '${TABFM_CPU_ENGINE}'")
+endif()
+option(TABFM_WITH_GGML "Build the ggml CPU engine (vendor/ggml) into the extension and its tests" ${_tabfm_ggml_default})
+
+# ONNX Runtime, flavor-aware (cpu | cuda | rocm | coreml) - defines tabfm_onnxruntime. The cpu flavor on the ggml engine does not need it at all:
+# no ORT download, no vcpkg ORT port. Every other flavor (the in-process CUDA/ROCm/CoreML paths) and the 'ort' engine still link it.
+set(TABFM_FLAVOR "cpu" CACHE STRING "anofox_tabfm flavor: cpu | cuda | rocm | coreml")
+set(_tabfm_ort_default ON)
+if(TABFM_FLAVOR STREQUAL "cpu" AND TABFM_CPU_ENGINE STREQUAL "ggml")
+    set(_tabfm_ort_default OFF)
+endif()
+option(TABFM_WITH_ORT "Link ONNX Runtime (the 'ort' CPU engine and the cuda/rocm/coreml flavors need it; the cpu flavor on ggml does not)" ${_tabfm_ort_default})
+if(TABFM_WITH_ORT)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort.cmake)
+else()
+    message(STATUS "anofox_tabfm: building WITHOUT ONNX Runtime (CPU engine: ${TABFM_CPU_ENGINE})")
+    add_library(tabfm_onnxruntime INTERFACE IMPORTED GLOBAL)
+    string(TOUPPER "${TABFM_FLAVOR}" _flavor_upper)
+    target_compile_definitions(tabfm_onnxruntime INTERFACE "TABFM_FLAVOR_NAME=\"${TABFM_FLAVOR}\"" "TABFM_FLAVOR_${_flavor_upper}=1")
+    set(TABFM_ORT_PROVIDERS "")
+endif()
+option(TABFM_GGML_NATIVE "Compile ggml for this machine's CPU (fast, but the binary may crash on older CPUs)" OFF)
+if(NOT TABFM_FLAVOR STREQUAL "cpu" AND NOT TABFM_WITH_ORT)
+    message(FATAL_ERROR "TABFM_FLAVOR=${TABFM_FLAVOR} runs through ONNX Runtime and needs TABFM_WITH_ORT=ON (a cached TABFM_WITH_ORT=OFF from an earlier "
+                        "cpu/ggml configure? pass -DTABFM_WITH_ORT=ON, or use a fresh build directory)")
+endif()
+if(TABFM_CPU_ENGINE STREQUAL "ort" AND NOT TABFM_WITH_ORT)
+    message(FATAL_ERROR "TABFM_CPU_ENGINE=ort needs TABFM_WITH_ORT=ON (a cached TABFM_WITH_ORT=OFF from an earlier ggml configure? "
+                        "pass -DTABFM_WITH_ORT=ON, or use a fresh build directory)")
+endif()
+if(TABFM_CPU_ENGINE STREQUAL "ggml" AND NOT TABFM_WITH_GGML)
+    message(FATAL_ERROR "TABFM_CPU_ENGINE=ggml needs TABFM_WITH_GGML=ON")
+endif()
+if(TABFM_WITH_GGML)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml/CMakeLists.txt")
+        message(FATAL_ERROR "vendor/ggml is empty. Run: git submodule update --init vendor/ggml")
+    endif()
+    # Static, CPU backend only. No OpenMP: libgomp's spin-waiting starves ggml's own thread pool (measured 24 s
+    # vs 4 s on Nori 1.5), and the engine's threads come from anofox_tabfm_threads, not OMP_NUM_THREADS.
+    set(_tabfm_saved_shared ${BUILD_SHARED_LIBS})
+    set(_tabfm_saved_pic ${CMAKE_POSITION_INDEPENDENT_CODE})
+    set(BUILD_SHARED_LIBS OFF)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+    set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    # CPU backend only. ggml defaults Metal, Accelerate and BLAS to ON on Apple, which would add backends this
+    # wrapper does not link (undefined ggml_backend_metal_reg, no frameworks, a Metal shader library nobody asked
+    # for). The GPU backends are a separate plan (P8).
+    set(GGML_METAL OFF CACHE BOOL "" FORCE)
+    set(GGML_BLAS OFF CACHE BOOL "" FORCE)
+    set(GGML_ACCELERATE OFF CACHE BOOL "" FORCE)
+    set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
+    # Static ggml gets default visibility in the loadable extension; hide it so an interposing ggml elsewhere in the
+    # process (a llama.cpp host, a preloaded library) cannot capture our calls through --allow-multiple-definition.
+    set(_tabfm_saved_cvis ${CMAKE_C_VISIBILITY_PRESET})
+    set(_tabfm_saved_cxxvis ${CMAKE_CXX_VISIBILITY_PRESET})
+    set(CMAKE_C_VISIBILITY_PRESET hidden)
+    set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+    set(GGML_NATIVE ${TABFM_GGML_NATIVE} CACHE BOOL "" FORCE)
+    # tinyBLAS: ggml's tuned float SGEMM for the CPU backend (off by default in a standalone ggml build). The matmuls are most of the compute.
+    set(GGML_LLAMAFILE ON CACHE BOOL "" FORCE)
+    add_subdirectory(vendor/ggml EXCLUDE_FROM_ALL)
+    # ggml's CPU kernels carry plain assert()s such as !isnan(x) in softmax. They are live in a Debug build, and NaN is valid data
+    # here (the graphs mask attention with NaN and the goldens feed NaN rows on purpose): a Debug build would abort() the whole
+    # process where ORT and a Release build return NaN. GGML_ASSERT (shape/type contracts) is a separate macro and stays on.
+    foreach(_tgt ggml ggml-base ggml-cpu)
+        if(TARGET ${_tgt})
+            target_compile_definitions(${_tgt} PRIVATE NDEBUG)
+        endif()
+    endforeach()
+    # DuckDB export()s the extension targets and rejects non-imported build-tree dependencies (install(EXPORT) fails
+    # with 'requires target ggml that is not in any export set'), exactly why tabfm_onnxruntime is an IMPORTED
+    # INTERFACE target. Wrap the static archives the same way; consumers add_dependencies() on `ggml` for build order.
+    add_library(tabfm_ggml INTERFACE IMPORTED GLOBAL)
+    set_target_properties(tabfm_ggml PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml/include"
+        INTERFACE_LINK_LIBRARIES "$<TARGET_FILE:ggml>;$<TARGET_FILE:ggml-cpu>;$<TARGET_FILE:ggml-base>;Threads::Threads;${CMAKE_DL_LIBS}")
+    set(BUILD_SHARED_LIBS ${_tabfm_saved_shared})
+    set(CMAKE_POSITION_INDEPENDENT_CODE ${_tabfm_saved_pic})
+    set(CMAKE_C_VISIBILITY_PRESET ${_tabfm_saved_cvis})
+    set(CMAKE_CXX_VISIBILITY_PRESET ${_tabfm_saved_cxxvis})
+endif()
 
 # Embed the weight-free graphs + tensor maps from resources/ into the binary
 # (built-in model flow needs no companion files) — sets
@@ -79,6 +183,9 @@ set(EXTENSION_SOURCES
         src/tabfm_onnx_reader.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
 )
+if(TABFM_WITH_GGML)
+    list(APPEND EXTENSION_SOURCES src/tabfm_ggml_engine.cpp src/tabfm_ggml_lower.cpp src/tabfm_ggml_session.cpp src/tabfm_shape_eval.cpp)
+endif()
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
@@ -88,6 +195,17 @@ foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
     target_sources(${_tgt} PRIVATE $<TARGET_OBJECTS:posthog_telemetry_obj>)
     target_include_directories(${_tgt} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include)
+    if(TABFM_WITH_GGML)
+        add_dependencies(${_tgt} ggml)
+        target_link_libraries(${_tgt} tabfm_ggml)
+        target_compile_definitions(${_tgt} PRIVATE TABFM_HAVE_GGML=1)
+        if(TABFM_CPU_ENGINE STREQUAL "ggml")
+            target_compile_definitions(${_tgt} PRIVATE TABFM_CPU_ENGINE_GGML=1)
+        endif()
+    endif()
+    if(TABFM_WITH_ORT)
+        target_compile_definitions(${_tgt} PRIVATE TABFM_WITH_ORT=1)
+    endif()
     target_link_libraries(${_tgt}
         tabfm_onnxruntime
         datazoo_banner
@@ -304,6 +422,9 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_scoring.cpp
     test/cpp/test_tabfm_context_cache.cpp
 )
+if(TABFM_WITH_GGML)
+    list(APPEND TABFM_CPP_TEST_SOURCES test/cpp/test_tabfm_ggml_engine.cpp test/cpp/test_tabfm_ggml_lowering.cpp test/cpp/test_tabfm_ggml_ops.cpp test/cpp/test_tabfm_ggml_nori.cpp test/cpp/test_tabfm_ggml_graphs.cpp test/cpp/test_tabfm_rank_reduce.cpp test/cpp/test_tabfm_shape_eval.cpp)
+endif()
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     # Backend-plugin fixtures (docs/DYNAMIC_BACKENDS.md phase 1). The real GPU
     # backend needs hardware CI does not have, which would leave the LOADER —
@@ -362,6 +483,14 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
         ${CMAKE_SOURCE_DIR}/third_party/catch
     )
     target_link_libraries(anofox_tabfm_unittest_tests PRIVATE duckdb_static tabfm_onnxruntime)
+    if(TABFM_WITH_GGML)
+        add_dependencies(anofox_tabfm_unittest_tests ggml)
+        target_link_libraries(anofox_tabfm_unittest_tests PRIVATE tabfm_ggml)
+        target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE TABFM_HAVE_GGML=1)
+    endif()
+    if(TABFM_WITH_ORT)
+        target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE TABFM_WITH_ORT=1)
+    endif()
 
     function(anofox_tabfm_register_cpp_tests)
         if(TARGET unittest)

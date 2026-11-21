@@ -114,37 +114,6 @@ VRAM) are refused before compiling, because MIGraphX would abort the process. Us
 
 A mode the backend cannot honour is an error, never a silent fp32 run.
 
-## Choosing per query
-
-```sql
-SET anofox_tabfm_device = 'cpu';     -- force the CPU, e.g. for a table above a ROCm ceiling
-SET anofox_tabfm_device = 'auto';    -- back to per-model routing
-```
-
-Sessions are cached per (model, device, precision), up to `anofox_tabfm_max_sessions` (default 4) across all
-of them; switching back and forth does not rebuild them. `CALL tabfm_unload();` frees GPU memory.
-
-## Platforms
-
-| backend | platforms | models |
-|---|---|---|
-| CPU | Linux x64 / arm64, macOS arm64, Windows x64 | all |
-| CUDA | Linux x64, CUDA userspace 12.5 or later | all with a GPU graph, i.e. all except `nori-30m`, `exaone-tabular` (`nori-1-5` included) |
-| ROCm | Linux x64; gfx1201 verified, others behind an allowlist | all built-in models (`nori-1-5` verified on one bucket); masked graphs for the TabPFN family and others |
-| MLX | macOS arm64 | all with a GPU graph, except `nori-30m`, `exaone-tabular` (`nori-1-5` included) |
-
-There is no macOS x86_64 build, and Windows is CPU-only. No GPU, or still slow on the CPU: a smaller
-context, `anofox_tabfm_threads`, and for repeated scoring the `tabicl-v2` context cache
-(`anofox-tabfm-predict`, "Large calls and repeated calls").
-
-## Errors and fixes
-
-| You see | Do this |
-|---|---|
-| `no usable '<device>' device was discovered` | `SELECT * FROM tabfm_devices();` for the driver state, or `SET anofox_tabfm_device = 'auto';` |
-| a predict on a named device fails with the reason the model cannot be served | `SELECT * FROM tabfm_backends() WHERE NOT supported;`, then `auto` or `cpu` |
-| `cannot use its bundled <backend> graph ... the converted weights at '<path>' do not have the header` | the cached `model.safetensors` is an older conversion the extension could not replace from the checkpoint: do what the message says (re-run `tools/export_*/convert_weights.py`, or delete the file and `CALL tabfm_download(...)`) |
-| `tabfm_accelerate()` reports `verify failed` | install what `detail` names (e.g. MIGraphX), run `CALL tabfm_accelerate();` again; predictions continue on the CPU |
-| a GPU precision mode is rejected | `bf16` / `fp16` are ROCm-only, `tf32` CUDA-only |
-| the first ROCm predict takes minutes | the bucket compile: `CALL tabfm_gpu_precompile(...)` ahead of time |
-| same answers, but slow | it is probably on the CPU: `SELECT model, device FROM tabfm_models() WHERE loaded;` |
+An experimental ggml GPU plugin (same engine as the CPU, built from `tools/ggml_plugin`) is used instead of the ONNX Runtime/MIGraphX plugin when
+`libanofox_tabfm_ggml-cuda_plugin.so` (or `ggml-rocm`) is in `anofox_tabfm_ep_path`; it honours the same precision values (`bf16`/`fp16` are errors) and reads
+float32 checkpoints only. Apple GPUs stay on MLX.

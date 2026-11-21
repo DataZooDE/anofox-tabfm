@@ -108,6 +108,15 @@ Quantized label flips against fp32 are model-dependent and **not confined to nea
 but only at near-ties (margins ≤ 0.023), fp16 10% at margins ≤ 0.002. Validate on your own data. A mode a
 backend cannot honour is an error, never a silent fp32 run.
 
+## The ggml GPU plugin (experimental)
+
+Besides the ONNX Runtime and MIGraphX plugins there is a ggml plugin, built from `tools/ggml_plugin` (see [BUILDING.md](../BUILDING.md)):
+the same engine the CPU runs, on a CUDA or HIP device. It is the file `libanofox_tabfm_ggml-cuda_plugin.so` (or `ggml-rocm`); **when it is in the
+directory `anofox_tabfm_ep_path` names, the extension uses it instead of the ONNX Runtime / MIGraphX plugin** for `cuda` and `rocm`, and otherwise nothing
+changes. It takes the plain external-data graph, so one graph serves both vendors, and honours `anofox_tabfm_gpu_precision` (`fp32` disables TF32, `tf32`
+keeps it; `bf16`/`fp16` are errors). Float32 checkpoints only. Measured on Nori 1.5 it agrees with ONNX Runtime to 1.5e-3 (ROCm gfx1150) and 3.4e-3
+(RTX 4090) on logits of scale 11. Not a release asset yet. Apple GPUs stay on MLX: ggml's Metal matmul is half-precision internally and was 3 logit units off.
+
 ## Platform limits
 
 macOS is **arm64 only**: ONNX Runtime published its last macOS x86_64 /

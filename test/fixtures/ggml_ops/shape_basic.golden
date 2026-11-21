@@ -1,0 +1,3 @@
+# op Shape
+in x f32 2,3,4 3f0151f1 40298d3c 3eb617dd be4bdac5 3fbb52e6 3f865f25 bf0f063d bf989ed6 3e1a0043 3eb469c9 bc0eaaac 3ff16e68 3edd4d13 be7cf660 be31a09f bd5bc2ab bf3c7601 c004d604 3f06c53b 3f87407e 3fd45a07 3f2ad773 bfd6855b 3e9f992d
+out y i64 3 2 3 4

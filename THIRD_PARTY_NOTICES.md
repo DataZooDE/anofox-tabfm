@@ -20,3 +20,9 @@ them under that reading: the agreement is retained verbatim in
 The Kumo-Tabular code is Apache-2.0 (NVIDIA/structured-data-models).
 
 This file records how we comply; it is not legal advice.
+
+## ggml (`vendor/ggml`)
+
+Copyright (c) 2023-2026 The ggml authors. MIT License; the full text is in [`vendor/ggml/LICENSE`](vendor/ggml/LICENSE).
+ggml is compiled into the extension as the CPU inference engine (static, CPU backend only). Its source is a pinned
+git submodule; no model weights or graphs come from it.

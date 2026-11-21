@@ -1,0 +1,4 @@
+# op GreaterOrEqual
+in a f32 3,1 3f1204e9 7fc00000 3eaf75e7
+in b f32 1,4 3e9702a4 7f800000 3f882f0f 7fc00000
+out y bool 3,4 1 0 0 0 0 0 0 0 1 0 0 0

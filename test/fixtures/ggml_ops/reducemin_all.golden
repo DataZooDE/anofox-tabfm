@@ -1,0 +1,3 @@
+# op ReduceMin
+in x f32 2,3,4 3ffc9087 be85e31d 3fc39aef bf72193c be319fe2 3ec62d4d 3e00df4a 3d8b3891 3eefb552 bfbf548d 3fa745b7 3f882bdd bf3df93b 3e82c105 3f080353 3fbc6bda bf9afc43 be0534ed 3e9be771 3f3f3521 3f44849d bf9d1efd bf8688b1 bec3cba1
+out y f32 1,1,1 bfbf548d

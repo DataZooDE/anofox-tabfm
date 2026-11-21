@@ -32,18 +32,13 @@ ifneq ($(TABFM_ORT_URL),)
 EXT_FLAGS += -DTABFM_ORT_URL=$(TABFM_ORT_URL)
 endif
 
-# Release/distribution builds (cpu flavor) link ONNX Runtime statically via the
-# vcpkg "ort-vcpkg" manifest feature, so the loadable extension is a single
-# self-contained file with no companion libonnxruntime.so — required for the
-# DuckDB Community Extensions single-file distribution model. Local debug builds
-# keep the fast prebuilt-archive path (dynamic). Override with TABFM_ORT_VCPKG=0.
-TABFM_ORT_VCPKG ?= 1
-ifeq ($(TABFM_FLAVOR),cpu)
-ifeq ($(TABFM_ORT_VCPKG),1)
-EXT_RELEASE_FLAGS += -DVCPKG_MANIFEST_FEATURES=ort-vcpkg
+# The CPU engine is ggml by default (vendor/ggml): that build links no ONNX Runtime. TABFM_CPU_ENGINE=ort builds the oracle engine, which needs a
+# prebuilt ONNX Runtime archive (TABFM_ORT_URL, see cmake/ort.cmake); the vcpkg ONNX Runtime port was removed. An unset TABFM_CPU_ENGINE leaves
+# CMake's default (ggml) alone.
+TABFM_CPU_ENGINE ?=
+ifneq ($(TABFM_CPU_ENGINE),)
+EXT_FLAGS += -DTABFM_CPU_ENGINE=$(TABFM_CPU_ENGINE)
 endif
-endif
-
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 

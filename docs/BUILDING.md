@@ -9,9 +9,9 @@ Clone with submodules (`git clone --recurse-submodules`; they include DuckDB, th
 git clone https://github.com/microsoft/vcpkg && ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 export VCPKG_TOOLCHAIN_PATH=$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake
 
-GEN=ninja make release                     # cpu flavor; ONNX Runtime linked statically via vcpkg
-GEN=ninja make release TABFM_ORT_VCPKG=0   # faster local build against the prebuilt ONNX Runtime archive
-GEN=ninja make debug                       # debug build (prebuilt ONNX Runtime archive, linked dynamically)
+GEN=ninja make release                     # cpu flavor on the ggml engine (vendor/ggml submodule): no ONNX Runtime anywhere
+GEN=ninja make debug                       # debug build
+GEN=ninja make release TABFM_CPU_ENGINE=ort   # the ONNX Runtime engine instead (the oracle build, see "Engines")
 make test_release                          # sqllogictests + C++ unit tests (telemetry disabled)
 ./build/release/test/unittest test/sql/tabfm_classify.test   # a single file
 make check-docs                            # every SQL example in README, docs/api, docs/guides and the
@@ -32,11 +32,28 @@ CMake Error: CMAKE_CXX_COMPILER not set, after EnableLanguage
 CMake aborts before probing for the generator or the compilers, so the last three are reported
 missing even when Ninja and the toolchain are installed and on `PATH`.
 
-Requires CMake ≥ 3.10 (≥ 3.19 to also build the bundled C++ unit tests), a C++17 toolchain, and vcpkg.
-Release builds of the cpu flavor link ONNX Runtime statically through the `ort-vcpkg` manifest feature, so
-the extension is one self-contained file; the first such build is slow. Local debug builds, and release
-builds with `TABFM_ORT_VCPKG=0`, use the prebuilt archive instead. `TABFM_BUILD_ROOT` gives a worktree its
-own build directory.
+Requires CMake ≥ 3.10 (≥ 3.19 to also build the bundled C++ unit tests), a C++17 toolchain, and vcpkg (for OpenSSL).
+`TABFM_BUILD_ROOT` gives a worktree its own build directory.
+
+## Engines
+
+The CPU device runs on **ggml** (`vendor/ggml`, a pinned git submodule compiled into the extension, CPU backend only, no OpenMP,
+AVX2/FMA baseline on x86-64), and a default `cpu` build links **no ONNX Runtime at all**: no download, no vcpkg ORT port. The
+bundled ONNX graphs are lowered op by op to ggml graphs (`docs/GGML_PLAN.md`, `docs/GGML_LOWERING.md`); every op is checked
+against ONNX Runtime's output (`tools/ggml_parity/`).
+
+| CMake option | Default | Meaning |
+|---|---|---|
+| `TABFM_CPU_ENGINE` | `ggml` (`ort` when `vendor/ggml` is absent) | the engine of the CPU device, one per binary |
+| `TABFM_WITH_ORT` | `OFF` for `cpu` + `ggml`, else `ON` | link ONNX Runtime (the `ort` engine and the `cuda`/`rocm`/`coreml` flavors need it) |
+| `TABFM_WITH_GGML` | `ON` when the submodule is present | compile the ggml engine in (the test binary then holds both engines and compares them in-process) |
+| `TABFM_GGML_NATIVE` | `OFF` | compile ggml for this machine's CPU (AVX-512 etc.): faster here, may crash on older CPUs |
+
+Building the `ort` engine (`-DTABFM_CPU_ENGINE=ort`) needs a prebuilt ONNX Runtime archive that **you** supply (`make release TABFM_CPU_ENGINE=ort
+TABFM_ORT_URL=file:///path/to/onnxruntime-linux-x64-1.29.0.tgz`): the vcpkg ONNX Runtime port and the upstream GitHub download it used to default to are
+gone (the upstream source and release archives no longer exist), so no CI job builds it. It stays as a local oracle for the parity tools and for the
+`cuda`/`rocm`/`coreml` flavors, which still link ONNX Runtime in the extension.
+Debugging aids: `TABFM_GGML_PROFILE=1|2` prints phase timings (2 adds per-op-kind compute times).
 
 The test suite runs against random-init fixture models and needs no real weights and no network. A
 locally built extension is unsigned: start DuckDB with `duckdb -unsigned` and `LOAD` the file, or use the
@@ -59,6 +76,12 @@ needs `brew install mlx mlx-c` and builds via the `anofox_tabfm_mlx_plugin` CMak
 plugin needs only MIGraphX; building an ONNX Runtime with the MIGraphX EP for the legacy `rocm` flavor is
 described in [rocm-build.md](rocm-build.md). How the pieces fit together, as designed:
 [DYNAMIC_BACKENDS.md](DYNAMIC_BACKENDS.md).
+
+The **ggml GPU plugin** (experimental; the same engine as the CPU build on a CUDA or HIP device, see
+[GGML_PLAN.md](GGML_PLAN.md) "P8 result") is a separate CMake project:
+`cmake -S tools/ggml_plugin -B build/ggml-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DTABFM_GGML_GPU=cuda -DCMAKE_CUDA_ARCHITECTURES=89`
+(`-DTABFM_GGML_GPU=hip -DAMDGPU_TARGETS=gfx1201` for ROCm), then `cmake --build build/ggml-cuda`. It needs `vendor/ggml` and the vendor's toolkit,
+not ONNX Runtime. `tools/ggml_plugin/abi_check.cpp` checks a built plugin against an ORT reference. Only the CUDA plugin is wired to the host today.
 
 Any build can host the CUDA plugin, including a local debug build that loads a shared
 `libonnxruntime.so`: the plugin's ONNX Runtime ships under a private SONAME (`libanofoxort_gpu.so`,

@@ -56,7 +56,7 @@ background (how each was ported, what is verified, licences in full, LimiX's att
 
 The extension ships only **weight-free** ONNX graphs, compiled into the extension; the weights are your own
 Hugging Face download, cached under `anofox_tabfm_cache_dir` (default `~/.cache/anofox-tabfm`). After
-`tabfm_download` a model works with no companion files. The engine (preprocess → ONNX Runtime forward →
+`tabfm_download` a model works with no companion files. The engine (preprocess → ggml forward (ONNX Runtime on an `ort` build) →
 decode) is checked against each model's PyTorch reference ([docs/REAL_MODELS.md](../REAL_MODELS.md)); for TabFM v1 per-row outputs match to ~1e-5. A **model
 registry** (`model :=`, `tabfm_list_models()`, `tabfm_register_model`) makes another model a data change,
 not new C++. For an air-gapped machine, pre-seed the cache directory.
@@ -135,7 +135,7 @@ against a fixed training table, cross-validation folds and per-segment `UNION AL
 - **Memory.** `anofox_tabfm_context_cache_memory` (default `256MB`) bounds the cached contexts per loaded model;
   the least recently used goes first. The budget is instance-wide (one cache per loaded model serves every
   connection) and read when a statement runs. `tabfm_unload()` drops the contexts with the session. With the
-  cache on, a model also holds a second ORT session (prepare + query): about +300 MB for `tabicl-v2`.
+  cache on, a model also holds a second session (prepare + query): about +300 MB for `tabicl-v2`.
 - **Batches within one call.** `opts := MAP{'query_batch': 'N'}` scores the test rows N at a time against one
   encoded context, so it bounds the peak memory of a large call without re-encoding the context per batch.
   Each pass has a fixed cost that grows with the context (about 60 ms at 2000 support rows), so keep N in the
