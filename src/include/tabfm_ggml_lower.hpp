@@ -89,6 +89,10 @@ public:
 	HostTensors Run(const HostTensors &inputs, const GgmlRunOptions &options);
 
 	//! Drop every compiled graph and its activation memory (the next call recompiles).
+	//! Uploads every float32 external weight into device memory now (a device executor does it lazily, the first time a graph needs each one), so device
+	//! out-of-memory and the one-time upload cost land at load, not in the first query. A weight whose layout the lowering cannot place is skipped here
+	//! and reported by the run that needs it. A no-op for the CPU device. Returns the number of weights uploaded.
+	size_t PreloadWeights();
 	void Trim();
 
 	//! Number of graphs compiled so far (a test hook: a repeated signature must not recompile).

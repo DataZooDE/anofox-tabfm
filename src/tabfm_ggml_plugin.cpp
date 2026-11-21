@@ -271,6 +271,9 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 			return it->second;
 		};
 		backend->executor.reset(new GgmlExecutor(backend->graph, std::move(config)));
+		// Upload the weights now: a device that cannot hold the model fails here, at load, with the host's "could not be initialised" message
+		// instead of inside the first query, and the first predict no longer pays the transfer.
+		backend->executor->PreloadWeights();
 		return backend.release();
 	} catch (const std::exception &e) {
 		SetError(err, err_len,

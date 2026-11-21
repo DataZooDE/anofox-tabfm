@@ -2691,6 +2691,43 @@ HostTensors GgmlExecutor::Run(const HostTensors &inputs, const GgmlRunOptions &o
 	}
 }
 
+size_t GgmlExecutor::PreloadWeights() {
+	std::lock_guard<std::mutex> guard(impl_->mutex);
+	if (impl_->runtime.sched_backends.empty() || !impl_->config.weights) {
+		return 0;
+	}
+	size_t uploaded = 0;
+	for (const auto &t : impl_->graph.initializers) {
+		const bool inline_data = !t.raw.empty() || !t.floats.empty() || !t.int64s.empty() || !t.int32s.empty();
+		size_t count = 1;
+		for (auto d : t.dims) {
+			count *= static_cast<size_t>(d);
+		}
+		if (t.data_type != 1 || inline_data || count == 0) {
+			continue; // only the float32 weights kept outside the ONNX file are persistent device tensors
+		}
+		const ExternalWeight external = impl_->config.weights(t.name, t.dims);
+		if (!external.data || external.count != count) {
+			continue;
+		}
+		try {
+			Node pseudo; // the same call, with the same layout, materialize_initializer makes
+			pseudo.name = t.name;
+			pseudo.op_type = "<weight>";
+			impl_->DeviceWeight(t.name, ToStorage(pseudo, Shape(t.dims.begin(), t.dims.end())), external.data);
+			uploaded++;
+		} catch (const std::bad_alloc &) {
+			throw;
+		} catch (const std::exception &e) {
+			if (std::string(e.what()).find("out of device memory") != std::string::npos) {
+				throw; // a real failure to report at load
+			}
+			// an unusable layout (rank above what a leaf holds): left to the run that needs it
+		}
+	}
+	return uploaded;
+}
+
 void GgmlExecutor::Trim() {
 	std::lock_guard<std::mutex> guard(impl_->mutex);
 	impl_->cache.clear();

@@ -462,6 +462,26 @@ TEST_CASE("ggml_executor: a bad device or device number throws, names the proble
 	}
 }
 
+TEST_CASE("ggml_executor: PreloadWeights uploads the external weights up front on a device path and does nothing on the CPU", "[tabfm][ggml][ggml_ops]") {
+	const auto g = ExpNegAddGraph();
+	const std::vector<float> weights = {10.0f, 20.0f, 30.0f};
+	for (const char *device : {"cpu", "cpu-sched"}) {
+		GgmlExecutorConfig config;
+		config.threads = 2;
+		config.device = device;
+		config.weights = [&](const std::string &, const std::vector<int64_t> &) { return ExternalWeight {weights.data(), 3}; };
+		GgmlExecutor executor(g, config);
+		REQUIRE(executor.PreloadWeights() == (std::string(device) == "cpu" ? 0u : 1u));
+		REQUIRE(executor.PreloadWeights() == (std::string(device) == "cpu" ? 0u : 1u)); // idempotent: the same device tensor is reused
+		HostTensors in;
+		in["x"] = {{1, 3}, {0.0f, 1.0f, 2.0f}};
+		const auto out = executor.Run(in, GgmlRunOptions());
+		for (int i = 0; i < 3; i++) {
+			REQUIRE(out.at("y").data[i] == Approx(std::exp(-static_cast<float>(i)) + weights[i]));
+		}
+	}
+}
+
 TEST_CASE("ggml_executor: a failed run does not poison the cached graph, and a missing input is named", "[tabfm][ggml][ggml_ops]") {
 	const auto g = ExpNegAddGraph();
 	const std::vector<float> weights = {10.0f, 20.0f, 30.0f};

@@ -195,9 +195,9 @@ five real dimensions (max 5) after dropping size-1 dims: those need an op-aware 
 - **SQL on CUDA (done).** The extension was built on the RTX 4090 pod and `ggml_plugin_gpu.sql` run: `tabfm_models()` reports `cuda:0` and the 100-row Nori regression agrees with the
   CPU engine to **0.031 at scale 7** (0.4%), looser than ROCm's 6.6e-5. Cause: this table has 4 features, so its small matmuls take ggml's own tensor-core kernel
   (`mul_mat_f`, 16 or fewer columns), which `NVIDIA_TF32_OVERRIDE=0` does not reach; the large-matmul runs above are 3.4e-3. Strict fp32 on CUDA for small tables needs a ggml change.
+- **Weights at create (done).** `GgmlExecutor::PreloadWeights()`, called by the plugin's create, uploads every float32 external weight up front (a device that cannot hold the model fails at load).
 - **Still open.** The plugin is not a release
-  asset and has no CI job; `tabfm_devices()`/`tabfm_backends()` do not list the ggml lane (explicit `cuda`/`rocm` only, `auto` never picks it); device weights upload at the first
-  run, not at create; Windows and Vulkan plugins; fp32 is not strict for matmuls of 16 or fewer columns on CUDA (ggml's own TF32 kernel has no switch).
+  asset and has no CI job; `tabfm_devices()`/`tabfm_backends()` do not list the ggml lane (explicit `cuda`/`rocm` only, `auto` never picks it); Windows and Vulkan plugins; fp32 is not strict for matmuls of 16 or fewer columns on CUDA (ggml's own TF32 kernel has no switch).
 
 ## P3 design notes (from the post-P2 crew review)
 - **The 78 five-real-dimension tensors** have only four shapes at T=350, H=17: (rows, features, 2, heads, head_dim) and variants, i.e. a fused
