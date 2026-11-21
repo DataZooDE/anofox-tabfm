@@ -56,7 +56,7 @@ background (how each was ported, what is verified, licences in full, LimiX's att
 
 The extension ships only **weight-free** ONNX graphs, compiled into the extension; the weights are your own
 Hugging Face download, cached under `anofox_tabfm_cache_dir` (default `~/.cache/anofox-tabfm`). After
-`tabfm_download` a model works with no companion files. The engine (preprocess → ggml forward (ONNX Runtime on an `ort` build) →
+`tabfm_download` a model works with no companion files. The engine (preprocess → ggml forward →
 decode) is checked against each model's PyTorch reference ([docs/REAL_MODELS.md](../REAL_MODELS.md)); for TabFM v1 per-row outputs match to ~1e-5. A **model
 registry** (`model :=`, `tabfm_list_models()`, `tabfm_register_model`) makes another model a data change,
 not new C++. For an air-gapped machine, pre-seed the cache directory.

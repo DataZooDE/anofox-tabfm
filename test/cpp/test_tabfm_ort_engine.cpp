@@ -651,36 +651,20 @@ TEST_CASE("tabfm_ort_engine: ValidateTabFMOutput enforces the [1,T,C] contract",
 // Engine: session creation + forward pass (MLP fixture)
 //===----------------------------------------------------------------------===//
 
-//! The CPU engines this build can run in one process: ONNX Runtime always, ggml when it is compiled in (TABFM_WITH_GGML).
-static vector<TabFMCpuEngine> CpuEngines() {
-	vector<TabFMCpuEngine> engines;
-#ifdef TABFM_WITH_ORT
-	engines.push_back(TabFMCpuEngine::ORT);
-#endif
-#ifdef TABFM_HAVE_GGML
-	engines.push_back(TabFMCpuEngine::GGML);
-#endif
-	return engines;
-}
-
 TEST_CASE("tabfm_ort_engine: create session with injection and run", "[tabfm][ort_engine]") {
 	auto fixture = LoadMlpFixture();
 
-	for (auto engine : CpuEngines()) {
-		INFO("cpu engine " << (engine == TabFMCpuEngine::ORT ? "ort" : "ggml"));
-		TabFMSessionConfig config;
-		config.cpu_engine = engine;
-		config.intra_op_threads = 2;
-		config.device_id = "cpu";
-		config.model_tag = "mlp-fixture";
+	TabFMSessionConfig config;
+	config.intra_op_threads = 2;
+	config.device_id = "cpu";
+	config.model_tag = "mlp-fixture";
 
-		auto session = CreateSession(fixture.graph.data(), fixture.graph.size(), fixture.Initializers(), config);
-		REQUIRE(session);
+	auto session = CreateSession(fixture.graph.data(), fixture.graph.size(), fixture.Initializers(), config);
+	REQUIRE(session);
 
-		auto output = Run(*session, fixture.RunInput());
-		REQUIRE(output.shape == vector<int64_t> {1, fixture.t, fixture.c});
-		RequireLogitsClose(output.logits, fixture.logits, fixture.rtol, 1e-6);
-	}
+	auto output = Run(*session, fixture.RunInput());
+	REQUIRE(output.shape == vector<int64_t> {1, fixture.t, fixture.c});
+	RequireLogitsClose(output.logits, fixture.logits, fixture.rtol, 1e-6);
 }
 
 #ifdef TABFM_WITH_ORT // ORT's own flavor message; a build without ORT answers any ORT-backed device with the "needs ONNX Runtime" error
@@ -747,34 +731,6 @@ TEST_CASE("tabfm_ort_engine: CoreML EP runs the fixture and matches the CPU gold
 	RequireLogitsClose(output.logits, fixture.logits, fixture.rtol, 1e-4);
 }
 
-#ifdef TABFM_WITH_ORT
-TEST_CASE("tabfm_ort_engine: source arena freed after creation, reruns bit-identical (S02)",
-          "[tabfm][ort_engine]") {
-	auto fixture = LoadMlpFixture();
-
-	TabFMSessionConfig config;
-	config.cpu_engine = TabFMCpuEngine::ORT; // ORT's contract: it copies at creation. The ggml engine keeps references (OrtBackend holds the buffers).
-	config.intra_op_threads = 1;
-	config.device_id = "cpu";
-	config.model_tag = "mlp-fixture";
-
-	auto session = CreateSession(fixture.graph.data(), fixture.graph.size(), fixture.Initializers(), config);
-
-	// S02 contract: ORT copied both graph bytes and injected initializers
-	// during session creation. Scribble over the sources — the moral
-	// equivalent of freeing the safetensors arena.
-	std::memset(fixture.weights.data(), 0x7f, fixture.weights.size());
-	std::memset(fixture.graph.data(), 0x7f, fixture.graph.size());
-
-	auto first = Run(*session, fixture.RunInput());
-	auto second = Run(*session, fixture.RunInput());
-
-	RequireLogitsClose(first.logits, fixture.logits, fixture.rtol, 1e-6);
-	REQUIRE(first.logits.size() == second.logits.size());
-	REQUIRE(std::memcmp(first.logits.data(), second.logits.data(), first.logits.size() * sizeof(float)) == 0);
-}
-#endif // TABFM_WITH_ORT
-
 TEST_CASE("tabfm_ort_engine: missing injection maps to the weights-not-loaded error", "[tabfm][ort_engine]") {
 	auto fixture = LoadMlpFixture();
 
@@ -783,7 +739,7 @@ TEST_CASE("tabfm_ort_engine: missing injection maps to the weights-not-loaded er
 	config.model_tag = "classification";
 
 	// No initializers: the graph's external stubs point at a weights.bin that
-	// never existed -> S02 negative control (a).
+	// never existed -> negative control (a): the weights-not-loaded error.
 	try {
 		CreateSession(fixture.graph.data(), fixture.graph.size(), {}, config);
 		FAIL("expected an exception");
@@ -1314,26 +1270,7 @@ TEST_CASE("tabfm_ort_engine: fixture-model parity vs golden.json (WS-A, rtol 1e-
 	config.device_id = "cpu";
 	config.model_tag = "fixture";
 
-	// Both engines read the same weights. ORT copies them at session creation (S02), so the source is scribbled to prove it; the ggml
-	// session keeps references to the buffers (like OrtBackend's arena does for ORT at real scale), so they stay intact for it.
-	vector<size_t> weight_offsets; // each initializer's position in the safetensors bytes, so every engine gets its own fresh copy
-	for (auto &init : initializers) {
-		weight_offsets.push_back(static_cast<size_t>(static_cast<const char *>(init.data) - safetensors_bytes.data()));
-	}
-	const auto pristine_weights = safetensors_bytes;
-	vector<float> ort_logits;
-	for (auto engine : CpuEngines()) {
-	INFO("cpu engine " << (engine == TabFMCpuEngine::ORT ? "ort" : "ggml"));
-	config.cpu_engine = engine;
-	auto weights = pristine_weights; // lives for this engine's session
-	for (size_t i = 0; i < initializers.size(); i++) {
-		initializers[i].data = weights.data() + weight_offsets[i];
-	}
-	auto session = CreateSession(graph_bytes.data(), graph_bytes.size(), initializers, config);
-	if (engine == TabFMCpuEngine::ORT) {
-		std::memset(weights.data(), 0x7f, weights.size());
-	}
-
+	// The ggml session keeps references to the weight buffers (like OrtBackend's arena does at real scale), so they stay alive for the whole test.
 	TabFMRunInput run_input;
 	run_input.x = x.data();
 	run_input.y = y.data();
@@ -1343,6 +1280,7 @@ TEST_CASE("tabfm_ort_engine: fixture-model parity vs golden.json (WS-A, rtol 1e-
 	run_input.train_size = train_size;
 	run_input.d = d;
 
+	auto session = CreateSession(graph_bytes.data(), graph_bytes.size(), initializers, config);
 	auto output = Run(*session, run_input);
 	REQUIRE(output.shape.size() == 3);
 	REQUIRE(output.shape[1] == t);
@@ -1370,16 +1308,6 @@ TEST_CASE("tabfm_ort_engine: fixture-model parity vs golden.json (WS-A, rtol 1e-
 	}
 	INFO("fixture parity max relative delta over rows >= train_size: " << max_rel);
 	REQUIRE(max_rel <= 1e-4);
-	if (engine == TabFMCpuEngine::ORT) {
-		ort_logits = output.logits;
-	} else if (!ort_logits.empty()) {
-		// the ggml engine against ORT itself, over every row (not only the golden's prediction rows); only when this build has ORT
-		REQUIRE(output.logits.size() == ort_logits.size());
-		for (size_t i = 0; i < ort_logits.size(); i++) {
-			REQUIRE(std::fabs(output.logits[i] - ort_logits[i]) <= 1e-4 + 1e-4 * std::fabs(ort_logits[i]));
-		}
-	}
-	}
 }
 
 #ifndef TABFM_WITH_ORT

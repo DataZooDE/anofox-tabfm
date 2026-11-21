@@ -13,7 +13,6 @@ backing your module before writing code).
 ```bash
 make debug            # cpu flavor on the ggml engine (vendor/ggml); no ONNX Runtime is built or downloaded
 make release
-make release TABFM_CPU_ENGINE=ort   # the ONNX Runtime engine (the local oracle build; needs TABFM_ORT_URL=<an ONNX Runtime archive>, no vcpkg port any more)
 make test_debug       # sqllogictests + C++ tests via build/debug/test/unittest
 ./build/debug/test/unittest test/sql/settings.test          # single file
 TABFM_FLAVOR=rocm make release TABFM_ORT_ROCM_DIR=...       # rocm flavor
@@ -59,7 +58,7 @@ TABFM_FLAVOR=rocm make release TABFM_ORT_ROCM_DIR=...       # rocm flavor
 ## Layout
 
 - `src/tabfm_safetensors.cpp`, `tabfm_manifest.cpp` — WS-B (readers)
-- `src/tabfm_ort_engine.cpp`, `tabfm_devices.cpp`, `tabfm_state.cpp` — WS-C (sessions; `TabFMSession` is served by ggml or, on an `ort` build, ONNX Runtime)
+- `src/tabfm_ort_engine.cpp`, `tabfm_devices.cpp`, `tabfm_state.cpp` — WS-C (sessions; `TabFMSession` is served by ggml for the CPU device and by ONNX Runtime only for the in-process cuda/rocm/coreml flavors)
 - `src/tabfm_ggml_lower.cpp` (ONNX graph -> ggml graph, `GgmlExecutor`), `tabfm_shape_eval.cpp` (host shape/constant pass, float64 interpreter),
   `tabfm_ggml_session.cpp` (the ggml-backed `TabFMSession`), `tabfm_ggml_ops.hpp` (the op table), `tabfm_rank_reduce.hpp` — the ggml CPU engine.
   Every op is checked against ONNX Runtime: `tools/ggml_parity/` (per-op goldens in `test/fixtures/ggml_ops`, whole-graph `graphs_parity.py`)

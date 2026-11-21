@@ -237,7 +237,7 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_cpu_prepack",
-	    "ONNX Runtime engine only: weight prepacking on the CPU EP, faster matmuls at ~+16% resident memory. No effect on the default ggml engine, which reads weights in place.",
+	    "Only for the in-process ONNX Runtime of the cuda/rocm/coreml flavors: weight prepacking on the CPU EP, faster matmuls at ~+16% resident memory. No effect on the CPU device (ggml), which reads weights in place.",
 	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
 
 	config.AddExtensionOption("anofox_tabfm_device",

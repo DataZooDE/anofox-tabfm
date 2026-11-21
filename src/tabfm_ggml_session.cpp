@@ -17,8 +17,6 @@
 namespace duckdb {
 namespace anofox {
 
-#ifdef TABFM_HAVE_GGML
-
 namespace {
 
 size_t ElementCount(const std::vector<int64_t> &dims) {
@@ -126,7 +124,7 @@ std::unique_ptr<GgmlSessionState> CreateGgmlSessionState(::anofox::onnxread::Gra
 	const string cpu_reason = UnsupportedCpuReason();
 	if (!cpu_reason.empty()) {
 		throw InvalidInputException("anofox_tabfm: the ggml CPU engine cannot run on this machine: " + cpu_reason +
-		                            ". Rebuild the extension with TABFM_CPU_ENGINE=ort (make release TABFM_CPU_ENGINE=ort) to run on ONNX Runtime instead.");
+		                            ". Run on a machine with those CPU instructions, or SET anofox_tabfm_device to a GPU (with its backend plugin in anofox_tabfm_ep_path).");
 	}
 	auto state = std::make_unique<GgmlSessionState>();
 	state->config = config;
@@ -299,7 +297,6 @@ TabFMRunOutput GgmlRunQuery(const GgmlSessionState &state, const float *x, int64
 	}
 }
 
-#endif // TABFM_HAVE_GGML
 
 } // namespace anofox
 } // namespace duckdb

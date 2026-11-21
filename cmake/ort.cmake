@@ -3,12 +3,9 @@
 # One codebase, three flavors (HLD D9): the flavor only decides which ONNX
 # Runtime build is linked and which execution providers it carries.
 #
-#   TABFM_FLAVOR=cpu   (default)  The CPU engine is ggml and this file is not
-#                                 used at all (cmake/ CMakeLists.txt: TABFM_WITH_ORT
-#                                 is OFF). Only the oracle build,
-#                                 TABFM_CPU_ENGINE=ort, comes here: a prebuilt ORT
-#                                 archive given by TABFM_ORT_URL. The vcpkg ORT
-#                                 port was removed (upstream source is gone).
+#   TABFM_FLAVOR=cpu   (default)  The CPU device runs on ggml and this file is not
+#                                 used at all (TABFM_WITH_ORT is OFF). The vcpkg ORT
+#                                 port and the ORT CPU engine were removed.
 #   TABFM_FLAVOR=cuda             Prebuilt ORT-GPU archive (CUDA EP + CPU EP).
 #                                 CUDA/cuDNN resolve from the user's system at
 #                                 runtime; never linked into this build.
@@ -103,9 +100,7 @@ function(_tabfm_fetch_prebuilt_ort archive_stem)
 endfunction()
 
 if(TABFM_FLAVOR STREQUAL "cpu")
-    # Only the oracle engine (TABFM_CPU_ENGINE=ort) reaches here.
-    message(STATUS "anofox_tabfm: ONNX Runtime from the archive at TABFM_ORT_URL (CPU EP, oracle engine)")
-    _tabfm_fetch_prebuilt_ort("onnxruntime-${_ort_platform}")
+    message(FATAL_ERROR "anofox_tabfm: the cpu flavor runs on ggml and does not link ONNX Runtime (internal error: cmake/ort.cmake was included for it)")
 elseif(TABFM_FLAVOR STREQUAL "coreml")
     # Apple Silicon acceleration via ORT's CoreML EP (docs/COREML_PLAN.md).
     # Same osx-universal2 prebuilt as the cpu flavor — the CoreML EP is compiled

@@ -71,5 +71,5 @@ TEST_CASE("ggml_engine: a graph with unsupported ops is refused with the op name
 	const std::string message = GgmlRefusal({"Identity", "Zebra"});
 	REQUIRE(message.find("Zebra") != std::string::npos);
 	REQUIRE(message.find("Identity") == std::string::npos); // only the missing ones are named
-	REQUIRE(message.find("TABFM_CPU_ENGINE=ort") != std::string::npos);
+	REQUIRE(message.find("report") != std::string::npos);
 }

@@ -1,5 +1,8 @@
 # Plan: move the CPU engine from ONNX Runtime to ggml (correctness first, ORT as oracle, then optimise to ORT parity)
 
+> **Status (2026-11-21): done and superseded in places.** The CPU device is always ggml and the ORT CPU engine, the `TABFM_CPU_ENGINE` option and the vcpkg ORT port are removed
+> (see "P6 follow-up" and "P8 result" below). Mentions of `TABFM_CPU_ENGINE`, `TabFMSessionConfig::cpu_engine` and an ORT oracle build in the sections written before that describe the migration path, not the current build.
+
 ## Context
 ORT's source is gone from GitHub (vcpkg port 404, main CI red since the outage), the CPU build needs a heavy vcpkg ORT build, and
 the CPU, CUDA, ROCm and MLX paths are four unrelated stacks. A spike (throwaway spike, not committed) ran the full Nori 1.5
@@ -48,7 +51,7 @@ Plan changes (from the engine-contract review, to be done in this order):
     `anofox_tabfm_threads` (touches scaffold-owned tabfm_settings.cpp: ask the user).
  5. **NaN-in goldens for every NATIVE and COMPOSITE op**, and a ggml-vs-ggml determinism calibration across `anofox_tabfm_threads`.
  6. **CPU baseline.** With GGML_NATIVE=OFF the x86 build requires AVX2+FMA+F16C+BMI2 (no runtime dispatch in a static build) and arm64 is
-    plain armv8-a. The init-time CPU feature check exists (`UnsupportedCpuReason`, tabfm_ggml_session.cpp): it errors naming TABFM_CPU_ENGINE=ort instead of SIGILL. Revisit in P7 (AVX-512 dispatch).
+    plain armv8-a. The init-time CPU feature check exists (`UnsupportedCpuReason`, tabfm_ggml_session.cpp): it errors naming the way out (another machine, or a GPU device) instead of SIGILL. Revisit in P7 (AVX-512 dispatch).
  7. **Memory.** `anofox_tabfm_max_memory` measures first-run resident growth (ForwardCost, tabfm_state.cpp); ggml_gallocr knows its arena at
     graph build, so report the exact peak up front as a design goal. The ggml graph cache is dropped by tabfm_unload.
  8. **macOS.** CoreML keeps ORT there, so the P0 gate "ORT absent from the link" applies to Linux/Windows only. CI jobs that check out without
@@ -154,7 +157,8 @@ five real dimensions (max 5) after dropping size-1 dims: those need an op-aware 
   branch of `cmake/ort.cmake`. The dead upstream download default is now a configure-time error that asks for `TABFM_ORT_URL`.
 - Kept (needed): `cmake/ort.cmake` for the `cuda`/`rocm`/`coreml` flavors and the `TABFM_CPU_ENGINE=ort` oracle build (with a user-supplied archive); the ORT-CUDA plugin, which links
   its own renamed ONNX Runtime from a wheel; the `TABFM_WITH_ORT` `#ifdef`s. Python `onnxruntime` stays the reference for goldens and graph parity.
-- Not done: no CI job builds the ORT oracle any more (its source is unobtainable); dropping the oracle engine entirely, and with it the `#ifdef`s, is a later, explicit decision.
+- Then (user decision): the ONNX Runtime CPU engine and the `TABFM_CPU_ENGINE` option are removed too; the CPU device is always ggml and ggml is mandatory. ONNX Runtime stays only for the in-process cuda/rocm/coreml flavors (`TABFM_WITH_ORT`), the ORT-CUDA plugin, and Python `onnxruntime` as the parity reference.
+- Real weights (12 ungated models downloaded by `tabfm_download` into a scratch cache, ggml CPU): nori-1-5 and nori-30m R2 1.0; tabicl-v2 0.98 / 1.0; tabdpt and tabdpt-v1-3 0.98 / 1.0; kumo small and medium 0.98-1.0; orion-bix and orion-msp 0.9; mitra and mitra-v2 0.96-0.98 / 0.998-1.0 on a learnable synthetic task. This run found a real bug no fixture reaches: `TryExternalDataSession` handed the ggml session a graph path and no weights for models whose bundled ext graph matches (tabdpt, mitra): fixed by skipping that ONNX-Runtime-only path on the CPU. Not run: limix-2m (its download needs a license acceptance), the TabPFN family, causilo, exaone and tabfm-v1(.1) (gated or large).
 
 ## P7 progress: performance against ORT (Nori 1.5, warm, 4 threads)
 - Measured with `TABFM_NORI15_REPEAT` (best of N through one `GgmlExecutor`): **9 rows 8.4 ms (ORT 10), 60 rows 70 ms (55), 130 rows 187 ms (151), 200 rows 489 ms (412).**

@@ -35,9 +35,9 @@ jobs:
       ci_tools_version: v1.5-variegata
       extension_name: anofox_tabfm
       # The cpu flavor runs on the vendored ggml engine (vendor/ggml, a git submodule: checked out with the others, no
-      # third-party download at build time) and does not link ONNX Runtime at all (TABFM_CPU_ENGINE=ggml, TABFM_WITH_ORT=OFF
+      # third-party download at build time) and does not link ONNX Runtime at all (TABFM_WITH_ORT=OFF
       # are the defaults, see CMakeLists.txt and docs/GGML_PLAN.md). ONNX Runtime is only built for the flavors that still use
-      # it (TABFM_FLAVOR=cuda|rocm|coreml, or TABFM_CPU_ENGINE=ort, the oracle engine). The GitHub ORT release archive the old
+      # it (TABFM_FLAVOR=cuda|rocm|coreml). The GitHub ORT release archive the old
       # default downloaded no longer exists, which is what turned this pipeline red.
       # Exclude WASM/musl (NFR-C1: explicitly out - multi-GB inference) and MinGW (vcpkg OpenSSL build issues, house
       # pattern). osx_amd64 stays excluded until the ggml engine has been verified there (it was dropped because ONNX

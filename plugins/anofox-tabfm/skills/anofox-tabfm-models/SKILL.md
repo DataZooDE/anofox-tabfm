@@ -194,7 +194,7 @@ FROM tabfm_models() WHERE context_cache;
 | `anofox_tabfm_max_features` | `500` | enforced features per call |
 | `anofox_tabfm_max_sessions` | `4` | cached sessions across models, devices and precisions |
 | `anofox_tabfm_max_memory` | `''` | refuse a call when resident memory, plus the measured cost of an identical earlier shape, reaches this; a new shape is unguarded |
-| `anofox_tabfm_threads` | cores / 2 | CPU inference threads (ggml engine; ONNX Runtime intra-op threads on an `ort` build) |
+| `anofox_tabfm_threads` | cores / 2 | CPU inference threads (ggml engine) |
 | `anofox_tabfm_cpu_prepack` | `true` | faster CPU matmuls for about 16% more memory |
 | `anofox_tabfm_trace_level` | `warn` | `error` / `warn` / `info` / `debug` / `trace` |
 

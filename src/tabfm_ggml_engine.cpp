@@ -15,7 +15,7 @@ std::string GgmlRefusal(const std::vector<std::string> &op_types) {
 		list += (list.empty() ? "" : ", ") + op;
 	}
 	return "this graph needs ONNX ops the ggml CPU engine does not implement (" + list +
-	       "). Rebuild with TABFM_CPU_ENGINE=ort to run it through ONNX Runtime, and please report these op names.";
+	       "). Please report these op names; a GPU backend plugin (SET anofox_tabfm_ep_path, SET anofox_tabfm_device) may still run the graph.";
 }
 
 } // namespace anofox

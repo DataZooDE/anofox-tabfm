@@ -11,7 +11,6 @@ export VCPKG_TOOLCHAIN_PATH=$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake
 
 GEN=ninja make release                     # cpu flavor on the ggml engine (vendor/ggml submodule): no ONNX Runtime anywhere
 GEN=ninja make debug                       # debug build
-GEN=ninja make release TABFM_CPU_ENGINE=ort   # the ONNX Runtime engine instead (the oracle build, see "Engines")
 make test_release                          # sqllogictests + C++ unit tests (telemetry disabled)
 ./build/release/test/unittest test/sql/tabfm_classify.test   # a single file
 make check-docs                            # every SQL example in README, docs/api, docs/guides and the
@@ -44,15 +43,12 @@ against ONNX Runtime's output (`tools/ggml_parity/`).
 
 | CMake option | Default | Meaning |
 |---|---|---|
-| `TABFM_CPU_ENGINE` | `ggml` (`ort` when `vendor/ggml` is absent) | the engine of the CPU device, one per binary |
-| `TABFM_WITH_ORT` | `OFF` for `cpu` + `ggml`, else `ON` | link ONNX Runtime (the `ort` engine and the `cuda`/`rocm`/`coreml` flavors need it) |
-| `TABFM_WITH_GGML` | `ON` when the submodule is present | compile the ggml engine in (the test binary then holds both engines and compares them in-process) |
-| `TABFM_GGML_NATIVE` | `OFF` | compile ggml for this machine's CPU (AVX-512 etc.): faster here, may crash on older CPUs |
+| `TABFM_WITH_ORT` | `OFF` for the `cpu` flavor, `ON` for `cuda`/`rocm`/`coreml` | link ONNX Runtime (only those in-process flavors need it) |
+| `TABFM_GGML_NATIVE` | `OFF` (`ON` on MSVC arm64, which ggml requires) | compile ggml for this machine's CPU (AVX-512 etc.): faster here, may crash on older CPUs |
 
-Building the `ort` engine (`-DTABFM_CPU_ENGINE=ort`) needs a prebuilt ONNX Runtime archive that **you** supply (`make release TABFM_CPU_ENGINE=ort
-TABFM_ORT_URL=file:///path/to/onnxruntime-linux-x64-1.29.0.tgz`): the vcpkg ONNX Runtime port and the upstream GitHub download it used to default to are
-gone (the upstream source and release archives no longer exist), so no CI job builds it. It stays as a local oracle for the parity tools and for the
-`cuda`/`rocm`/`coreml` flavors, which still link ONNX Runtime in the extension.
+ggml is not optional: a checkout without `vendor/ggml` (`git submodule update --init vendor/ggml`) does not configure. The ONNX Runtime CPU engine, its vcpkg
+port and the upstream download it used to default to are gone (the upstream source and release archives no longer exist); `TABFM_ORT_URL` (a mirror or a local
+archive) is still needed by the `cuda`/`rocm`/`coreml` flavors, which link ONNX Runtime in the extension. Python `onnxruntime` remains the reference for the parity tools.
 Debugging aids: `TABFM_GGML_PROFILE=1|2` prints phase timings (2 adds per-op-kind compute times).
 
 The test suite runs against random-init fixture models and needs no real weights and no network. A

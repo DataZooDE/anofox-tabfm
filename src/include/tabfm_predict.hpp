@@ -272,7 +272,7 @@ struct PredictContext {
 	//! sighting. Default ('second'): keep it the second time its key is seen.
 	bool context_cache_admit_first = false;
 	//! SET anofox_tabfm_cpu_prepack — ORT weight prepacking on the CPU EP: faster
-	//! matmuls at ~+16% RSS. On by default now that external-data keeps RSS low.
+	//! matmuls at ~+16% RSS. Only reaches the in-process ONNX Runtime of the cuda/rocm/coreml flavors; the CPU device (ggml) ignores it.
 	bool cpu_prepack = true;
 	//! SET anofox_tabfm_mxr_source — directory of precompiled MIGraphX .mxr programs
 	//! (offline/CI/shared). A matching bucket artifact is staged into the cache

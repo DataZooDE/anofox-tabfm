@@ -445,7 +445,7 @@ public:
 	std::vector<std::string> injected_names;
 	std::vector<Ort::Value> injected_values;
 #endif
-	//! Set when the ggml CPU engine serves this session (TABFM_CPU_ENGINE=ggml, docs/GGML_PLAN.md); with ONNX Runtime compiled in, `session`
+	//! Set when the ggml CPU engine serves this session (always, for the CPU device; docs/GGML_PLAN.md); with ONNX Runtime compiled in, `session`
 	//! is then an empty handle. Declared before `session`, which must be destroyed first.
 	std::unique_ptr<GgmlSessionState> ggml;
 #ifdef TABFM_WITH_ORT
@@ -572,47 +572,27 @@ static void ValidateDeclaredContract(const TabFMSession &session, const TabFMSes
 
 namespace {
 
-//! A build without ONNX Runtime (TABFM_WITH_ORT=OFF) serves the CPU device through ggml and the GPU devices through the backend plugins; a request that
-//! would reach ORT says so, and names the way out.
+//! The CPU device always runs on the ggml engine. A build without ONNX Runtime (TABFM_WITH_ORT=OFF, the default cpu flavor) serves the GPU devices through
+//! the backend plugins; a request that would reach ONNX Runtime says so, and names the way out.
 [[noreturn, maybe_unused]] void ThrowNoOrt(const TabFMSessionConfig &config) {
-	if (config.device_id == "cpu") {
-		throw InvalidInputException("anofox_tabfm: this build selected the ONNX Runtime CPU engine but contains no ONNX Runtime. Rebuild with "
-		                            "TABFM_CPU_ENGINE=ggml, or with TABFM_CPU_ENGINE=ort TABFM_WITH_ORT=ON.");
-	}
 	throw InvalidInputException("anofox_tabfm: device '" + config.device_id +
 	                            "' needs ONNX Runtime, which this build does not contain (built with TABFM_WITH_ORT=OFF). The CPU device runs on the "
 	                            "ggml engine; for a GPU device SET anofox_tabfm_ep_path to the directory holding its backend plugin, or "
 	                            "SET anofox_tabfm_device='cpu'.");
 }
 
-//! The ggml engine serves the CPU device when the build or the config says so; every other device keeps its own path.
+//! The ggml engine serves the CPU device; every other device keeps its own path.
 bool UseGgmlEngine(const TabFMSessionConfig &config) {
-	if (config.device_id != "cpu") {
-		return false;
-	}
-	bool ggml = config.cpu_engine == TabFMCpuEngine::GGML;
-#ifdef TABFM_CPU_ENGINE_GGML
-	ggml = ggml || config.cpu_engine == TabFMCpuEngine::DEFAULT;
-#endif
-#ifndef TABFM_HAVE_GGML
-	if (ggml) {
-		throw InvalidInputException("anofox_tabfm: this build does not contain the ggml CPU engine (built with TABFM_WITH_GGML=OFF).");
-	}
-#endif
-	return ggml;
+	return config.device_id == "cpu";
 }
 
 TabFMSessionHandle MakeGgmlSession(::anofox::onnxread::Graph graph, const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config) {
-#ifdef TABFM_HAVE_GGML
 	auto state = CreateGgmlSessionState(std::move(graph), initializers, config);
 	auto inputs = state->input_names;
 	auto outputs = state->output_names;
 	auto handle = make_shared_ptr<TabFMSession>(config, std::move(state), std::move(inputs), std::move(outputs));
 	ValidateDeclaredContract(*handle, config);
 	return handle;
-#else
-	throw InvalidInputException("anofox_tabfm: this build does not contain the ggml CPU engine.");
-#endif
 }
 
 } // namespace
@@ -689,11 +669,9 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 		                            std::to_string(input.t) + " H=" + std::to_string(input.h));
 	}
 
-#ifdef TABFM_HAVE_GGML
 	if (session.ggml) {
 		return GgmlRun(*session.ggml, input);
 	}
-#endif
 #ifdef TABFM_WITH_ORT
 	auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 
@@ -828,11 +806,9 @@ TabFMPreparedContext RunPrepare(TabFMSession &session, const float *x, const flo
 		    "anofox_tabfm: the query graph takes no context tensors, so it is not the query half of a split pair.");
 	}
 
-#ifdef TABFM_HAVE_GGML
 	if (session.ggml) {
 		return GgmlRunPrepare(*session.ggml, x, y, s, h, wanted);
 	}
-#endif
 #ifdef TABFM_WITH_ORT
 	auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 	const std::array<int64_t, 3> x_shape {1, s, h};
@@ -907,11 +883,9 @@ TabFMRunOutput RunQuery(TabFMSession &session, const float *x, int64_t q, int64_
 		                            " H=" + std::to_string(h) + " S=" + std::to_string(s));
 	}
 
-#ifdef TABFM_HAVE_GGML
 	if (session.ggml) {
 		return GgmlRunQuery(*session.ggml, x, q, h, y, s, context);
 	}
-#endif
 #ifdef TABFM_WITH_ORT
 	auto memory_info = Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
 	const std::array<int64_t, 3> x_shape {1, q, h};

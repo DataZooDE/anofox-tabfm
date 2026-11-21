@@ -8,9 +8,9 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 ### Changed
 - **The CPU engine is now ggml, not ONNX Runtime.** The vendored ggml (`vendor/ggml`, a git submodule) runs all bundled graphs: every one of the 72 ops is lowered to a
   ggml graph and checked against ONNX Runtime (455 per-op goldens, all 45 bundled graphs, Nori 1.5 on its real weights). A default CPU build no longer links or downloads ONNX
-  Runtime (`TABFM_CPU_ENGINE=ggml`, `TABFM_WITH_ORT=OFF`); `make release TABFM_CPU_ENGINE=ort` still builds the old engine as the oracle. Warm Nori 1.5 is within about
+  Runtime (`TABFM_WITH_ORT=OFF`); the ONNX Runtime CPU engine is removed (cuda/rocm/coreml flavors keep ONNX Runtime). Warm Nori 1.5 is within about
   1.2x of ONNX Runtime at 200 rows and faster at small sizes. The x86 build needs AVX2, FMA, F16C and BMI2 and refuses to run (naming the way out) on an older CPU.
-  The vcpkg ONNX Runtime port (and its `ort-vcpkg` feature) is removed; `TABFM_CPU_ENGINE=ort` now needs a supplied `TABFM_ORT_URL` archive. Differences you can see: out-of-range `Gather` indices give NaN where ONNX Runtime raised, and one loaded model runs one prediction at a time. See docs/GGML_PLAN.md.
+  The vcpkg ONNX Runtime port (and its `ort-vcpkg` feature) and the `TABFM_CPU_ENGINE` option are removed. Differences you can see: out-of-range `Gather` indices give NaN where ONNX Runtime raised, and one loaded model runs one prediction at a time. See docs/GGML_PLAN.md.
 
 ### Added
 - **Experimental ggml GPU plugin** (`tools/ggml_plugin`, CUDA or HIP): the CPU engine on a GPU. Used instead of the ONNX Runtime/MIGraphX plugin when

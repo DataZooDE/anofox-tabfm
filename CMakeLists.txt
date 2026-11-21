@@ -24,59 +24,36 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- ggml CPU engine (docs/GGML_PLAN.md) ---
 #
-# TABFM_CPU_ENGINE picks which engine the extension's CPU device uses. It is a build option, not a setting: one
-# binary, one engine. 'ort' stays the default (and the oracle) until every bundled model passes on 'ggml'.
-# TABFM_WITH_GGML builds the ggml engine into the binary regardless, so the test binary can hold BOTH engines and
-# compare them in-process.
-# Default ON when the submodule is present (a checkout without it still configures and builds the ORT engine),
-# and OFF on MSVC arm64, where ggml's CPU backend refuses to configure without GGML_NATIVE (ggml-cpu/CMakeLists.txt).
-set(_tabfm_ggml_default ON)
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml/CMakeLists.txt")
-    set(_tabfm_ggml_default OFF)
-endif()
-if(MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
-    set(_tabfm_ggml_default OFF)
-endif()
-# ggml is the CPU engine wherever it can be built; 'ort' remains selectable (and is the fallback without the submodule).
-set(_tabfm_engine_default "ort")
-if(_tabfm_ggml_default)
-    set(_tabfm_engine_default "ggml")
-endif()
-set(TABFM_CPU_ENGINE "${_tabfm_engine_default}" CACHE STRING "CPU inference engine used by the extension: ort | ggml")
-set_property(CACHE TABFM_CPU_ENGINE PROPERTY STRINGS ort ggml)
-if(NOT TABFM_CPU_ENGINE STREQUAL "ort" AND NOT TABFM_CPU_ENGINE STREQUAL "ggml")
-    message(FATAL_ERROR "TABFM_CPU_ENGINE must be 'ort' or 'ggml', got '${TABFM_CPU_ENGINE}'")
-endif()
-option(TABFM_WITH_GGML "Build the ggml CPU engine (vendor/ggml) into the extension and its tests" ${_tabfm_ggml_default})
+# The CPU device always runs on the vendored ggml (vendor/ggml, a git submodule): there is no other CPU engine and no option to pick one. A checkout
+# without the submodule does not configure. ONNX Runtime is linked only for the flavors that still run through it in-process (cuda, rocm, coreml).
+set(TABFM_WITH_GGML ON)
 
-# ONNX Runtime, flavor-aware (cpu | cuda | rocm | coreml) - defines tabfm_onnxruntime. The cpu flavor on the ggml engine does not need it at all:
-# no ORT download, no vcpkg ORT port. Every other flavor (the in-process CUDA/ROCm/CoreML paths) and the 'ort' engine still link it.
+# ONNX Runtime, flavor-aware (cpu | cuda | rocm | coreml) - defines tabfm_onnxruntime. The cpu flavor does not need it at all: no ORT download,
+# no vcpkg ORT port. Every other flavor (the in-process CUDA/ROCm/CoreML paths) still links it.
 set(TABFM_FLAVOR "cpu" CACHE STRING "anofox_tabfm flavor: cpu | cuda | rocm | coreml")
 set(_tabfm_ort_default ON)
-if(TABFM_FLAVOR STREQUAL "cpu" AND TABFM_CPU_ENGINE STREQUAL "ggml")
+if(TABFM_FLAVOR STREQUAL "cpu")
     set(_tabfm_ort_default OFF)
 endif()
-option(TABFM_WITH_ORT "Link ONNX Runtime (the 'ort' CPU engine and the cuda/rocm/coreml flavors need it; the cpu flavor on ggml does not)" ${_tabfm_ort_default})
+option(TABFM_WITH_ORT "Link ONNX Runtime (the cuda/rocm/coreml flavors need it; the cpu flavor does not)" ${_tabfm_ort_default})
 if(TABFM_WITH_ORT)
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort.cmake)
 else()
-    message(STATUS "anofox_tabfm: building WITHOUT ONNX Runtime (CPU engine: ${TABFM_CPU_ENGINE})")
+    message(STATUS "anofox_tabfm: building WITHOUT ONNX Runtime (the CPU device runs on ggml)")
     add_library(tabfm_onnxruntime INTERFACE IMPORTED GLOBAL)
     string(TOUPPER "${TABFM_FLAVOR}" _flavor_upper)
     target_compile_definitions(tabfm_onnxruntime INTERFACE "TABFM_FLAVOR_NAME=\"${TABFM_FLAVOR}\"" "TABFM_FLAVOR_${_flavor_upper}=1")
     set(TABFM_ORT_PROVIDERS "")
 endif()
-option(TABFM_GGML_NATIVE "Compile ggml for this machine's CPU (fast, but the binary may crash on older CPUs)" OFF)
+# ggml's CPU backend refuses to configure on MSVC arm64 without GGML_NATIVE (ggml-cpu/CMakeLists.txt); everywhere else the baseline build is the default.
+set(_tabfm_ggml_native_default OFF)
+if(MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
+    set(_tabfm_ggml_native_default ON)
+endif()
+option(TABFM_GGML_NATIVE "Compile ggml for this machine's CPU (fast, but the binary may crash on older CPUs)" ${_tabfm_ggml_native_default})
 if(NOT TABFM_FLAVOR STREQUAL "cpu" AND NOT TABFM_WITH_ORT)
     message(FATAL_ERROR "TABFM_FLAVOR=${TABFM_FLAVOR} runs through ONNX Runtime and needs TABFM_WITH_ORT=ON (a cached TABFM_WITH_ORT=OFF from an earlier "
-                        "cpu/ggml configure? pass -DTABFM_WITH_ORT=ON, or use a fresh build directory)")
-endif()
-if(TABFM_CPU_ENGINE STREQUAL "ort" AND NOT TABFM_WITH_ORT)
-    message(FATAL_ERROR "TABFM_CPU_ENGINE=ort needs TABFM_WITH_ORT=ON (a cached TABFM_WITH_ORT=OFF from an earlier ggml configure? "
-                        "pass -DTABFM_WITH_ORT=ON, or use a fresh build directory)")
-endif()
-if(TABFM_CPU_ENGINE STREQUAL "ggml" AND NOT TABFM_WITH_GGML)
-    message(FATAL_ERROR "TABFM_CPU_ENGINE=ggml needs TABFM_WITH_GGML=ON")
+                        "cpu configure? pass -DTABFM_WITH_ORT=ON, or use a fresh build directory)")
 endif()
 if(TABFM_WITH_GGML)
     if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml/CMakeLists.txt")
@@ -198,10 +175,6 @@ foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
     if(TABFM_WITH_GGML)
         add_dependencies(${_tgt} ggml)
         target_link_libraries(${_tgt} tabfm_ggml)
-        target_compile_definitions(${_tgt} PRIVATE TABFM_HAVE_GGML=1)
-        if(TABFM_CPU_ENGINE STREQUAL "ggml")
-            target_compile_definitions(${_tgt} PRIVATE TABFM_CPU_ENGINE_GGML=1)
-        endif()
     endif()
     if(TABFM_WITH_ORT)
         target_compile_definitions(${_tgt} PRIVATE TABFM_WITH_ORT=1)
@@ -233,7 +206,7 @@ endif()
 # returns a null OrtApi for our compiled ORT_API_VERSION, crashing on first use
 # (docs/WINDOWS_INFERENCE.md). Stage our prebuilt onnxruntime.dll next to the
 # test + shell binaries so ours wins the search. TABFM_ORT_LIB_DIR is set by
-# cmake/ort.cmake on the prebuilt-archive path (the CI cpu-flavor default).
+# cmake/ort.cmake on the prebuilt-archive path (cuda/rocm/coreml flavors; the cpu flavor links no ONNX Runtime).
 if(WIN32 AND TABFM_ORT_LIB_DIR)
     file(GLOB _tabfm_ort_dlls "${TABFM_ORT_LIB_DIR}/*.dll")
     if(_tabfm_ort_dlls)
@@ -486,7 +459,6 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     if(TABFM_WITH_GGML)
         add_dependencies(anofox_tabfm_unittest_tests ggml)
         target_link_libraries(anofox_tabfm_unittest_tests PRIVATE tabfm_ggml)
-        target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE TABFM_HAVE_GGML=1)
     endif()
     if(TABFM_WITH_ORT)
         target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE TABFM_WITH_ORT=1)

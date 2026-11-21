@@ -32,13 +32,6 @@ ifneq ($(TABFM_ORT_URL),)
 EXT_FLAGS += -DTABFM_ORT_URL=$(TABFM_ORT_URL)
 endif
 
-# The CPU engine is ggml by default (vendor/ggml): that build links no ONNX Runtime. TABFM_CPU_ENGINE=ort builds the oracle engine, which needs a
-# prebuilt ONNX Runtime archive (TABFM_ORT_URL, see cmake/ort.cmake); the vcpkg ONNX Runtime port was removed. An unset TABFM_CPU_ENGINE leaves
-# CMake's default (ggml) alone.
-TABFM_CPU_ENGINE ?=
-ifneq ($(TABFM_CPU_ENGINE),)
-EXT_FLAGS += -DTABFM_CPU_ENGINE=$(TABFM_CPU_ENGINE)
-endif
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 

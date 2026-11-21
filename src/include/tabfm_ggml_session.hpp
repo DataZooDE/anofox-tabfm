@@ -21,8 +21,6 @@
 namespace duckdb {
 namespace anofox {
 
-#ifdef TABFM_HAVE_GGML
-
 struct GgmlSessionState {
 	::anofox::onnxread::Graph graph;
 	//! Runtime inputs and outputs of the graph (initializers are not inputs), in graph order.
@@ -48,12 +46,6 @@ TabFMPreparedContext GgmlRunPrepare(const GgmlSessionState &state, const float *
 TabFMRunOutput GgmlRunQuery(const GgmlSessionState &state, const float *x, int64_t q, int64_t h, const float *y, int64_t s,
                             const TabFMPreparedContext &context);
 
-#else
-
-//! Built without ggml (TABFM_WITH_GGML=OFF): the type exists only so TabFMSession can hold a (always empty) pointer to it.
-struct GgmlSessionState {};
-
-#endif
 
 } // namespace anofox
 } // namespace duckdb

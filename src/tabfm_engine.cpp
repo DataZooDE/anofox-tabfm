@@ -587,7 +587,7 @@ MappedFile TryMapFile(const string &path) {
 // references to the user buffers (and reads them lazily during inference), so
 // the safetensors bytes and the bf16-upcast arena must outlive the session. The
 // bytes come from either the mmap (preferred) or a full read (`weights`), or
-// neither (external-data path: ORT reads weights from disk). Declaration order
+// neither (the ONNX Runtime external-data path, where ORT reads weights from disk; not used for the CPU device). Declaration order
 // is the destruction contract: `session` is LAST so it is destroyed FIRST,
 // before the buffers it references.
 struct OrtBackend : public TabFMBackend {
@@ -1125,6 +1125,12 @@ TabFMDeviceInfo DeviceInfoFor(FileSystem &fs, const ResolvedModel &resolved, con
 shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                                const PredictContext &ctx) {
 	if (std::getenv("TABFM_DISABLE_EXTERNAL_DATA")) {
+		return nullptr;
+	}
+	// This path hands the session a graph file and NO injected weights: ONNX Runtime resolves the graph's external-data references itself. The ggml
+	// engine that serves the CPU device needs the weights injected by name, so the CPU takes the mmap-and-inject path below (the real checkpoints of
+	// tabdpt and mitra, whose bundled ext graph matches, failed here with "weights are not loaded" until this guard).
+	if (ResolvedDeviceCached(fs, resolved, ctx) == "cpu") {
 		return nullptr;
 	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
@@ -1812,7 +1818,7 @@ const string &ResolvedDeviceCached(FileSystem &fs, const ResolvedModel &resolved
 
 // Build (or reuse) the ORT session for `resolved` and return a snapshot of the
 // LoadedModel. Order: MIGraphX plugin (ROCm GPU) -> CUDA plugin (NVIDIA GPU)
-// -> low-memory external-data (CPU, ORT reads weights from disk) -> read/mmap
+// -> low-memory external-data (in-process ONNX Runtime flavors only; ORT reads weights from disk) -> read/mmap
 // + in-memory injection. Both GPU backends run in dlopen'd plugins with their
 // own runtimes rather than through this binary's ORT (DYNAMIC_BACKENDS.md).
 shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
@@ -1882,13 +1888,13 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		if (auto gpu = TryCudaBackend(fs, state, resolved, ctx)) {
 			return gpu;
 		}
-		// Low-memory path (external-data graph; ORT reads weights from disk).
+		// Low-memory path (external-data graph; ONNX Runtime reads weights from disk). Never taken for the CPU device, which runs on ggml.
 		if (auto external = TryExternalDataSession(fs, state, resolved, ctx)) {
 			return external;
 		}
 	}
 
-	// Prefer an mmap of the (local) cache file: ORT reads the injected
+	// Prefer an mmap of the (local) cache file: the engine (ggml, or ORT) reads the injected
 	// initializers straight from file-backed pages, so the multi-GB weights are
 	// never copied into an anonymous heap buffer. Fall back to a full read for a
 	// non-local/virtual path or any OS that cannot map it (a short read there
@@ -2111,7 +2117,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	auto session = resolved.graph_bundle.data
 	                   ? CreateSession(resolved.graph_bundle.data, resolved.graph_bundle.size, initializers, config)
 	                   : CreateSessionFromPath(resolved.graph_path, initializers, config);
-	// ORT keeps references to the injected user buffers (the mmap or read buffer +
+	// The session (ggml, or ORT) keeps references to the injected user buffers (the mmap or read buffer +
 	// arena) and to the OrtValues (inside the session) — all must OUTLIVE the
 	// session, so keep the buffers in the holder alongside it.
 	auto backend = make_shared_ptr<OrtBackend>();
