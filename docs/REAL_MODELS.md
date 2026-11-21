@@ -35,6 +35,7 @@ ordinal). It feeds inputs by name and only feeds names the graph declares.
 | **TabPFN-3.5** (`tabpfn-v3-5`) | tabpfn-3-5-license-v1.0 (**non-commercial**, no hosted service) | ✅ shipped | **yes — classify + regress** | 219.0 M / 876 MB; ONE safetensors serves both tasks, **no conversion**; parity vs upstream 1.7e-05 clf / 3.8e-06 reg; ROCm served (0 label diffs; cold compile ~1 h per task) |
 | **TabPFN-3.5-Fast** (`tabpfn-v3-5-fast`) | tabpfn-3-5-license-v1.0 (**non-commercial**, no hosted service) | ✅ shipped | **yes — classify + regress** | 83.5 M / 334 MB; 3.5 at 8 ICL layers instead of 24; parity 1.5e-04 clf (logit floor) / 6.2e-06 reg; ROCm served (0 label diffs; cold compile ~17 min per task) |
 | **Nori-30M** (`nori-30m`) | Apache-2.0, code and weights (commercial, ungated) | ✅ shipped | **yes — regress only** | 29.2 M; a LimiX fork; **no conversion — the engine reads `nori.pt` natively**; 999-quantile head reduced in-graph to its mean; parity with upstream's single forward 1.0e-4 (california); **ROCm served** (masked graph, after a one-time convert; 3.8e-6 vs CPU) |
+| **Nori 1.5** (`nori-1-5`) | Apache-2.0, code and weights (commercial, ungated) | ✅ shipped | **yes — regress only** | ~20.8 M; Synthefy "Model v3", a two-phase encoder (9 cell layers at 128, 12 row layers at 256); **no conversion — the engine reads `nori.pt` natively**; 999-quantile head reduced in-graph to its mean; one forward, not upstream's 4-member ensemble; graph vs upstream eager max \|delta\| 0.083 on a target std of 77.0 (diabetes); CPU, CUDA (ext graph) and MLX verified, **not ROCm yet** |
 | **EXAONE Tabular** (`exaone-tabular`) | EXAONE AI Model License 1.2 - NC (**non-commercial**, gated) | ✅ shipped | **yes — classify + regress** | 20.8 M clf / 21.1 M reg; **no conversion — LG ship safetensors**; iris 45/45 and wine 54/54 labels identical to upstream's single forward; plain attention instead of upstream's pinned FlashAttention; **ROCm served** (masked graph; 0/100 label diffs vs CPU) |
 | **Kumo-Tabular** (`kumo-tabular-small` / `-medium` / `-large`) | OpenMDW-1.1 (**commercial**, ungated; keep the agreement + NVIDIA notice when distributing) | ✅ shipped | **yes — classify + regress, CPU, CUDA and ROCm** | 27.5 M / 61.5 M / 213.7 M (classifier); no conversion on the CPU (the `.pt` is read natively); upstream parity ≤ 1.5e-5 (probabilities); first model onboarded on the masked contract from day one |
 
@@ -1138,6 +1139,96 @@ uv run export_nori --config real --out ./out        # resources/graph_nori30m_re
 uv run make_nori_fixture ../../test/fixtures/nori   # the committed CI fixture
 TABFM_REAL_WEIGHTS=1 uv run pytest                  # real-weight parity
 ```
+
+## Nori 1.5 (Synthefy, Model v3) — shipped (regression only)
+
+Nori 1.5 is the ~20.8 M-parameter (20,757,833 tensor elements) "Model v3" from Synthefy, a regression-only
+in-context model, released as `Synthefy/Nori-1-5` @ `79afc5a65b2775d0c62977211a63620ce87846c7`. Upstream's
+NOTICE says the codebase originated as a fork of LimiX. It is registered as its own model, `nori-1-5`, next
+to `nori-30m`, because the architecture differs.
+
+**Architecture.** A TWO-PHASE encoder. Nine cell layers at width 128 (column attention per feature, a 2-token
+target stream with train-only row attention, decoupled feature attention), then twelve row layers at width
+256 over 8 heads (train-only row attention, a read-back from the row's own cells, SwiGLU). Every attention
+carries a q/k RMS norm. A quantile PLE tokenizer (64 bins) sits beside the scientific-notation RBF tokenizer,
+`features_per_group` is 1, and the head is a 999-quantile pinball head.
+
+**Licence.** Apache-2.0 for code and weights: the model card, its body and the repo LICENSE agree. The
+Hugging Face repo is ungated, so it is registered like `nori-30m`: `commercial: true`, no licence gate.
+Regression only (`capabilities` is `["regress"]`), so `tabfm_classify` is refused and `tabfm_generate` refuses
+it; `tabfm_impute` fills numeric columns only.
+
+**How it runs.** The same wrapper contract as `nori-30m`: an `(x, y)`-only graph, the split is `len(y)`, the
+target is standardised in-graph, and the point estimate is the mean of the 999 quantiles. `nori.pt` is a
+`torch.save` archive `{model_config, model_state_dict, inference_config}` (no EMA copy, unlike `nori-30m`);
+83,176,401 bytes, which the engine reads natively. `tools/export_nori` builds the graph and patches the
+upstream code at run time: patches 1-4 are shared with `nori-30m`, patch 5 drops `int(eval_pos)` from
+`PromptQuantilePLEEncoder` (it specialised the symbolic context length), and patch 6 replaces `nn.ReLU` with
+`clamp(x, min=0)` so the graph stays inside MLX's op set (as `tools/export_limix` does).
+
+**One forward.** The upstream default inference is a 4-member preprocessing ensemble (in `nori.pt`'s
+`inference_config`). The engine runs ONE forward on the raw table, as for `nori-30m`.
+
+**What is verified, on the real weights.**
+- Exported graph against upstream's own eager forward plus quantile mean, on sklearn diabetes (309 context /
+  133 query rows): max |delta| 0.083 on a target std of 77.0, query R² 0.3927 (graph) vs 0.3926 (upstream).
+  `tools/export_nori/tests/test_real_weights_v15.py` pins it.
+- The built-in on the CPU through SQL: `tabfm_download` at the pinned revision; the engine writes
+  `model.safetensors` with header sha256 `6da735b26d65fd2281525b127938f45c48d9eeef7bc20156ba6a87caaeed6029`,
+  byte-identical to `tools/export_nori`'s `convert_nori_weights`; `tabfm_regress(model := 'nori-1-5')` on a
+  smooth 100-row table gives R² 0.9999.
+- `test/sql/tabfm_real_models.test` (the shared tables, CPU): split query R² **0.99995**; `reg_t` context corr
+  0.99999; `reg_in` query corr 0.99997, worst error 0.36. **It extrapolates a linear trend worse than Nori-30M**:
+  on `reg_t` (queries outside the context's range) the query corr(yhat, f1) is **0.51** with predictions reaching
+  58.7 against a truth of 72.3, where Nori-30M gets 0.9955 and 74.2. Inside the context's range it is as good or
+  better, so prefer `nori-30m` when the queries lie well outside the training range.
+
+**Size and speed** (CPU, default threads, 24 cores, 200 query rows; each point is a fresh process, wall time
+includes the process start and the model load). Peak memory grows with rows² x features, and at the same size it
+is about twice Nori-30M's (2000 x 20: 7.5 GB against 3.3 GB), while the run is a little faster (22.7 s against
+28 s). The registry therefore recommends at most 2,000 rows and 100 features, which are limits for ONE dimension
+at a time: 2000 x 20 peaks at 7.5 GB and 1000 x 100 at 12.8 GB, but 2000 x 100 (not run) extrapolates to roughly 40 GB from the rows² x features scaling. The
+limits are recommended, not enforced.
+
+| rows x features | wall | peak RSS |
+|---|---|---|
+| 500 x 20 | 5.4 s | 1.2 GB |
+| 1000 x 20 | 10.2 s | 2.9 GB |
+| 2000 x 20 | 22.7 s | 7.5 GB |
+| 3000 x 20 | 36.9 s | 14.8 GB |
+| 500 x 100 | 13.2 s | 5.2 GB |
+| 1000 x 100 | 28.7 s | 12.8 GB |
+| 1000 x 1 | 1.7 s | 0.6 GB |
+| 5000 x 1 | 13.3 s | 4.1 GB |
+
+The machine was also running other jobs (load average 1.6 at the start, about 15 by the end), so the wall times
+are upper bounds. Larger points were not run: the series stops once a point passes 12 GB. On MLX (Apple M3, 16
+GB, the same tables) every point ran in seconds: 500 x 20 in 1.1 s, 1000 x 20 in 1.5 s, 2000 x 20 in 3.9 s,
+500 x 100 in 2.6 s, 1000 x 100 in 6.0 s, 1000 x 1 in 0.8 s and 5000 x 1 in 3.1 s. No MLX memory figure is
+claimed: the process's resident set (0.25 to 0.34 GB throughout) does not include the GPU's buffers, and the
+larger CPU points were not run on the 16 GB machine.
+
+**Platforms.**
+- **CPU:** verified on Linux x86-64.
+- **CUDA:** verified on an RTX 3090 (RunPod secure cloud; released v2026.11.17 extension and CUDA plugin;
+  `tools/gpu_test/nori15_cuda.sh`). This ran the model REGISTERED IN SQL, not the built-in: the bundled-equivalent
+  plain graph for the CPU and `graph_ext_nori15_regression` for CUDA, over the same `model.safetensors`.
+  Served by `cuda:0`, 30/30 rows, max relative difference against the CPU 6.0e-7, repeat difference 0, R²
+  0.9999 on both; cold 2733 ms and warm 53 ms against 2035 ms on the CPU.
+- **MLX:** verified on an Apple M3 (macOS 27.2, mlx 0.32.4): served by `mlx:0`, max |diff| against the CPU
+  1.2e-5 (8.8e-7 of the range), corr 0.9999999999996, repeat identical; CPU 649 ms against MLX 312 ms cold and
+  215 ms warm (100 rows x 8 features).
+- **ROCm: served on `rocm:0`, verified on a real gfx1201 (RX 9070 XT, ROCm 10.1) with the real weights**, through
+  a second, MASKED graph (`graph_migraphx_nori15_regression.onnx`: `x, y_full, train_size, d, n_rows`;
+  `tools/export_nori --config real15 --contract mask`, then `tools/make_migraphx_graph.py --dynamic`). The
+  quantile PLE tokenizer's sort and gather were rewritten for MIGraphX as a stable rank by comparison plus a
+  one-hot selection GEMM, bit-equal to upstream on decades, zero, constants, duplicates, NaN and infinities
+  (`tools/export_nori/tests/test_mask_v15.py`, eight negative controls). Through SQL with the model registered
+  (not the built-in), 100 rows x 8 features (the 128 x 16 bucket), fp32, against the CPU: **max |diff| 6.3e-5**
+  on a scale of 8.0 (7.9e-6 relative), corr 0.9999999999937. The first call on a bucket compiles for **794.7 s
+  (13.2 minutes)**; warm calls take **107 ms on ROCm against 411 ms on the CPU** (about 4x; `tools/gpu_test/
+  nori15_rocm.sh`). Only that bucket was compiled: larger ones are untested, and the PLE compare matrix is
+  O(T² x H) in memory, so a large row bucket may need a cap.
 
 ## EXAONE Tabular (LG AI Research) — shipped (classify + regress)
 

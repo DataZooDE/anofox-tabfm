@@ -190,6 +190,34 @@ TEST_CASE("tabfm_bundled_resources: TabICL v2 and LimiX-2M bundle masked ROCm gr
 	REQUIRE(BundledGpuGraphId("limix-2m", "migraphx", "regression") == "graph_migraphx_limix2m_regression");
 }
 
+// Nori 1.5 reads the train/test split from len(y) on the CPU, which a fixed-shape MIGraphX compile cannot bucket
+// (docs/ROCM_SINGLE_EVAL_POS.md), so it bundles a MASKED graph for ROCm (tools/export_nori --config real15
+// --contract mask): x, y (full length), train_size, d, n_rows. Its external data points into the same
+// model.safetensors the CUDA/MLX ext graph reads, so the pinned header sha is the one the ext graph already uses.
+TEST_CASE("tabfm_bundled_resources: Nori 1.5 bundles a masked MIGraphX graph next to its CPU and ext graphs",
+          "[tabfm][bundled]") {
+	const auto id = BundledGpuGraphId("nori-1-5", "migraphx", "regression");
+	REQUIRE(id == "graph_migraphx_nori15_regression");
+	auto res = GetBundledResource(id);
+	REQUIRE(res.data != nullptr);
+	auto disk = ReadDiskFile(ResourcesDir() + "/" + id + ".onnx");
+	REQUIRE(res.size == disk.size());
+	REQUIRE(std::memcmp(res.data, disk.data(), disk.size()) == 0);
+	// the masked contract: the split and the feature count are VALUES (the positional graph has neither)
+	for (auto *input : {"train_size", "n_rows"}) {
+		REQUIRE(disk.find(input) != string::npos);
+	}
+	REQUIRE(disk.find("model.safetensors") != string::npos);
+	// the three Nori 1.5 graphs are distinct, and none of them is Nori-30M's
+	REQUIRE(GetBundledResource("graph_nori15_regression").data != nullptr);
+	REQUIRE(GetBundledResource("graph_ext_nori15_regression").data != nullptr);
+	REQUIRE(GetBundledResource("graph_migraphx_nori15_regression").size !=
+	        GetBundledResource("graph_migraphx_nori30m_regression").size);
+	// the same weights as the ext graph: one converted-weights header
+	REQUIRE(ExpectedWeightsHeaderShaFor("nori-1-5", "regression") ==
+	        "6da735b26d65fd2281525b127938f45c48d9eeef7bc20156ba6a87caaeed6029");
+}
+
 // Orion-BiX and Orion-MSP read the train/test split from len(y) on the CPU, which a fixed-shape MIGraphX compile
 // cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). Each bundles a second, MASKED graph for ROCm
 // (tools/export_orion_*: --contract mask): x, y (full length), train_size, d. Its external data points into the

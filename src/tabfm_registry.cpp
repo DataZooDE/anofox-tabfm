@@ -713,6 +713,37 @@ static const char *const BUILTIN_NORI30M = R"json({
   "size_regime": {"max_rows": 5000, "max_features": 100, "max_classes": 10}
 })json";
 
+// Nori 1.5 (Synthefy, "Model v3"): ~20.8 M parameters, a TWO-PHASE encoder: 9 cell layers at width 128 (column
+// attention over each feature's cells, a 2-token target stream with train-only row attention, decoupled
+// feature attention), then 12 row layers at width 256 over 8 heads (train-only row attention, a read-back from
+// the row's own cells, SwiGLU), q/k RMS norm on every attention, a quantile PLE tokenizer beside the RBF one,
+// and a 999-quantile pinball head. Apache-2.0 code and weights, ungated, regression only. Same wrapper
+// contract as nori-30m ((x, y)-only, the split is len(y), the target is standardised in-graph and the point
+// estimate is the mean of the quantile head) but a different architecture, so its own stem, graphs and header.
+// Source of every number below: tools/export_nori (configs.real15, test_real_weights_v15.py) and
+// docs/REAL_MODELS.md. The checkpoint is read natively (model_state_dict; it ships no EMA copy).
+// size_regime (CPU, 200 query rows): peak RSS grows with rows^2 x features, about twice Nori-30M's at the same
+// size (2000 x 20: 7.5 GB, 3000 x 20: 14.8 GB, 1000 x 100: 12.8 GB, 5000 x 1: 4.1 GB), so each cap is the point
+// where ONE dimension alone stays near 13 GB; both together do not fit. Not enforced (docs/api/02).
+static const char *const BUILTIN_NORI15 = R"json({
+  "schema_version": 2, "id": "nori-1-5", "display_name": "Nori 1.5 (Synthefy)",
+  "family": "icl-transformer",
+  "license": {"id": "apache-2.0", "commercial": true, "redistributable": true, "gate_setting": null,
+              "attribution": "Nori 1.5 by Synthefy, Apache-2.0 (code and weights). Checkpoint: HF Synthefy/Nori-1-5 (nori.pt). Regression only."},
+  "preprocessing_profile": "nori_v15_raw",
+  "weights": {
+    "regression": {"repo": "Synthefy/Nori-1-5", "revision": "79afc5a65b2775d0c62977211a63620ce87846c7",
+      "files": [{"path": "model.ckpt", "bytes": 83176401,
+                 "url": "https://huggingface.co/Synthefy/Nori-1-5/resolve/79afc5a65b2775d0c62977211a63620ce87846c7/nori.pt"}]}
+  },
+  "graph": {"regression": "graph_nori15_regression",
+    "tensor_map": {"regression": "tensor_map_nori15_regression.json"}},
+  "capabilities": ["regress"],
+  "tensor_contract": {"inputs": {"features": {"name": "x", "dtype": "f32"}, "labels": {"name": "y", "dtype": "f32"}},
+                      "outputs": {"logits": {"name": "logits", "dtype": "f32"}}},
+  "size_regime": {"max_rows": 2000, "max_features": 100, "max_classes": 10}
+})json";
+
 // EXAONE Tabular v1 (LG AI Research; TabArena v0.1.4 classification Elo 1759, regression 1883 per the model
 // card), a Cross-Axis Summary Transformer: width 192, 12 blocks, one column per feature token, 3 item-summary
 // and 32 feature-summary tokens, SSMax attention; 20.8M (classifier) / 21.1M (regressor) parameters.
@@ -922,6 +953,7 @@ vector<ModelSpec> BuiltinModelSpecs() {
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN35, "(built-in tabpfn-v3-5)"));
 	specs.push_back(ParseModelSpec(BUILTIN_TABPFN35_FAST, "(built-in tabpfn-v3-5-fast)"));
 	specs.push_back(ParseModelSpec(BUILTIN_NORI30M, "(built-in nori-30m)"));
+	specs.push_back(ParseModelSpec(BUILTIN_NORI15, "(built-in nori-1-5)"));
 	specs.push_back(ParseModelSpec(BUILTIN_EXAONE_TABULAR, "(built-in exaone-tabular)"));
 	specs.push_back(ParseModelSpec(BUILTIN_KUMO_SMALL, "(built-in kumo-tabular-small)"));
 	specs.push_back(ParseModelSpec(BUILTIN_KUMO_MEDIUM, "(built-in kumo-tabular-medium)"));

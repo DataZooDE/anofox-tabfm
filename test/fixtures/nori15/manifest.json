@@ -1,0 +1,76 @@
+{
+  "schema_version": 2,
+  "id": "nori15-fixture",
+  "display_name": "Nori 1.5 CI fixture (random init, schema v2)",
+  "family": "icl-transformer",
+  "license": {
+    "id": "apache-2.0",
+    "commercial": true,
+    "redistributable": true,
+    "gate_setting": null
+  },
+  "preprocessing_profile": "nori_v15_raw",
+  "weights": {
+    "regression": {
+      "repo": "local:test/fixtures/nori15",
+      "revision": "fixture-v1",
+      "files": [
+        {
+          "path": "model.ckpt",
+          "bytes": 532027,
+          "sha256": "fbdaed2c9fed97a1f66b52e2e0d016e8f349424a81d8170b456d83fd44325095"
+        }
+      ]
+    }
+  },
+  "graph": {
+    "regression": "graph_nori_regression.onnx",
+    "tensor_map": {
+      "regression": "tensor_map_nori_regression.json"
+    }
+  },
+  "capabilities": [
+    "regress"
+  ],
+  "tensor_contract": {
+    "inputs": {
+      "features": {
+        "name": "x",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "H"
+        ]
+      },
+      "labels": {
+        "name": "y",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "S"
+        ]
+      }
+    },
+    "outputs": {
+      "logits": {
+        "name": "logits",
+        "dtype": "f32",
+        "shape": [
+          "1",
+          "T",
+          "1"
+        ]
+      }
+    }
+  },
+  "size_regime": {
+    "max_rows": 4096,
+    "max_features": 64,
+    "max_classes": 10
+  },
+  "compute": {
+    "cpu": "f32"
+  },
+  "_note": "Random-init Nori 1.5 (Model v3, two-phase encoder) fixture (Apache-2.0 architecture, our weights), regression only, in the released checkpoint's own torch.save layout {model_config, model_state_dict, inference_config} (no EMA copy). H is DYNAMIC; y carries RAW train targets only (length = train_size). The model standardises features itself and the wrapper standardises the target in-graph, so the engine profile is *_raw. The output is ONE raw-space point estimate per row (the mean of the quantile head); rows < S are in-context fitted values (context rows presented a second time as queries)."
+}

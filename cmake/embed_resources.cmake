@@ -179,6 +179,16 @@ set(_tabfm_inputs
     "graph_nori30m_regression.onnx"
     "graph_migraphx_nori30m_regression.onnx"
     "tensor_map_nori30m_regression.json"
+    # Nori 1.5 (Synthefy, Model v3, two-phase encoder; Apache-2.0) -- regression ONLY, (x, y)-only like 30M but a
+    # different architecture, hence its own stem. The engine reads nori.pt natively ({model_config,
+    # model_state_dict, inference_config}). The ext graph (CUDA and MLX) reads the safetensors tabfm_download
+    # writes beside the checkpoint (tools/make_external_graph.py; header sha in ExpectedWeightsHeaderShaFor).
+    "graph_nori15_regression.onnx"
+    "graph_ext_nori15_regression.onnx"
+    # the MASKED contract for ROCm (tools/export_nori --config real15 --contract mask, then
+    # tools/make_migraphx_graph.py --dynamic): x, y_full, train_size, d, n_rows. Reads the same model.safetensors.
+    "graph_migraphx_nori15_regression.onnx"
+    "tensor_map_nori15_regression.json"
     # EXAONE Tabular v1 (LG AI Research; non-commercial EXAONE NC 1.2 weights) -- (x, y)-only on the CPU, one
     # plain graph and one tensor map per task. The released files are safetensors keyed by the module
     # namespace, so there is no converter. The migraphx graphs are the MASKED contract (x, y_full, train_size,

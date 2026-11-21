@@ -20,7 +20,7 @@ model is regression-only, and so is this exporter.
   imputation head is off, so ``forward`` returns the quantile bank rather than a dict.
 * ``feature_positional_embedding_type = "none"``: the other kinds draw ``torch.randn`` / ``randperm``
   at a symbolic column count on every call.
-* no ``two_phase_config`` (that is Nori 1.5's encoder, a different model).
+* ``two_phase_config`` is allowed: it selects Nori 1.5's encoder (see nori_patches.apply).
 * the regression head is a PINBALL head on the legacy evenly spaced grid tau_k = (k + 1) / (K + 1),
   which is what makes the in-graph mean a closed form (see ``nori_patches.quantile_mean``).
 """
@@ -64,6 +64,74 @@ _REAL_CONFIG = {
 }
 
 
+# Nori 1.5 (Model v3), verbatim from ``Synthefy/Nori-1-5 :: nori.pt["model_config"]`` (revision 79afc5a6,
+# 381 tensors, 20,757,832 params). Only two entries differ from the file: ``mask_prediction`` (forced False for
+# inference, as upstream's ``load_model`` does) and ``regression_quantiles`` (the file lists the 999 levels
+# 0.001 ... 0.999; they are generated here and the real-weight test proves them equal to the file's).
+_K15 = 999
+_REAL_CONFIG_15 = {
+    "preprocess_config_x": {
+        "num_features": 1, "nan_handling_enabled": True, "normalize_on_train_only": True,
+        "normalize_x": True, "remove_outliers": False, "normalize_by_used_features": True,
+        "prompt_quantile_ple_bins": 64,
+    },
+    "encoder_config_x": {
+        "num_features": 1, "embedding_size": 128, "mask_embedding_size": 128, "encoder_use_bias": True,
+        "numeric_embed_type": "RBF",
+        "RBF_config": {
+            "token_embed_dim": 16, "n_kernels": 64, "sigma": 0.5, "use_learn_sigma": False,
+            "use_learn_embeddings": False, "use_original_features": False,
+            "compute_dtype": "float64", "input_transform": "scientific", "use_raw_input_residual": False,
+        },
+        "prompt_quantile_ple_bins": 64,
+    },
+    "encoder_config_y": {"num_inputs": 1, "embedding_size": 128, "nan_handling_y_encoder": True},
+    "decoder_config": {
+        "num_reg_quantiles": _K15, "regression_loss": "pinball",
+        "regression_quantiles": [(i + 1) / (_K15 + 1) for i in range(_K15)],
+    },
+    "feature_positional_embedding_type": "none",
+    "nlayers": 9, "nhead": 4, "embed_dim": 128, "hid_dim": 384, "features_per_group": 1,
+    "feature_group_circular": False, "dropout": 0, "pre_norm": True, "activation": "swiglu",
+    "recompute_attn": False, "layer_arch": "smf", "self_share_all_kv_heads": False,
+    "cross_share_all_kv_heads": False, "seq_attn_isolated": True, "seq_attn_serial": False,
+    "mask_prediction": False,
+    "use_qassmax": True, "use_target_aware_embedding": True, "use_column_specific_y_aware": True,
+    "omit_feature_decoder": True, "feature_positional_embedding_num_slots": 1000,
+    "use_column_deepset": False, "column_deepset_hidden_dim": None,
+    "two_phase_config": {"target_tokens": 2, "row_layers": 12, "row_heads": 8, "row_hidden_dim": 768},
+    "norm_type": "rmsnorm", "deepnorm_alpha": 0.3333333333333333,
+    "use_prompt_quantile_ple": True, "prompt_quantile_ple_bins": 64,
+    "use_conditional_landmarks": False, "conditional_landmark_embedding_dim": 32,
+    "conditional_landmark_bins": 8, "conditional_landmark_shrinkage": 4.0,
+    "conditional_landmark_dropout": 0.0,
+    "qass_mode": "log_only", "use_logn_attention": False, "use_learnable_attn_temperature": False,
+    "attn_n_ref": 1024.0,
+}
+
+
+def _fixture_config_15() -> dict:
+    """Tiny CI-fixture dims, same structural shape (every flag) as the released 1.5 config."""
+    cfg = copy.deepcopy(_REAL_CONFIG_15)
+    cfg["preprocess_config_x"]["prompt_quantile_ple_bins"] = 8
+    cfg["encoder_config_x"]["prompt_quantile_ple_bins"] = 8
+    cfg["prompt_quantile_ple_bins"] = 8
+    cfg["encoder_config_x"]["embedding_size"] = 24
+    cfg["encoder_config_x"]["mask_embedding_size"] = 24
+    cfg["encoder_config_x"]["RBF_config"]["n_kernels"] = 8
+    cfg["encoder_config_x"]["RBF_config"]["token_embed_dim"] = 8
+    cfg["encoder_config_y"]["embedding_size"] = 24
+    k = 19
+    cfg["decoder_config"] = {"num_reg_quantiles": k, "regression_loss": "pinball",
+                             "regression_quantiles": [(i + 1) / (k + 1) for i in range(k)]}
+    cfg["nlayers"] = 2
+    cfg["nhead"] = 2
+    cfg["embed_dim"] = 24
+    cfg["hid_dim"] = 48
+    cfg["two_phase_config"] = {"target_tokens": 2, "row_layers": 2, "row_heads": 2, "row_hidden_dim": 96}
+    return cfg
+
+
 def _fixture_config() -> dict:
     """Tiny CI-fixture dims, same structural shape (every flag) as the released config."""
     cfg = copy.deepcopy(_REAL_CONFIG)
@@ -96,17 +164,19 @@ def assert_shipped_path(cfg: dict) -> None:
     if cfg.get("feature_positional_embedding_type") != "none":
         raise ValueError("only feature_positional_embedding_type='none' is on the exported path: the others "
                          "draw torch.randn / torch.randperm at a symbolic column count on every call.")
-    if cfg.get("two_phase_config"):
-        raise ValueError("two_phase_config is Nori 1.5's encoder, a different model; not exported here.")
     if cfg.get("sequence_attention_mode", "full") != "full" or cfg.get("qass_sdpa_scale"):
         raise ValueError("only full sequence attention with the QASS temperature folded into q is traced.")
     if cfg.get("task_type", "reg") != "reg":
         raise ValueError("Nori is regression-only (upstream build_model refuses any other task_type).")
     dec = cfg["decoder_config"]
-    if dec.get("regression_loss", "pinball") != "pinball" or dec.get("regression_quantiles") is not None:
+    k = int(dec.get("num_reg_quantiles", 1))
+    grid = dec.get("regression_quantiles")
+    uniform = grid is None or (len(grid) == k and all(g == (i + 1) / (k + 1) for i, g in enumerate(grid)))
+    if dec.get("regression_loss", "pinball") != "pinball" or not uniform:
         raise ValueError("the in-graph point estimate assumes a pinball head on the legacy evenly spaced "
-                         "grid tau_k = (k+1)/(K+1); this checkpoint declares something else.")
-    if int(dec.get("num_reg_quantiles", 1)) < 2:
+                         "grid tau_k = (k+1)/(K+1) (listed explicitly or not at all); this checkpoint "
+                         "declares something else.")
+    if k < 2:
         raise ValueError("a single-output head has no quantile bank to collapse.")
 
 
@@ -141,9 +211,33 @@ def real() -> ExportConfig:
     )
 
 
+def fixture15() -> ExportConfig:
+    cfg = _fixture_config_15()
+    assert_shipped_path(cfg)
+    return ExportConfig(
+        name="fixture15", model_config=cfg,
+        dim_rows=DIM_ROWS_FIXTURE, dim_train=DIM_TRAIN_FIXTURE, dim_features=DIM_FEATURES_FIXTURE,
+        example=(20, 6, 12), parity_shapes=((40, 7, 30), (9, 1, 5)),
+    )
+
+
+def real15() -> ExportConfig:
+    cfg = copy.deepcopy(_REAL_CONFIG_15)
+    assert_shipped_path(cfg)
+    return ExportConfig(
+        name="real15", model_config=cfg,
+        dim_rows=DIM_ROWS, dim_train=DIM_TRAIN, dim_features=DIM_FEATURES,
+        example=(20, 8, 12), parity_shapes=((16, 3, 10), (60, 20, 40)),
+    )
+
+
 def get(name: str) -> ExportConfig:
     if name == "fixture":
         return fixture()
     if name == "real":
         return real()
-    raise ValueError(f"unknown config {name!r} (fixture|real)")
+    if name == "fixture15":
+        return fixture15()
+    if name == "real15":
+        return real15()
+    raise ValueError(f"unknown config {name!r} (fixture|real|fixture15|real15)")

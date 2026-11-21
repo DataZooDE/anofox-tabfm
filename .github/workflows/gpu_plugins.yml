@@ -44,7 +44,15 @@ permissions:
 
 env:
   ORT_GPU_VERSION: "1.29.0"
+  # Only the NAME of the directory the next steps read (lib/ and include/); it used to be the unpacked
+  # github.com/microsoft/onnxruntime release archive, which no longer exists (see the fetch step).
   ORT_GPU_ARCHIVE: "onnxruntime-linux-x64-gpu_cuda12-1.29.0"
+  # The CUDA-12 wheel tabfm_download_runtime ships to users (src/tabfm_weights.cpp, ResolveRuntimeArtifact):
+  # Microsoft's own Azure Artifacts feed. Its core is the one the plugin pairs with at run time.
+  ORT_GPU_WHEEL_URL: "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.29/onnxruntime_gpu-1.29.0-cp312-cp312-manylinux_2_28_x86_64.whl"
+  ORT_GPU_WHEEL_SHA256: "3338e3a5ad27ca5afd93c60732fa6fde308971cf424517817f3138fa7c5fcdb9"
+  # The public C/C++ headers (they do not depend on the CUDA major), from the base NuGet package.
+  ORT_HEADERS_NUPKG_SHA256: "4557021fec4da3924e2e12ff44b1cc50b176de0d2c5c7daa89ab11c208b3a454"
 
 jobs:
   cuda-plugin:
@@ -54,11 +62,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch the ONNX Runtime GPU archive
+      # github.com/microsoft/onnxruntime disappeared in November 2026 (404 on the repository and on every release
+      # asset, also through the authenticated API), which broke the archive download this step used to make. The
+      # core now comes from the SAME CUDA-12 wheel that tabfm_download_runtime ships (so CI builds against what
+      # users load), and the headers from the base NuGet package. Both are pinned by sha256, and the wheel's size
+      # must equal the one src/tabfm_weights.cpp pins, so the two cannot drift apart unnoticed.
+      - name: Fetch the ONNX Runtime GPU core (CUDA-12 wheel) and headers
         run: |
-          curl -sSL -o ort_gpu.tgz \
-            "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_GPU_VERSION}/${ORT_GPU_ARCHIVE}.tgz"
-          tar xzf ort_gpu.tgz
+          set -euo pipefail
+          curl -sSL --fail -o ort_gpu.whl "${ORT_GPU_WHEEL_URL}"
+          echo "${ORT_GPU_WHEEL_SHA256}  ort_gpu.whl" | sha256sum -c -
+          curl -sSL --fail -o ort_headers.nupkg \
+            "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/${ORT_GPU_VERSION}/microsoft.ml.onnxruntime.${ORT_GPU_VERSION}.nupkg"
+          echo "${ORT_HEADERS_NUPKG_SHA256}  ort_headers.nupkg" | sha256sum -c -
+          python3 - <<'PY'
+          import os, re, zipfile
+          version, archive = os.environ["ORT_GPU_VERSION"], os.environ["ORT_GPU_ARCHIVE"]
+          pinned = int(re.search(r"out\.wheel_bytes = (\d+);", open("src/tabfm_weights.cpp").read()).group(1))
+          assert os.path.getsize("ort_gpu.whl") == pinned, "the wheel is not the one tabfm_download_runtime ships"
+          os.makedirs(f"{archive}/lib", exist_ok=True)
+          os.makedirs(f"{archive}/include", exist_ok=True)
+          with zipfile.ZipFile("ort_gpu.whl") as z:
+              open(f"{archive}/lib/libonnxruntime.so.{version}", "wb").write(z.read(f"onnxruntime/capi/libonnxruntime.so.{version}"))
+          with zipfile.ZipFile("ort_headers.nupkg") as z:
+              heads = [n for n in z.namelist() if n.startswith("build/native/include/") and n.endswith(".h")]
+              assert heads, "no headers in the NuGet package"
+              for n in heads:
+                  open(f"{archive}/include/{os.path.basename(n)}", "wb").write(z.read(n))
+          print(f"core + {len(heads)} headers laid out under {archive}/")
+          PY
 
       - name: Rename the core SONAME (S2 shadowing fix)
         run: |

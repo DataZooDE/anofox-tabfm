@@ -34,9 +34,9 @@ FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['custome
 - **Two forms**: an explicit train / test pair, or one table whose missing targets are the rows to score
 - **Probabilities**, not just labels: `yhat_score` and a `proba` map per row
 
-### 23 models, plus your own
+### 24 models, plus your own
 - **Built in, selectable by name**: Mitra and Mitra-v2, TabDPT v1.2 and v1.3, TabPFN v2 / 2.5 / 2.5-real / 2.6 /
-  3 / 3.5 / 3.5-Fast, TabICL v2, Causilo, LimiX-2M, Nori-30M, EXAONE Tabular, Kumo-Tabular (small, medium,
+  3 / 3.5 / 3.5-Fast, TabICL v2, Causilo, LimiX-2M, Nori-30M, Nori 1.5, EXAONE Tabular, Kumo-Tabular (small, medium,
   large), Orion-BiX, Orion-MSP and Google TabFM v1 / 1.1
 - **Your own model**, registered entirely in SQL with `tabfm_register_model`
 - **One SQL surface**: swap `model :=` to compare models on your own data
@@ -135,6 +135,7 @@ weights: `CALL tabfm_download('regression', model := 'mitra');`. The full walk-t
 | `orion-bix` | Lexsi Labs | classify | `mit` | yes | no |
 | `orion-msp` | Lexsi Labs | classify | `mit` | yes | no |
 | `nori-30m` | Synthefy | regress | `apache-2.0` | yes | no |
+| `nori-1-5` | Synthefy | regress | `apache-2.0` | yes | no |
 | `kumo-tabular-small` | NVIDIA | classify, regress | `openmdw-1.1` (keep the agreement and NVIDIA's notice when you distribute) | yes | no |
 | `kumo-tabular-medium` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no |
 | `kumo-tabular-large` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no |
@@ -177,7 +178,7 @@ prospects from history with a commercially usable model, then cross-validate it"
 | Skill | Covers |
 |---|---|
 | `anofox-tabfm-predict` | `tabfm_classify` / `tabfm_regress`: both forms, features, `opts`, output columns, segments |
-| `anofox-tabfm-models` | the 23 models, licences, the licence gate, the weight lifecycle, your own model, the context cache |
+| `anofox-tabfm-models` | the 24 models, licences, the licence gate, the weight lifecycle, your own model, the context cache |
 | `anofox-tabfm-evaluate` | metrics, scoring rules, cross-validation, the `_by` plotting macros |
 | `anofox-tabfm-generate` | synthetic rows and imputation |
 | `anofox-tabfm-gpu` | CUDA, ROCm and MLX plugins, devices, precision, the ROCm precompile |

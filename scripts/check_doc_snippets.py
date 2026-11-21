@@ -97,7 +97,7 @@ REGISTRY_CPP_MODELS = {"tabfm-v1"}
 # Model ids the docs use as placeholders or for a user's own registration.
 PLACEHOLDER_MODELS = {"my", "fixture", "<id>", "<model>"}
 CLASSIFY_ONLY = {"orion-bix", "orion-msp"}
-REGRESS_ONLY = {"nori-30m"}
+REGRESS_ONLY = {"nori-30m", "nori-1-5"}
 
 FENCE_RE = re.compile(r"^```[ \t]*([A-Za-z0-9_+-]*)[ \t]*$")
 SETUP_RE = re.compile(
