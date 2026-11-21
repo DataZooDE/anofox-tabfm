@@ -185,6 +185,9 @@ set(_tabfm_inputs
     # writes beside the checkpoint (tools/make_external_graph.py; header sha in ExpectedWeightsHeaderShaFor).
     "graph_nori15_regression.onnx"
     "graph_ext_nori15_regression.onnx"
+    # the MASKED contract for ROCm (tools/export_nori --config real15 --contract mask, then
+    # tools/make_migraphx_graph.py --dynamic): x, y_full, train_size, d, n_rows. Reads the same model.safetensors.
+    "graph_migraphx_nori15_regression.onnx"
     "tensor_map_nori15_regression.json"
     # EXAONE Tabular v1 (LG AI Research; non-commercial EXAONE NC 1.2 weights) -- (x, y)-only on the CPU, one
     # plain graph and one tensor map per task. The released files are safetensors keyed by the module
