@@ -11,7 +11,7 @@
 
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_model_spec.hpp"
-#include "tabfm_ort_engine.hpp"
+#include "tabfm_session.hpp"
 #include "tabfm_registry.hpp"
 
 #include "../../duckdb/third_party/yyjson/include/yyjson.hpp"
@@ -162,100 +162,26 @@ TEST_CASE("tabfm_bundled_resources: bundled graph is a valid weight-free ONNX gr
 	}
 }
 
-// TabICL v2 and LimiX-2M read the train/test split from len(y), which a fixed-shape MIGraphX compile cannot
-// bucket (docs/ROCM_SINGLE_EVAL_POS.md). Each now bundles a second, MASKED graph per task for ROCm
-// (tools/export_tabicl, tools/export_limix: --contract mask), keyed to the weights by the header sha the CPU
-// path already pins. The graph must declare the masked contract's inputs: the plugin binds by name, and a
-// positional (x, y) graph compiled at the bucket shape would treat every padded row as context.
-TEST_CASE("tabfm_bundled_resources: TabICL v2 and LimiX-2M bundle masked ROCm graphs", "[tabfm][bundled]") {
-	auto contains = [](const BundledResource &res, const string &needle) {
-		const auto *begin = reinterpret_cast<const char *>(res.data);
-		return std::search(begin, begin + res.size, needle.begin(), needle.end()) != begin + res.size;
-	};
-	for (auto *model : {"tabicl-v2", "limix-2m"}) {
-		for (auto *task : {"classification", "regression"}) {
-			auto id = BundledGpuGraphId(model, "migraphx", task);
-			INFO("model " << model << " task " << task << " id " << id);
-			auto res = GetBundledResource(id);
-			REQUIRE(res.data != nullptr);
-			REQUIRE(res.size > 0);
-			for (auto *input : {"train_size", "n_rows"}) {
-				REQUIRE(contains(res, input));
-			}
-			// the same weights the CPU/CUDA graphs were built against: one sha per file, unchanged by masking
-			REQUIRE(!ExpectedWeightsHeaderShaFor(model, task).empty());
-		}
-	}
-	REQUIRE(BundledGpuGraphId("tabicl-v2", "migraphx", "classification") == "graph_migraphx_tabicl_classification");
-	REQUIRE(BundledGpuGraphId("limix-2m", "migraphx", "regression") == "graph_migraphx_limix2m_regression");
-}
-
-// Nori 1.5 reads the train/test split from len(y) on the CPU, which a fixed-shape MIGraphX compile cannot bucket
-// (docs/ROCM_SINGLE_EVAL_POS.md), so it bundles a MASKED graph for ROCm (tools/export_nori --config real15
-// --contract mask): x, y (full length), train_size, d, n_rows. Its external data points into the same
-// model.safetensors the CUDA/MLX ext graph reads, so the pinned header sha is the one the ext graph already uses.
-TEST_CASE("tabfm_bundled_resources: Nori 1.5 bundles a masked MIGraphX graph next to its CPU and ext graphs",
-          "[tabfm][bundled]") {
-	const auto id = BundledGpuGraphId("nori-1-5", "migraphx", "regression");
-	REQUIRE(id == "graph_migraphx_nori15_regression");
-	auto res = GetBundledResource(id);
-	REQUIRE(res.data != nullptr);
-	auto disk = ReadDiskFile(ResourcesDir() + "/" + id + ".onnx");
-	REQUIRE(res.size == disk.size());
-	REQUIRE(std::memcmp(res.data, disk.data(), disk.size()) == 0);
-	// the masked contract: the split and the feature count are VALUES (the positional graph has neither)
-	for (auto *input : {"train_size", "n_rows"}) {
-		REQUIRE(disk.find(input) != string::npos);
-	}
-	REQUIRE(disk.find("model.safetensors") != string::npos);
-	// the three Nori 1.5 graphs are distinct, and none of them is Nori-30M's
-	REQUIRE(GetBundledResource("graph_nori15_regression").data != nullptr);
-	REQUIRE(GetBundledResource("graph_ext_nori15_regression").data != nullptr);
-	REQUIRE(GetBundledResource("graph_migraphx_nori15_regression").size !=
-	        GetBundledResource("graph_migraphx_nori30m_regression").size);
-	// the same weights as the ext graph: one converted-weights header
-	REQUIRE(ExpectedWeightsHeaderShaFor("nori-1-5", "regression") ==
-	        "6da735b26d65fd2281525b127938f45c48d9eeef7bc20156ba6a87caaeed6029");
-}
-
-// Orion-BiX and Orion-MSP read the train/test split from len(y) on the CPU, which a fixed-shape MIGraphX compile
-// cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). Each bundles a second, MASKED graph for ROCm
-// (tools/export_orion_*: --contract mask): x, y (full length), train_size, d. Its external data points into the
-// same model.safetensors the CUDA ext graph reads, so ExpectedWeightsHeaderShaFor is unchanged.
-TEST_CASE("tabfm_bundled_resources: Orion-BiX and Orion-MSP bundle masked MIGraphX graphs", "[tabfm][bundled]") {
-	for (auto *model : {"orion-bix", "orion-msp"}) {
-		const auto id = BundledGpuGraphId(model, "migraphx", "classification");
-		INFO("model: " << model << " id: " << id);
-		auto res = GetBundledResource(id);
-		REQUIRE(res.data != nullptr);
-		auto disk = ReadDiskFile(ResourcesDir() + "/" + id + ".onnx");
-		REQUIRE(res.size == disk.size());
-		REQUIRE(std::memcmp(res.data, disk.data(), disk.size()) == 0);
-		// the split is a VALUE: the masked contract declares train_size and d (the positional graph has neither)
-		REQUIRE(disk.find("train_size") != string::npos);
-		REQUIRE(disk.find("model.safetensors") != string::npos);
-		REQUIRE(GetBundledResource(BundledGpuGraphId(model, "migraphx", "regression")).data == nullptr);
-	}
-}
-
-// The ggml GPU plugin reads the plain external-data ("ext") graph for both CUDA and ROCm; the MIGraphX-only masked graphs are going away. So every model that
-// bundles a masked MIGraphX graph must also bundle an ext graph, or it would lose its GPU path.
-TEST_CASE("tabfm_bundled_resources: every model with a GPU graph bundles the ext graph the ggml GPU plugin reads", "[tabfm][bundled]") {
-	size_t checked = 0;
+// The ggml GPU plugin reads the plain external-data ("ext") graph for both CUDA and ROCm. The masked MIGraphX graphs (a fixed-shape compile
+// could not bucket a split read from len(y)) went with MIGraphX: none is embedded any more, so they cost no binary size, and every ext graph
+// is pinned to the one safetensors header its absolute offsets were computed against.
+TEST_CASE("tabfm_bundled_resources: GPU models bundle the ext graph the ggml GPU plugin reads, and no MIGraphX graph", "[tabfm][bundled]") {
+	size_t ext_graphs = 0;
 	for (const auto &spec : BuiltinModelSpecs()) {
 		for (const auto &task : spec.tasks) {
 			const string task_name = TabFMTaskName(task.first);
-			const bool has_migraphx = GetBundledResource(BundledGpuGraphId(spec.id, "migraphx", task_name)).data != nullptr;
-			if (!has_migraphx) {
-				continue;
-			}
 			INFO("model " << spec.id << " task " << task_name);
+			REQUIRE(GetBundledResource(BundledGpuGraphId(spec.id, "migraphx", task_name)).data == nullptr);
 			const auto ext = GetBundledResource(BundledGpuGraphId(spec.id, "ext", task_name));
-			REQUIRE(ext.data != nullptr);
+			if (ext.data == nullptr) {
+				continue; // a CPU-only model
+			}
 			REQUIRE(ext.size > 0);
-			REQUIRE(!ExpectedWeightsHeaderShaFor(spec.id, task_name).empty()); // the offsets are pinned to one safetensors header
-			checked++;
+			REQUIRE(!ExpectedWeightsHeaderShaFor(spec.id, task_name).empty());
+			ext_graphs++;
 		}
 	}
-	REQUIRE(checked >= 30); // the catalog bundles masked graphs for dozens of (model, task) pairs
+	REQUIRE(ext_graphs >= 33); // the catalog serves dozens of (model, task) pairs on a GPU
+	// Nori 1.5's ext graph reads the same converted weights its CPU graph does: one header
+	REQUIRE(ExpectedWeightsHeaderShaFor("nori-1-5", "regression") == "6da735b26d65fd2281525b127938f45c48d9eeef7bc20156ba6a87caaeed6029");
 }

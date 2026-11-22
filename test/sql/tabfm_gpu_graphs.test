@@ -1,5 +1,5 @@
 # name: test/sql/tabfm_gpu_graphs.test
-# description: Model-provided GPU graphs (docs/GPU_HARDENING_PLAN.md P3):
+# description: Model-provided GPU graphs (docs/archive/GPU_HARDENING_PLAN.md P3):
 #              tabfm_register_model accepts ext_graph / migraphx_graph per
 #              task, and a declared-but-missing GPU graph fails loudly at
 #              resolution — a broken declaration is an error, not a silent
@@ -90,3 +90,25 @@ CALL tabfm_unregister_model('gpu-fixture')
 
 statement ok
 CALL tabfm_unregister_model('gpu-broken')
+
+# A registration from the MIGraphX era names a *_migraphx_graph. Nothing reads it any more, so a file that is gone (the obvious cleanup) must
+# not break the model: predictions on the CPU still run.
+statement ok
+CALL tabfm_register_model(id := 'stale-mgx', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_migraphx_graph := 'graph_migraphx_deleted_long_ago.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal');
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE stale_mgx_t AS SELECT (hash(i * 3) % 100) / 25.0 AS f1, (hash(i * 7) % 100) / 25.0 AS f2,
+  CASE WHEN i < 12 THEN 'c' || (i % 2)::VARCHAR END AS label FROM range(20) r(i);
+
+query I
+SELECT count(*) FROM tabfm_classify('stale_mgx_t', 'label', model := 'stale-mgx');
+----
+20

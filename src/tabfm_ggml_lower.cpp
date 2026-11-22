@@ -11,6 +11,10 @@
 
 #include <algorithm>
 #include <cctype>
+#if defined(__linux__)
+#include <sched.h>
+#include <unistd.h>
+#endif
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -2357,6 +2361,8 @@ struct ExecutorRuntime {
 };
 
 //! Wakes the thread pool for one compute and puts it back to sleep on every way out of the scope.
+//! Resumed before the compute, so ggml's kickoff never re-applies the pool's mask to the CALLING thread (it does that only for a pool still paused
+//! at kickoff): the DuckDB worker that runs the graph keeps the core DuckDB pinned it to (pin_threads), as it should.
 struct PoolRun {
 	ggml_threadpool_t pool;
 	explicit PoolRun(ggml_threadpool_t p) : pool(p) {
@@ -2592,6 +2598,20 @@ struct GgmlExecutor::Impl {
 			// One pool for the executor's life: a pool per call spawns and joins its threads every time, and its workers spin-wait.
 			ggml_threadpool_params params = ggml_threadpool_params_default(config.threads);
 			params.paused = true; // workers sleep until a run resumes them
+#if defined(__linux__)
+			// A thread inherits its creator's CPU affinity, and DuckDB pins its worker threads to single cores on large machines (pin_threads =
+			// 'auto' above 64 CPUs). Created from such a worker, the whole pool shared ONE core and every barrier crawled (0.4 s became 19 minutes
+			// on a 96-core server). Give the workers the main thread's CPU set instead, which DuckDB does not pin and which carries a taskset or
+			// cpuset limit the host set (not strict: each worker may run on any of them). A host that pins its own main thread to one core keeps
+			// the inherited behaviour.
+			cpu_set_t process;
+			if (sched_getaffinity(getpid(), sizeof(process), &process) == 0 && CPU_COUNT(&process) > 1) {
+				for (int cpu = 0; cpu < GGML_MAX_N_THREADS && cpu < CPU_SETSIZE; cpu++) {
+					params.cpumask[cpu] = CPU_ISSET(cpu, &process);
+				}
+				params.strict_cpu = false;
+			}
+#endif
 			pool = ggml_threadpool_new(&params);
 		}
 		runtime.cpu = cpu.get();

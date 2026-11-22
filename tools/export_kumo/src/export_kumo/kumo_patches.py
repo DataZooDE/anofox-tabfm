@@ -18,7 +18,7 @@ it: `_KumoTabular.forward_train(x, y, categorical_mask, num_columns=, train_size
 padded-context / padded-column path (NVIDIA/structured-data-models #1204, #1297), where every
 split is a mask (`arange < train_size`, `arange < K + num_columns`) and no tensor shape depends
 on the data. That is exactly what a fixed-shape MIGraphX compile needs
-(docs/ROCM_SINGLE_EVAL_POS.md), and on the CPU it is the same function (gated by tests/).
+(docs/archive/ROCM_SINGLE_EVAL_POS.md), and on the CPU it is the same function (gated by tests/).
 
 Fitted values. Context rows go through the ICL stack as queries attending the context, which
 contains themselves with their label -- the in-context consistency value tabfm-v1 and mitra
@@ -38,7 +38,7 @@ The few things this wrapper adds to `forward_train`:
     Upstream zeroes their embedding anyway (masked_fill on ~context), so feeding class 0 there
     is the identical function.
   * the group wrap `index % num_columns` (CellEmbedding) is rewritten without integer modulo:
-    MIGraphX's GPU target miscomputes data-dependent integer division (docs/ROCM_TABPFN_PLAN.md),
+    MIGraphX's GPU target miscomputes data-dependent integer division (docs/archive/ROCM_TABPFN_PLAN.md),
     and the shifts are tiny (0, 1, 3), so a few conditional subtractions are exact.
 """
 

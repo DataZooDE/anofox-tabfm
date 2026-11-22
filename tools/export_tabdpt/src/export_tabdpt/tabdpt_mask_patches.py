@@ -8,7 +8,7 @@ TabDPT is in the engine's ``single_eval_pos`` family: the graph declares only
 SHAPE, which is exactly what a fixed-shape MIGraphX compile cannot bucket: a
 different context length is a different compiled program, so the ``(T, H)``
 bucket table would need a third, unbounded axis. Hence nine of eleven catalog
-models, TabDPT among them, have no ROCm graph (docs/ROCM_SINGLE_EVAL_POS.md).
+models, TabDPT among them, have no ROCm graph (docs/archive/ROCM_SINGLE_EVAL_POS.md).
 
 This module rewrites the same computation with the split carried as a runtime
 value — ``x[1,T,H]``, ``y[1,T]``, ``train_size[1]``, ``d[1]`` — the contract
@@ -390,7 +390,7 @@ def _patched_swiglu_forward(self, x: torch.Tensor) -> torch.Tensor:
     This is a SECOND MIGraphX blocker in TabDPT, entirely independent of the
     positional train/test split, and it is present in the graph tabdpt already
     ships -- 32 SplitToSequence and 64 SequenceAt, exactly one chunk per layer
-    across the 32 layers. docs/ROCM_SINGLE_EVAL_POS.md nominated tabdpt as the
+    across the 32 layers. docs/archive/ROCM_SINGLE_EVAL_POS.md nominated tabdpt as the
     model worth converting on the strength of the split alone; converting the
     split is necessary and was never sufficient. Only compiling it on the
     hardware could reveal that, because ONNX Runtime supports sequence ops

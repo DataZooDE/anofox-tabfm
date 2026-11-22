@@ -71,7 +71,7 @@ const char *kV2 = R"json({
 	"compute": {"cpu": "f32", "gpu_precision_default": "bf16"}
 })json";
 
-// kV2 plus a model-provided GPU graph for one task (docs/GPU_HARDENING_PLAN.md
+// kV2 plus a model-provided GPU graph for one task (docs/archive/GPU_HARDENING_PLAN.md
 // P3): "ext_graph" mirrors "graph"'s task keying and is optional per task.
 const char *kV2ExtGraph = R"json({
 	"schema_version": 2,
@@ -186,7 +186,7 @@ TEST_CASE("model_spec: unknown model id / missing fields error clearly", "[tabfm
 }
 
 TEST_CASE("model_spec: v2 ext_graph is optional and carried per task", "[tabfm][model_spec]") {
-	// The model-provided GPU graph (docs/GPU_HARDENING_PLAN.md P3). Declared for
+	// The model-provided GPU graph (docs/archive/GPU_HARDENING_PLAN.md P3). Declared for
 	// classification only, so regression must stay empty — and a manifest that
 	// never mentions ext_graph must parse exactly as before (back-compat).
 	auto spec = ParseModelSpec(kV2ExtGraph, "mitra_ext.json");
@@ -204,7 +204,7 @@ TEST_CASE("model_spec: v2 ext_graph is optional and carried per task", "[tabfm][
 }
 
 TEST_CASE("model_spec: SelectGpuGraph — model-provided wins, bundled needs its header match", "[tabfm][model_spec]") {
-	// The pure gate behind GPU dispatch (docs/GPU_HARDENING_PLAN.md P3). This
+	// The pure gate behind GPU dispatch (docs/archive/GPU_HARDENING_PLAN.md P3). This
 	// exact gate — in its old, implicit form — is what locked every model but
 	// tabfm-v1 out of the GPUs, so it gets the CanReuseSession treatment:
 	// exhaustive, hardware-free, and mutation-honest (each case pins one rule).
@@ -869,7 +869,7 @@ TEST_CASE("model_spec: Causilo bundles masked ROCm graphs, keyed to the pinned c
 // Measured on an RTX 4090 (tools/gpu_test/cuda_catalog.sh, released v2026.10.31 artefacts, 100-row tables):
 // every bundled ext graph served on cuda:0 agreed with the CPU except TabPFN-3.5 and 3.5-Fast, which failed
 // inside ONNX Runtime 1.29's CUDA EP and were refused here by name. Their ext graphs now carry the shape-tensor
-// pins of tools/pin_cuda_shape_operands.py (docs/UPSTREAM_ORT_ISSUES.md, Draft 3), so nothing is refused on
+// pins of tools/pin_cuda_shape_operands.py (docs/archive/UPSTREAM_ORT_ISSUES.md, Draft 3), so nothing is refused on
 // cuda; the refusal path itself stays covered by the known_wrong servability test above.
 TEST_CASE("servability: no bundled graph is refused on CUDA by name", "[tabfm][model_spec][servability]") {
 	for (auto *model : {"tabpfn-v3", "tabfm-v1-1", "kumo-tabular-large", "limix-2m", "causilo", "mitra-v2",
@@ -895,36 +895,3 @@ TEST_CASE("servability: no bundled graph is refused on CUDA by name", "[tabfm][m
 	REQUIRE(GpuKnownWrong("mlx", "tabpfn-v3-5", "classification").empty()); // MlxKnownWrong lists none today
 }
 
-// LimiX-2M's sample attention holds a [ceil(H/2) + 1, 6, T, T] float32 score tensor. At T4096 x H128 (24.4 GiB)
-// MIGraphX's compile could not allocate it on a 16 GiB gfx1201 and the hip.cpp:155 assertion aborted the process
-// (docs/ROCM_SINGLE_EVAL_POS.md). Buckets over the largest one measured to work are refused before the compile.
-TEST_CASE("rocm bucket ceiling: limix-2m buckets over the measured one are refused", "[tabfm][model_spec][rocm]") {
-	const int64_t gib16 = int64_t(16) << 30;
-	REQUIRE(LimixRocmScoreElements(4096, 128) == int64_t(65) * 6 * 4096 * 4096);
-	REQUIRE(LimixRocmScoreElements(1024, 64) == int64_t(33) * 6 * 1024 * 1024);
-	// the measured bucket and everything smaller is served
-	REQUIRE(RocmBucketRefusal("limix-2m", LIMIX_ROCM_MEASURED_T, LIMIX_ROCM_MEASURED_H, gib16).empty());
-	REQUIRE(RocmBucketRefusal("limix-2m", 128, 16, gib16).empty());
-	REQUIRE(RocmBucketRefusal("limix-2m", 512, 512, -1).empty());     // 257 tokens x 512^2
-	REQUIRE(RocmBucketRefusal("limix-2m", 1024, 256, gib16).empty()); // 129 tokens x 1024^2
-	REQUIRE(RocmBucketRefusal("limix-2m", 2048, 64, gib16).empty());  // 33 tokens x 2048^2
-	// one bucket up on either axis is refused
-	REQUIRE_FALSE(RocmBucketRefusal("limix-2m", 2048, 128, gib16).empty());
-	REQUIRE_FALSE(RocmBucketRefusal("limix-2m", 1024, 512, gib16).empty());
-	REQUIRE_FALSE(RocmBucketRefusal("limix-2m", 4096, 64, gib16).empty());
-	// the bucket that aborted, on any card size, with the reason and the way out
-	for (int64_t vram : {int64_t(-1), gib16, int64_t(48) << 30}) {
-		auto reason = RocmBucketRefusal("limix-2m", 4096, 128, vram);
-		REQUIRE_THAT(reason, Contains("4096 rows x 128 features"));
-		REQUIRE_THAT(reason, Contains("24.4 GiB"));
-		REQUIRE_THAT(reason, Contains("anofox_tabfm_device = 'cpu'"));
-	}
-	REQUIRE_FALSE(RocmBucketRefusal("limix-2m", 10000, 16, gib16).empty());
-	// a smaller card lowers the ceiling in proportion; a bigger one does not raise it
-	REQUIRE_FALSE(
-	    RocmBucketRefusal("limix-2m", LIMIX_ROCM_MEASURED_T, LIMIX_ROCM_MEASURED_H, int64_t(8) << 30).empty());
-	// other models have no ceiling
-	REQUIRE(RocmBucketRefusal("tabicl-v2", 10000, 512, gib16).empty());
-	REQUIRE(RocmBucketCeilingNote("tabicl-v2").empty());
-	REQUIRE_THAT(RocmBucketCeilingNote("limix-2m"), Contains("refused"));
-}

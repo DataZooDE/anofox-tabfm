@@ -17,11 +17,12 @@
  *
  * Precision: a CUDA GPU multiplies fp32 matrices in TF32 by default on Ampere and later (10-bit mantissa; measured
  * 2e-3 relative error per matmul, up to 1.5 on the logits of a 12k-node graph). "fp32" (the default) turns that off
- * with NVIDIA_TF32_OVERRIDE=0 before the CUDA runtime starts, "tf32" leaves the hardware default. KNOWN LIMIT: that switch only
- * reaches cuBLAS; ggml's own small-batch f32 kernel (mul_mat_f, used when a matmul has <= 16 columns on Ampere+) issues TF32 tensor-core
- * instructions directly and has no switch, so "fp32" is strict for the large matmuls the Nori measurements cover but not for such
- * tiny ones. The process-wide setting is also latched by the first CUDA initialisation. fp16/bf16 are
- * refused: they would need a real graph conversion and a silent fp32 run would be a lie.
+ * with NVIDIA_TF32_OVERRIDE=0 before the CUDA runtime starts (it reaches cuBLAS), and pads every matmul to at least 17
+ * activation rows (GgmlExecutorConfig::strict_fp32) so none takes ggml's own small-batch f32 kernel (mul_mat_f, <= 16 columns), which issues
+ * TF32 tensor-core instructions with no switch; "tf32" leaves the hardware default. KNOWN LIMIT: the environment switch is process-wide and
+ * latched by the first CUDA initialisation, so a "tf32" session created after an "fp32" one still runs cuBLAS in fp32 (and the reverse:
+ * "fp32" after "tf32" in one process keeps cuBLAS in TF32; the padding still applies). fp16/bf16 are refused: they would need a real graph
+ * conversion and a silent fp32 run would be a lie.
  *
  * Independent of duckdb. Every exception is caught at the API boundary and reported through the err buffer.
  *===----------------------------------------------------------------------===*/
@@ -168,8 +169,8 @@ void SetTf32(const std::string &precision) {
 	if (precision != "fp32") {
 		return; // "tf32": the hardware default
 	}
-	// Strict fp32 matmuls. Read by cuBLAS and by ggml's own tensor-core kernels' dispatch when the CUDA runtime starts, so it has to be
-	// set before the first device is initialised; a value the user set explicitly wins.
+	// Strict fp32 matmuls in cuBLAS. Read when the CUDA runtime starts, so it has to be set before the first device is initialised; a value
+	// the user set explicitly wins. (ggml's own small-batch kernel ignores it; the strict_fp32 padding keeps matmuls off that kernel.)
 #if defined(_WIN32)
 	if (!std::getenv("NVIDIA_TF32_OVERRIDE")) {
 		_putenv_s("NVIDIA_TF32_OVERRIDE", "0");

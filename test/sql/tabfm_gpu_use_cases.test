@@ -130,7 +130,7 @@ statement error
 SELECT count(*) FROM tabfm_classify('history', 'status', test := '(SELECT * EXCLUDE (true_status) FROM prospects)',
   features := ['tenure_months', 'monthly_charge', 'support_tickets', 'contract'], model := 'tabicl-v2');
 ----
-<REGEX>:.*bf16.*anofox_tabfm_device='cpu'.*
+<REGEX>:.*bf16.*anofox_tabfm_gpu_precision='fp32'.*anofox_tabfm_device='cpu'.*
 
 statement ok
 SET anofox_tabfm_gpu_precision = 'fp32';

@@ -4,15 +4,14 @@
 // tabfm_ggml_session.hpp — the ggml CPU engine behind TabFMSession (docs/GGML_PLAN.md, P5).
 //
 // The engine's backends (OrtBackend, SplitOrtBackend with its context cache) only ever talk to a TabFMSession through CreateSession / Run /
-// RunPrepare / RunQuery / SplitContextInputs / SessionHasOutput. A TabFMSession that holds a GgmlSessionState answers those with
-// GgmlRunGraph instead of an Ort::Session, so every backend, cache, memory check and SQL surface above it is shared by both engines.
+// RunPrepare / RunQuery / SplitContextInputs / SessionHasOutput; a TabFMSession answers those through its GgmlSessionState with GgmlRunGraph.
 //
-// Lifetime: like ORT's AddExternalInitializers, the session keeps REFERENCES to the weight buffers behind TabFMTensorRef (the safetensors mapping
+// Lifetime: the session keeps REFERENCES to the weight buffers behind TabFMTensorRef (the safetensors mapping
 // or the bf16 upcast arena); the owner keeps them alive for the life of the session (OrtBackend's member order already guarantees it).
 //===----------------------------------------------------------------------===//
 
 #include "tabfm_ggml_lower.hpp"
-#include "tabfm_ort_engine.hpp"
+#include "tabfm_session.hpp"
 #include "tabfm_onnx_reader.hpp"
 
 #include <memory>
@@ -34,9 +33,8 @@ struct GgmlSessionState {
 	std::unique_ptr<GgmlExecutor> executor;
 };
 
-//! Validate the graph against what the engine implements and the injected weights against what the graph needs. Throws the same
-//! actionable errors as ORT session creation would: missing weights -> the tabfm_load hint, a mismatching tensor -> corrupted checkpoint,
-//! an op the engine lacks -> the op names and the way back to ORT.
+//! Validate the graph against what the engine implements and the injected weights against what the graph needs. Throws actionable errors:
+//! missing weights -> the tabfm_load hint, a mismatching tensor -> corrupted checkpoint, an op the engine lacks -> the op names.
 std::unique_ptr<GgmlSessionState> CreateGgmlSessionState(::anofox::onnxread::Graph graph, const vector<TabFMTensorRef> &initializers,
                                                          const TabFMSessionConfig &config);
 

@@ -48,7 +48,7 @@ API = "https://api.runpod.io/v2"
 # the thing this harness exists to test: the CUDA-12 ONNX Runtime provider
 # fails on a 12.4 image with `undefined symbol: cudaLibraryGetKernel, version
 # libcudart.so.12` -- that symbol needs a newer CUDA 12 minor than the image
-# ships. Recorded in docs/DYNAMIC_BACKENDS.md ("RunPod-verified" findings 1-2),
+# ships. Recorded in docs/archive/DYNAMIC_BACKENDS.md ("RunPod-verified" findings 1-2),
 # discovered by renting a pod and watching it fail, and then left in place as
 # the default so the next person rented a pod and watched it fail too.
 # README pins the floor at CUDA userspace >= 12.5.
@@ -315,7 +315,7 @@ def pod_spec(args, gpu_id, cloud, pub, volume=None):
     }
     if volume:
         # A persistent network volume mounted AT /workspace (S7 of
-        # docs/GPU_HARDENING_PLAN.md): uploads, toolchains, build trees and
+        # docs/archive/GPU_HARDENING_PLAN.md): uploads, toolchains, build trees and
         # weights survive across pods, which is what turns a 40-90 min CUDA
         # iteration into minutes. Volumes are datacenter-pinned, so the pod is
         # restricted to the volume's datacenter -- capacity misses there are a

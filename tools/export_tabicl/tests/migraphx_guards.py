@@ -4,7 +4,7 @@ Structural guards for the four failures MIGraphX's GPU target has on graphs ORT 
 
 None is visible to ONNX Runtime or to MIGraphX's own reference (CPU) target, so no parity check, gate or ORT run
 can see them; they surface only when the GPU backend compiles the graph, after minutes. They were all found on
-the TabPFN conversion (docs/ROCM_TABPFN_PLAN.md); this is the Causilo counterpart, written BEFORE the first GPU
+the TabPFN conversion (docs/archive/ROCM_TABPFN_PLAN.md); this is the Causilo counterpart, written BEFORE the first GPU
 run. Each guard is exercised against a deliberately bad graph in tests/test_mask_export_isolated.py, because a
 guard that has never failed is not known to work: the first reshape guard written for TabPFN passed on the very
 graph MIGraphX rejected (the empty shape is a Constant with `value_ints = []`, not a tensor `value`).
@@ -26,7 +26,7 @@ graph MIGraphX rejected (the empty shape is a Constant with `value_ints = []`, n
      EVIDENCE IS WEAKER than for 1-5, and the docs say so: eight tiny graphs with such a Concat (float, bool, via
      `isnan`) compiled FINE on the GPU target, and the real graph was not reduced to a minimal reproducer. What was
      shown: the real fixture graph fails in `fuse_concat` with them, and compiles PAST `fuse_concat` without them
-     (it then fails later, for an unrelated reason: see docs/ROCM_CAUSILO_PLAN.md). The guard marks a known-bad
+     (it then fails later, for an unrelated reason: see docs/archive/ROCM_CAUSILO_PLAN.md). The guard marks a known-bad
      CONTEXT, not a proven trigger.
 
 All of them take a path and return a list of offending node names (empty = clean).

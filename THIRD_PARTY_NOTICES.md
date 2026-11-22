@@ -26,3 +26,17 @@ This file records how we comply; it is not legal advice.
 Copyright (c) 2023-2026 The ggml authors. MIT License; the full text is in [`vendor/ggml/LICENSE`](vendor/ggml/LICENSE).
 ggml is compiled into the extension as the CPU inference engine (static, CPU backend only). Its source is a pinned
 git submodule; no model weights or graphs come from it.
+
+## GPU backend plugins (release assets, not part of the extension binary)
+
+No build of the extension or of any plugin links ONNX Runtime or MIGraphX any more.
+
+- **ggml CUDA plugin** (`libanofox_tabfm_ggml-cuda_plugin.so`): ggml (above) with its CUDA backend, plus the
+  NVIDIA CUDA runtime (`cudart`) and cuBLAS / cuBLASLt from CUDA Toolkit 12.8, **linked statically**. These
+  are components NVIDIA lets applications redistribute under the CUDA Toolkit End User License Agreement
+  (Attachment A). The plugin loads the NVIDIA driver (`libcuda.so.1`) from the user's system and ships no
+  driver code.
+- **ggml ROCm plugin** (`libanofox_tabfm_ggml-rocm_plugin.so`): ggml with its HIP backend. It links HIP,
+  hipBLAS and rocBLAS dynamically from the user's ROCm installation and bundles none of them.
+- **MLX plugin** (`libanofox_tabfm_mlx_plugin.dylib`): links Apple's `libmlx` / `libmlxc` (MIT) dynamically
+  from the user's installation (`brew install mlx mlx-c`) and bundles neither.

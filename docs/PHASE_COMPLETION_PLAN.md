@@ -24,7 +24,7 @@ through a re-download the week after). C parallelizes freely after B.
 
 Why 1.29 and not stay at 1.28: S5 (GPU_HARDENING_PLAN) measured that the
 1.28.0 provider-bridge global-ctor crash — the bug behind both unfiled
-drafts in `docs/UPSTREAM_ORT_ISSUES.md` — **does not reproduce on the 1.29.0
+drafts in `docs/archive/UPSTREAM_ORT_ISSUES.md` — **does not reproduce on the 1.29.0
 wheel**. Upgrading buys a crash-class fix in the exact code path
 `tabfm_download_runtime` users exercise.
 
@@ -44,7 +44,7 @@ wheel**. Upgrading buys a crash-class fix in the exact code path
   (~30 min now that weights + CLI are cached): the 11-example run plus the
   fp32/tf32 bench legs, `SERVED_BY=cuda:0` asserted. ROCm needs nothing —
   the MIGraphX plugin never touches ORT. Local CPU suite covers the rest.
-- **A4 — docs closure.** `docs/UPSTREAM_ORT_ISSUES.md` drafts re-scoped to
+- **A4 — docs closure.** `docs/archive/UPSTREAM_ORT_ISSUES.md` drafts re-scoped to
   "affects ≤ 1.28.x, confirmed resolved in the runtime we now pin" (filing
   remains a separate, user-approved decision); README/DYNAMIC_BACKENDS
   version references.

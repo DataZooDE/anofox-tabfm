@@ -56,7 +56,7 @@ def main(argv=None) -> int:
                     help="positional: y is the train prefix and the split is its LENGTH (the shipped "
                          "CPU/CUDA form). mask: y is full length and the split arrives as a train_size "
                          "VALUE, so every shape depends on the (T, H) bucket alone -- the only form "
-                         "MIGraphX can compile. See docs/ROCM_TABDPT_SPIKE.md.")
+                         "MIGraphX can compile. See docs/archive/ROCM_TABDPT_SPIKE.md.")
     ap.add_argument("--weights",
                     help="published safetensors; when given, configs.real() is "
                          "checked against its embedded cfg metadata")

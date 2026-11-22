@@ -549,7 +549,7 @@ to the combined graph instead, because the cache becomes default-on and must not
   guards the backend.
 - **ROCm (MIGraphX plugin).** It compiles per fixed shape (`.mxr` per bucket). The query graph's shape
   depends on S (the K/V length) as well as on Q and H, so it needs the masked contract that tabdpt and
-  the TabPFN family already use (pad S to a bucket and pass a key mask; ROCM_SINGLE_EVAL_POS.md). That
+  the TabPFN family already use (pad S to a bucket and pass a key mask; archive/ROCM_SINGLE_EVAL_POS.md). That
   multiplies the buckets by the S-buckets. Later phase, measure compile cost first.
 - **MLX.** The plugin interprets the ONNX graph op by op (`tabfm_mlx_graph.cpp`). The kv graphs use the
   same ops as the combined graph, so they should run once the engine passes named state through the

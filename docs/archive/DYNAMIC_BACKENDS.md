@@ -1,6 +1,6 @@
 # One artifact, backends resolved at runtime
 
-> **Status (2026-10):** design history. Every phase has landed except phase 4 (CoreML), which was dropped; the status line below is out of date. Current behaviour: [docs/api/04-gpu.md](api/04-gpu.md).
+> **Status (2026-10):** design history. Every phase has landed except phase 4 (CoreML), which was dropped; the status line below is out of date. Current behaviour: [docs/api/04-gpu.md](../api/04-gpu.md).
 
 **Goal:** a single `anofox_tabfm.duckdb_extension` that runs on CPU everywhere
 and lights up CUDA, ROCm or CoreML when the machine can, instead of three
@@ -16,7 +16,7 @@ directly (phase 1), CUDA over its own shared ORT-GPU distribution (phase 3).
 Each phase is independently shippable and none silently changes results.
 
 What is verified, and how far (as of the phases above; for the current per-model matrix see
-[docs/api/04-gpu.md](api/04-gpu.md#backend-support-matrix), which since v2026.11.01 covers every built-in
+[docs/api/04-gpu.md](../api/04-gpu.md#backend-support-matrix), which since v2026.11.01 covers every built-in
 model on CUDA, ROCm and MLX):
 
 | | plugin, on hardware | via SQL, real weights | at scale |

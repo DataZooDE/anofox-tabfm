@@ -41,6 +41,20 @@ for ort in ("ORT_GPU", "onnxruntime", "libanofoxort_gpu", "migraphx_plugin", "ta
     if ort in text:
         errors.append(f"the workflow still references {ort!r} (the ORT-CUDA and MIGraphX plugins are gone)")
 
+# The ROCm architectures the plugin is built for must be exactly the ones the extension reports usable (GgmlRocmPluginArchs in
+# src/tabfm_devices.cpp): a target built but not listed is a card refused for nothing, one listed but not built is a card chosen and then failing.
+targets = re.search(r"-DAMDGPU_TARGETS=([^\s\"']+)", text)
+built = set(targets.group(1).split(";")) if targets else set()
+src = open("src/tabfm_devices.cpp").read()
+listed_m = re.search(r"GgmlRocmPluginArchs\(\) \{\s*static const vector<string> archs = \{([^}]*)\}", src)
+listed = set(re.findall(r'"(gfx[0-9a-f]+)"', listed_m.group(1))) if listed_m else set()
+if not built:
+    errors.append("the ROCm job sets no -DAMDGPU_TARGETS")
+if not listed:
+    errors.append("GgmlRocmPluginArchs() not found in src/tabfm_devices.cpp")
+if built and listed and built != listed:
+    errors.append(f"AMDGPU_TARGETS {sorted(built)} != GgmlRocmPluginArchs {sorted(listed)}")
+
 if errors:
     print("FAIL: " + path)
     for e in errors:

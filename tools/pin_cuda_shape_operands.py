@@ -1,7 +1,7 @@
 """Pin every shape-computation tensor of a graph as a graph output (CUDA EP workaround).
 
 Workaround for an ONNX Runtime CUDA execution-provider bug that broke TabPFN-3.5 and
-3.5-Fast on CUDA (ORT 1.29.0, CUDA-12 build; docs/UPSTREAM_ORT_ISSUES.md, Draft 3).
+3.5-Fast on CUDA (ORT 1.29.0, CUDA-12 build; docs/archive/UPSTREAM_ORT_ISSUES.md, Draft 3).
 In a CUDA session the shape subgraph (Shape -> Squeeze -> Add/Min -> Reshape -> Concat)
 runs on the CPU and feeds host-side operands of CUDA kernels (Expand's `shape`, Range,
 Reshape, ...). ORT's allocation planner hands the CPU buffer of one of those small int64

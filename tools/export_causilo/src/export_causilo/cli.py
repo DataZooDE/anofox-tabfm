@@ -4,7 +4,7 @@ Writes into --out:
   graph_causilo_<task>.onnx          weight-free graph (checkpoint initializers are EXTERNAL
                                      stubs; the .onnx.data is deleted)
   graph_mask_causilo_<task>.onnx     with --contract mask: the MASKED graph (x, y, train_size, n_rows, d)
-                                     that MIGraphX can compile per shape bucket; docs/ROCM_CAUSILO_PLAN.md
+                                     that MIGraphX can compile per shape bucket; docs/archive/ROCM_CAUSILO_PLAN.md
   tensor_map_causilo_<task>.json     ONNX initializer name -> safetensors key
   export_report_causilo_<task>.json  provenance + parity numbers
 """

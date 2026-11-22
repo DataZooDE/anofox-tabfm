@@ -99,8 +99,8 @@ SELECT current_setting('anofox_tabfm_device')
 ----
 rocm
 
-# 'coreml' is a valid device on every flavor (ResolveDevice errors helpfully at
-# use time on flavors that do not carry it — like cuda/rocm)
+# 'coreml' is deprecated (it was an in-process ONNX Runtime provider, and no build has ONNX Runtime any more). SET still accepts it so old
+# scripts do not break at the SET; the first prediction then fails, pointing to the mlx device that replaced it.
 statement ok
 SET anofox_tabfm_device = 'coreml'
 
@@ -108,6 +108,24 @@ query I
 SELECT current_setting('anofox_tabfm_device')
 ----
 coreml
+
+statement ok
+CALL tabfm_register_model(
+  id := 'fixture-settings', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'apache-2.0', commercial := true,
+  preprocessing_profile := 'tabfm_v1_minimal',
+  max_rows := 5000, max_features := 100, max_classes := 10)
+
+statement ok
+CREATE TABLE coreml_t AS SELECT * FROM (VALUES (0.5, 1.0, 'c0'), (1.5, 0.2, 'c1'), (2.5, -1.0, 'c0'), (0.2, 0.8, 'c1'), (1.1, 0.4, NULL)) v(f1, f2, label)
+
+statement error
+SELECT count(*) FROM tabfm_classify('coreml_t', 'label', model := 'fixture-settings')
+----
+<REGEX>:.*coreml.*tabfm_download_runtime\('mlx'\).*anofox_tabfm_device='cpu'.*
 
 # 'mlx' is carried by every build like cuda/rocm (a dlopen'd plugin, not a
 # compile-time flavor), so the SETTING always validates. Whether the hardware
@@ -190,10 +208,17 @@ SET anofox_tabfm_gpu_precision = 'int4'
 ----
 <REGEX>:.*must be 'fp32', 'tf32', 'bf16' or 'fp16'.*
 
+# anofox_tabfm_cpu_prepack and anofox_tabfm_mxr_source are deprecated no-ops (they configured ONNX Runtime and MIGraphX): still accepted
+# so existing scripts keep working, and described as having no effect.
 statement ok
 SET anofox_tabfm_cpu_prepack = false
 
-# precompiled .mxr staging source: empty by default, accepts a directory path
+query I
+SELECT description LIKE 'Deprecated, no effect%' FROM duckdb_settings() WHERE name IN ('anofox_tabfm_cpu_prepack', 'anofox_tabfm_mxr_source') ORDER BY name
+----
+true
+true
+
 query T
 SELECT current_setting('anofox_tabfm_mxr_source')
 ----

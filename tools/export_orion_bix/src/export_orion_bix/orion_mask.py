@@ -1,7 +1,7 @@
 """Orion-BiX with the train/test split as a VALUE instead of a shape (the ROCm / MIGraphX contract).
 
 The CPU graph (``orion_bix_patches.ExportWrapper``) is ``(x, y)``-only: the split is ``len(y)``, a SHAPE, which a
-fixed-shape MIGraphX compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). This module computes the same function
+fixed-shape MIGraphX compile cannot bucket (docs/archive/ROCM_SINGLE_EVAL_POS.md). This module computes the same function
 with every shape a function of the padded (T, H) bucket alone, the contract tabdpt, the TabPFN family, EXAONE
 Tabular and Nori-30M already serve on ROCm:
 
@@ -24,8 +24,8 @@ two places, and the columns in one:
 Nothing else mixes rows or columns: the column embedder runs every column independently, and a padded row is a
 query everywhere, never a key. So there is no ``n_rows`` input (nothing would read it).
 
-MIGraphX-specific choices, each learnt by the earlier conversions (docs/ROCM_TABDPT_SPIKE.md,
-docs/ROCM_TABPFN_PLAN.md, tools/export_exaone): attention is written out (matmul, softmax, matmul) with an
+MIGraphX-specific choices, each learnt by the earlier conversions (docs/archive/ROCM_TABDPT_SPIKE.md,
+docs/archive/ROCM_TABPFN_PLAN.md, tools/export_exaone): attention is written out (matmul, softmax, matmul) with an
 additive -1e4 key bias, finite in every float format; RoPE is written without einsum/einops; the one-hot label
 encoding is a comparison against a constant ``arange``; ``train_size`` / ``d`` stay rank 1.
 """

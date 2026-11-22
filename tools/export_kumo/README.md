@@ -40,7 +40,7 @@ Regression returns the mean of the 999 quantiles (upstream's own benchmark point
 
 1. **`index % num_columns` → conditional subtraction** (`kumo_patches._wrap`). The circular feature groups
    wrap at the real width. A data-dependent integer modulo is what MIGraphX's GPU target miscomputes
-   (docs/ROCM_TABPFN_PLAN.md); the group shifts are 0, 1, 3, so four subtractions are exact.
+   (docs/archive/ROCM_TABPFN_PLAN.md); the group shifts are 0, 1, 3, so four subtractions are exact.
 2. **Unshared RoPE parameters** (`unshare_parameters`). Upstream hands one `RotaryEmbedding` to every row
    block's query and key transform, so 8 checkpoint keys are one tensor and the exporter emitted one
    initializer. The engine injects every checkpoint tensor by name and refused the graph. Deep-copying the

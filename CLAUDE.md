@@ -2,7 +2,8 @@
 
 DuckDB C++ extension embedding Google's TabFM tabular foundation model
 (TabPFN-style in-context learner). The CPU device runs the bundled ONNX graphs on a vendored **ggml** engine
-(`vendor/ggml`; ONNX Runtime is optional, see `docs/BUILDING.md` "Engines" and `docs/GGML_PLAN.md`). Zero-shot
+(`vendor/ggml`; no build links ONNX Runtime, see `docs/BUILDING.md` "Engine" and `docs/GGML_PLAN.md`).
+ONNX Runtime survives only as Python dev tooling (the oracle in `tools/ggml_parity`). Zero-shot
 classification and regression as SQL. Spec (normative):
 `/home/jr/Projects/tmp/research/2026-07-04-anofox-tabfm-spec/` — BRD, HLD,
 SQL-API rev 4, spikes S01–S06 (all executed; read the RESULTS.md of the spike
@@ -11,11 +12,12 @@ backing your module before writing code).
 ## Build & test
 
 ```bash
-make debug            # cpu flavor on the ggml engine (vendor/ggml); no ONNX Runtime is built or downloaded
+make debug            # the ggml engine (vendor/ggml); no ONNX Runtime is built or downloaded
 make release
 make test_debug       # sqllogictests + C++ tests via build/debug/test/unittest
 ./build/debug/test/unittest test/sql/settings.test          # single file
-TABFM_FLAVOR=rocm make release TABFM_ORT_ROCM_DIR=...       # rocm flavor
+cmake -S tools/ggml_plugin -B build/ggml-cuda -G Ninja -DTABFM_GGML_GPU=cuda -DCMAKE_CUDA_ARCHITECTURES=89  # GPU plugin
+cmake -S tools/ggml_plugin -B build/ggml-rocm -G Ninja -DTABFM_GGML_GPU=hip -DAMDGPU_TARGETS=gfx1201       # (docs/BUILDING.md)
 ```
 
 - DuckDB pinned v1.5.6 (submodule), extension-ci-tools v1.5-variegata.
@@ -58,9 +60,11 @@ TABFM_FLAVOR=rocm make release TABFM_ORT_ROCM_DIR=...       # rocm flavor
 ## Layout
 
 - `src/tabfm_safetensors.cpp`, `tabfm_manifest.cpp` — WS-B (readers)
-- `src/tabfm_ort_engine.cpp`, `tabfm_devices.cpp`, `tabfm_state.cpp` — WS-C (sessions; `TabFMSession` is served by ggml for the CPU device and by ONNX Runtime only for the in-process cuda/rocm/coreml flavors)
+- `src/tabfm_session.cpp`, `tabfm_devices.cpp`, `tabfm_state.cpp` — WS-C (sessions; the in-process `TabFMSession` is always ggml on the CPU; GPU devices are served by plugins)
+- `src/tabfm_engine.cpp` (dispatch: `TryGgmlGpuBackend`, `TryMlxBackend`), `tabfm_plugin_backend.cpp` (the plugin loader), `src/include/tabfm_plugin_artifacts.hpp` (plugin file names, release tag, sha256 sidecars)
 - `src/tabfm_ggml_lower.cpp` (ONNX graph -> ggml graph, `GgmlExecutor`), `tabfm_shape_eval.cpp` (host shape/constant pass, float64 interpreter),
-  `tabfm_ggml_session.cpp` (the ggml-backed `TabFMSession`), `tabfm_ggml_ops.hpp` (the op table), `tabfm_rank_reduce.hpp` — the ggml CPU engine.
+  `tabfm_ggml_session.cpp` (the ggml-backed `TabFMSession`), `tabfm_ggml_engine.cpp`, `tabfm_ggml_ops.hpp` (the op table), `tabfm_rank_reduce.hpp` — the ggml engine
+  (CPU, and the same sources in the GPU plugin).
   Every op is checked against ONNX Runtime: `tools/ggml_parity/` (per-op goldens in `test/fixtures/ggml_ops`, whole-graph `graphs_parity.py`)
 - `src/tabfm_weights.cpp` — WS-D (download/lifecycle/license gate)
 - `src/tabfm_predict_agg.cpp`, `tabfm_macros.cpp` — WS-E (predict surface)
@@ -72,27 +76,33 @@ TABFM_FLAVOR=rocm make release TABFM_ORT_ROCM_DIR=...       # rocm flavor
 - `test/fixtures/` — committed fixture model (graph, safetensors, golden.json,
   manifest.json); CI verifies the pinned sha256, never regenerates
 
-## Flavors and backend plugins (HLD D9, docs/DYNAMIC_BACKENDS.md)
+## Backend plugins (HLD D9)
 
-One codebase; `TABFM_FLAVOR=cpu|cuda|rocm|coreml` still picks the ORT build in
-`cmake/ort.cmake`, but **a GPU is no longer a flavor**. Both GPU backends are
-standalone plugins the extension `dlopen`s at runtime through
+There are no build flavors: `TABFM_FLAVOR`, `TABFM_ORT_*`, `TABFM_WITH_ORT` and `cmake/ort.cmake` are gone, and
+**a GPU is never a build**. Every GPU backend is a standalone plugin the extension `dlopen`s at runtime through
 `src/include/tabfm_plugin_abi.h`:
 
-- `src/tabfm_migraphx_plugin.cpp` — drives MIGraphX directly, no ORT involved
-- `src/tabfm_cuda_plugin.cpp` — links its own shared ORT-GPU distribution
+- `src/tabfm_ggml_plugin.cpp` — the **ggml GPU plugin**, the only lane for `cuda` and `rocm`. Built by its own
+  CMake project, `tools/ggml_plugin` (`-DTABFM_GGML_GPU=cuda|hip`), from the same engine sources as the CPU;
+  outputs `libanofox_tabfm_ggml-cuda_plugin.so` (CUDA runtime + cuBLAS linked statically, needs only
+  `libcuda.so.1`; `scripts/check_plugin_deps.sh` enforces it) and `libanofox_tabfm_ggml-rocm_plugin.so` (links
+  the system's HIP, hipBLAS, rocBLAS). Reads the plain `ext` graph; `.github/workflows/gpu_plugins.yml` builds
+  and publishes both with sha256 sidecars.
 - `src/tabfm_mlx_plugin.cpp` — Apple MLX; runs the shipped ONNX graph itself
   via `src/tabfm_mlx_graph.cpp` (+ `tabfm_onnx_reader.cpp`, a minimal
   wire-format parser so the plugin needs no libonnx/libprotobuf). mitra also
   has a hand-ported forward, kept as the fast path and as an independent
   oracle for the interpreter. macOS/arm64 only; see `docs/MLX_PLAN.md`.
 
-So every build discovers GPUs (`tabfm_devices()` probes NVML and the KFD sysfs
-topology in all flavors — neither needs a vendor SDK) and every build accepts
-`SET anofox_tabfm_device='cuda'|'rocm'|'mlx'`; `SET anofox_tabfm_ep_path` says
-where the plugin lives. CoreML is the exception and stays flavor-gated, being an
-in-process ORT EP. GPU code paths must never be *required* for the cpu build —
-that constraint is about what is LINKED, which is unchanged.
+Every build discovers GPUs (`tabfm_devices()` probes NVML and the KFD sysfs
+topology — neither needs a vendor SDK; `ep` is `ggml`, `ggml-cuda`, `ggml-rocm`
+or `mlx`) and every build accepts `SET anofox_tabfm_device='cuda'|'rocm'|'mlx'`;
+`SET anofox_tabfm_ep_path` says where the plugin lives, `tabfm_download_runtime`
+fetches it. `'coreml'` is accepted but errors (deprecated), `'migraphx'` aliases
+`'rocm'`; `anofox_tabfm_mxr_source` and `anofox_tabfm_cpu_prepack` are no-ops.
+GPU code paths must never be *required* for the extension build — that
+constraint is about what is LINKED. The removed ONNX Runtime / MIGraphX design
+notes are in `docs/archive/`.
 
 When touching any of this, two rules earned the hard way:
 

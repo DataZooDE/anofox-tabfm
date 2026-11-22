@@ -41,3 +41,14 @@ jobs:
 
       - name: Compile the sources with stray headers on the include path
         run: scripts/check_compat_stray_headers.sh
+
+  no-onnx-runtime:
+    name: The extension, its build and its CI contain no ONNX Runtime
+    timeout-minutes: 5
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # ggml is the only engine (docs/GGML_PLAN.md); ONNX Runtime stays only in the Python dev tooling (goldens, parity). A reintroduced
+      # include, link or flavor switch fails here, with the lines that carry it.
+      - name: No ONNX Runtime outside the dev tooling
+        run: scripts/check_no_ort.sh

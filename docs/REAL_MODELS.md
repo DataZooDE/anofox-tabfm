@@ -470,7 +470,7 @@ for t in classification regression; do
 done
 uv run make_tabdpt_fixture --config fixture13 ../../test/fixtures/tabdpt13
 # then tools/make_external_graph.py and tools/make_migraphx_graph.py --dynamic exactly as for v1.2
-# (docs/ROCM_TABDPT_SPIKE.md), with the tabdpt13 names and --inline-ok bin_centres for regression
+# (docs/archive/ROCM_TABDPT_SPIKE.md), with the tabdpt13 names and --inline-ok bin_centres for regression
 ```
 
 Offline fixture: `test/sql/tabfm_tabdpt13.test` (`test/fixtures/tabdpt13`; its seeding keeps the
@@ -853,7 +853,7 @@ The second pass gives 1.000 on both and leaves query rows unchanged. It costs `S
 - More than 10 classes (upstream handles them with error-correcting output codes) is not supported;
   the engine's class ceiling is the head width.
 - ROCm: served on `rocm:0` through a second, MASKED graph per task (`tools/export_causilo --contract mask`;
-  `docs/ROCM_CAUSILO_PLAN.md`), not the positional CPU graph.
+  `docs/archive/ROCM_CAUSILO_PLAN.md`), not the positional CPU graph.
 
 **ROCm (Radeon RX 9070 XT, gfx1201, real weights).** `graph_migraphx_causilo_*` take `x, y` (full length,
 -100 off the context), `train_size`, `n_rows`, `d`: context statistics and every attention over rows are masked,
@@ -1016,7 +1016,7 @@ check the table above against your machine. (The first declared limit, 10,000 x 
 - **CPU:** verified on Linux x86-64 (this section's numbers). macOS arm64 and Windows x64 build in CI like every
   model but nobody ran LimiX there; the fixture SQL test is `notwindows`, as for the other ORT-forward tests.
 - **ROCm:** served through a second, MASKED graph per task (`tools/export_limix --contract mask`;
-  `docs/ROCM_SINGLE_EVAL_POS.md`), which reads the `model.safetensors` `tabfm_download` writes beside
+  `docs/archive/ROCM_SINGLE_EVAL_POS.md`), which reads the `model.safetensors` `tabfm_download` writes beside
   `model.ckpt` (header sha `0c6a8684...`, the same file the ext graphs use). Verified on a gfx1201 (RX 9070 XT,
   fp32, 100 x 8, 70 context rows; `test/sql/tabfm_rocm_real_models.test`): served by `rocm:0`, **0/100** label
   differences from the CPU, regression max |diff| 3.5e-4 on a target scale of 7.9 (corr 0.9999999996); cold
@@ -1446,7 +1446,7 @@ revision upstream's loader asks for; the LFS hashes are identical on `main`.
 
 Four things the export had to change, each found by a failure: integer `index % num_columns` in the group
 wrap became conditional subtraction (MIGraphX's GPU target miscomputes data-dependent integer division,
-`docs/ROCM_TABPFN_PLAN.md`); upstream hands ONE `RotaryEmbedding` to every row block, so 8 checkpoint keys
+`docs/archive/ROCM_TABPFN_PLAN.md`); upstream hands ONE `RotaryEmbedding` to every row block, so 8 checkpoint keys
 were one ONNX initializer and the engine refused the graph, and unsharing the leaf module gives a 1:1 map;
 the qkv / RoPE / readout splits lowered to `SplitToSequence` + `SequenceAt` (166 in the small graph), which
 MIGraphX and the MLX interpreter lack, and a graph rewrite turns them into `Slice`; and query rows carry the
@@ -1568,7 +1568,7 @@ tensors, regressor 347), so the exporter is task-aware; the regressor keys are a
 subset of the classifier's, so a shared tensor_map still drives both graphs.
 
 **ROCm** serves both tasks through a second, MASKED graph per task (`tools/export_tabicl --contract mask`,
-`docs/ROCM_SINGLE_EVAL_POS.md`): the same initializers and safetensors, the split as a value. On the real
+`docs/archive/ROCM_SINGLE_EVAL_POS.md`): the same initializers and safetensors, the split as a value. On the real
 checkpoints the masked forward matches the positional one to 2.6e-5 (five negative controls caught). On a
 gfx1201 (RX 9070 XT, fp32, 100 x 8, 70 context rows; `test/sql/tabfm_rocm_real_models.test`): served by
 `rocm:0`, **0/100** label differences from the CPU, regression max |diff| 4.4e-5 on a scale of 7.3; cold

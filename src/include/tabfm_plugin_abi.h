@@ -3,7 +3,7 @@
  *
  * tabfm_plugin_abi.h — the C ABI between the extension and a backend plugin.
  *
- * Phase 1 of docs/DYNAMIC_BACKENDS.md. A GPU backend is a shared library the
+ * Phase 1 of docs/archive/DYNAMIC_BACKENDS.md. A GPU backend is a shared library the
  * extension dlopens when the user asks for that device, not code compiled into
  * a separate build flavor. The shape is deliberately the one ONNX Runtime uses
  * for its own providers: one exported symbol returning a function table.

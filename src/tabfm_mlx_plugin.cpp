@@ -379,7 +379,7 @@ Precision ParsePrecision(const std::string &value) {
 	if (value == "fp16") {
 		return Precision::FP16;
 	}
-	// P2 in docs/GPU_HARDENING_PLAN.md was the CUDA plugin silently ignoring
+	// P2 in docs/archive/GPU_HARDENING_PLAN.md was the CUDA plugin silently ignoring
 	// this setting and always running fp32. Every mode must happen or error.
 	// 'tf32' is a CUDA tensor-core rounding mode with no Metal equivalent, so
 	// it is refused here rather than quietly delivering fp32 under its name.
@@ -935,7 +935,7 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		if (precision != Precision::FP32) {
 			// Better an error than a mode that silently does nothing: the
 			// interpreter runs the graph's own dtypes (P2 in
-			// docs/GPU_HARDENING_PLAN.md is exactly this failure).
+			// docs/archive/GPU_HARDENING_PLAN.md is exactly this failure).
 			throw MlxError("precision '" + std::string(params->precision ? params->precision : "") +
 			               "' is not implemented for models running through the mlx graph interpreter; only "
 			               "'mitra' has a reduced-precision path today. SET anofox_tabfm_gpu_precision='fp32'.");

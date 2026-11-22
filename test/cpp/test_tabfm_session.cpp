@@ -12,7 +12,7 @@
 #include "catch.hpp"
 
 #include "duckdb.hpp"
-#include "tabfm_ort_engine.hpp"
+#include "tabfm_session.hpp"
 #include "tabfm_state.hpp"
 
 // DuckDB's vendored yyjson (linked inside duckdb_static); the test object
@@ -235,7 +235,7 @@ void RequireLogitsClose(const vector<float> &actual, const vector<float> &expect
 // Dtype hooks
 //===----------------------------------------------------------------------===//
 
-TEST_CASE("tabfm_ort_engine: dtype sizes and cast hooks", "[tabfm][ort_engine]") {
+TEST_CASE("tabfm_session: dtype sizes and cast hooks", "[tabfm][session]") {
 	REQUIRE(TabFMDtypeSize(TabFMTensorDtype::F32) == 4);
 	REQUIRE(TabFMDtypeSize(TabFMTensorDtype::F16) == 2);
 	REQUIRE(TabFMDtypeSize(TabFMTensorDtype::BF16) == 2);
@@ -279,39 +279,6 @@ TEST_CASE("tabfm_ort_engine: dtype sizes and cast hooks", "[tabfm][ort_engine]")
 // MIGraphX shape buckets
 //===----------------------------------------------------------------------===//
 
-TEST_CASE("tabfm_devices: MIGraphX shape buckets", "[tabfm][ort_engine][devices]") {
-	auto bucket = MIGraphXShapeBucket(1, 1);
-	REQUIRE(bucket.padded_t == 128);
-	REQUIRE(bucket.padded_h == 16);
-
-	bucket = MIGraphXShapeBucket(128, 16); // exact edges stay
-	REQUIRE(bucket.padded_t == 128);
-	REQUIRE(bucket.padded_h == 16);
-
-	bucket = MIGraphXShapeBucket(129, 17); // just past an edge -> next bucket
-	REQUIRE(bucket.padded_t == 512);
-	REQUIRE(bucket.padded_h == 64);
-
-	bucket = MIGraphXShapeBucket(4097, 300);
-	REQUIRE(bucket.padded_t == 10000);
-	REQUIRE(bucket.padded_h == 512);
-
-	bucket = MIGraphXShapeBucket(10000, 512); // top edges
-	REQUIRE(bucket.padded_t == 10000);
-	REQUIRE(bucket.padded_h == 512);
-
-	// above the largest bucket: unchanged (guardrail settings own the limit)
-	bucket = MIGraphXShapeBucket(10001, 513);
-	REQUIRE(bucket.padded_t == 10001);
-	REQUIRE(bucket.padded_h == 513);
-
-	REQUIRE_THROWS(MIGraphXShapeBucket(0, 16));
-	REQUIRE_THROWS(MIGraphXShapeBucket(128, -1));
-}
-
-//===----------------------------------------------------------------------===//
-// Device discovery + resolution
-//===----------------------------------------------------------------------===//
 
 #ifndef _WIN32
 //! A fake /sys/class/kfd/kfd/topology/nodes: node 0 is the CPU (gfx_target_version 0), then the given GPUs as (gfx_target_version, simd_count).
@@ -334,7 +301,7 @@ static string MakeFakeKfdTopology(const string &tag, const vector<std::pair<uint
 	return root.string();
 }
 
-TEST_CASE("tabfm_devices: every compute-capable KFD node is a usable rocm device, whatever its architecture", "[tabfm][ort_engine][devices]") {
+TEST_CASE("tabfm_devices: every compute-capable KFD node is a usable rocm device, whatever its architecture", "[tabfm][session][devices]") {
 	// The ggml HIP plugin runs the architectures it was built for, not only the ones MIGraphX claims: an iGPU (gfx1150) and a new discrete card (gfx1201)
 	// were both reported unusable by the old allowlist, and the CPU node and a node without compute units must never appear.
 	const auto root = MakeFakeKfdTopology("two_gpus", {{110500, 64}, {120001, 2048}, {90000, 0}});
@@ -351,9 +318,46 @@ TEST_CASE("tabfm_devices: every compute-capable KFD node is a usable rocm device
 	REQUIRE(devices[1].driver == "6.4.0");
 	REQUIRE(DiscoverRocmDevicesFrom(root + "/does_not_exist", "").empty());
 }
+
+TEST_CASE("tabfm_devices: a rocm device is usable only when the ggml plugin ships kernels for its architecture", "[tabfm][session][devices]") {
+	// A Ryzen desktop: the iGPU (gfx1036) enumerates first, before an RX 7900 (gfx1100). The released plugin carries no gfx1036 code objects, so
+	// 'auto' and an explicit 'rocm' must pick the discrete card, not commit to a device whose first query fails inside HIP.
+	const auto root = MakeFakeKfdTopology("igpu_first", {{100306, 4}, {110000, 192}});
+	const auto devices = DiscoverRocmDevicesFrom(root, "6.4.0");
+	REQUIRE(devices.size() == 2);
+	REQUIRE(devices[0].arch == "gfx1036");
+	REQUIRE(!devices[0].usable);
+	REQUIRE(devices[1].arch == "gfx1100");
+	REQUIRE(devices[1].usable);
+	TabFMDeviceInfo cpu;
+	cpu.device_id = "cpu";
+	cpu.usable = true;
+	vector<TabFMDeviceInfo> all = {cpu};
+	all.insert(all.end(), devices.begin(), devices.end());
+	REQUIRE(ResolveDevice("rocm", all).device_id == "rocm:1");
+	REQUIRE(ResolveDevice("rocm", all).device_ordinal == 1); // the HIP ordinal of the card that is used, not of the first node
+	// every architecture the release builds is usable, and only those
+	for (const auto &arch : GgmlRocmPluginArchs()) {
+		REQUIRE(RocmArchUsable(arch));
+	}
+	REQUIRE(!RocmArchUsable("gfx906"));
+	// asked for explicitly with only the iGPU present, the error names the card, its architecture and what the plugin supports
+	vector<TabFMDeviceInfo> igpu_only = {cpu, devices[0]};
+	try {
+		ResolveDevice("rocm", igpu_only);
+		FAIL("expected a refusal");
+	} catch (const InvalidInputException &e) {
+		const string message = e.what();
+		REQUIRE(message.find("rocm:0") != string::npos);
+		REQUIRE(message.find("gfx1036") != string::npos);
+		REQUIRE(message.find("gfx1100") != string::npos); // the supported list
+		REQUIRE(message.find("anofox_tabfm_device='cpu'") != string::npos);
+	}
+	REQUIRE(!RocmArchUsable(""));
+}
 #endif
 
-TEST_CASE("tabfm_devices: a CUDA card is usable when the plugin ships kernels for its compute capability", "[tabfm][ort_engine][devices]") {
+TEST_CASE("tabfm_devices: a CUDA card is usable when the plugin ships kernels for its compute capability", "[tabfm][session][devices]") {
 	REQUIRE(CudaComputeCapabilityUsable(7, 5));   // Turing, the oldest build target
 	REQUIRE(CudaComputeCapabilityUsable(8, 9));   // Ada
 	REQUIRE(CudaComputeCapabilityUsable(12, 0));  // Blackwell
@@ -361,12 +365,12 @@ TEST_CASE("tabfm_devices: a CUDA card is usable when the plugin ships kernels fo
 	REQUIRE(!CudaComputeCapabilityUsable(7, 0));  // Volta
 }
 
-TEST_CASE("tabfm_devices: discovery always yields the usable cpu row", "[tabfm][ort_engine][devices]") {
+TEST_CASE("tabfm_devices: discovery always yields the usable cpu row", "[tabfm][session][devices]") {
 	auto devices = DiscoverDevices();
 	REQUIRE(devices.size() >= 1);
 	auto &cpu = devices[0];
 	REQUIRE(cpu.device_id == "cpu");
-	REQUIRE(cpu.ep == "CPUExecutionProvider");
+	REQUIRE(cpu.ep == "ggml"); // the engine that serves the device (it used to be an ONNX Runtime provider name)
 	REQUIRE(!cpu.name.empty());
 	REQUIRE(cpu.arch.empty());
 	REQUIRE(cpu.vram_total == -1);
@@ -377,7 +381,7 @@ TEST_CASE("tabfm_devices: discovery always yields the usable cpu row", "[tabfm][
 	// more. It used to be here, and it encoded the bug: the GPU probes were
 	// compiled only into their own flavor, so the shipped cpu artifact could not
 	// see a card even with a working backend plugin installed — which defeats
-	// the point of docs/DYNAMIC_BACKENDS.md. Every flavor probes now, so the row
+	// the point of docs/archive/DYNAMIC_BACKENDS.md. Every flavor probes now, so the row
 	// count is a property of the MACHINE and cannot be asserted here.
 	//
 	// What must hold regardless of hardware: cpu is first, ids are unique, and
@@ -396,283 +400,67 @@ TEST_CASE("tabfm_devices: discovery always yields the usable cpu row", "[tabfm][
 	}
 }
 
-TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][ort_engine][devices]") {
+TEST_CASE("tabfm_devices: ResolveDevice semantics", "[tabfm][session][devices]") {
 	TabFMDeviceInfo cpu;
 	cpu.device_id = "cpu";
-	cpu.ep = "CPUExecutionProvider";
 	cpu.usable = true;
-
 	TabFMDeviceInfo cuda0;
 	cuda0.device_id = "cuda:0";
-	cuda0.ep = "CUDAExecutionProvider";
 	cuda0.arch = "sm_89";
 	cuda0.usable = true;
-
 	TabFMDeviceInfo rocm0;
 	rocm0.device_id = "rocm:0";
-	rocm0.ep = "MIGraphXExecutionProvider";
-	rocm0.arch = "gfx1100";
+	rocm0.arch = "gfx1150";
 	rocm0.usable = true;
+	TabFMDeviceInfo mlx0;
+	mlx0.device_id = "mlx:0";
+	mlx0.usable = true;
+	const vector<TabFMDeviceInfo> all {cpu, cuda0, rocm0, mlx0};
 
-	SECTION("cpu flavor") {
-		vector<TabFMDeviceInfo> devices {cpu};
-		REQUIRE(ResolveDevice("cpu", devices, false, false).device_id == "cpu");
-		REQUIRE(ResolveDevice("auto", devices, false, false).device_id == "cpu");
-		// Requesting cuda on a cpu-flavor build is NOT a flavor error any more
-		// (docs/DYNAMIC_BACKENDS.md phase 3): CUDA is a downloadable plugin with
-		// its own ORT-GPU runtime, so every build can drive an NVIDIA card. What
-		// is wrong here is that this machine has no such card, and the message
-		// must say so rather than blaming the build.
-		try {
-			ResolveDevice("cuda", devices, false, false);
-			FAIL("expected an exception");
-		} catch (std::exception &error) {
-			string message = error.what();
-			REQUIRE(message.find("no usable 'cuda' device") != string::npos);
-			REQUIRE(message.find("tabfm_devices()") != string::npos);
-			REQUIRE(message.find("does not carry") == string::npos);
-		}
-		// rocm is carried by every build too (its plugin is built independently
-		// of TABFM_FLAVOR), so with no AMD card present this is a hardware
-		// message, not a flavor one.
-		try {
-			ResolveDevice("rocm", devices, false, false);
-			FAIL("expected an exception");
-		} catch (std::exception &error) {
-			string message = error.what();
-			REQUIRE(message.find("no usable 'rocm' device") != string::npos);
-			REQUIRE(message.find("does not carry") == string::npos);
-		}
-		// CoreML IS still a compile-time flavor — it is an ordinary ORT EP in
-		// this process — so it still reports as one, and must never point at the
-		// dead ext.anofox.com host (issue #25).
-		try {
-			ResolveDevice("coreml", devices, false, false, false);
-			FAIL("expected an exception");
-		} catch (std::exception &error) {
-			string message = error.what();
-			REQUIRE(message.find("does not carry 'coreml'") != string::npos);
-			REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
-			REQUIRE(message.find("ext.anofox.com") == string::npos);
-			REQUIRE(message.find("get.anofox.com") != string::npos);
-			REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
-			// The plugins ARE published (v2026.08.22 onward carries all three),
-			// and TABFM_FLAVOR cannot build one — flavor stopped driving GPU
-			// execution when the plugin ABI took over. This message may only
-			// name the flavor for coreml, which really is compiled in, and must
-			// never send a cuda/rocm/mlx user to a source build instead of to
-			// tabfm_download_runtime.
-			REQUIRE(message.find("not published yet") == string::npos);
-			REQUIRE(message.find("TABFM_FLAVOR=cuda") == string::npos);
-			REQUIRE(message.find("TABFM_FLAVOR=rocm") == string::npos);
-			REQUIRE(message.find("TABFM_FLAVOR=mlx") == string::npos);
-			// mlx is the accelerator that actually works on this hardware, and
-			// it is one call away — say so rather than leaving cpu as the only
-			// exit.
-			REQUIRE(message.find("tabfm_download_runtime('mlx')") != string::npos);
+	SECTION("cpu and auto answer the CPU (a GPU is chosen per model by the engine)") {
+		REQUIRE(ResolveDevice("cpu", all).device_id == "cpu");
+		REQUIRE(ResolveDevice("auto", all).device_id == "cpu");
+		REQUIRE(ResolveDevice("CPU", all).device_id == "cpu");
+	}
+	SECTION("every build carries every GPU lane: the plugins are separate") {
+		REQUIRE(ResolveDevice("cuda", all).device_id == "cuda:0");
+		REQUIRE(ResolveDevice("rocm", all).device_id == "rocm:0");
+		REQUIRE(ResolveDevice("migraphx", all).device_id == "rocm:0"); // the old name still resolves
+		REQUIRE(ResolveDevice("mlx", all).device_id == "mlx:0");
+	}
+	SECTION("a GPU setting with no usable device names tabfm_devices() and the CPU way out") {
+		TabFMDeviceInfo unusable = cuda0;
+		unusable.usable = false;
+		for (const vector<TabFMDeviceInfo> &devices : {vector<TabFMDeviceInfo> {cpu}, vector<TabFMDeviceInfo> {cpu, unusable}}) {
+			try {
+				ResolveDevice("cuda", devices);
+				FAIL("expected a refusal");
+			} catch (const InvalidInputException &e) {
+				const string message = e.what();
+				REQUIRE(message.find("no usable 'cuda' device") != string::npos);
+				REQUIRE(message.find("tabfm_devices()") != string::npos);
+				REQUIRE(message.find("anofox_tabfm_device='cpu'") != string::npos);
+			}
 		}
 	}
-
-	SECTION("coreml hardware present but not carried names coreml's own remedy") {
-		// The other !carried branch. Reachable only for coreml: `carried` is
-		// hardcoded true for cuda/rocm/mlx, since each is a dlopen'd plugin
-		// every build can host. So this message must talk about coreml's
-		// compiled-in EP, not about unpublished GPU runtimes.
-		TabFMDeviceInfo coreml0;
-		coreml0.device_id = "coreml:0";
-		coreml0.ep = "CoreMLExecutionProvider";
-		coreml0.name = "Apple M3";
-		coreml0.usable = true;
-		vector<TabFMDeviceInfo> devices {cpu, coreml0};
+	SECTION("coreml was an ONNX Runtime provider: refused, pointing at mlx") {
 		try {
-			ResolveDevice("coreml", devices, false, false, false);
-			FAIL("expected an exception");
-		} catch (std::exception &error) {
-			string message = error.what();
-			// names the hardware it found, so the user knows the probe worked
-			REQUIRE(message.find("Apple M3") != string::npos);
-			REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
-			REQUIRE(message.find("not published yet") == string::npos);
-			REQUIRE(message.find("docs/rocm-build.md") == string::npos);
-		}
-	}
-
-	SECTION("mlx is a plugin lane, explicit-only") {
-		TabFMDeviceInfo mlx0;
-		mlx0.device_id = "mlx:0";
-		mlx0.ep = "MlxBackend";
-		mlx0.name = "Apple M3";
-		mlx0.arch = "Apple M3";
-		mlx0.usable = true;
-
-		// Like cuda and rocm since docs/DYNAMIC_BACKENDS.md phases 1 and 3, and
-		// UNLIKE coreml: MLX runs in a dlopen'd plugin with its own runtime, so
-		// every build can drive it and no flavor gate applies. A cpu-flavor
-		// build must therefore resolve it rather than complain about the build.
-		vector<TabFMDeviceInfo> devices {cpu, mlx0};
-		REQUIRE(ResolveDevice("mlx", devices, false, false, false).device_id == "mlx:0");
-		REQUIRE(ResolveDevice("cpu", devices, false, false, false).device_id == "cpu");
-
-		// Explicit opt-in only. Auto-selecting a device whose plugin is fetched
-		// separately would turn a working CPU install into a failing one the
-		// moment the extension is run on Apple Silicon -- the same reasoning
-		// that keeps cuda and rocm out of 'auto'.
-		REQUIRE(ResolveDevice("auto", devices, false, false, false).device_id == "cpu");
-
-		// No Apple Silicon -> a hardware message, never a flavor one.
-		vector<TabFMDeviceInfo> only_cpu {cpu};
-		try {
-			ResolveDevice("mlx", only_cpu, false, false, false);
-			FAIL("expected an exception");
-		} catch (std::exception &error) {
-			string message = error.what();
-			REQUIRE(message.find("no usable 'mlx' device") != string::npos);
-			REQUIRE(message.find("tabfm_devices()") != string::npos);
-			REQUIRE(message.find("does not carry") == string::npos);
-		}
-	}
-
-	SECTION("cuda flavor with a usable device") {
-		vector<TabFMDeviceInfo> devices {cpu, cuda0};
-		REQUIRE(ResolveDevice("cuda", devices, true, false).device_id == "cuda:0");
-		REQUIRE(ResolveDevice("auto", devices, true, false).device_id == "cuda:0");
-		REQUIRE(ResolveDevice("cpu", devices, true, false).device_id == "cpu");
-		// carried flavor but the other GPU vendor requested
-		REQUIRE_THROWS(ResolveDevice("rocm", devices, true, false));
-	}
-
-	SECTION("runtime present but no such device, vs device present but no runtime") {
-		// Phase 0 of docs/DYNAMIC_BACKENDS.md: resolution asks whether the
-		// RUNTIME is usable here, not whether this build was compiled as a
-		// particular flavor. The two failures are different and a user can only
-		// act on the difference: install a driver, or fetch a runtime.
-		vector<TabFMDeviceInfo> only_cpu {cpu};
-		try {
-			// runtime available, but the machine has no NVIDIA device
-			ResolveDevice("cuda", only_cpu, true, false);
-			FAIL("expected an exception");
-		} catch (std::exception &error) {
-			string message = error.what();
-			REQUIRE(message.find("tabfm_devices()") != string::npos);
-			// must NOT claim the build lacks cuda -- it does not
-			REQUIRE(message.find("does not carry") == string::npos);
-		}
-
-		// The mirror case used to be "device present but this build carries no
-		// cuda runtime". Since phase 3 there is no such state for CUDA: the
-		// runtime travels with the plugin, so a cpu-flavor build resolves a
-		// discovered, usable NVIDIA card successfully. (If the plugin has not
-		// been fetched, TryCudaBackend is what says so — resolution is not the
-		// place that knows.)
-		vector<TabFMDeviceInfo> with_gpu {cpu, cuda0};
-		REQUIRE(ResolveDevice("cuda", with_gpu, false, false).device_id == "cuda:0");
-
-		// Same for rocm, and for the same reason: a cpu-flavor build with the
-		// MIGraphX plugin present drives a discovered AMD card. Refusing here
-		// used to tell users to rebuild with TABFM_FLAVOR=rocm while the plugin
-		// was already at their ep_path — advice that could not fix anything.
-		vector<TabFMDeviceInfo> with_rocm {cpu, rocm0};
-		REQUIRE(ResolveDevice("rocm", with_rocm, false, false).device_id == "rocm:0");
-
-		// CoreML keeps the distinction, being an in-process ORT EP.
-		TabFMDeviceInfo apple;
-		apple.device_id = "coreml:0";
-		apple.ep = "CoreMLExecutionProvider";
-		apple.name = "Apple M3";
-		apple.usable = true;
-		vector<TabFMDeviceInfo> with_coreml {cpu, apple};
-		try {
-			ResolveDevice("coreml", with_coreml, false, false, false);
-			FAIL("expected an exception");
-		} catch (std::exception &error) {
-			string message = error.what();
+			ResolveDevice("coreml", all);
+			FAIL("expected a refusal");
+		} catch (const InvalidInputException &e) {
+			const string message = e.what();
 			REQUIRE(message.find("coreml") != string::npos);
-			// naming the discovered hardware is what makes this actionable
-			REQUIRE(message.find("runtime") != string::npos);
+			REQUIRE(message.find("tabfm_download_runtime('mlx')") != string::npos);
+			REQUIRE(message.find("anofox_tabfm_device='cpu'") != string::npos);
+			REQUIRE(message.find("rebuild") == string::npos); // no rebuild advice: there is nothing to rebuild with
 		}
 	}
-
-	SECTION("cuda flavor, device present but not usable") {
-		cuda0.usable = false;
-		vector<TabFMDeviceInfo> devices {cpu, cuda0};
-		try {
-			ResolveDevice("cuda", devices, true, false);
-			FAIL("expected an exception");
-		} catch (std::exception &error) {
-			string message = error.what();
-			REQUIRE(message.find("tabfm_devices()") != string::npos);
-		}
-		// auto falls back to the cpu lane
-		REQUIRE(ResolveDevice("auto", devices, true, false).device_id == "cpu");
-	}
-
-	SECTION("rocm flavor") {
-		vector<TabFMDeviceInfo> devices {cpu, rocm0};
-		REQUIRE(ResolveDevice("rocm", devices, false, true).device_id == "rocm:0");
-		REQUIRE(ResolveDevice("migraphx", devices, false, true).device_id == "rocm:0"); // alias
-		REQUIRE(ResolveDevice("auto", devices, false, true).device_id == "rocm:0");
-		// unsupported consumer card: usable=false -> explicit failure
-		devices[1].usable = false;
-		REQUIRE_THROWS(ResolveDevice("rocm", devices, false, true));
-		REQUIRE(ResolveDevice("auto", devices, false, true).device_id == "cpu");
-	}
-
-	TabFMDeviceInfo coreml0;
-	coreml0.device_id = "coreml:0";
-	coreml0.ep = "CoreMLExecutionProvider";
-	coreml0.arch = "Apple M3";
-	coreml0.usable = true;
-
-	SECTION("cpu flavor rejects coreml with an actionable message") {
-		vector<TabFMDeviceInfo> devices {cpu};
-		try {
-			ResolveDevice("coreml", devices, false, false, false);
-			FAIL("expected an exception");
-		} catch (std::exception &error) {
-			string message = error.what();
-			REQUIRE(message.find("does not carry 'coreml'") != string::npos);
-			// The route must be one that exists: the repository serves the cpu
-			// flavor only, so the message names the from-source build instead,
-			// and must never point at the dead ext.anofox.com host (issue #25).
-			REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
-			REQUIRE(message.find("ext.anofox.com") == string::npos);
-			REQUIRE(message.find("get.anofox.com") != string::npos);
-			REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
-		}
-	}
-
-	SECTION("coreml flavor with a usable device") {
-		vector<TabFMDeviceInfo> devices {cpu, coreml0};
-		REQUIRE(ResolveDevice("coreml", devices, false, false, true).device_id == "coreml:0");
-		REQUIRE(ResolveDevice("auto", devices, false, false, true).device_id == "coreml:0");
-		REQUIRE(ResolveDevice("cpu", devices, false, false, true).device_id == "cpu");
-		// A GPU vendor requested on the coreml flavor. rocm is not carried;
-		// cuda is always carried now but there is no NVIDIA card in this list,
-		// so both still throw — for different, and correct, reasons.
-		REQUIRE_THROWS(ResolveDevice("cuda", devices, false, false, true));
-		REQUIRE_THROWS(ResolveDevice("rocm", devices, false, false, true));
-	}
-
-	SECTION("coreml flavor, device present but not usable") {
-		coreml0.usable = false;
-		vector<TabFMDeviceInfo> devices {cpu, coreml0};
-		try {
-			ResolveDevice("coreml", devices, false, false, true);
-			FAIL("expected an exception");
-		} catch (std::exception &error) {
-			string message = error.what();
-			REQUIRE(message.find("tabfm_devices()") != string::npos);
-		}
-		// auto falls back to the cpu lane when coreml is unusable
-		REQUIRE(ResolveDevice("auto", devices, false, false, true).device_id == "cpu");
+	SECTION("an unknown setting names the valid ones") {
+		REQUIRE_THROWS_WITH(ResolveDevice("tpu", all), Catch::Matchers::Contains("'auto', 'cpu', 'cuda', 'rocm', 'mlx'"));
 	}
 }
 
-//===----------------------------------------------------------------------===//
-// Output validation (guards decode against malformed/mismatched graphs)
-//===----------------------------------------------------------------------===//
-
-TEST_CASE("tabfm_ort_engine: ValidateTabFMOutput enforces the [1,T,C] contract", "[tabfm][ort_engine]") {
+TEST_CASE("tabfm_session: ValidateTabFMOutput enforces the [1,T,C] contract", "[tabfm][session]") {
 	auto make = [](vector<int64_t> shape, idx_t n) {
 		TabFMRunOutput o;
 		o.shape = std::move(shape);
@@ -700,7 +488,7 @@ TEST_CASE("tabfm_ort_engine: ValidateTabFMOutput enforces the [1,T,C] contract",
 // Engine: session creation + forward pass (MLP fixture)
 //===----------------------------------------------------------------------===//
 
-TEST_CASE("tabfm_ort_engine: create session with injection and run", "[tabfm][ort_engine]") {
+TEST_CASE("tabfm_session: create session with injection and run", "[tabfm][session]") {
 	auto fixture = LoadMlpFixture();
 
 	TabFMSessionConfig config;
@@ -716,71 +504,8 @@ TEST_CASE("tabfm_ort_engine: create session with injection and run", "[tabfm][or
 	RequireLogitsClose(output.logits, fixture.logits, fixture.rtol, 1e-6);
 }
 
-#ifdef TABFM_WITH_ORT // ORT's own flavor message; a build without ORT answers any ORT-backed device with the "needs ONNX Runtime" error
-TEST_CASE("tabfm_ort_engine: coreml device on a non-coreml flavor gives the actionable flavor error",
-          "[tabfm][ort_engine]") {
-	// Under the cpu/cuda/rocm flavors, requesting the coreml lane must not fall
-	// through to the generic 'unknown device' path — it must name the coreml
-	// flavor and the cpu fallback (SQL-API §5). Under the coreml flavor this
-	// branch instead registers the EP (covered by the [.coreml] case below), so
-	// skip the assertion there.
-	if (TabFMFlavorHasCoreML()) {
-		SUCCEED("coreml flavor: append registers the EP, see the [.coreml] parity case");
-		return;
-	}
-	auto fixture = LoadMlpFixture();
-	TabFMSessionConfig config;
-	config.device_id = "coreml";
-	config.model_tag = "mlp-fixture";
-	try {
-		CreateSession(fixture.graph.data(), fixture.graph.size(), fixture.Initializers(), config);
-		FAIL("expected an exception");
-	} catch (std::exception &error) {
-		string message = error.what();
-		// The message describes the situation that actually obtains — no GPU
-		// backend could serve this model, so it fell back to an ORT without that
-		// provider — rather than the old "this build does not carry coreml",
-		// which contradicted device resolution now that a plugin can carry a
-		// device the build was not compiled for.
-		REQUIRE(message.find("carries no 'coreml' execution provider") != string::npos);
-		REQUIRE(message.find("no GPU backend could serve this model") != string::npos);
-		// The routes offered must still be ones that exist (issue #25).
-		REQUIRE(message.find("TABFM_FLAVOR=coreml") != string::npos);
-		REQUIRE(message.find("anofox_tabfm_ep_path") != string::npos);
-		REQUIRE(message.find("ext.anofox.com") == string::npos);
-		REQUIRE(message.find("SET anofox_tabfm_device='cpu'") != string::npos);
-	}
-}
-#endif // TABFM_WITH_ORT
 
-// Hidden by default ([.coreml] tag): needs the coreml flavor + Apple Silicon.
-// Run with:  TABFM_FLAVOR=coreml ... unittest "[.coreml]"
-TEST_CASE("tabfm_ort_engine: CoreML EP runs the fixture and matches the CPU golden logits",
-          "[tabfm][ort_engine][.coreml]") {
-	// [.coreml] hides this from the default run, but an explicit tag filter (e.g.
-	// "[ort_engine]") still selects it — skip unless this really is the coreml
-	// flavor, where the EP is registered.
-	if (!TabFMFlavorHasCoreML()) {
-		SUCCEED("not the coreml flavor — CoreML EP unavailable, skipping");
-		return;
-	}
-	auto fixture = LoadMlpFixture();
-	TabFMSessionConfig config;
-	config.intra_op_threads = 2;
-	config.device_id = "coreml";
-	config.model_tag = "mlp-fixture";
-
-	auto session = CreateSession(fixture.graph.data(), fixture.graph.size(), fixture.Initializers(), config);
-	REQUIRE(session);
-
-	auto output = Run(*session, fixture.RunInput());
-	REQUIRE(output.shape == vector<int64_t> {1, fixture.t, fixture.c});
-	// CoreML partitions the graph; unsupported ops fall back to the CPU EP. The
-	// end-to-end result must still match the pure-CPU golden within tolerance.
-	RequireLogitsClose(output.logits, fixture.logits, fixture.rtol, 1e-4);
-}
-
-TEST_CASE("tabfm_ort_engine: missing injection maps to the weights-not-loaded error", "[tabfm][ort_engine]") {
+TEST_CASE("tabfm_session: missing injection maps to the weights-not-loaded error", "[tabfm][session]") {
 	auto fixture = LoadMlpFixture();
 
 	TabFMSessionConfig config;
@@ -800,7 +525,7 @@ TEST_CASE("tabfm_ort_engine: missing injection maps to the weights-not-loaded er
 	}
 }
 
-TEST_CASE("tabfm_ort_engine: wrong-shape injection maps to the corrupted-checkpoint error", "[tabfm][ort_engine]") {
+TEST_CASE("tabfm_session: wrong-shape injection maps to the corrupted-checkpoint error", "[tabfm][session]") {
 	auto fixture = LoadMlpFixture();
 
 	TabFMSessionConfig config;
@@ -850,7 +575,7 @@ shared_ptr<LoadedModel> MakeFakeModel(bool &freed_flag, const string &device = "
 
 } // anonymous namespace
 
-TEST_CASE("tabfm_state: a cached session is not reused for a different device", "[tabfm][ort_engine][state]") {
+TEST_CASE("tabfm_state: a cached session is not reused for a different device", "[tabfm][session][state]") {
 	// Regression test for the bug where SET anofox_tabfm_device was ignored
 	// after the first predict of a session: LoadOrGetSession returned any
 	// cached session whose key matched, so
@@ -919,7 +644,7 @@ TEST_CASE("tabfm_state: a cached session is not reused for a different device", 
 	}
 }
 
-TEST_CASE("tabfm_state: load / snapshot / unload-while-in-use / refcount release", "[tabfm][ort_engine][state]") {
+TEST_CASE("tabfm_state: load / snapshot / unload-while-in-use / refcount release", "[tabfm][session][state]") {
 	auto state = make_shared_ptr<TabFMState>();
 	bool freed = false;
 
@@ -945,7 +670,7 @@ TEST_CASE("tabfm_state: load / snapshot / unload-while-in-use / refcount release
 	REQUIRE(freed);
 }
 
-TEST_CASE("tabfm_state: re-register replaces and evicts the old model", "[tabfm][ort_engine][state]") {
+TEST_CASE("tabfm_state: re-register replaces and evicts the old model", "[tabfm][session][state]") {
 	// `freed_*` MUST outlive `state`: the new model stays registered at scope
 	// exit (asserted !freed_new below), so its deleter writes freed_new during
 	// state's destruction. Declaring the flags first makes state destruct first
@@ -969,7 +694,7 @@ TEST_CASE("tabfm_state: re-register replaces and evicts the old model", "[tabfm]
 	REQUIRE(!freed_new);
 }
 
-TEST_CASE("tabfm_state: the context cache serves exact pairs on the CPU only", "[tabfm][ort_engine][state]") {
+TEST_CASE("tabfm_state: the context cache serves exact pairs on the CPU only", "[tabfm][session][state]") {
 	// The cache is on by default (anofox_tabfm_context_cache), so the GPU half of this predicate is what
 	// keeps a GPU session running exactly as before: the plugins run single-graph forwards with no split
 	// form, and a split session built "for" a GPU device would silently serve it from the CPU. CI has no
@@ -992,7 +717,7 @@ TEST_CASE("tabfm_state: the context cache serves exact pairs on the CPU only", "
 	}
 }
 
-TEST_CASE("tabfm_state: UnloadAll evicts everything", "[tabfm][ort_engine][state]") {
+TEST_CASE("tabfm_state: UnloadAll evicts everything", "[tabfm][session][state]") {
 	auto state = make_shared_ptr<TabFMState>();
 	bool freed_a = false, freed_b = false;
 	state->Register("classification", MakeFakeModel(freed_a));
@@ -1005,8 +730,8 @@ TEST_CASE("tabfm_state: UnloadAll evicts everything", "[tabfm][ort_engine][state
 	REQUIRE(freed_b);
 }
 
-TEST_CASE("tabfm_state: one model caches sessions per device, unload frees them all", "[tabfm][ort_engine][state]") {
-	// P5 of docs/GPU_HARDENING_PLAN.md. S6 measured 18-27 s of pure rebuild per
+TEST_CASE("tabfm_state: one model caches sessions per device, unload frees them all", "[tabfm][session][state]") {
+	// P5 of docs/archive/GPU_HARDENING_PLAN.md. S6 measured 18-27 s of pure rebuild per
 	// device alternation under one-slot-per-key caching, so cpu and GPU
 	// sessions of a model now coexist — and tabfm_unload must still reach every
 	// one of them by the model's single name.
@@ -1046,7 +771,7 @@ TEST_CASE("tabfm_state: one model caches sessions per device, unload frees them 
 	REQUIRE(freed_gpu);
 }
 
-TEST_CASE("tabfm_state: the session cap evicts oldest-first and spares the newcomer", "[tabfm][ort_engine][state]") {
+TEST_CASE("tabfm_state: the session cap evicts oldest-first and spares the newcomer", "[tabfm][session][state]") {
 	// Multi-GB sessions must not accumulate behind the user's back now that
 	// (models x devices x precisions) is unbounded. Cap = 2: registering a
 	// third evicts the OLDEST, never the entry just registered.
@@ -1069,7 +794,7 @@ TEST_CASE("tabfm_state: the session cap evicts oldest-first and spares the newco
 	REQUIRE(state->SnapshotsFor("model_b").size() == 1);
 }
 
-TEST_CASE("tabfm_state: shared across connections via the ObjectCache", "[tabfm][ort_engine][state]") {
+TEST_CASE("tabfm_state: shared across connections via the ObjectCache", "[tabfm][session][state]") {
 	DuckDB db(nullptr);
 	Connection connection_a(db);
 	Connection connection_b(db);
@@ -1174,7 +899,7 @@ yyjson_val *GetAny(yyjson_val *object, const vector<const char *> &keys) {
 
 } // anonymous namespace
 
-TEST_CASE("tabfm_ort_engine: fixture-model parity vs golden.json (WS-A, rtol 1e-4)", "[tabfm][ort_engine]") {
+TEST_CASE("tabfm_session: fixture-model parity vs golden.json (WS-A, rtol 1e-4)", "[tabfm][session]") {
 	auto dir = RepoFixtureDir();
 	const string graph_path = dir + "/graph_fixture.onnx";
 	const string safetensors_path = dir + "/model.safetensors";
@@ -1359,22 +1084,20 @@ TEST_CASE("tabfm_ort_engine: fixture-model parity vs golden.json (WS-A, rtol 1e-
 	REQUIRE(max_rel <= 1e-4);
 }
 
-#ifndef TABFM_WITH_ORT
-TEST_CASE("tabfm_ort_engine: without ONNX Runtime a GPU/ORT-backed device is refused with the way out, the CPU device runs on ggml",
-          "[tabfm][ort_engine]") {
+TEST_CASE("tabfm_session: an in-process session exists for the CPU only; a GPU device is served by its plugin", "[tabfm][session]") {
 	auto fixture = LoadMlpFixture();
 	TabFMSessionConfig config;
 	config.model_tag = "mlp-fixture";
-	config.device_id = "coreml";
+	config.device_id = "cuda";
 	try {
 		CreateSession(fixture.graph.data(), fixture.graph.size(), fixture.Initializers(), config);
-		FAIL("a device that needs ONNX Runtime must be refused in a build without it");
+		FAIL("a GPU device has no in-process session");
 	} catch (const Exception &error) {
 		const string message = error.what();
-		REQUIRE(message.find("needs ONNX Runtime") != string::npos);
+		REQUIRE(message.find("plugin") != string::npos);
 		REQUIRE(message.find("anofox_tabfm_device='cpu'") != string::npos);
+		REQUIRE(message.find("ONNX Runtime") == string::npos);
 	}
 	config.device_id = "cpu";
 	REQUIRE(CreateSession(fixture.graph.data(), fixture.graph.size(), fixture.Initializers(), config) != nullptr);
 }
-#endif

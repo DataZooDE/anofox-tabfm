@@ -9,7 +9,7 @@ ONNX operator at all, which is the one thing that blocks a plain export.
 This module computes the same numbers with a binary search of a FIXED number of
 steps (`_SEARCH_STEPS`), each a Gather and a compare -- no data-dependent loop,
 no integer division (MIGraphX's GPU target miscomputes integer floor-division,
-docs/ROCM_TABPFN_PLAN.md), no Python branch on a value.
+docs/archive/ROCM_TABPFN_PLAN.md), no Python branch on a value.
 
 It follows upstream's algorithm step for step, both rulers included:
 

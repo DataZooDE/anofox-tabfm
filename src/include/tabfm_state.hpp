@@ -96,13 +96,13 @@ struct LoadedModel {
 //! real bug — a connection that ran anything on the cpu and then
 //! SET anofox_tabfm_device='cuda' kept getting the cpu session, with no error
 //! and no GPU, which is the "requested device quietly becomes CPU" outcome the
-//! tier-4 contract in docs/DYNAMIC_BACKENDS.md exists to rule out.
+//! tier-4 contract in docs/archive/DYNAMIC_BACKENDS.md exists to rule out.
 //!
 //! Pulled out of LoadOrGetSession as a pure function so it is testable without
 //! a GPU: CI cannot run the cpu->cuda switch that exposed the bug, but it can
 //! assert this predicate, which is where the mistake actually lived.
 //!
-//! `wanted_precision` joined in Track A (docs/GPU_HARDENING_PLAN.md P1/P2),
+//! `wanted_precision` joined in Track A (docs/archive/GPU_HARDENING_PLAN.md P1/P2),
 //! because the device story repeats one setting over: once gpu_precision
 //! shapes the session (fp32 vs tf32 vs bf16 build different programs),
 //! ignoring it here silently serves the old mode after a SET — the exact

@@ -1,7 +1,7 @@
 """MIGraphX structural guards on freshly exported 3.5 masked graphs.
 
 Each guard is a GPU-only failure found on an earlier TabPFN generation that ORT
-and the PyTorch parity gate cannot see (docs/ROCM_TABPFN_PLAN.md):
+and the PyTorch parity gate cannot see (docs/archive/ROCM_TABPFN_PLAN.md):
 
   * an integer Div on runtime data (MIGraphX's GPU target miscomputes it);
   * a Reshape to [] (MIGraphX reads it as zero elements and refuses the graph);

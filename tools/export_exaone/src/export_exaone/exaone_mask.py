@@ -1,7 +1,7 @@
 """EXAONE Tabular with the train/test split as a VALUE instead of a shape (the ROCm / MIGraphX contract).
 
 The CPU graph (``exaone_patches.ExportWrapper``) is ``(x, y)``-only: the split is ``len(y)``, a SHAPE, which a
-fixed-shape MIGraphX compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). This module computes the same
+fixed-shape MIGraphX compile cannot bucket (docs/archive/ROCM_SINGLE_EVAL_POS.md). This module computes the same
 function with every shape a function of the padded (T, H) bucket alone, the contract tabdpt and the TabPFN
 family already serve on ROCm:
 
@@ -30,8 +30,8 @@ static T-row copies: the first copy plays the context role (only its rows < S ar
 row as a query. The encoders run once and are duplicated, which is exact: duplicating rows changes neither the
 support statistics nor the constant-column test.
 
-MIGraphX-specific choices, each learnt by the earlier conversions (docs/ROCM_TABDPT_SPIKE.md,
-docs/ROCM_TABPFN_PLAN.md): masked row sums are GEMMs (``ones @ x``), because chained masked reductions crash
+MIGraphX-specific choices, each learnt by the earlier conversions (docs/archive/ROCM_TABDPT_SPIKE.md,
+docs/archive/ROCM_TABPFN_PLAN.md): masked row sums are GEMMs (``ones @ x``), because chained masked reductions crash
 MIGraphX's reducer codegen; ``train_size`` / ``d`` / ``n_rows`` stay rank 1 (a rank-0 Reshape is refused);
 there is no integer division on runtime data; the key bias is -1e4, finite in every float format.
 """

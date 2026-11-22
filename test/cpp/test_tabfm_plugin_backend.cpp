@@ -1,6 +1,6 @@
 //===----------------------------------------------------------------------===//
 // Catch2 tests for the backend-plugin loader (phase 1 of
-// docs/DYNAMIC_BACKENDS.md).
+// docs/archive/DYNAMIC_BACKENDS.md).
 //
 // The loader is the trust boundary: on the far side of it a mismatched ABI is
 // undefined behaviour rather than a wrong answer, so every refusal is asserted
@@ -166,8 +166,29 @@ TEST_CASE("plugin_backend: a graph input the plugin does not bind is refused bef
 	params.graph_path = "test/fixtures/graph_migraphx_fixture.onnx";
 	REQUIRE(LoadPluginBackend(path, params) != nullptr);
 
-	// a masked TabPFN graph also declares n_rows
-	params.graph_path = "resources/graph_migraphx_tabpfn_classification.onnx";
+	// a graph that also declares n_rows (as the masked TabPFN graphs did): a minimal ModelProto written by hand, ir_version + a graph whose
+	// inputs are the classic five plus n_rows
+	auto field = [](int number, const string &payload) {
+		string out(1, static_cast<char>((number << 3) | 2));
+		size_t len = payload.size();
+		do {
+			unsigned char byte = len & 0x7f;
+			len >>= 7;
+			out.push_back(static_cast<char>(len ? (byte | 0x80) : byte));
+		} while (len);
+		return out + payload;
+	};
+	string graph_proto;
+	for (const char *input : {"x", "y", "cat_mask", "train_size", "d", "n_rows"}) {
+		graph_proto += field(11, field(1, input)); // GraphProto.input = ValueInfoProto{name}
+	}
+	const string model_proto = string("\x08\x08", 2) + field(7, graph_proto); // ir_version 8, ModelProto.graph
+	const string extra_input_graph = (std::filesystem::temp_directory_path() / "anofox_tabfm_graph_with_n_rows.onnx").string();
+	{
+		std::ofstream out(extra_input_graph, std::ios::binary);
+		out << model_proto;
+	}
+	params.graph_path = extra_input_graph.c_str();
 	try {
 		LoadPluginBackend(path, params);
 		FAIL("expected an exception");
@@ -175,7 +196,7 @@ TEST_CASE("plugin_backend: a graph input the plugin does not bind is refused bef
 		const string message = error.what();
 		REQUIRE(message.find("'n_rows'") != string::npos);
 		REQUIRE(message.find("tabfm_accelerate") != string::npos);
-		REQUIRE(message.find("graph_migraphx_tabpfn_classification.onnx") != string::npos);
+		REQUIRE(message.find("anofox_tabfm_graph_with_n_rows.onnx") != string::npos);
 	}
 }
 
@@ -204,143 +225,6 @@ TEST_CASE("plugin_backend: an ABI mismatch is refused before anything is read", 
 
 #endif // TABFM_FAKE_PLUGIN_BAD_ABI_PATH
 
-#include "tabfm_soname_patch.hpp"
-
-TEST_CASE("soname_patch: exactly the NUL-terminated SONAME is rewritten", "[tabfm][plugin]") {
-	// Half of the SONAME-shadowing fix (GPU_HARDENING_PLAN S2). The dangerous
-	// mistakes are (a) rewriting a longer string the SONAME merely prefixes and
-	// (b) missing an occurrence and shipping a half-renamed core — both pinned.
-	using namespace duckdb::anofox;
-
-	SECTION("the plain case: one .dynstr-style entry") {
-		char buffer[] = "xx\0libonnxruntime.so.1\0yy";
-		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer)) == 1);
-		REQUIRE(std::memcmp(buffer + 3, ORT_RENAMED_SONAME, 19) == 0);
-		REQUIRE(buffer[3 + 19] == '\0'); // terminator untouched
-		REQUIRE(buffer[sizeof(buffer) - 3] == 'y');
-	}
-	SECTION("a longer string it prefixes is NOT touched") {
-		char buffer[] = "libonnxruntime.so.1.28.0\0";
-		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer)) == 0);
-		REQUIRE(std::memcmp(buffer, "libonnxruntime.so.1.28.0", 24) == 0);
-	}
-	SECTION("every occurrence is counted, so the caller can refuse a drifted wheel") {
-		char buffer[] = "libonnxruntime.so.1\0mid\0libonnxruntime.so.1\0";
-		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer)) == 2);
-	}
-	SECTION("absent, empty, and too-small inputs are zero, never a crash") {
-		char buffer[] = "nothing to see";
-		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer)) == 0);
-		REQUIRE(PatchOrtSonameInPlace(nullptr, 0) == 0);
-		char tiny[] = "lib";
-		REQUIRE(PatchOrtSonameInPlace(tiny, sizeof(tiny)) == 0);
-	}
-	SECTION("a match at the very end of the buffer is found") {
-		char buffer[] = "pad\0libonnxruntime.so.1\0";
-		REQUIRE(PatchOrtSonameInPlace(buffer, sizeof(buffer) - 0) == 1);
-	}
-}
-
-#include "tabfm_mxr_cache_key.hpp"
-
-TEST_CASE("mxr cache key: different graph content never collides; same content shares", "[tabfm][plugin_backend]") {
-	using anofox_tabfm_mxr::Fnv1a64;
-	using anofox_tabfm_mxr::MxrCacheStem;
-	// The 2026-08-22 bug pair: a stem-only key let mitra load tabfm-v1's
-	// compiled program (wrong answers, no error); the first fix hashed the
-	// PATH, which silently broke anofox_tabfm_mxr_source sharing across
-	// machines. Content hashing satisfies both: different models' graphs
-	// differ in bytes, the same graph anywhere hashes identically.
-	auto tabfm_bytes = std::string("pretend-tabfm-graph-bytes");
-	auto mitra_bytes = std::string("pretend-mitra-graph-bytes");
-	auto here = MxrCacheStem("/cache/a/graph_migraphx_classification.onnx", Fnv1a64(tabfm_bytes));
-	auto there = MxrCacheStem("/other/machine/graph_migraphx_classification.onnx", Fnv1a64(tabfm_bytes));
-	auto mitra = MxrCacheStem("/cache/b/graph_migraphx_classification.onnx", Fnv1a64(mitra_bytes));
-	REQUIRE(here == there); // same bytes, any path, any machine
-	REQUIRE(here != mitra); // different model, same filename
-	REQUIRE(here.rfind("graph_migraphx_classification_", 0) == 0);
-	REQUIRE(here.size() == std::string("graph_migraphx_classification_").size() + 8);
-}
-
-// The SECOND half of the 2026-08-22 bug, which the content hash above did not close.
-//
-// A graph is weight-FREE: it references `model.safetensors` by offset, and the
-// compiled .mxr bakes the weight VALUES in. Hashing the graph bytes therefore
-// separates models whose graphs differ -- and says nothing about two models that
-// share a byte-identical graph and differ only in weights. tabpfn-v2-5 and
-// tabpfn-v2-5-real are exactly that pair: same architecture, same graph, different
-// checkpoint. On ROCm the second one asked for silently received the first one's
-// compiled program -- GPU real vs GPU regular differed by 0.0, CPU real vs CPU
-// regular by 0.115 -- with no error and a plausible answer, which is the failure
-// mode this repo has the most scar tissue around.
-TEST_CASE("mxr cache key: same graph with different weights never collides", "[tabfm][plugin_backend]") {
-	using anofox_tabfm_mxr::Fnv1a64;
-	using anofox_tabfm_mxr::MxrCacheStem;
-	using anofox_tabfm_mxr::WeightsFingerprint;
-	namespace fs = std::filesystem;
-
-	const auto root = fs::temp_directory_path() / "tabfm_weights_fp_test";
-	fs::remove_all(root);
-	fs::create_directories(root / "a");
-	fs::create_directories(root / "b");
-	fs::create_directories(root / "c");
-	auto write = [](const fs::path &p, const std::string &bytes) {
-		std::ofstream(p, std::ios::binary) << bytes;
-	};
-	// Big enough that the fingerprint SAMPLES rather than reading everything, and
-	// large enough that a difference in one block is a real test of the sampling.
-	std::string base(4096 * 200, 'x');
-	auto with_byte_at = [&](size_t at, char c) {
-		auto s2 = base;
-		s2[at] = c;
-		return s2;
-	};
-
-	write(root / "a" / "model.safetensors", base);
-	write(root / "b" / "model.safetensors", base);                          // identical content, other path
-	write(root / "c" / "model.safetensors", with_byte_at(0, 'y'));         // differs in the first block
-	fs::create_directories(root / "d");
-	write(root / "d" / "model.safetensors", base + "extra");               // different SIZE, same prefix
-	fs::create_directories(root / "e");
-	// Differs only in a block the sampler visits (first, last and 62 between).
-	write(root / "e" / "model.safetensors", with_byte_at(base.size() - 1, 'z'));
-
-	const auto fa = WeightsFingerprint((root / "a" / "model.safetensors").string());
-	REQUIRE(fa != 0);
-	// same content anywhere shares (keeps anofox_tabfm_mxr_source working across machines)
-	REQUIRE(fa == WeightsFingerprint((root / "b" / "model.safetensors").string()));
-	// different content, same size, must not
-	REQUIRE(fa != WeightsFingerprint((root / "c" / "model.safetensors").string()));
-	REQUIRE(fa != WeightsFingerprint((root / "e" / "model.safetensors").string()));
-	// different size must not
-	REQUIRE(fa != WeightsFingerprint((root / "d" / "model.safetensors").string()));
-	// a missing file is a defined value, not an exception
-	REQUIRE(WeightsFingerprint((root / "nope").string()) == 0);
-
-	// ...and it must actually reach the key: same graph bytes, different weights.
-	const auto graph = Fnv1a64("one-shared-graph");
-	const auto regular = MxrCacheStem("/w/graph_migraphx_tabpfn25_classification.onnx", graph, fa);
-	const auto real =
-	    MxrCacheStem("/w/graph_migraphx_tabpfn25_classification.onnx", graph,
-	                 WeightsFingerprint((root / "c" / "model.safetensors").string()));
-	const auto regular_elsewhere = MxrCacheStem("/other/graph_migraphx_tabpfn25_classification.onnx", graph,
-	                                            WeightsFingerprint((root / "b" / "model.safetensors").string()));
-	REQUIRE(regular != real);              // the bug
-	REQUIRE(regular == regular_elsewhere); // sharing across machines still works
-	fs::remove_all(root);
-}
-
-TEST_CASE("mxr cache key: stem extraction handles plain names and extensionless paths", "[tabfm][plugin_backend]") {
-	using anofox_tabfm_mxr::MxrCacheStem;
-	REQUIRE(MxrCacheStem("graph.onnx", 1).rfind("graph_", 0) == 0);
-	REQUIRE(MxrCacheStem("/a.b/dir/noext", 1).rfind("noext_", 0) == 0);
-}
-
-//===----------------------------------------------------------------------===//
-// Plugin artifacts: filenames and published-platform refusals
-//===----------------------------------------------------------------------===//
-
-
 // These take the platform explicitly so every combination is testable from any
 // host — which is the point, since the combinations that need guarding are the
 // ones the developer's machine is not.
@@ -363,7 +247,7 @@ TEST_CASE("plugin_artifacts: filenames follow each platform's convention", "[tab
 
 TEST_CASE("plugin_artifacts: an explicit cuda or rocm request without the ggml plugin names the file and the way to get it", "[tabfm][plugin_artifacts]") {
 	// With the ggml plugin as the ONLY GPU lane there is no other plugin to fall back to: the error must say which file is missing, where it looked, and
-	// the two ways out (fetch it, or run on the CPU) — never the old "libmigraphx"/"onnxruntime" wording.
+	// the two ways out (fetch it, or run on the CPU) — never the old MIGraphX / ONNX Runtime wording.
 	for (const char *vendor : {"cuda", "rocm"}) {
 		INFO("vendor " << vendor);
 		const auto file = PluginFileName(vendor);
@@ -392,10 +276,19 @@ TEST_CASE("plugin_artifacts: tabfm_download_runtime('cuda') fetches only the sel
 		REQUIRE(ResolveRuntimeArtifact(backend, artifact, error));
 		REQUIRE(error.empty());
 		REQUIRE(artifact.plugin_name == PluginFileName(backend));
-		REQUIRE(artifact.wheel_url.empty()); // the 475 MB onnxruntime-gpu wheel is gone: the plugin links CUDA statically
-		REQUIRE(artifact.wheel_bytes == 0);
-		REQUIRE(artifact.zip_entries.empty());
+		REQUIRE(!artifact.plugin_url.empty()); // the plugin alone: no runtime archive comes with it (the struct has no field for one any more)
 	}
+	// 'migraphx' is the documented alias of 'rocm': it fetches the same plugin, never an exception with an empty message
+	RuntimeArtifact alias;
+	string alias_error;
+	REQUIRE(ResolveRuntimeArtifact("migraphx", alias, alias_error));
+	REQUIRE(alias_error.empty());
+	REQUIRE(alias.plugin_name == PluginFileName("rocm"));
+	// and a backend nobody publishes says so by name
+	RuntimeArtifact unknown;
+	string unknown_error;
+	REQUIRE(!ResolveRuntimeArtifact("vulkan", unknown, unknown_error));
+	REQUIRE(!unknown_error.empty());
 }
 
 TEST_CASE("plugin_artifacts: the published platform for each backend is the only one accepted",
@@ -485,10 +378,10 @@ TEST_CASE("plugin_artifacts: a digest is matched by FILENAME, not by position",
 	// worse with the operands swapped, pass on the wrong file.
 	const string sidecar =
 	    "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  libanofox_tabfm_cuda_plugin.so\n"
-	    "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222  libanofoxort_gpu.so\n";
+	    "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222  libanofox_tabfm_other_plugin.so\n";
 	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_cuda_plugin.so") ==
 	        "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111");
-	REQUIRE(Sha256FromSidecar(sidecar, "libanofoxort_gpu.so") ==
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_other_plugin.so") ==
 	        "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222");
 }
 

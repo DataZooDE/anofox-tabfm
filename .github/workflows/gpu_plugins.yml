@@ -76,7 +76,10 @@ jobs:
       - name: Load check - dlopen answers and create fails gracefully without a GPU
         run: |
           gcc -O2 -o plugin_load_check tools/gpu_test/plugin_load_check.c -ldl
-          ./plugin_load_check ./libanofox_tabfm_ggml-cuda_plugin.so
+          # The plugin needs only the driver's libcuda.so.1 (the runtime is linked statically), and a build container has no driver: the
+          # toolkit's stub stands in for it, so dlopen resolves and create fails cleanly, as it does on a machine without an NVIDIA GPU.
+          mkdir -p cuda-stub && ln -sf /usr/local/cuda/lib64/stubs/libcuda.so cuda-stub/libcuda.so.1
+          LD_LIBRARY_PATH="$PWD/cuda-stub" ./plugin_load_check ./libanofox_tabfm_ggml-cuda_plugin.so
       - uses: actions/upload-artifact@v4
         with:
           name: anofox-tabfm-ggml-cuda-plugin

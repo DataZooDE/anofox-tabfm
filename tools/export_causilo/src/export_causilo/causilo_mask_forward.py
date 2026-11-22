@@ -1,4 +1,4 @@
-"""The masked whole-model forward for Causilo (docs/ROCM_CAUSILO_PLAN.md has the inventory).
+"""The masked whole-model forward for Causilo (docs/archive/ROCM_CAUSILO_PLAN.md has the inventory).
 
 Everything in the forward that consumes the train/test split, the real row count or the real feature
 count is rewritten so those arrive as VALUES and every shape is the padded bucket:
@@ -85,7 +85,7 @@ def _twice(t):
     The values are identical to `torch.cat([t, t], dim=1)`. The Concat spelling puts a node into the graph whose
     two inputs are the SAME tensor, and the real masked graph fails MIGraphX's GPU pipeline in `fuse_concat`
     (`program.cpp:1211 create_module: Assertion 'not contains(impl->modules, name)'`). See
-    docs/ROCM_CAUSILO_PLAN.md for how far that is established.
+    docs/archive/ROCM_CAUSILO_PLAN.md for how far that is established.
     """
     return t.unsqueeze(1).expand(t.shape[0], 2, *t.shape[1:]).reshape(t.shape[0], -1, *t.shape[2:])
 
@@ -205,7 +205,7 @@ def _row_sum(v):
     Why a matmul: with the statistics written as reductions, MIGraphX's GPU pipeline fuses the chain
     reduce -> pointwise -> reduce (mean, then the variance around it) into one `fused_reduce` kernel that does not
     compile for gfx1201 (`invalid operands to binary expression ('float' and ...inner_storage<float, 1, ...>)`, a
-    16-line reproducer is in docs/ROCM_CAUSILO_PLAN.md). A matmul is not a reduction to the fuser, so it breaks the
+    16-line reproducer is in docs/archive/ROCM_CAUSILO_PLAN.md). A matmul is not a reduction to the fuser, so it breaks the
     chain. The reciprocal form (`* (1/count)`) and a scalar count did NOT help: the chain is the trigger, not the
     division. Same values up to summation order.
     """

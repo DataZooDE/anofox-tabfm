@@ -98,7 +98,7 @@ true
 # shape can be bucketed for this architecture", which is false for every one of
 # these: tabfm-v1, tabfm-v1-1, mitra, mitra-v2 and kumo-tabular-* (train_size-scalar family), and tabdpt, tabdpt-v1-3, tabpfn-v2,
 # tabpfn-v2-5, tabpfn-v2-6, tabpfn-v3, tabpfn-v3-5(-fast), exaone-tabular, nori-30m, nori-1-5, tabicl-v2, limix-2m, orion-bix,
-# orion-msp and causilo, whose split was converted to a value (see docs/ROCM_TABDPT_SPIKE.md, docs/ROCM_TABPFN_PLAN.md,
+# orion-msp and causilo, whose split was converted to a value (see docs/archive/ROCM_TABDPT_SPIKE.md, docs/archive/ROCM_TABPFN_PLAN.md,
 # tools/export_exaone, tools/export_nori, tools/export_tabicl, tools/export_limix, tools/export_orion_* and
 # tools/export_causilo: *_mask.py). They may still be
 # unsupported for a situational cause (weights not downloaded), so this asserts

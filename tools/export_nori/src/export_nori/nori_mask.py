@@ -1,7 +1,7 @@
 """Nori with the train/test split as a VALUE instead of a shape (the ROCm / MIGraphX contract).
 
 The CPU graph (``nori_patches.ExportWrapper``) is ``(x, y)``-only: the split is ``len(y)``, a SHAPE, which a
-fixed-shape MIGraphX compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). This module computes the same
+fixed-shape MIGraphX compile cannot bucket (docs/archive/ROCM_SINGLE_EVAL_POS.md). This module computes the same
 function with every shape a function of the padded (T, H) bucket alone:
 
     x[1, T, H] f32   y[1, T] f32 (FULL length; off-context rows carry the -100 sentinel)
@@ -15,7 +15,7 @@ modules, and every place that used a shape the plugin's padding now inflates bec
      CONTEXT rows (row < S); upstream's `x[:, :eval_pos]`;
   2. the label NaN-imputation mean and the target-aware embedding, over the context rows;
   3. the feature attention per row: padded feature GROUPS are masked out as keys. A group is real when
-     2 * g < d (division-free: MIGraphX miscompiles a runtime integer floor-division, docs/ROCM_TABPFN_PLAN.md).
+     2 * g < d (division-free: MIGraphX miscompiles a runtime integer floor-division, docs/archive/ROCM_TABPFN_PLAN.md).
      A padded column inside the last real group (odd d) is exactly upstream's own pad column;
   4. the sample attention: the context self-attention and the queries' cross-attention mask out
      non-context rows as keys, and the QASSMax length is S, the value, not the padded length;
@@ -41,7 +41,7 @@ NEG = -1e4
 
 def _sum_rows(x: torch.Tensor) -> torch.Tensor:
     """Sum over the first axis as a GEMM (ones[1, R] @ x[R, rest]) -- chained masked reductions crash
-    MIGraphX's reducer codegen (docs/ROCM_TABDPT_SPIKE.md)."""
+    MIGraphX's reducer codegen (docs/archive/ROCM_TABDPT_SPIKE.md)."""
     rows = x.shape[0]
     flat = x.reshape(rows, -1)
     ones = torch.ones(1, rows, dtype=flat.dtype, device=flat.device)
@@ -85,7 +85,7 @@ def rbf_tokenizer(rbf, x: torch.Tensor) -> torch.Tensor:
     """``RBFembedding.forward`` (exponent_digits = 1, as_tokenizer) without the two ops MIGraphX cannot take.
 
     * the exponent digit is ``(abs_exp // 10**0) % 10``: an integer floor-division and modulo on runtime data,
-      which MIGraphX's GPU target miscomputes (docs/ROCM_TABPFN_PLAN.md). With one exponent digit and the
+      which MIGraphX's GPU target miscomputes (docs/archive/ROCM_TABPFN_PLAN.md). With one exponent digit and the
       exponent clamped to [-9, 9] it is ``abs_exp`` itself, taken here in float and cast once for the lookup;
     * ``torch.split`` of the gate output exports as SplitToSequence / SequenceAt, which MIGraphX's parser
       does not implement; slicing is the same halves.

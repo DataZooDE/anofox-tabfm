@@ -34,7 +34,7 @@ Claude loads a skill by itself when a request matches it; you do not call them.
 | `anofox-tabfm-models` | the 24 built-in models, licences and commercial use, the licence gate, download / load / unload / remove, `tabfm_register_model`, the context cache | *"which model can I use commercially for a 40-feature table?"* |
 | `anofox-tabfm-evaluate` | classification and regression metrics, scoring rules, `tabfm_cross_validate`, the `_by` macros for anofox-visualization | *"5-fold CV of mitra against tabicl-v2, then plot ROC curves"* |
 | `anofox-tabfm-generate` | `tabfm_generate`, `tabfm_impute`, options, fidelity checks | *"fill the NULL incomes in raw, then add 500 synthetic rows"* |
-| `anofox-tabfm-gpu` | `tabfm_accelerate`, devices and backends, precision, the ROCm precompile, checking what served a query | *"use my AMD GPU and confirm it is actually used"* |
+| `anofox-tabfm-gpu` | `tabfm_accelerate`, devices and backends, precision, GPU memory, checking what served a query | *"use my AMD GPU and confirm it is actually used"* |
 
 Each skill leads with the mistakes that are easy to make and hard to spot: a `test` relation that still has
 the target column, metrics that need `avg :=`, cross-validation that takes the default model only, a GPU that

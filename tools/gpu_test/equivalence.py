@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Cross-backend equivalence: a device switch must not change the answer.
 
-The contract behind docs/DYNAMIC_BACKENDS.md. Every backend runs the same
+The contract behind docs/archive/DYNAMIC_BACKENDS.md. Every backend runs the same
 graph on the same inputs and is compared against the CPU result, which is the
 reference by definition — it is the one every user gets.
 
@@ -24,7 +24,7 @@ a real cached checkpoint with --weights, which is the stronger statement.
 A backend named "<name>-plugin" is driven through the REAL backend plugin
 (tabfm_plugin_abi.h, dlopen'd from --plugin-dir) rather than through ONNX
 Runtime's own execution provider. That distinction is the whole point on GPU:
-since docs/DYNAMIC_BACKENDS.md phases 1 and 3, neither ROCm nor CUDA reaches
+since docs/archive/DYNAMIC_BACKENDS.md phases 1 and 3, neither ROCm nor CUDA reaches
 the accelerator through this process's ORT, so `--providers cpu,cuda` measures
 ONNX Runtime while `--providers cpu,cuda-plugin` measures what actually ships.
 
@@ -66,7 +66,7 @@ PROVIDERS = {
 }
 
 # The providers above are ONNX Runtime's own execution providers, reached
-# through its Python bindings. Since docs/DYNAMIC_BACKENDS.md phase 1 (ROCm)
+# through its Python bindings. Since docs/archive/DYNAMIC_BACKENDS.md phase 1 (ROCm)
 # and phase 3 (CUDA) that is NOT how this extension reaches a GPU: inference
 # runs in a dlopen'd backend plugin carrying its own runtime. Comparing CPU
 # against ORT's CUDA EP therefore measures ONNX Runtime, not us, and would keep

@@ -279,7 +279,7 @@ struct PredictContext {
 	//! instead of compiling on-device (~27 min). '' → always compile. ROCm only.
 	string mxr_source;
 	//! SET anofox_tabfm_ep_path — directory holding backend-plugin shared
-	//! libraries (docs/DYNAMIC_BACKENDS.md phase 1), e.g.
+	//! libraries (docs/archive/DYNAMIC_BACKENDS.md phase 1), e.g.
 	//! libanofox_tabfm_migraphx_plugin.so. '' → the rocm device path throws
 	//! rather than silently running on CPU (tier 4: a requested device that
 	//! cannot actually be driven must error, never fall back quietly).
@@ -328,16 +328,13 @@ struct TabFMPrecompileResult {
 	string model;
 	//! The device that serves it (the resolved id: "cpu", "rocm:0", "cuda:0", "mlx:0").
 	string device;
-	//! True when the device compiles per shape bucket (ROCm/MIGraphX); bucket_rows/_features are
-	//! then the padded (T, H) the program was built for.
+	//! Always false since MIGraphX is gone (it compiled per padded shape bucket); kept so the result columns are unchanged.
 	bool bucketed = false;
 	int64_t bucket_rows = 0;
 	int64_t bucket_features = 0;
-	//! "compiled" (a new .mxr was written), "cached" (the bucket's program was already in memory or
-	//! on disk), "not needed" (the device has no per-shape compile: CPU, CUDA, MLX), or "refused" (the
-	//! bucket is over the model's ROCm ceiling, RocmBucketRefusal; nothing was compiled).
+	//! "not needed": no backend compiles per shape bucket (the ggml engines build a graph for a shape on its first use); the session is loaded and warm.
 	string status;
-	//! Why the bucket was refused; "" otherwise.
+	//! Unused (no bucket is refused any more); kept so the result columns are unchanged.
 	string reason;
 	//! Wall time of the call, model load included.
 	double seconds = 0;

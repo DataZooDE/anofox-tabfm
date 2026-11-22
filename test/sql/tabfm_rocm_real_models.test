@@ -4,7 +4,7 @@
 #              with the CPU (ONNX Runtime, the positional graph) on every row.
 #
 #              Both models read the train/test split from len(y), which a fixed-shape MIGraphX compile cannot
-#              bucket (docs/ROCM_SINGLE_EVAL_POS.md); the masked graph takes the split as a value. This file is
+#              bucket (docs/archive/ROCM_SINGLE_EVAL_POS.md); the masked graph takes the split as a value. This file is
 #              the check that the masked graph computes what the positional one does ON THE GPU: it asks for
 #              device 'rocm' explicitly (a silent CPU fallback would also "agree with the CPU") and reads the
 #              serving device from tabfm_models().

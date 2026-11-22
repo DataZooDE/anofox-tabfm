@@ -1,7 +1,7 @@
 """LimiX-2M with the train/test split as a VALUE instead of a shape (the ROCm / MIGraphX contract).
 
 The CPU graph (``limix_patches.ExportWrapper``) is ``(x, y)``-only: the split is ``len(y)``, a SHAPE, which a
-fixed-shape MIGraphX compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). This module computes the same
+fixed-shape MIGraphX compile cannot bucket (docs/archive/ROCM_SINGLE_EVAL_POS.md). This module computes the same
 function with every shape a function of the padded (T, H) bucket alone:
 
     x[1, T, H] f32   y[1, T] f32 (FULL length; off-context rows carry the -100 sentinel)
@@ -23,7 +23,7 @@ the plugin's padding now inflates becomes a mask:
      (a presence table over the 10 class ids instead of an S x S comparison), the label embedding on the
      context rows and the mask embedding everywhere else;
   4. the feature attention per row: padded feature GROUPS are masked out as keys. A group is real when
-     2 * g < d (division-free: MIGraphX miscompiles a runtime integer floor-division, docs/ROCM_TABPFN_PLAN.md).
+     2 * g < d (division-free: MIGraphX miscompiles a runtime integer floor-division, docs/archive/ROCM_TABPFN_PLAN.md).
      A padded column inside the last real group (odd d) is exactly upstream's own pad column;
   5. the sample attention: the context self-attention and the queries' cross-attention mask out
      non-context rows as keys;
@@ -46,7 +46,7 @@ NEG = -1e4
 
 def _sum_rows(x: torch.Tensor) -> torch.Tensor:
     """Sum over the first axis as a GEMM (ones[1, R] @ x[R, rest]) -- chained masked reductions crash
-    MIGraphX's reducer codegen (docs/ROCM_TABDPT_SPIKE.md)."""
+    MIGraphX's reducer codegen (docs/archive/ROCM_TABDPT_SPIKE.md)."""
     rows = x.shape[0]
     flat = x.reshape(rows, -1)
     ones = torch.ones(1, rows, dtype=flat.dtype, device=flat.device)
@@ -82,7 +82,7 @@ def rbf_tokenizer(rbf, x: torch.Tensor) -> torch.Tensor:
     """``RBFembedding.forward`` (exponent_digits = 1, as_tokenizer) without the two ops MIGraphX cannot take.
 
     * the exponent digit is ``(abs_exp // 10**0) % 10``: an integer floor-division and modulo on runtime data,
-      which MIGraphX's GPU target miscomputes (docs/ROCM_TABPFN_PLAN.md). With one exponent digit and the
+      which MIGraphX's GPU target miscomputes (docs/archive/ROCM_TABPFN_PLAN.md). With one exponent digit and the
       exponent clamped to [-9, 9] it is ``abs_exp`` itself, taken here in float and cast once for the lookup;
     * ``torch.split`` of the gate output exports as SplitToSequence / SequenceAt, which MIGraphX's parser
       does not implement; slicing is the same halves.
@@ -254,7 +254,7 @@ def masked_forward(model, task, x, y_lab, train_size, d, n_rows):
     real = row < n_rows
     pre = preprocess(model, xg, ctx.view(-1, 1, 1), real.view(-1, 1, 1))                  # [T, G, 2]
     # the two copies as expand + reshape, not torch.cat([t, t]): a Concat listing one tensor twice preceded a
-    # fuse_concat assertion on the Causilo graph (docs/ROCM_CAUSILO_PLAN.md)
+    # fuse_concat assertion on the Causilo graph (docs/archive/ROCM_CAUSILO_PLAN.md)
     pre = pre.unsqueeze(0).expand(2, *pre.shape).reshape(1, 2 * rows, *pre.shape[1:])  # [1, 2T, G, 2]
     x_emb = encode_x(model.encoder_x[0], pre)                                             # [1, 2T, G, E]
 

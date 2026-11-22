@@ -3,7 +3,7 @@
 `tabpfn_mask_patches` proved the ATTENTION layer converts exactly. This is the
 rest: everything else in the forward that consumes the train/test split or the
 real row count, rewritten so both arrive as VALUES and every shape is the padded
-bucket. See docs/ROCM_TABPFN_PLAN.md for the inventory this implements.
+bucket. See docs/archive/ROCM_TABPFN_PLAN.md for the inventory this implements.
 
 Inputs to the graph (all padded to the shape bucket, T rows x H features):
 

@@ -1,7 +1,7 @@
 """Orion-MSP with the train/test split as a VALUE instead of a shape (the ROCm / MIGraphX contract).
 
 The CPU graph (``orion_msp_patches.ExportWrapper``) is ``(x, y)``-only: the split is ``len(y)``, a SHAPE, which a
-fixed-shape MIGraphX compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). This module computes the same function
+fixed-shape MIGraphX compile cannot bucket (docs/archive/ROCM_SINGLE_EVAL_POS.md). This module computes the same function
 with every shape a function of the padded (T, H) bucket alone -- the contract Orion-BiX, tabdpt, the TabPFN family,
 EXAONE Tabular and Nori-30M serve on ROCm:
 

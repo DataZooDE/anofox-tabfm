@@ -52,6 +52,13 @@ constexpr int64_t kDefaultMaxKnownElements = 1 << 20;
 thread_local int64_t g_max_known_elements = kDefaultMaxKnownElements;
 #define kMaxKnownElements g_max_known_elements
 
+//! ceil(distance / |step|) for a positive distance, exact in unsigned 64-bit arithmetic for every int64 step (INT64_MIN included): the element
+//! count of a Slice or Range. Portable where a 128-bit integer is not (MSVC).
+uint64_t StepCount(uint64_t distance, int64_t step) {
+	const uint64_t magnitude = step < 0 ? 0 - static_cast<uint64_t>(step) : static_cast<uint64_t>(step);
+	return distance == 0 ? 0 : (distance - 1) / magnitude + 1;
+}
+
 int64_t WrapAdd(int64_t a, int64_t b) {
 	return static_cast<int64_t>(static_cast<uint64_t>(a) + static_cast<uint64_t>(b));
 }
@@ -690,11 +697,11 @@ std::vector<ShapeValue> Evaluator::Run(const Node &n, const std::vector<const Sh
 			if (step > 0) {
 				s = std::min(std::max<int64_t>(s, 0), dim);
 				e = std::min(std::max<int64_t>(e, 0), dim);
-				len = e > s ? static_cast<int64_t>((static_cast<__int128>(e) - s + step - 1) / step) : 0;
+				len = e > s ? static_cast<int64_t>(StepCount(static_cast<uint64_t>(e) - static_cast<uint64_t>(s), step)) : 0;
 			} else {
 				s = std::min(std::max<int64_t>(s, -1), dim - 1);
 				e = std::min(std::max<int64_t>(e, -1), dim - 1);
-				len = s > e ? static_cast<int64_t>((static_cast<__int128>(s) - e + (-static_cast<__int128>(step)) - 1) / (-static_cast<__int128>(step))) : 0;
+				len = s > e ? static_cast<int64_t>(StepCount(static_cast<uint64_t>(s) - static_cast<uint64_t>(e), step)) : 0;
 			}
 			os[a] = len;
 			base += (len > 0 ? s : 0) * st[a];
@@ -773,13 +780,13 @@ std::vector<ShapeValue> Evaluator::Run(const Node &n, const std::vector<const Sh
 			if (d == 0) {
 				Fail(n, "the delta must not be 0");
 			}
-			const __int128 span = static_cast<__int128>(l) - s;
-			__int128 count = d > 0 ? (span + d - 1) / d : (span + d + 1) / d;
-			if (count < 0) {
-				count = 0;
-			}
+			// max(0, ceil((l - s) / d)) without a 128-bit type (MSVC has none): the distance in the direction of d, as an unsigned 64-bit value
+			const bool moves = d > 0 ? l > s : l < s;
+			const uint64_t count_u =
+			    moves ? StepCount(d > 0 ? static_cast<uint64_t>(l) - static_cast<uint64_t>(s) : static_cast<uint64_t>(s) - static_cast<uint64_t>(l), d) : 0;
+			const int64_t count = count_u > static_cast<uint64_t>(INT64_MAX) ? INT64_MAX : static_cast<int64_t>(count_u);
 			if (count > kMaxKnownElements) {
-				return {Unknown({static_cast<int64_t>(count)}, ShapeDtype::I64)};
+				return {Unknown({count}, ShapeDtype::I64)};
 			}
 			std::vector<int64_t> v;
 			for (int64_t i = 0; i < static_cast<int64_t>(count); i++) {

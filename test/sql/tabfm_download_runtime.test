@@ -4,7 +4,7 @@
 #              carries plugins) the plugin fetch are exercised on real
 #              hardware via tools/gpu_test/; what CI can pin is that the
 #              error paths name their fixes and never a URL that does not
-#              exist (docs/GPU_HARDENING_PLAN.md P7).
+#              exist (docs/archive/GPU_HARDENING_PLAN.md P7).
 # group: [anofox_tabfm]
 
 require anofox_tabfm

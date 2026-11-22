@@ -1,20 +1,19 @@
 //===----------------------------------------------------------------------===//
-// tabfm_devices.cpp — device discovery, tabfm_devices(), device resolution,
-// MIGraphX shape buckets (WS-C, HLD §9, SQL-API §3/§4)
+// tabfm_devices.cpp — device discovery, tabfm_devices(), device resolution
+// (WS-C, HLD §9, SQL-API §3/§4)
 //
-// The cpu row always exists. The GPU probes are compiled into EVERY flavor,
-// because since docs/DYNAMIC_BACKENDS.md phases 1 and 3 a plain cpu build can
-// drive a GPU through a dlopen'd backend plugin — a build that cannot even see
-// the card would make "one artifact, backends resolved at runtime" impossible.
+// The cpu row always exists. The GPU probes are compiled into every build,
+// because every build drives a GPU through a dlopen'd backend plugin (the ggml
+// GPU plugin, MLX) — a build that cannot even see the card would make "one
+// artifact, backends resolved at runtime" impossible.
 // This costs no GPU dependency: NVML is dlopen'd by name and ROCm is read out
 // of the KFD sysfs topology, so neither probe needs a CUDA or ROCm SDK header
 // and the extension still links nothing vendor-specific (community-extension
 // eligibility, HLD D9, is about what is LINKED, which is unchanged).
 //===----------------------------------------------------------------------===//
 
-#include "tabfm_ort_engine.hpp"
+#include "tabfm_session.hpp"
 #include "tabfm_registration.hpp"
-#include "tabfm_shape_bucket.hpp"
 #include "anofox_function_alias.hpp"
 
 #include "duckdb/common/exception.hpp"
@@ -29,9 +28,6 @@
 #include <fstream>
 #include "anofox_tabfm_banner.hpp"
 
-#ifdef TABFM_WITH_ORT
-#include <onnxruntime_cxx_api.h>
-#endif
 
 #ifdef _WIN32
 // NOMINMAX and WIN32_LEAN_AND_MEAN before <windows.h>: without them it defines
@@ -92,7 +88,7 @@ string CpuModelName() {
 TabFMDeviceInfo MakeCpuDevice() {
 	TabFMDeviceInfo device;
 	device.device_id = "cpu";
-	device.ep = "CPUExecutionProvider";
+	device.ep = "ggml";
 	device.name = CpuModelName();
 	device.arch = "";
 	device.vram_total = -1;
@@ -103,32 +99,16 @@ TabFMDeviceInfo MakeCpuDevice() {
 	return device;
 }
 
-bool OrtProviderAvailable(const char *provider_name) {
-#ifdef TABFM_WITH_ORT
-	for (auto &provider : Ort::GetAvailableProviders()) {
-		if (provider == provider_name) {
-			return true;
-		}
-	}
-#else
-	(void)provider_name; // no ONNX Runtime in this build: no ORT execution provider is available
-#endif
-	return false;
-}
 
 //===----------------------------------------------------------------------===//
-// CUDA discovery (compiled into every flavor — see the file header)
+// CUDA discovery (compiled into every build — see the file header)
 //
-// Design: EP presence comes from Ort::GetAvailableProviders(); device
-// enumeration goes through NVML, loaded at runtime — NVML ships with every
+// Device enumeration goes through NVML, loaded at runtime — NVML ships with every
 // NVIDIA driver install and has a stable C ABI, so the extension links nothing
 // NVIDIA-specific. No driver == no NVML == only the cpu row, which is exactly
 // the "missing driver is a diagnosable one-liner" behavior HLD §9 asks for.
 //
-// Linux and Windows both. The probe was once Linux-only, which made the cuda
-// flavor unusable on Windows for a reason unrelated to inference: the CUDA EP
-// itself was never guarded, but with no device discovered ResolveDevice refused
-// 'cuda' and there was nothing to run on. Only the loader differs.
+// Linux and Windows both; only the loader differs.
 //===----------------------------------------------------------------------===//
 
 struct NvmlMemory {
@@ -222,7 +202,7 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 			}
 			TabFMDeviceInfo device;
 			device.device_id = "cuda:" + std::to_string(i);
-			device.ep = "CUDAExecutionProvider";
+			device.ep = "ggml-cuda";
 			device.device_ordinal = static_cast<int>(i);
 			char name[96] = {0};
 			if (nvml_name && nvml_name(handle, name, sizeof(name)) == 0) {
@@ -242,12 +222,10 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 			// longer means "the CUDA EP is compiled into this binary's ORT".
 			// CUDA inference runs in a dlopen'd plugin carrying its OWN shared
 			// ORT-GPU runtime (a statically-linked ORT cannot host ORT's provider
-			// libraries at all — see docs/DYNAMIC_BACKENDS.md), so a discovered
-			// card is usable whenever the driver is present. Gating on the
-			// in-binary EP would mark every card unusable in exactly the build
-			// that ships. If the plugin turns out not to be configured,
-			// TryCudaBackend throws a message naming the fix rather than
-			// quietly running on CPU.
+			// libraries at all), so a discovered card is usable whenever the
+			// plugin ships kernels for it (compute capability 7.5+). If the
+			// plugin turns out not to be installed, TryGgmlGpuBackend throws a
+			// message naming the fix rather than quietly running on CPU.
 			device.usable = CudaComputeCapabilityUsable(cc_major, cc_minor);
 			devices.push_back(std::move(device));
 		}
@@ -260,7 +238,7 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 
 
 //===----------------------------------------------------------------------===//
-// ROCm / MIGraphX discovery (rocm flavor only)
+// ROCm discovery
 //
 // Design: no ROCm library dependency at all — the kernel's KFD topology under
 // /sys/class/kfd/kfd/topology/nodes/* is the source of truth (present iff the
@@ -269,16 +247,11 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 //   (0 or missing => CPU node, skipped)
 //   mem_banks/*/properties: heap_type 1|2 (FB public|private) sizes summed
 //   -> vram_total; vram_free stays NULL (needs the ROCm SMI library).
-// `usable` = MIGraphX claims the gfx arch (HLD §9 support-matrix honesty:
-// unsupported consumer cards fail explicitly, not mysteriously). It used to
-// also require the MIGraphX EP to be registered in THIS ORT build, which is
-// the wrong question since docs/DYNAMIC_BACKENDS.md phase 1: ROCm inference
-// runs in a dlopen'd plugin that drives MIGraphX directly and never touches
-// ORT's EP at all, so gating on the EP marked cards unusable in exactly the
-// builds where the plugin would have driven them. (The ORT MIGraphX EP is
-// still a live fallback for tasks with no bundled migraphx graph — when that
-// path is taken and the EP is absent, ORT says so itself.) The arch allowlist
-// needs no ROCm libraries, so this probe works in any flavor.
+// `usable` = the released ggml ROCm plugin carries code objects for the gfx
+// arch (GgmlRocmPluginArchs; HLD §9 support-matrix honesty: an unsupported
+// card is refused by name, not chosen and then failing inside HIP). The KFD
+// ordinal counts every GPU node, usable or not, because that is the HIP
+// device index the plugin is handed.
 //===----------------------------------------------------------------------===//
 
 #ifndef _WIN32
@@ -353,6 +326,16 @@ void ProbeRocmDevices(vector<TabFMDeviceInfo> &devices) {
 
 } // anonymous namespace
 
+const vector<string> &GgmlRocmPluginArchs() {
+	static const vector<string> archs = {"gfx90a", "gfx942", "gfx1030", "gfx1100", "gfx1101", "gfx1102", "gfx1150", "gfx1151", "gfx1200", "gfx1201"};
+	return archs;
+}
+
+bool RocmArchUsable(const string &arch) {
+	const auto &archs = GgmlRocmPluginArchs();
+	return std::find(archs.begin(), archs.end(), arch) != archs.end();
+}
+
 vector<TabFMDeviceInfo> DiscoverRocmDevicesFrom(const string &nodes_path, const string &driver) {
 	vector<TabFMDeviceInfo> devices;
 	DIR *dir = opendir(nodes_path.c_str());
@@ -386,7 +369,7 @@ vector<TabFMDeviceInfo> DiscoverRocmDevicesFrom(const string &nodes_path, const 
 		}
 		TabFMDeviceInfo device;
 		device.device_id = "rocm:" + std::to_string(ordinal);
-		device.ep = "MIGraphXExecutionProvider";
+		device.ep = "ggml-rocm";
 		device.device_ordinal = ordinal;
 		ordinal++;
 		device.arch = GfxArchFromTargetVersion(gfx_target_version);
@@ -398,7 +381,7 @@ vector<TabFMDeviceInfo> DiscoverRocmDevicesFrom(const string &nodes_path, const 
 		device.vram_total = SumVramBanks(node_path);
 		device.vram_free = -1; // needs rocm_smi; NULL is honest
 		device.driver = driver;
-		device.usable = true; // a compute-capable KFD node: the ggml HIP plugin runs the architectures it was built for and says so itself at create when it was not built for this one
+		device.usable = RocmArchUsable(device.arch); // the plugin carries code objects for these architectures only
 		devices.push_back(std::move(device));
 	}
 	return devices;
@@ -409,45 +392,16 @@ namespace {
 #endif // !_WIN32
 
 //===----------------------------------------------------------------------===//
-// CoreML discovery (coreml flavor only)
-//
-// The CoreML EP is compiled into the prebuilt osx-universal2 ORT core, so its
-// availability is a build fact, not a driver probe. We emit a single logical
-// `coreml:0` row for the Apple SoC. `usable` is honest: true only on Apple
-// Silicon (arm64, where the ANE/GPU actually accelerate) with the EP registered
-// — an Intel Mac reports the row usable=false (CoreML would run CPU-only there).
-//===----------------------------------------------------------------------===//
-#ifdef TABFM_EP_COREML
-void ProbeCoreMLDevices(vector<TabFMDeviceInfo> &devices) {
-	const bool ep_available = OrtProviderAvailable("CoreMLExecutionProvider");
-	const string soc = CpuModelName(); // e.g. "Apple M3"
-	const bool apple_silicon = StringUtil::Contains(StringUtil::Lower(soc), "apple");
-
-	TabFMDeviceInfo device;
-	device.device_id = "coreml:0";
-	device.ep = "CoreMLExecutionProvider";
-	device.name = soc;
-	device.arch = soc;
-	device.vram_total = -1; // unified memory; no discrete VRAM semantics
-	device.vram_free = -1;
-	device.driver = "";
-	device.usable = ep_available && apple_silicon;
-	device.device_ordinal = 0;
-	devices.push_back(std::move(device));
-}
-#endif // TABFM_EP_COREML
-
-//===----------------------------------------------------------------------===//
 // Apple MLX discovery (docs/MLX_PLAN.md)
 //
 // Unlike the CUDA and ROCm probes there is no driver to interrogate and no SDK
 // to dlopen: MLX runs on the SoC's own GPU, so "is there hardware" reduces to
 // "is this Apple Silicon". That is a compile-time platform test plus a runtime
 // SoC-name check, which is why this probe is compiled into every build rather
-// than flavor-gated -- the plugin that does the work is fetched separately, but
+// than platform-gated -- the plugin that does the work is fetched separately, but
 // discovery must be able to say the hardware is there.
 //
-// One logical `mlx:0` row, like coreml. Rosetta is the case worth being careful
+// One logical `mlx:0` row. Rosetta is the case worth being careful
 // about: an x86_64 process on an Apple Silicon machine reads an Apple SoC name
 // while being unable to load an arm64 plugin, so usable is gated on the
 // compiled architecture, not just the reported chip.
@@ -466,7 +420,7 @@ void ProbeMlxDevices(vector<TabFMDeviceInfo> &devices) {
 	}
 	TabFMDeviceInfo device;
 	device.device_id = "mlx:0";
-	device.ep = "MlxBackend";
+	device.ep = "mlx";
 	device.name = soc;
 	device.arch = soc;
 	device.vram_total = -1; // unified memory; no discrete VRAM semantics
@@ -481,24 +435,15 @@ void ProbeMlxDevices(vector<TabFMDeviceInfo> &devices) {
 } // anonymous namespace
 
 //===----------------------------------------------------------------------===//
-// Discovery + resolution (declared in tabfm_ort_engine.hpp)
+// Discovery + resolution (declared in tabfm_session.hpp)
 //===----------------------------------------------------------------------===//
 
 vector<TabFMDeviceInfo> DiscoverDevices() {
-	// tabfm_devices() is usually the first ORT call a session makes, and the
-	// probes below reach into ORT. Register the default logger first so any ORT
-	// diagnostic here is reported as itself rather than as a DefaultLogger
-	// error (see EnsureOrtEnv in tabfm_ort_engine.hpp).
-	EnsureOrtEnv();
-
 	vector<TabFMDeviceInfo> devices;
 	devices.push_back(MakeCpuDevice());
 	ProbeCudaDevices(devices);
 #ifndef _WIN32
 	ProbeRocmDevices(devices);
-#endif
-#ifdef TABFM_EP_COREML
-	ProbeCoreMLDevices(devices);
 #endif
 #if defined(__APPLE__)
 	ProbeMlxDevices(devices);
@@ -506,144 +451,61 @@ vector<TabFMDeviceInfo> DiscoverDevices() {
 	return devices;
 }
 
-TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDeviceInfo> &devices, bool flavor_has_cuda,
-                              bool flavor_has_rocm, bool flavor_has_coreml) {
+TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDeviceInfo> &devices) {
 	auto setting = StringUtil::Lower(setting_value);
 	if (setting == "migraphx") { // validator normalizes, but stay forgiving
 		setting = "rocm";
 	}
-
-	// Flavor name as implied by the capability flags (== compiled flavor in
-	// production; explicit flags keep this a pure, unit-testable function).
-	const string flavor = flavor_has_cuda ? "cuda" : (flavor_has_rocm ? "rocm" : (flavor_has_coreml ? "coreml" : "cpu"));
-
-	auto find_usable = [&](const string &prefix) -> const TabFMDeviceInfo * {
-		for (auto &device : devices) {
-			if (StringUtil::StartsWith(device.device_id, prefix) && device.usable) {
-				return &device;
-			}
-		}
-		return nullptr;
-	};
-
-	if (setting == "cpu") {
+	auto cpu_device = [&]() {
 		for (auto &device : devices) {
 			if (device.device_id == "cpu") {
 				return device;
 			}
 		}
 		return MakeCpuDevice();
+	};
+	if (setting == "cpu" || setting == "auto") {
+		// 'auto' picks a GPU per model (ResolveDeviceForModel in tabfm_engine.cpp), and only where its plugin is installed and serves that model; the
+		// session-wide answer is the CPU, which every model runs on.
+		return cpu_device();
 	}
-	if (setting == "cuda" || setting == "rocm" || setting == "coreml" || setting == "mlx") {
-		// Both GPU lanes are carried by every build. Since
-		// docs/DYNAMIC_BACKENDS.md phases 1 and 3 neither is a compile-time
-		// flavor: each runs in a dlopen'd plugin with its own runtime, and the
-		// plugins are built and shipped independently of TABFM_FLAVOR. Refusing
-		// 'rocm' here because this is not a rocm-flavor build told users to
-		// rebuild with TABFM_FLAVOR=rocm when the plugin was already sitting at
-		// their anofox_tabfm_ep_path -- advice that could not fix anything.
-		// A missing or misconfigured plugin is reported by TryCudaBackend /
-		// TryMIGraphXBackend, which name the actual fix.
-		//
-		// CoreML is different and stays flavor-gated: it is an ordinary ORT
-		// execution provider running in this process, so a build whose ORT lacks
-		// it genuinely cannot drive it.
-		//
-		// None of this extends to 'auto': auto-selecting a GPU that needs a
-		// separately fetched plugin would turn a working CPU install into a
-		// failing one the moment a card appears, so the GPU lane stays an
-		// explicit opt-in.
-		const bool carried = setting == "coreml" ? flavor_has_coreml : true;
-
-		// Phase 0 of docs/DYNAMIC_BACKENDS.md. "No such hardware" and "hardware
-		// is here but its runtime is not" are different problems with different
-		// fixes, and the caller can only act on the difference. Discovery has
-		// already looked: a device row exists whenever the vendor runtime
-		// enumerated something, whether or not this build can drive it.
-		bool device_discovered = false;
-		string discovered_name;
+	if (setting == "coreml") {
+		// CoreML was an ONNX Runtime execution provider compiled into the extension; ONNX Runtime is gone, and MLX (a plugin) serves Apple GPUs.
+		throw InvalidInputException("anofox_tabfm: device 'coreml' is no longer available: it was an ONNX Runtime provider, and this build contains no "
+		                            "ONNX Runtime. On Apple Silicon use 'mlx': CALL tabfm_download_runtime('mlx'); SET anofox_tabfm_device='mlx'. "
+		                            "Otherwise SET anofox_tabfm_device='cpu'.");
+	}
+	if (setting == "cuda" || setting == "rocm" || setting == "mlx") {
+		// Every build carries every GPU lane: each runs in a dlopen'd plugin (the ggml GPU plugin for cuda and rocm, MLX for Apple), built and shipped
+		// separately. A missing plugin is reported by the lane that loads it, naming the fix (TryGgmlGpuBackend, TryMlxBackend).
 		for (auto &device : devices) {
-			if (StringUtil::StartsWith(device.device_id, setting)) {
-				device_discovered = true;
-				discovered_name = device.name;
-				break;
+			if (StringUtil::StartsWith(device.device_id, setting) && device.usable) {
+				return device;
 			}
 		}
-		if (!carried && device_discovered) {
-			throw InvalidInputException(
-			    "anofox_tabfm: '" + setting + "' hardware is present (" + discovered_name +
-			    ") but this build carries no '" + setting +
-			    "' runtime, so it cannot be driven. Unlike the cuda/rocm/mlx plugins, coreml is compiled into "
-			    "the extension's own ONNX Runtime — build with TABFM_FLAVOR=coreml on macOS, or SET "
-			    "anofox_tabfm_device='cpu'.");
+		// A card that is there but unusable is the common case worth explaining: say which, and what the plugin runs on.
+		string found;
+		for (auto &device : devices) {
+			if (StringUtil::StartsWith(device.device_id, setting)) {
+				found += (found.empty() ? "" : ", ") + device.device_id + " (" + (device.arch.empty() ? device.name : device.arch) + ")";
+			}
 		}
-		if (!carried) {
-			// Mirrors ThrowFlavorMissingDeviceLocal in tabfm_ort_engine.cpp: the
-			// anofox repository serves the cpu flavor only, so a GPU user sent
-			// there would land back here (issue #25).
-			throw InvalidInputException(
-			    "anofox_tabfm: this build is the '" + flavor + "' flavor and does not carry '" + setting +
-			    "'. coreml is an in-process ONNX Runtime provider, so it needs a build with "
-			    "TABFM_FLAVOR=coreml (macOS only) — it is not a downloadable plugin the way cuda, rocm and mlx "
-			    "are. On Apple Silicon prefer 'mlx', which is a plugin and serves every model: CALL "
-			    "tabfm_download_runtime('mlx'); SET anofox_tabfm_device='mlx'. Otherwise SET "
-			    "anofox_tabfm_device='cpu'. Released cpu builds: SET custom_extension_repository = "
-			    "'https://get.anofox.com'");
-		}
-		if (auto *device = find_usable(setting)) {
-			return *device;
+		if (!found.empty() && setting != "mlx") {
+			const string supported = setting == "cuda" ? "compute capability 7.5 or newer (sm_75+)"
+			                                           : "the architectures " + StringUtil::Join(GgmlRocmPluginArchs(), ", ");
+			throw InvalidInputException("anofox_tabfm: no usable '" + setting + "' device: found " + found +
+			                            ", which the ggml GPU plugin has no kernels for; it supports " + supported +
+			                            ". SELECT * FROM tabfm_devices(); shows every device found; SET anofox_tabfm_device='cpu' (or 'auto') to run "
+			                            "on the CPU.");
 		}
 		throw InvalidInputException("anofox_tabfm: no usable '" + setting +
 		                            "' device was discovered — check SELECT * FROM tabfm_devices(); for the "
 		                            "detected hardware/driver state, or SET anofox_tabfm_device='cpu'");
 	}
-	if (setting == "auto") {
-		// Best discovered device: the flavor's GPU lane if a usable device
-		// exists, else the cpu fallback lane (HLD §9).
-		if (flavor_has_cuda) {
-			if (auto *device = find_usable("cuda")) {
-				return *device;
-			}
-		}
-		if (flavor_has_rocm) {
-			if (auto *device = find_usable("rocm")) {
-				return *device;
-			}
-		}
-		if (flavor_has_coreml) {
-			if (auto *device = find_usable("coreml")) {
-				return *device;
-			}
-		}
-		for (auto &device : devices) {
-			if (device.device_id == "cpu") {
-				return device;
-			}
-		}
-		return MakeCpuDevice();
-	}
 	throw InvalidInputException("anofox_tabfm: unknown device setting '" + setting_value +
-	                            "' — anofox_tabfm_device must be one of 'auto', 'cpu', 'cuda', 'rocm', 'coreml', "
-	                            "'mlx'");
+	                            "' — anofox_tabfm_device must be one of 'auto', 'cpu', 'cuda', 'rocm', 'mlx'");
 }
 
-//===----------------------------------------------------------------------===//
-// MIGraphX shape buckets (HLD §9)
-//===----------------------------------------------------------------------===//
-
-TabFMShapeBucket MIGraphXShapeBucket(int64_t rows_t, int64_t features_h) {
-	// The padding table itself lives in tabfm_shape_bucket.hpp, a duckdb-free
-	// header the standalone MIGraphX plugin also includes — one source of
-	// truth so the extension and the plugin can never disagree on a bucket
-	// and silently miss each other's .mxr cache. This wraps it in the
-	// exception shape the rest of the extension expects.
-	try {
-		auto raw = PadToShapeBucket(rows_t, features_h);
-		return TabFMShapeBucket {raw.padded_t, raw.padded_h};
-	} catch (const std::invalid_argument &e) {
-		throw InvalidInputException(string("anofox_tabfm: ") + e.what());
-	}
-}
 
 //===----------------------------------------------------------------------===//
 // tabfm_devices() table function (SQL-API §3)
@@ -700,8 +562,8 @@ void RegisterDevicesFunctions(ExtensionLoader &loader) {
 	FunctionDescription fd;
 	fd.description =
 	    "List the inference devices this build can see (device_id, ep, name, arch, vram, driver, usable). The cpu "
-	    "row always exists; GPU rows appear only in the matching flavor (cuda/rocm) and report usable=false when a "
-	    "device is present but unsupported.";
+	    "row always exists; a GPU row appears for every NVIDIA (NVML), AMD (KFD) or Apple Silicon GPU found, with "
+	    "usable=false when the GPU plugin has no kernels for it; ep names the engine that serves it.";
 	fd.examples = {"SELECT * FROM tabfm_devices();"};
 	fd.categories = {"tabfm", "meta"};
 	RegisterTableFunctionWithAlias(loader, std::move(func), "tabfm_devices", {std::move(fd)});

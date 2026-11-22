@@ -226,6 +226,31 @@ TEST_CASE("shape_eval: Slice with a negative step reverses", "[tabfm][shape_eval
 	REQUIRE(r.values.at("out").ints == std::vector<int64_t> {14, 12, 10});
 }
 
+TEST_CASE("shape_eval: Slice and Range counts are exact at the int64 extremes (no 128-bit type needed)", "[tabfm][shape_eval]") {
+	// steps of INT64_MAX / INT64_MIN take one element; a Range across the whole int64 span is too long to materialise but its length is still
+	// computed without overflow (these used __int128, which MSVC does not have)
+	Graph g;
+	g.nodes = {Const("data", Int64Tensor({5}, {10, 11, 12, 13, 14})),
+	           Const("s0", Int64Tensor({1}, {0})), Const("e5", Int64Tensor({1}, {5})), Const("ax", Int64Tensor({1}, {0})),
+	           Const("big", Int64Tensor({1}, {INT64_MAX})), Op("Slice", {"data", "s0", "e5", "ax", "big"}, {"one_up"}),
+	           Const("s4", Int64Tensor({1}, {4})), Const("eneg", Int64Tensor({1}, {-6})), Const("small", Int64Tensor({1}, {INT64_MIN})),
+	           Op("Slice", {"data", "s4", "eneg", "ax", "small"}, {"one_down"}),
+	           Const("lo", Int64Tensor({}, {INT64_MIN})), Const("hi", Int64Tensor({}, {INT64_MAX})), Const("d1", Int64Tensor({}, {1})),
+	           Const("dbig", Int64Tensor({}, {INT64_MAX})), Const("dneg", Int64Tensor({}, {-3})),
+	           Op("Range", {"lo", "hi", "dbig"}, {"r_two"}),
+	           Op("Range", {"hi", "lo", "small"}, {"r_down"}),
+	           Op("Range", {"d1", "hi", "dneg"}, {"r_empty"}),
+	           Const("ten", Int64Tensor({}, {10})), Op("Range", {"ten", "d1", "dneg"}, {"r_neg"})};
+	const auto r = Eval(g);
+	REQUIRE(r.values.at("one_up").ints == std::vector<int64_t> {10});
+	REQUIRE(r.values.at("one_down").ints == std::vector<int64_t> {14});
+	// INT64_MIN + k*INT64_MAX for k = 0, 1, 2 lies below INT64_MAX: three elements
+	REQUIRE(r.values.at("r_two").ints == std::vector<int64_t> {INT64_MIN, -1, INT64_MAX - 1});
+	REQUIRE(r.values.at("r_down").ints == std::vector<int64_t> {INT64_MAX, -1});
+	REQUIRE(r.values.at("r_empty").ints.empty());
+	REQUIRE(r.values.at("r_neg").ints == std::vector<int64_t> {10, 7, 4});
+}
+
 TEST_CASE("shape_eval: a scalar index removes the gathered axis, a vector index keeps it", "[tabfm][shape_eval]") {
 	Graph g;
 	g.inputs = {"x"};

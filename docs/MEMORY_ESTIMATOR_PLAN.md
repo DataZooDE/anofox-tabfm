@@ -72,7 +72,7 @@ break that pattern. The measurements already in the repo are the first calibrati
 | CPU | mitra | 1,500 (1,000 + 500), 15 | 3.5 GB RSS | 0.58 GB |
 | CPU | mitra | 2,500 (2,000 + 500), 15 | 6.8 GB RSS | 1.60 GB |
 | MLX | mitra | 2,500, 17 | 3.19 GB | 2.1 GB |
-| MIGraphX | every model | the measured buckets | peak VRAM <= 11 GiB | the ceilings table, docs/ROCM_SINGLE_EVAL_POS.md |
+| MIGraphX | every model | the measured buckets | peak VRAM <= 11 GiB | the ceilings table, docs/archive/ROCM_SINGLE_EVAL_POS.md |
 
 The CPU rows (from #107, 4 threads) suggest `peak ~ 1.3 GB + 3.4 x largest_term` for mitra at 15 features (the 5-feature row sits
 0.4 GB below it, so the smaller terms matter too). Phase 2 refits

@@ -58,19 +58,11 @@ struct ModelTaskArtifacts {
 	vector<ManifestFile> files;
 	//! Bundled graph id or an on-disk .onnx path (resolved relative to manifest).
 	string graph;
-	//! Optional GPU-format graphs (docs/GPU_HARDENING_PLAN.md P3). Two fields,
-	//! not one, and deliberately no cross-fallback: spike U1 showed MIGraphX
-	//! cannot run a plain external-data ONNX (the fixture graph fails at eval),
-	//! so pointing ROCm at an ext_graph would trade a clear "no GPU graph for
-	//! this model" for a runtime MIGraphX error. A model whose single export
-	//! happens to satisfy both simply names the same file twice.
-	//!
-	//! ext_graph: external-data ONNX for the ORT-based CUDA plugin; its data
-	//! file(s) sit beside it, and its offsets match the model's own weights by
-	//! construction, so no header check applies.
+	//! ext_graph: the external-data ONNX every GPU plugin reads (the ggml plugin for cuda and rocm, MLX); its data file(s) sit beside it,
+	//! and its offsets match the model's own weights by construction, so no header check applies.
 	string ext_graph;
-	//! migraphx_graph: the MIGraphX-compatible variant (Shape-rewritten,
-	//! external-data) for the ROCm plugin.
+	//! migraphx_graph: the masked MIGraphX variant. Still parsed from manifests and tabfm_register_model so old registrations load, but
+	//! nothing reads it since MIGraphX was removed; a model without an ext_graph has no GPU path.
 	string migraphx_graph;
 	//! Exactly one of the two tensor-map forms is populated (or neither).
 	string tensor_map_path;
@@ -149,7 +141,7 @@ struct ModelSpec {
 	static string TaskCapability(TabFMTask task);
 };
 
-//! Which graph a GPU backend should run, if any (docs/GPU_HARDENING_PLAN.md
+//! Which graph a GPU backend should run, if any (docs/archive/GPU_HARDENING_PLAN.md
 //! P3). Pure so CI can pin the gate without hardware — the same treatment
 //! CanReuseSession got after the device-switch bug, and for the same reason:
 //! this exact gate is what silently locked every model but tabfm-v1 out of
@@ -232,7 +224,7 @@ inline string MlxSupportedModels() {
 //! The error for "you asked for this GPU but the model ships no graph it can
 //! run". Found on hardware (examples on a pod): the previous path surfaced
 //! "SET anofox_tabfm_ep_path" — the one thing already configured. graph_kind
-//! is "ext_graph" (CUDA) or "migraphx_graph" (ROCm).
+//! is "ext_graph" for every GPU backend.
 inline string NoGpuGraphMessage(const string &device, const string &model, const string &task_name,
                                 const string &graph_kind) {
 	return "anofox_tabfm: device '" + device + "' was requested, but model '" + model +
@@ -381,7 +373,7 @@ inline string GpuGraphKindFor(const string &backend) {
 //! graph agreed with the CPU on an RTX 4090 (tools/gpu_test/cuda_catalog.sh). TabPFN-3.5 and 3.5-Fast were
 //! listed here until their ext graphs gained the shape-tensor pins of tools/pin_cuda_shape_operands.py: ONNX
 //! Runtime 1.29's CUDA session reused the CPU buffer of a live shape tensor, so an Expand received a wrong
-//! shape (docs/UPSTREAM_ORT_ISSUES.md, Draft 3). Add an entry only with a cuda_catalog.sh run that shows the
+//! shape (docs/archive/UPSTREAM_ORT_ISSUES.md, Draft 3). Add an entry only with a cuda_catalog.sh run that shows the
 //! model disagreeing with (or failing where) the CPU does not; remove one only with a run that shows it agreeing.
 inline string CudaKnownWrong(const string &model, const string &task) {
 	(void)model;
@@ -403,71 +395,6 @@ inline string GpuKnownWrong(const string &backend, const string &model, const st
 //===----------------------------------------------------------------------===//
 // ROCm bucket ceilings: shapes a model's MIGraphX program cannot be built for
 //
-// MIGraphX compiles one program per padded (T, H) bucket, and some graphs grow
-// a tensor quadratically in T. When hipMalloc cannot place a buffer MIGraphX
-// 2.15 falls back to pinned host memory and then asserts on it
-// (src/targets/gpu/hip.cpp:155, `host or is_device_ptr(result.get())`). The
-// assertion is compiled in on distribution builds, so it aborts the whole
-// DuckDB process from a single SQL call. Such buckets are refused here, before
-// the plugin starts the compile (docs/ROCM_SINGLE_EVAL_POS.md, "LimiX-2M bucket
-// ceiling").
-//===----------------------------------------------------------------------===//
-
-//! Float32 elements of LimiX-2M's largest tensor at bucket (T, H): the per-token
-//! sample attention keeps a [G + 1, 6 heads, T, T] score tensor, with
-//! G = ceil(H / 2) feature groups plus the label token. At T4096 x H128 that is
-//! 24.4 GiB, which is what failed.
-inline int64_t LimixRocmScoreElements(int64_t bucket_t, int64_t bucket_h) {
-	const int64_t tokens = (bucket_h + 1) / 2 + 1;
-	return tokens * 6 * bucket_t * bucket_t;
-}
-
-//! The largest LimiX-2M bucket measured to compile AND run, on a 16 GiB card
-//! (RX 9070 XT, gfx1201, MIGraphX 2.15): T4096 x H16, 3.4 GiB of scores, peak
-//! VRAM 10.5 GiB over the idle card, 0/3000 label differences from the CPU. Its
-//! score size is the ceiling. The next larger buckets (T2048 x H128, T1024 x
-//! H512) need about 1.8x that, more than the card holds at the measured
-//! ~3x peak-to-score ratio.
-static constexpr int64_t LIMIX_ROCM_MEASURED_T = 4096;
-static constexpr int64_t LIMIX_ROCM_MEASURED_H = 16;
-static constexpr int64_t ROCM_CEILING_MEASURED_VRAM = int64_t(16) << 30;
-
-//! "" when (model, bucket) can be compiled on a ROCm device with vram_total
-//! bytes (negative: unknown); otherwise the reason it is refused. A card smaller
-//! than the measured one scales the ceiling down in proportion. A larger card
-//! does NOT raise it, because a bigger bucket was never measured.
-inline string RocmBucketRefusal(const string &model, int64_t bucket_t, int64_t bucket_h, int64_t vram_total) {
-	if (model != "limix-2m") {
-		return string();
-	}
-	int64_t ceiling = LimixRocmScoreElements(LIMIX_ROCM_MEASURED_T, LIMIX_ROCM_MEASURED_H);
-	if (vram_total > 0 && vram_total < ROCM_CEILING_MEASURED_VRAM) {
-		ceiling = int64_t(double(ceiling) * double(vram_total) / double(ROCM_CEILING_MEASURED_VRAM));
-	}
-	const int64_t need = LimixRocmScoreElements(bucket_t, bucket_h);
-	if (need <= ceiling) {
-		return string();
-	}
-	const double gib = double(need) * 4.0 / double(int64_t(1) << 30);
-	return StringUtil::Format(
-	    "model 'limix-2m' cannot be compiled for the ROCm shape bucket %d rows x %d features: its sample "
-	    "attention holds a %.1f GiB float32 score tensor there, and when MIGraphX runs out of VRAM it aborts the "
-	    "process instead of raising an error. The largest bucket measured to work on a 16 GiB GPU is %d x %d "
-	    "(docs/ROCM_SINGLE_EVAL_POS.md). Use fewer rows or features, or SET anofox_tabfm_device = 'cpu'",
-	    bucket_t, bucket_h, gib, LIMIX_ROCM_MEASURED_T, LIMIX_ROCM_MEASURED_H);
-}
-
-//! The tabfm_backends() note for a model that serves on ROCm only up to a ceiling; "" for the others.
-inline string RocmBucketCeilingNote(const string &model) {
-	if (model != "limix-2m") {
-		return string();
-	}
-	return StringUtil::Format("served up to the %d rows x %d features shape bucket (or any bucket whose sample-"
-	                          "attention score tensor is no larger) on a 16 GiB GPU; larger buckets are refused "
-	                          "because MIGraphX aborts the process when it runs out of VRAM "
-	                          "(docs/ROCM_SINGLE_EVAL_POS.md)",
-	                          LIMIX_ROCM_MEASURED_T, LIMIX_ROCM_MEASURED_H);
-}
 
 inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &in) {
 	GpuServabilityResult out;
@@ -513,7 +440,7 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		}
 		// The case worth being precise about: a model whose context split is
 		// positional (it reads the split from y's length), which a fixed-shape
-		// compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). tabdpt and the
+		// compile cannot bucket (docs/archive/ROCM_SINGLE_EVAL_POS.md). tabdpt and the
 		// whole TabPFN family (v2, v2.5, v2.6, v3), tabicl-v2 and limix-2m have had
 		// that split converted to a value and so no longer land here; the orion
 		// models and causilo still do, and tabfm_backends() is the source of truth.
@@ -641,7 +568,7 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	//
 	// tabdpt is the exception: its split was converted to a train_size mask so
 	// every shape depends on the (T, H) bucket alone, and it now bundles
-	// migraphx graphs too (docs/ROCM_TABDPT_SPIKE.md). The sha below is
+	// migraphx graphs too (docs/archive/ROCM_TABDPT_SPIKE.md). The sha below is
 	// unchanged by that — it hashes the WEIGHTS header, and the conversion
 	// touched only the graph, leaving all 647 initializers and the tensor map
 	// exactly as they were.

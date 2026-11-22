@@ -25,19 +25,8 @@ namespace anofox {
 //! MissingExtensionException must keep their own remediation.
 string HttpAuthRemediation(const string &error, const string &url);
 
-//! One file to lift out of a downloaded runtime archive (no backend uses one any more: kept for the archive path's shape).
-struct RuntimeEntry {
-	string zip_path;
-	string dest_name;
-	bool patch_soname = false;
-};
-
-//! What tabfm_download_runtime fetches for a backend: the plugin from this repo's release assets (built by .github/workflows/gpu_plugins.yml), plus
-//! an optional runtime archive (`wheel_url`, empty for every backend now that CUDA and ROCm are served by the self-contained ggml plugin).
+//! What tabfm_download_runtime fetches for a backend: its plugin, from this repo's release assets (built by .github/workflows/gpu_plugins.yml).
 struct RuntimeArtifact {
-	string wheel_url;
-	int64_t wheel_bytes = 0;
-	vector<RuntimeEntry> zip_entries;
 	string plugin_name;
 	string plugin_url;
 };

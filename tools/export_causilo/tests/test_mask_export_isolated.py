@@ -296,42 +296,6 @@ def test_masked_matches_upstreams_own_runner_and_numpy_normaliser():
     assert np.abs(got - want).max() < 1e-4
 
 
-# --- MIGraphX's own parser (local only: needs migraphx-driver and, for the weights, nothing but this machine) ----
-
-@pytest.mark.skipif(shutil.which("migraphx-driver") is None, reason="needs migraphx-driver (ROCm)")
-@pytest.mark.parametrize("task", TASKS)
-def test_migraphx_parses_and_reference_compiles_the_masked_graph(tmp_path, task):
-    """What this CAN see: parse-time failures (`Unknown operator`, a Reshape to []) and anything the REFERENCE
-    target's passes reject. What it CANNOT see, measured: the GPU pipeline's `simplify_reshapes` failures, which the
-    reference target passes (the known-bad TabPFN-3 repro compiles on --ref) and for which there is no
-    GPU-free target here (libmigraphx_cpu.so is not installed). So a pass is necessary, not sufficient."""
-    import json
-    import subprocess
-
-    from safetensors.torch import save_file
-
-    cfg = configs.get("fixture")
-    model = seeded_model(task)
-    classes = cfg.classes if task == "classification" else 0
-    graph = tmp_path / f"graph_mask_causilo_{task}.onnx"
-    export.export_mask_graph(model, graph, example=cfg.mask_example, classes=classes)
-    tensor_map = export.postprocess(graph, dict(model.state_dict()))
-    tmap = tmp_path / f"tensor_map_causilo_{task}.json"
-    export.write_tensor_map(tmap, tensor_map, task=task, safetensors_rel="model.safetensors")
-    save_file({k: v.detach().contiguous() for k, v in sorted(model.state_dict().items())},
-              str(tmp_path / "model.safetensors"))
-    out = tmp_path / "graph_migraphx.onnx"
-    tool = pathlib.Path(__file__).resolve().parents[2] / "make_migraphx_graph.py"
-    r = subprocess.run([sys.executable, str(tool), task, "--weights", str(tmp_path / "model.safetensors"),
-                        "--graph", str(graph), "--tensor-map", str(tmap), "--dynamic", "--out", str(out)],
-                       capture_output=True, text=True, timeout=300)
-    assert r.returncode == 0, r.stderr[-1500:] + r.stdout[-500:]
-    r = subprocess.run(["migraphx-driver", "compile", str(out), "--onnx", "--ref", "--input-dim", "@x", "1", "64", "16",
-                        "@y", "1", "64", "@train_size", "1", "@n_rows", "1", "@d", "1"],
-                       capture_output=True, text=True, timeout=600)
-    assert r.returncode == 0, (r.stderr + r.stdout)[-1500:]
-
-
 # --- 6. a fresh process -----------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("task", TASKS)

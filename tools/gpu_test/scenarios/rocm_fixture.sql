@@ -10,7 +10,7 @@
 LOAD anofox_tabfm;
 CALL tabfm_register_model(id := 'mgx-fixture', base_dir := 'test/fixtures',
   classification_graph := 'graph_fixture.onnx',
-  classification_migraphx_graph := 'graph_migraphx_fixture.onnx',
+  classification_ext_graph := 'graph_migraphx_fixture.onnx',
   classification_weights := 'model.safetensors',
   classification_tensor_map := 'tensor_map_fixture.json',
   license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal');

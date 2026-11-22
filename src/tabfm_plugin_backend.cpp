@@ -3,7 +3,7 @@
 //
 // tabfm_plugin_backend.cpp — load a backend from a shared library.
 //
-// Phase 1 of docs/DYNAMIC_BACKENDS.md: a GPU backend becomes a library the
+// Phase 1 of docs/archive/DYNAMIC_BACKENDS.md: a GPU backend becomes a library the
 // extension dlopens on demand rather than a build flavor. This is the loader
 // side of tabfm_plugin_abi.h — it adapts the C function table back onto the
 // TabFMBackend interface the engine already speaks.
@@ -309,8 +309,8 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 	if (!handle) {
 		const string backend_name = api->name();
 		// Deliberately NOT CloseLibrary here (review finding): create has
-		// already executed plugin code — the CUDA plugin constructs an
-		// Ort::Env and probes the driver before it can fail, leaving TLS and
+		// already executed plugin code — a GPU plugin initialises its
+		// runtime and probes the driver before it can fail, leaving TLS and
 		// atexit registrations pointing into the library. Unmapping it turns
 		// a clean "could not be initialised" into a crash at shutdown or on
 		// retry. The pre-create failure paths above ran no plugin code and

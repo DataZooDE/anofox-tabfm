@@ -9,7 +9,7 @@ the real feature count arrive as VALUES, so the only dynamic axes are rows and f
     y          [1, T]    f32   train targets in [:train_size], -100 elsewhere
     train_size [1] int64
     n_rows     [1] int64       declared so the MIGraphX plugin binds it uniformly; Causilo does not need it
-                               (nothing here looks at all rows; docs/ROCM_CAUSILO_PLAN.md)
+                               (nothing here looks at all rows; docs/archive/ROCM_CAUSILO_PLAN.md)
     d          [1] int64
 """
 

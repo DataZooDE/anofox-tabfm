@@ -2,13 +2,13 @@
 name: anofox-tabfm-gpu
 description: >
   GPU acceleration and device control for the anofox_tabfm DuckDB extension:
-  NVIDIA CUDA, AMD ROCm (MIGraphX) and Apple MLX backend plugins loaded at
-  runtime, device discovery, per-model backend support, precision modes, and the
-  ROCm first-run compile. Use when making predictions faster on a GPU, running
-  `tabfm_accelerate` / `tabfm_download_runtime` / `tabfm_gpu_precompile`, reading
-  `tabfm_devices()` / `tabfm_backends()`, setting `anofox_tabfm_device`,
-  `anofox_tabfm_gpu_precision`, `anofox_tabfm_ep_path` or
-  `anofox_tabfm_mxr_source`, checking which device actually served a query, or
+  NVIDIA CUDA and AMD ROCm (both served by the ggml GPU plugin) and Apple MLX
+  backend plugins loaded at runtime, device discovery, per-model backend
+  support, precision modes and GPU memory. Use when making predictions faster
+  on a GPU, running `tabfm_accelerate` / `tabfm_download_runtime` /
+  `tabfm_gpu_precompile`, reading `tabfm_devices()` / `tabfm_backends()`,
+  setting `anofox_tabfm_device`, `anofox_tabfm_gpu_precision` or
+  `anofox_tabfm_ep_path`, checking which device actually served a query, or
   troubleshooting a GPU that is not used.
 version: 2026.11.17
 user-invocable: false
@@ -18,10 +18,12 @@ user-invocable: false
 
 **Extension:** anofox_tabfm v2026.11.17 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
 
-A GPU is not a separate build. Every published build is the CPU build, and each accelerator is a plugin it
-loads at runtime: `cuda` (NVIDIA, Linux x64, its own ONNX Runtime GPU libraries), `rocm` (AMD, Linux x64, a
-direct MIGraphX backend) and `mlx` (Apple Silicon, macOS arm64). No vendor runtime is linked; CUDA / cuDNN or
-ROCm come from the system.
+A GPU is not a separate build. There is one build per platform; the CPU runs on the vendored ggml engine and
+no build contains ONNX Runtime. Each accelerator is a plugin loaded at runtime: `cuda` (NVIDIA, Linux x64) and
+`rocm` (AMD, Linux x64) are both the **ggml GPU plugin** (`libanofox_tabfm_ggml-cuda_plugin.so`,
+`libanofox_tabfm_ggml-rocm_plugin.so`), the same engine as the CPU on the GPU; `mlx` (Apple Silicon, macOS
+arm64) is the MLX plugin. The CUDA plugin links the CUDA runtime statically and needs only the NVIDIA driver;
+the ROCm plugin uses the system's ROCm 6.4+ (HIP, hipBLAS, rocBLAS); MLX needs `brew install mlx mlx-c`.
 
 ## Critical gotchas
 
@@ -34,24 +36,26 @@ ROCm come from the system.
    against the same context with `tabicl-v2` is fastest on the CPU, whose context cache a GPU session does
    not use; pin `SET anofox_tabfm_device = 'cpu';` there.
 3. **Naming a device is a hard request.** `SET anofox_tabfm_device = 'cuda'` (or `'rocm'`, `'mlx'`) errors
-   when the model cannot be served there instead of falling back.
-4. **ROCm compiles per shape bucket.** The first predict in a (GPU arch, precision, rows x features) bucket
-   compiles a MIGraphX program: minutes (about 25 for `tabfm-v1`, 16 for `tabpfn-v3`, 2–9 for most others).
-   Later predicts in the bucket are sub-second. Precompile off the query path with `tabfm_gpu_precompile`.
-5. **Precision defaults to strict `fp32`** everywhere; `bf16` / `fp16` (ROCm) flip labels on some rows, and
-   not only near-ties. Validate on your own data before switching.
-6. **Not every model runs on every backend.** CUDA and MLX refuse `nori-30m` and `exaone-tabular` (no GPU
-   graph); `nori-1-5` runs on CUDA and MLX (ext graph) and on ROCm (masked graph; only the 128 x 16 bucket is
-   verified); ROCm serves every built-in model but caps
-   `limix-2m`'s bucket size. CoreML is dropped (MLX replaces it).
+   when the model cannot be served there instead of falling back; without the plugin the error names the file
+   and `CALL tabfm_download_runtime('cuda')`.
+4. **Precision defaults to strict `fp32`** everywhere. `bf16` / `fp16` exist on MLX only; on CUDA and ROCm
+   they are refused with an error. `tf32` (CUDA) is faster but rounds each matmul; validate before switching.
+5. **A model must fit the card.** Weights are uploaded when the session is created, after a free-memory
+   check; a model that does not fit fails at load naming `CALL tabfm_unload()`, `SET anofox_tabfm_max_sessions = 1`
+   and `SET anofox_tabfm_device='cpu'`. Sessions are cached per (model, device, precision) and add up.
+6. **Which cards are usable.** CUDA needs compute capability 7.5 (Turing) or newer. On ROCm every GPU node is
+   usable, iGPUs included; the published plugin has kernels for gfx1030/1100/1101/1102/1150/1151/1200/1201,
+   gfx90a and gfx942. Every built-in model ships an ext graph, so each runs on CUDA, ROCm and MLX as far as
+   `tabfm_backends()` says. CoreML is gone (`'coreml'` errors and points to `mlx`); `'migraphx'` is an alias
+   for `rocm`.
 
 ## Set up
 
 ```sql
-CALL tabfm_accelerate();   -- find the GPU, fetch its plugin (and runtime), verify it loads
+CALL tabfm_accelerate();   -- find the GPU, fetch its plugin, verify it loads
 ```
 
-Returns `step, status, detail` rows, including what is still ahead (MIGraphX's first compile, `brew install
+Returns `step, status, detail` rows, including what is still ahead (the ROCm runtime libraries, `brew install
 mlx mlx-c` on macOS). Re-running re-verifies without re-downloading. That is all: with `device = 'auto'` the
 next predict uses the GPU for every model it can serve.
 
@@ -62,10 +66,10 @@ CALL tabfm_download_runtime('cuda');   -- 'cuda', 'rocm' or 'mlx': rows file, by
 SET anofox_tabfm_device = 'cuda';
 ```
 
-Plugins land in the `runtime` subdirectory of `anofox_tabfm_cache_dir`; `SET anofox_tabfm_ep_path = '<dir>'`
-only to point somewhere else. A plugin is checked against the extension's plugin ABI on load, so a plugin left
-over from an older release is refused (and `auto` uses the CPU); `CALL tabfm_accelerate()` fetches the matching
-one.
+Plugins land in the `runtime` subdirectory of `anofox_tabfm_cache_dir`, verified against a published sha256;
+`SET anofox_tabfm_ep_path = '<dir>'` only to point somewhere else. A plugin is checked against the extension's
+plugin ABI on load, so a plugin left over from an older release is refused (and `auto` uses the CPU);
+`CALL tabfm_accelerate()` fetches the matching one.
 
 ## Inspect
 
@@ -76,7 +80,7 @@ SELECT model, task, device, backend, supported, reason FROM tabfm_backends() WHE
 
 | function | columns | meaning |
 |---|---|---|
-| `tabfm_devices()` | `device_id, ep, name, arch, vram_total, vram_free, driver, usable` | always `cpu`, plus every CUDA, ROCm or MLX device found; `usable = false` when present but unsupported |
+| `tabfm_devices()` | `device_id, ep, name, arch, vram_total, vram_free, driver, usable` | always `cpu`, plus every CUDA, ROCm or MLX device found; `usable = false` when present but unsupported. `ep` is the serving engine: `ggml` (cpu), `ggml-cuda`, `ggml-rocm`, `mlx` |
 | `tabfm_backends()` | `model, task, device, backend, supported, reason` | per model, task and device: can it be served, and why not. `supported` is `NULL` while the weights are not downloaded |
 | `tabfm_models()` | `..., device, ...` | the device serving each loaded session right now |
 
@@ -88,32 +92,22 @@ FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['custome
 SELECT model, task, device FROM tabfm_models() WHERE loaded;
 ```
 
-## Precompile (ROCm)
+## Warm-up
+
+There is no ahead-of-time compile on any backend. `tabfm_gpu_precompile` is kept as a warm-up: it loads the
+model's session on its device and reports `status = 'not needed'` (`bucket_rows` / `bucket_features` are NULL).
 
 ```sql
 CALL tabfm_gpu_precompile('classification', model := 'mitra');
-CALL tabfm_gpu_precompile('classification', 1000, 50, model := 'mitra');   -- task, rows, features
 ```
-
-Returns `task, rows, features, device, status, model, bucket_rows, bucket_features, seconds, reason`;
-`status` is `compiled`, `cached`, `not needed` (CPU, CUDA, MLX) or `refused` (over the model's ROCm ceiling,
-`reason` says why). The compiled `.mxr` persists in the weight cache across sessions. A fleet can share
-compiles: `SET anofox_tabfm_mxr_source = '<dir>'` stages matching precompiled programs from that directory
-(they are GPU-arch and ROCm-version specific). CUDA has no such cost (about 30 s cold start).
-
-`limix-2m` on ROCm: buckets above 4096 rows x 16 features (on a 16 GiB GPU; proportionally less with less
-VRAM) are refused before compiling, because MIGraphX would abort the process. Use the CPU for larger tables.
 
 ## Precision
 
 | `anofox_tabfm_gpu_precision` | backends | meaning |
 |---|---|---|
-| `fp32` (default) | all | strict: switching device does not change answers (TF32 rounding off on CUDA) |
-| `tf32` | CUDA | TF32 tensor-core matmuls, fp32 storage |
-| `bf16`, `fp16` | ROCm | quantized program: about 2x faster on RDNA4, half the VRAM; validate first |
+| `fp32` (default) | all | strict: switching device does not change answers beyond float rounding (TF32 off on CUDA, small matmuls padded past ggml's TF32 kernel) |
+| `tf32` | CUDA (accepted on ROCm, which has no TF32 switch) | TF32 tensor-core matmuls, fp32 storage. Process-wide, latched at the first CUDA use |
+| `bf16`, `fp16` | MLX | reduced precision; refused on CUDA and ROCm |
 
-A mode the backend cannot honour is an error, never a silent fp32 run.
-
-An experimental ggml GPU plugin (same engine as the CPU, built from `tools/ggml_plugin`) is used instead of the ONNX Runtime/MIGraphX plugin when
-`libanofox_tabfm_ggml-cuda_plugin.so` (or `ggml-rocm`) is in `anofox_tabfm_ep_path`; it honours the same precision values (`bf16`/`fp16` are errors) and reads
-float32 checkpoints only. Apple GPUs stay on MLX.
+A mode the backend cannot honour is an error, never a silent fp32 run. Deprecated and without effect:
+`anofox_tabfm_mxr_source`, `anofox_tabfm_cpu_prepack`.

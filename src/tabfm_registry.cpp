@@ -300,7 +300,7 @@ static const char *const BUILTIN_TABPFN26 = R"json({
 
 // TabICL v2's CPU/CUDA graphs are (x, y)-only: the split is the length of y. For ROCm a second, MASKED graph per
 // task (x, y_full, train_size, d, n_rows; tools/export_tabicl --contract mask) is bundled, keyed to the same
-// safetensors by header sha (docs/ROCM_SINGLE_EVAL_POS.md).
+// safetensors by header sha (docs/archive/ROCM_SINGLE_EVAL_POS.md).
 static const char *const BUILTIN_TABICL = R"json({
   "schema_version": 2, "id": "tabicl-v2", "display_name": "TabICL v2 (soda-inria)",
   "family": "icl-transformer",
@@ -449,7 +449,7 @@ static const char *const BUILTIN_ORION_BIX = R"json({
 //
 // Its graph is (x, y)-only like TabICL's: the split is the length of y, so the engine needs no
 // model-specific code (tools/export_causilo). For ROCm a second, MASKED graph per task (x, y_full,
-// train_size, n_rows, d; tools/export_causilo --contract mask, docs/ROCM_CAUSILO_PLAN.md) is bundled,
+// train_size, n_rows, d; tools/export_causilo --contract mask, docs/archive/ROCM_CAUSILO_PLAN.md) is bundled,
 // keyed to the pinned safetensors by header sha. The graph normalises its own features, hence a
 // *_raw profile. Weights are already safetensors with the keys the tensor map names, so there is
 // no converter, and they are pinned to the commit the graph was exported from: HF main has moved
@@ -500,7 +500,7 @@ static const char *const BUILTIN_CAUSILO = R"json({
 // Its graph is (x, y)-only like TabICL's and Causilo's: the split is the length of y, so the engine needs
 // no model-specific code (tools/export_limix). For ROCm a second, MASKED graph per task (x, y_full,
 // train_size, d, n_rows; tools/export_limix --contract mask) is bundled; it reads the model.safetensors that
-// tabfm_download writes beside the checkpoint (docs/ROCM_SINGLE_EVAL_POS.md).
+// tabfm_download writes beside the checkpoint (docs/archive/ROCM_SINGLE_EVAL_POS.md).
 // The model standardises its own features and the export wrapper standardises the regression target
 // in-graph, hence a *_raw profile. ONE checkpoint serves both tasks, so both name the same file.
 //

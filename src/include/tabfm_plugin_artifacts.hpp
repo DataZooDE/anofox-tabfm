@@ -148,9 +148,9 @@ inline string PluginSha256AssetName(const string &backend) {
 	return PluginBaseName(backend) + "_plugin.sha256";
 }
 
-//! Pull one file's digest out of a `sha256sum` sidecar. The CUDA sidecar covers
-//! two files (the plugin and its private ORT core), so the line must be matched
-//! by filename rather than assumed to be the first.
+//! Pull one file's digest out of a `sha256sum` sidecar. A sidecar may list
+//! several files, so the line must be matched by filename rather than assumed
+//! to be the first.
 //!
 //! Returns "" when the file is not listed — which callers must treat as a
 //! failure, not as "nothing to check": a sidecar that does not mention the file

@@ -2,7 +2,7 @@
 
 `split_sequences_to_slices`: torch's dynamo exporter lowers `Tensor.split` / `chunk` to
 `SplitToSequence` + `SequenceAt`. MIGraphX's ONNX parser implements neither (the same wall
-docs/ROCM_TABDPT_SPIKE.md hit as "blocker 2"), and the MLX interpreter has neither in its op table.
+docs/archive/ROCM_TABDPT_SPIKE.md hit as "blocker 2"), and the MLX interpreter has neither in its op table.
 Kumo splits in three places -- the fused QKV projection, RoPE's half-split and the readout/column
 split in the row embedding -- 83 times in the small graph. Rewriting each `SequenceAt(SplitToSequence(X,
 split, axis), p)` into `Slice(X, start_p, end_p, axis)` is the identical tensor and runs everywhere.

@@ -23,7 +23,7 @@
 
 #include "catch.hpp"
 
-#include "tabfm_ort_engine.hpp"
+#include "tabfm_session.hpp"
 #include "tabfm_plugin_backend.hpp"
 
 #include <cmath>

@@ -71,7 +71,7 @@ TEST_CASE("mlx ops: which bundled ext graphs MLX can run", "[tabfm][mlx_ops]") {
 }
 
 // The TabPFN-3.5 ext graphs run on CUDA only because their shape tensors are pinned as extra graph outputs
-// (tools/pin_cuda_shape_operands.py; docs/UPSTREAM_ORT_ISSUES.md, Draft 3). Both executors read the first
+// (tools/pin_cuda_shape_operands.py; docs/archive/UPSTREAM_ORT_ISSUES.md, Draft 3). Both executors read the first
 // output, so 'logits' must stay first; and a re-export that drops the pins would bring the CUDA failure back
 // with nothing local to notice (CI's graph_invariants.yml runs the structural --check too).
 TEST_CASE("mlx ops: TabPFN-3.5 ext graphs keep logits first and their CUDA shape pins", "[tabfm][mlx_ops]") {

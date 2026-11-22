@@ -78,7 +78,7 @@ externally (`CustomStandardScaler`, `RTDLQuantileTransformer`,
 ## The ROCm graph (masked contract)
 
 The CPU graph's split is positional (`len(y)`), which a fixed-shape MIGraphX compile cannot bucket
-(docs/ROCM_SINGLE_EVAL_POS.md). `orion_mask.py` computes the same function with the split as a VALUE:
+(docs/archive/ROCM_SINGLE_EVAL_POS.md). `orion_mask.py` computes the same function with the split as a VALUE:
 `x[1,T,H]`, `y[1,T]` (full length, -100 off the context), `train_size[1]`, `d[1]`. Orion-BiX touches the split
 in two places and the padded columns in one, so three masks suffice: the inducing points and every ICL query
 attend to the context rows only, the label embedding goes to the context rows only, and padded columns are

@@ -7,7 +7,7 @@
 -- What makes this tier 5 rather than another equivalence check: it asserts
 -- that two models in ONE session land on DIFFERENT devices, each the best its
 -- own architecture supports. Most of the catalog has no MIGraphX graph
--- (docs/ROCM_SINGLE_EVAL_POS.md), so on ROCm the correct behaviour is a split,
+-- (docs/archive/ROCM_SINGLE_EVAL_POS.md), so on ROCm the correct behaviour is a split,
 -- not a uniform answer. A run where everything says cpu is the old behaviour;
 -- a run where everything says rocm:0 means the servability gate is not being
 -- consulted. Both are failures, and only printing SERVED_BY per model can tell
@@ -25,7 +25,7 @@
 --
 -- It has now changed hands four times: tabdpt, then tabpfn-v2 (when the TabPFN
 -- v2 / v2.5 / v2.6 graphs were bundled), then tabpfn-v3 (when its conversion
--- landed -- docs/ROCM_TABPFN_PLAN.md), then tabicl-v2 (until tabicl-v2 and
+-- landed -- docs/archive/ROCM_TABPFN_PLAN.md), then tabicl-v2 (until tabicl-v2 and
 -- limix-2m gained masked graphs). orion-bix still reads its context split from
 -- y's length, so it stays unservable until someone converts it; orion-msp and
 -- causilo are the other candidates.

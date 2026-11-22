@@ -31,7 +31,7 @@ Differences from upstream that are NOT approximations:
   an all-zero value column, so attention returns exactly that zero either way.
 * `nn.Linear(1, n)` layers (the softmax-scaling MLPs' first layer, the regression
   target encoders) are computed elementwise. Same arithmetic; MIGraphX's GPU
-  compile dies on a K=1 matmul feeding a broadcast Mul (docs/ROCM_TABPFN_PLAN.md).
+  compile dies on a K=1 matmul feeding a broadcast Mul (docs/archive/ROCM_TABPFN_PLAN.md).
 """
 
 from __future__ import annotations

@@ -3,14 +3,14 @@
 //
 // tabfm_plugin_backend.hpp — load a TabFMBackend from a shared library.
 //
-// Phase 1 of docs/DYNAMIC_BACKENDS.md. See tabfm_plugin_abi.h for the C
+// Phase 1 of docs/archive/DYNAMIC_BACKENDS.md. See tabfm_plugin_abi.h for the C
 // contract the library must satisfy, and tabfm_plugin_backend.cpp for the
 // failures this refuses (missing file, not a plugin, ABI mismatch).
 //===----------------------------------------------------------------------===//
 
 #pragma once
 
-#include "tabfm_ort_engine.hpp" // TabFMBackend
+#include "tabfm_session.hpp" // TabFMBackend
 #include "tabfm_plugin_abi.h"
 
 namespace duckdb {

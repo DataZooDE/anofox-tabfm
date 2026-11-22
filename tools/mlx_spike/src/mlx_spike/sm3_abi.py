@@ -207,7 +207,7 @@ def main(argv: list[str] | None = None) -> int:
     api.destroy(handle)
     _mark("DESTROY_OK", True)
 
-    # P2 guard (docs/GPU_HARDENING_PLAN.md): the CUDA plugin once accepted this
+    # P2 guard (docs/archive/GPU_HARDENING_PLAN.md): the CUDA plugin once accepted this
     # setting and always ran fp32. Reduced precision MUST move the logits; if
     # bf16 reproduced fp32 bit-for-bit the mode would be a no-op wearing its
     # name. Compared against the fp32 run's own logits, not the ORT golden.

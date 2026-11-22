@@ -11,26 +11,8 @@ endif
 EXT_NAME=anofox_tabfm
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
-# Flavor selection (cpu | cuda | rocm), see cmake/ort.cmake.
-# The flavor decides which ONNX Runtime build is linked; sources are identical.
-TABFM_FLAVOR ?= cpu
-EXT_FLAGS += -DTABFM_FLAVOR=$(TABFM_FLAVOR)
-
-# rocm flavor: install tree of an ONNX Runtime built with --use_migraphx.
-TABFM_ORT_ROCM_DIR ?=
-ifneq ($(TABFM_ORT_ROCM_DIR),)
-EXT_FLAGS += -DTABFM_ORT_ROCM_DIR=$(TABFM_ORT_ROCM_DIR)
-endif
-# MIGraphX prefix for the direct GPU backend (rocm flavor; defaults to /opt/rocm).
-TABFM_MIGRAPHX_DIR ?=
-ifneq ($(TABFM_MIGRAPHX_DIR),)
-EXT_FLAGS += -DTABFM_MIGRAPHX_DIR=$(TABFM_MIGRAPHX_DIR)
-endif
-# Optional mirror override for the prebuilt ORT archive (cpu/cuda flavors).
-TABFM_ORT_URL ?=
-ifneq ($(TABFM_ORT_URL),)
-EXT_FLAGS += -DTABFM_ORT_URL=$(TABFM_ORT_URL)
-endif
+# The CPU runs on the vendored ggml (vendor/ggml); GPUs are served by plugins built separately (tools/ggml_plugin for CUDA and ROCm, the
+# anofox_tabfm_mlx_plugin target on Apple Silicon). Nothing here links ONNX Runtime.
 
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
@@ -47,12 +29,8 @@ BUILD_ROOT:=$(or $(TABFM_BUILD_ROOT),build)
 # sqllogictests register under their PATH ("test/sql/foo.test"), while the
 # Catch2 TUs in TABFM_CPP_TEST_SOURCES register under their tag ([tabfm]).
 # "test/*" alone silently skipped every C++ case in CI.
-# Sanitizer builds also need LSan pointed at the suppression list: ONNX
-# Runtime leaks one small allocation from its own static init that no
-# extension code can reach, and without this the run fails at exit with every
-# test passing. Narrow by design (see test/lsan.supp) — a leak in tabfm code
-# still fails.
-TABFM_TEST_ENV = DATAZOO_DISABLE_TELEMETRY=1 LSAN_OPTIONS=suppressions=$(CURDIR)/test/lsan.supp
+# No LSan suppressions: the one leak that needed them was inside ONNX Runtime, which no build links any more.
+TABFM_TEST_ENV = DATAZOO_DISABLE_TELEMETRY=1
 
 test_release_internal:
 	$(TABFM_TEST_ENV) ./$(BUILD_ROOT)/release/test/unittest "test/*"

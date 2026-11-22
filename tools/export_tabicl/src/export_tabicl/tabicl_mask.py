@@ -1,7 +1,7 @@
 """TabICL v2 with the train/test split as a VALUE instead of a shape (the ROCm / MIGraphX contract).
 
 The CPU graph (``tabicl_patches.ExportWrapper``) is ``(x, y)``-only: the split is ``len(y)``, a SHAPE, which a
-fixed-shape MIGraphX compile cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). This module computes the same
+fixed-shape MIGraphX compile cannot bucket (docs/archive/ROCM_SINGLE_EVAL_POS.md). This module computes the same
 function with every shape a function of the padded (T, H) bucket alone:
 
     x[1, T, H] f32   y[1, T] f32 (FULL length; off-context rows carry the -100 sentinel)
@@ -14,7 +14,7 @@ changes only what read a shape the plugin's padding inflates:
   1. feature grouping. Upstream groups column ``j`` with ``(j + 2**i) % H`` -- a circular permutation of the
      REAL width. Padded columns would change every group's partners, so the index is taken modulo ``d`` (the
      value), division-free (``j + 2**i < d + 2**(size-1)``, so a bounded number of conditional subtractions;
-     MIGraphX miscompiles a runtime integer floor-division and modulo, docs/ROCM_TABPFN_PLAN.md) and gathered.
+     MIGraphX miscompiles a runtime integer floor-division and modulo, docs/archive/ROCM_TABPFN_PLAN.md) and gathered.
      A padded group (index >= d) gathers its own zero column: finite, and masked out in step 4;
   2. the target-aware column embedding adds the label embedding to the CONTEXT rows (row < S) only;
   3. the column set-transformer's inducing points attend to the context rows only (a key mask, not the
@@ -27,7 +27,7 @@ changes only what read a shape the plugin's padding inflates:
 Two ops MIGraphX's ONNX parser cannot take are rewritten while the masked forward traces (``migraphx_safe``),
 each to the same function: ``F._in_projection_packed`` splits the packed q/k/v weight with ``Tensor.split``
 whenever the keys are not the queries (the column ISAB and the row interactor's last block), which exports as
-SplitToSequence / SequenceAt (slices instead, docs/ROCM_TABDPT_SPIKE.md); and RoPE's ``einsum("..., f -> ...
+SplitToSequence / SequenceAt (slices instead, docs/archive/ROCM_TABDPT_SPIKE.md); and RoPE's ``einsum("..., f -> ...
 f")`` is an outer product (a broadcast multiply instead; no committed MIGraphX graph uses Einsum). QASSMax's
 ``base_mlp`` on the scalar log(S) is written out elementwise (the Nori and Causilo graphs failed on it), and
 the all-equal skip tests (SkippableLinear, ISAB) are counts by GEMM, not ReduceMin (MIGraphX's reducer bug).
@@ -150,7 +150,7 @@ def migraphx_safe():
 
 def _sum_rows(x: torch.Tensor) -> torch.Tensor:
     """Sum over the first axis as a GEMM (ones[1, R] @ x[R, rest]) -- chained masked reductions crash
-    MIGraphX's reducer codegen (docs/ROCM_TABDPT_SPIKE.md)."""
+    MIGraphX's reducer codegen (docs/archive/ROCM_TABDPT_SPIKE.md)."""
     rows = x.shape[0]
     flat = x.reshape(rows, -1)
     ones = torch.ones(1, rows, dtype=flat.dtype, device=flat.device)
@@ -182,7 +182,7 @@ def feature_grouping(ce, x: torch.Tensor, d: torch.Tensor) -> torch.Tensor:
 
 def _linear1(linear, v):
     """``nn.Linear(1, n)`` on a trailing size-1 axis, written elementwise: a matmul with contraction dimension 1
-    feeding a broadcast Mul kills MIGraphX's simplify_reshapes (tools/export_causilo, docs/ROCM_CAUSILO_PLAN.md).
+    feeding a broadcast Mul kills MIGraphX's simplify_reshapes (tools/export_causilo, docs/archive/ROCM_CAUSILO_PLAN.md).
     v [...] -> [..., n]; the same function."""
     out = v.unsqueeze(-1) * linear.weight.view(-1)
     return out + linear.bias if linear.bias is not None else out
@@ -193,7 +193,7 @@ def _count_ne(x: torch.Tensor, value: float, dims: int) -> torch.Tensor:
     in float32 below 2**24). ``(x == v).all(...)`` lowers to a ReduceMin that MIGraphX fuses with its
     neighbours into a kernel its own reducer templates fail to compile on gfx1201 ("type 'float' does not
     provide a subscript operator", then an assertion in tuning_config) -- the TabDPT reducer bug
-    (docs/ROCM_TABDPT_SPIKE.md, blocker 3), here on the SkippableLinear test of the column features."""
+    (docs/archive/ROCM_TABDPT_SPIKE.md, blocker 3), here on the SkippableLinear test of the column features."""
     n = (x != value).to(x.dtype)
     for _ in range(dims):
         n = n @ torch.ones(n.shape[-1], dtype=n.dtype, device=n.device)

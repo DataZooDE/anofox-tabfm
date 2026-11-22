@@ -75,7 +75,7 @@ context size from `tabfm_list_models()`.
 | `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~876 MB, both tasks | 10k / 500 | no hosted service |
 | `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~334 MB, both tasks | 10k / 500 | 8 of 3.5's 24 layers |
 | `causilo` | Nums AI | classify, regress | `causilo-license-v1.0` | **no** | yes | ~144 / ~148 MB | 10k / 500 | hosted, API or SaaS use needs a separate licence |
-| `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | **no** | yes | ~83 / ~85 MB | 3k / 100 | CPU and ROCm only |
+| `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | **no** | yes | ~83 / ~85 MB | 3k / 100 | |
 | `tabfm-v1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | **no** | yes | 6.56 GB (classification) | — | the original; slow and large |
 | `tabfm-v1-1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | **no** | yes | ~821 / ~825 MB | 100k / 500 | v1's licence, 4x fewer parameters |
 
@@ -158,9 +158,9 @@ Other arguments: `display_name`, `family`, `regression_graph`, `regression_weigh
 `_bytes`, `weights_repo`, `weights_revision`, per-task `classification_tensor_map` / `regression_tensor_map`,
 `commercial`, `gate_setting`, `preprocessing_profile`, `max_rows` / `max_features` / `max_classes`,
 `fitted_second_pass` (the tasks whose context rows' own outputs are not fitted values, e.g. `['regression']`), `base_dir`
-(relative paths resolve against it), `contract_inputs` / `contract_outputs`, the GPU graph variants
-(`classification_ext_graph`, `regression_ext_graph`, `classification_migraphx_graph`,
-`regression_migraphx_graph`) and multi-file lists (`classification_files`, `classification_file_urls`,
+(relative paths resolve against it), `contract_inputs` / `contract_outputs`, the GPU graphs
+(`classification_ext_graph`, `regression_ext_graph`: what every GPU backend reads; the old
+`classification_migraphx_graph` / `regression_migraphx_graph` are accepted and ignored) and multi-file lists (`classification_files`, `classification_file_urls`,
 `classification_file_bytes` and the `regression_` equivalents).
 
 ## Context cache (`tabicl-v2` on the CPU)

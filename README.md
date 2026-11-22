@@ -54,6 +54,7 @@ FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['custome
 ### Run anywhere
 - **CPU** on Linux, macOS (arm64) and Windows
 - **GPU** with one call, `CALL tabfm_accelerate()`: NVIDIA CUDA, AMD ROCm, Apple MLX
+- **No ONNX Runtime**: the CPU, CUDA and ROCm all run the vendored [ggml](https://github.com/ggml-org/ggml) engine
 
 ### Safe by default
 - **No weights shipped**: you download each model's weights from Hugging Face yourself
@@ -181,7 +182,7 @@ prospects from history with a commercially usable model, then cross-validate it"
 | `anofox-tabfm-models` | the 24 models, licences, the licence gate, the weight lifecycle, your own model, the context cache |
 | `anofox-tabfm-evaluate` | metrics, scoring rules, cross-validation, the `_by` plotting macros |
 | `anofox-tabfm-generate` | synthetic rows and imputation |
-| `anofox-tabfm-gpu` | CUDA, ROCm and MLX plugins, devices, precision, the ROCm precompile |
+| `anofox-tabfm-gpu` | the ggml CUDA / ROCm plugin and the MLX plugin, devices, precision, GPU memory |
 
 The skills live in [`plugins/anofox-tabfm/`](plugins/anofox-tabfm/) and are checked against the built
 extension on every pull request: each SQL example runs, and each function, setting and model name must
@@ -197,7 +198,7 @@ directly with `claude --plugin-dir ./plugins/anofox-tabfm`.
 | [Getting Started](docs/guides/01-getting-started.md) | Install, download a model, licence gates, a first prediction on iris |
 | [Choosing a model](docs/guides/02-choosing-a-model.md) | Selecting a model, the default, your own model, how the models compared |
 | [Evaluate and compare](docs/guides/03-evaluate-and-compare.md) | A churn walk-through, cross-validation, plotting the results |
-| [GPU acceleration](docs/guides/04-gpu-acceleration.md) | `tabfm_accelerate()`, checking which device served a query, the ROCm first compile |
+| [GPU acceleration](docs/guides/04-gpu-acceleration.md) | `tabfm_accelerate()`, checking which device served a query, what each plugin needs |
 | [Generate and impute](docs/guides/05-generate-and-impute.md) | Synthetic rows and filling NULL cells |
 | [Claude Code skills](docs/guides/06-claude-code.md) | Installing the plugin, what each skill covers, how they stay in sync |
 
@@ -208,7 +209,7 @@ directly with `claude --plugin-dir ./plugins/anofox-tabfm`.
 | [Functions](docs/api/01-functions.md) | `tabfm_classify`, `tabfm_regress`, missing targets, segments, `opts`, output columns |
 | [Models and weights](docs/api/02-models-and-weights.md) | Every model, download / load / unload / remove, the cache, secrets, `tabfm_register_model` |
 | [Generation](docs/api/03-generation.md) | `tabfm_generate`, `tabfm_impute`, options, outputs, cost |
-| [GPU acceleration](docs/api/04-gpu.md) | CUDA, ROCm and MLX plugins, the support matrix, precision, platform limits |
+| [GPU acceleration](docs/api/04-gpu.md) | The ggml CUDA / ROCm plugin and the MLX plugin, the support matrix, precision, platform limits |
 | [Settings](docs/api/05-settings.md) | Every setting with its default, and the `opts` keys |
 | [Troubleshooting](docs/api/06-troubleshooting.md) | Error messages, what they mean, what to run |
 | [Evaluation](docs/api/07-evaluation.md) | Metrics, cross-validation, scoring rules |
@@ -224,8 +225,9 @@ The full index, including design notes and the history of plans and reviews, is
 | [docs/REAL_MODELS.md](docs/REAL_MODELS.md) | Reference: each real model, how it was ported and verified, licences, gated repositories |
 | [docs/GENERATE.md](docs/GENERATE.md) | Reference: how generation and imputation work, and what binning costs |
 | [docs/BUILDING.md](docs/BUILDING.md) | Reference: building and testing from source |
-| [docs/DYNAMIC_BACKENDS.md](docs/DYNAMIC_BACKENDS.md), [docs/KV_CACHE_DESIGN.md](docs/KV_CACHE_DESIGN.md) | Design: GPU backends as runtime plugins; the context cache |
-| [docs/ROCM_SINGLE_EVAL_POS.md](docs/ROCM_SINGLE_EVAL_POS.md), [docs/MLX_SPIKE_RESULTS.md](docs/MLX_SPIKE_RESULTS.md) | Report: how models that read the split from `len(y)` were given masked ROCm graphs; the MLX spike |
+| [docs/GGML_PLAN.md](docs/GGML_PLAN.md), [docs/KV_CACHE_DESIGN.md](docs/KV_CACHE_DESIGN.md) | Design: the ggml engine on the CPU and in the CUDA / ROCm plugin; the context cache |
+| [docs/MLX_SPIKE_RESULTS.md](docs/MLX_SPIKE_RESULTS.md) | Report: the MLX spike |
+| [docs/archive/](docs/archive/README.md) | History: the removed ONNX Runtime, MIGraphX and CoreML backends |
 | [docs/README.md](docs/README.md#history-plans-and-reviews) | History: the plans and reviews behind each feature |
 | [CHANGELOG.md](CHANGELOG.md) | Every release |
 
@@ -259,7 +261,7 @@ make test_release           # sqllogictests + C++ unit tests (fixture models, no
 make check-docs             # every documented SQL example and name, docs and Claude Code skills
 ```
 
-Prerequisites, the GPU plugins and source-build flavors: [docs/BUILDING.md](docs/BUILDING.md).
+Prerequisites, the ggml engine and building the GPU plugins: [docs/BUILDING.md](docs/BUILDING.md).
 
 ## License
 

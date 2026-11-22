@@ -26,12 +26,10 @@
 #include "tabfm_registry.hpp"
 #include "tabfm_safetensors.hpp"
 #include "tabfm_ckpt.hpp"
-#include "tabfm_ort_engine.hpp"
+#include "tabfm_session.hpp"
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_plugin_artifacts.hpp"
-#include "tabfm_mxr_cache_key.hpp"
-#include "tabfm_shape_bucket.hpp"
 #include "tabfm_mlx_ops.hpp"
 #include "tabfm_onnx_reader.hpp"
 #include "tabfm_state.hpp"
@@ -125,11 +123,10 @@ struct ResolvedModel {
 	// (custom/scenario/fixture manifests that point at an .onnx file).
 	string graph_path;
 	BundledResource graph_bundle;
-	// Model-provided GPU graphs, resolved to on-disk paths ("" = not declared).
-	// Their external-data files must sit beside them; the dispatch hands the
+	// The model-provided GPU graph, resolved to an on-disk path ("" = not declared).
+	// Its external-data files must sit beside it; the dispatch hands the
 	// containing directory to the plugin as weights_dir.
 	string ext_graph_path;
-	string migraphx_graph_path;
 	string weights_path;
 	unordered_map<string, string> tensor_map; // onnx initializer name -> st key
 	//! Checkpoint keys this task's graph does not read (the tensor map's optional "unused_by_graph"
@@ -469,7 +466,8 @@ void ResolveModelArtifacts(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 		return candidate;
 	};
 	resolved.ext_graph_path = resolve_gpu_graph(resolved.manifest.ext_graph, "ext_graph");
-	resolved.migraphx_graph_path = resolve_gpu_graph(resolved.manifest.migraphx_graph, "migraphx_graph");
+	// manifest.migraphx_graph is accepted and deliberately not resolved: nothing reads it since MIGraphX was removed, so a file that is gone must not
+	// break a model that still names it.
 	resolved.tensor_map =
 	    LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin, &resolved.unused_weights,
 	                  &resolved.tensor_map_complete, &resolved.ckpt_aliases);
@@ -1030,6 +1028,16 @@ bool ReadWeightsHeaderBytes(FileSystem &fs, const string &path, string &header) 
 // question rather than a lookalike, and an anonymous-namespace copy here would
 // make every call in this file ambiguous between the two.
 
+//! FNV-1a over a byte string: cheap content identity for a staged graph file.
+static uint64_t Fnv1a64(const std::string &s) {
+	uint64_t h = 1469598103934665603ULL;
+	for (unsigned char c : s) {
+		h ^= c;
+		h *= 1099511628211ULL;
+	}
+	return h;
+}
+
 // Stage a bundled graph next to the weights (idempotent by size) so external-data
 // "model.safetensors" resolves. Returns false if it cannot be written.
 bool StageBundledGraph(FileSystem &fs, const BundledResource &graph, const string &graph_path) {
@@ -1037,10 +1045,8 @@ bool StageBundledGraph(FileSystem &fs, const BundledResource &graph, const strin
 	//
 	// This compared byte sizes alone, which is a stale-graph hazard with a very
 	// quiet failure: a re-export that happens to preserve the size leaves the
-	// old graph on every existing user's disk forever. The .mxr program cache is
-	// keyed on the graph's content hash, so the stale graph would then compile
-	// to a consistently wrong program and keep serving it -- the exact shape of
-	// the bug that made content hashing the .mxr key in the first place.
+	// old graph on every existing user's disk forever, and the GPU plugin would
+	// keep reading weights at the stale graph's offsets.
 	//
 	// The tabdpt re-export in this branch changed sizes (660509 -> 659729
 	// bytes), so it escaped by luck rather than by design. One FNV-1a pass over
@@ -1061,8 +1067,8 @@ bool StageBundledGraph(FileSystem &fs, const BundledResource &graph, const strin
 					read += NumericCast<idx_t>(got);
 				}
 				if (read == on_disk &&
-				    anofox_tabfm_mxr::Fnv1a64(existing) ==
-				        anofox_tabfm_mxr::Fnv1a64(string(graph.data, NumericCast<size_t>(graph.size)))) {
+				    Fnv1a64(existing) ==
+				        Fnv1a64(string(graph.data, NumericCast<size_t>(graph.size)))) {
 					return true;
 				}
 			}
@@ -1117,7 +1123,7 @@ TabFMDeviceInfo DeviceInfoFor(FileSystem &fs, const ResolvedModel &resolved, con
 	}
 	TabFMDeviceInfo cpu;
 	cpu.device_id = "cpu";
-	cpu.ep = "CPUExecutionProvider";
+	cpu.ep = "ggml";
 	cpu.usable = true;
 	return cpu;
 }
@@ -1241,8 +1247,10 @@ string GpuPostCommitFailure(const string &device, const string &device_setting, 
 //! requested device. Keeps the "here is the device, here is why, here is the
 //! way out" shape every §5 error has.
 string GpuRefusalMessage(const string &device, const string &reason) {
-	return "anofox_tabfm: device '" + device + "' was requested, but " + reason +
-	       ". SET anofox_tabfm_device='cpu' to run this model on the CPU, or SELECT * FROM tabfm_backends() to see "
+	const bool precision = reason.find("precision") != string::npos;
+	return "anofox_tabfm: device '" + device + "' was requested, but " + reason + "." +
+	       (precision ? " SET anofox_tabfm_gpu_precision='fp32' to run it on this device," : "") +
+	       " SET anofox_tabfm_device='cpu' to run this model on the CPU, or SELECT * FROM tabfm_backends() to see "
 	       "which devices can serve it.";
 }
 
@@ -1264,12 +1272,6 @@ shared_ptr<LoadedModel> TryGgmlGpuBackend(FileSystem &fs, TabFMState &state, con
 		return nullptr; // the CPU (ggml in the extension) and MLX are not this lane
 	}
 	const string vendor = is_cuda ? "cuda" : "rocm";
-	const string plugin_file = PluginFileName(vendor);
-	const string plugin_path = ctx.ep_path.empty() ? string() : fs.JoinPath(ctx.ep_path, plugin_file);
-	if (plugin_path.empty() || !fs.FileExists(plugin_path)) {
-		// (a file that exists but will not load gets the loader's own, more specific error below)
-		throw InvalidInputException(GgmlGpuPluginMissingMessage(vendor, ctx.ep_path, plugin_file));
-	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
 	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
 	const bool bundled_matches =
@@ -1277,7 +1279,14 @@ shared_ptr<LoadedModel> TryGgmlGpuBackend(FileSystem &fs, TabFMState &state, con
 	auto servability = GpuServabilityFor(fs, resolved, vendor, task_name, !resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches,
 	                                     ctx.gpu_precision, {}, GpuKnownWrong(vendor, resolved.manifest.model, task_name));
 	if (!servability.supported) {
+		// first: a model or precision the GPU can never serve is a permanent no, and downloading the plugin would not change it
 		throw InvalidInputException(GpuRefusalMessage(vendor, servability.reason));
+	}
+	const string plugin_file = PluginFileName(vendor);
+	const string plugin_path = ctx.ep_path.empty() ? string() : fs.JoinPath(ctx.ep_path, plugin_file);
+	if (plugin_path.empty() || !fs.FileExists(plugin_path)) {
+		// (a file that exists but will not load gets the loader's own, more specific error below)
+		throw InvalidInputException(GgmlGpuPluginMissingMessage(vendor, ctx.ep_path, plugin_file));
 	}
 	string graph_path;
 	string weights_dir;
@@ -1321,9 +1330,9 @@ shared_ptr<LoadedModel> TryGgmlGpuBackend(FileSystem &fs, TabFMState &state, con
 //     what IS implemented, because the alternative — falling through to the
 //     CPU path — is the tier-4 "requested device quietly becomes CPU" failure.
 //
-// Since 'auto' never resolves to mlx (tabfm_devices.cpp keeps the plugin lanes
-// explicit), reaching here at all means the user asked for it by name, so every
-// failure below throws rather than returning nullptr.
+// Reaching here means the device resolved to mlx (by name, or 'auto' after
+// ResolveDeviceForModel found the plugin installed and the model servable), so
+// every failure below throws rather than returning nullptr.
 shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                       const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
@@ -1484,7 +1493,7 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 //! anti-silent-fallback contract is enforced by IsExplicitGpuRequest, a string
 //! compare on the raw setting, whose asymmetry is deliberate -- an explicit
 //! request hard-errors where 'auto' declines quietly. So the moment 'auto'
-//! resolved to rocm, the nine catalog models with no MIGraphX graph would have
+//! resolved to a GPU, every catalog model that GPU cannot serve would have
 //! been served on the CPU with nothing said.
 //!
 //! Resolving per (model, task) dissolves that rather than negotiating with it.
@@ -1504,7 +1513,7 @@ string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, cons
 		}
 		const string backend = BackendOfDeviceId(device.device_id);
 		// coreml is an in-process ORT provider, not a plugin, and is unverified
-		// (docs/DYNAMIC_BACKENDS.md). 'auto' does not reach for it.
+		// (docs/archive/DYNAMIC_BACKENDS.md). 'auto' does not reach for it.
 		if (backend != "cuda" && backend != "rocm" && backend != "mlx") {
 			continue;
 		}
@@ -1558,7 +1567,7 @@ const string &ResolvedDeviceCached(FileSystem &fs, const ResolvedModel &resolved
 	const string key = std::to_string(g_plugin_probe_generation.load()) + "\x1f" + ctx.device + "\x1f" +
 	                   resolved.manifest.model + "\x1f" + TabFMTaskName(resolved.manifest.task) + "\x1f" +
 	                   ctx.gpu_precision + "\x1f" + ctx.ep_path + "\x1f" + ctx.cache_dir + "\x1f" +
-	                   resolved.ext_graph_path + "\x1f" + resolved.migraphx_graph_path + "\x1f" +
+	                   resolved.ext_graph_path + "\x1f" +
 	                   resolved.weights_path + "\x1f" + (ctx.context_cache ? "1" : "0");
 	{
 		lock_guard<mutex> guard(memo_lock);
@@ -1576,11 +1585,10 @@ const string &ResolvedDeviceCached(FileSystem &fs, const ResolvedModel &resolved
 	return memo.emplace(key, std::move(device_id)).first->second;
 }
 
-// Build (or reuse) the ORT session for `resolved` and return a snapshot of the
-// LoadedModel. Order: MIGraphX plugin (ROCm GPU) -> CUDA plugin (NVIDIA GPU)
-// -> low-memory external-data (in-process ONNX Runtime flavors only; ORT reads weights from disk) -> read/mmap
-// + in-memory injection. Both GPU backends run in dlopen'd plugins with their
-// own runtimes rather than through this binary's ORT (DYNAMIC_BACKENDS.md).
+// Build (or reuse) the session for `resolved` and return a snapshot of the
+// LoadedModel. Order: the MLX plugin -> the ggml GPU plugin (cuda, rocm) ->
+// read/mmap + in-memory injection into the ggml CPU engine. The GPU backends run
+// in dlopen'd plugins; the CPU runs in-process.
 shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                          const PredictContext &ctx) {
 	// The device the caller is asking for right now. A cached session belongs to
@@ -1589,7 +1597,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	// the cpu and then SET anofox_tabfm_device='cuda' kept getting the cpu
 	// session and never touched the GPU. That is precisely the "requested device
 	// quietly becomes CPU" outcome the tier-4 contract in
-	// docs/DYNAMIC_BACKENDS.md exists to rule out, and it is invisible without
+	// docs/archive/DYNAMIC_BACKENDS.md exists to rule out, and it is invisible without
 	// looking at tabfm_models().device.
 	const string &wanted_device = ResolvedDeviceCached(fs, resolved, ctx);
 	// gpu_precision only shapes GPU sessions; for CPU it is "" so flipping the
@@ -1607,7 +1615,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	const bool want_split = split.Available() && UseContextCache(ctx.context_cache, split.exact, wanted_device);
 
 	// Sessions cache per (model, device, precision) since P5 of
-	// docs/GPU_HARDENING_PLAN.md: S6 measured 18–27 s of pure rebuild per
+	// docs/archive/GPU_HARDENING_PLAN.md: S6 measured 18–27 s of pure rebuild per
 	// device alternation under the old one-slot-per-key design. The lookup is
 	// exact, so a device or precision switch is a cache MISS that builds a new
 	// entry beside the old one — not a replacement — and tabfm_unload(key)
@@ -2427,35 +2435,6 @@ PredictEngine &GetPredictEngine() {
 	return engine;
 }
 
-namespace {
-
-//! The newest modification time among the .mxr programs for one padded bucket
-//! in the MIGraphX cache directory (0 when there are none). The plugin names
-//! each program <stem>_<arch>_<precision>_T<t>_H<h>.mxr, so a bucket suffix
-//! match finds every model's program for it; the caller compares the value
-//! before and after a precompile, which isolates the one it wrote.
-int64_t NewestBucketMxr(FileSystem &fs, const string &mxr_dir, int64_t padded_t, int64_t padded_h) {
-	const string suffix = "_T" + std::to_string(padded_t) + "_H" + std::to_string(padded_h) + ".mxr";
-	int64_t newest = 0;
-	if (!fs.DirectoryExists(mxr_dir)) {
-		return newest;
-	}
-	fs.ListFiles(mxr_dir, [&](const string &name, bool is_dir) {
-		if (is_dir || !StringUtil::EndsWith(name, suffix)) {
-			return;
-		}
-		try {
-			auto handle = fs.OpenFile(fs.JoinPath(mxr_dir, name), FileFlags::FILE_FLAGS_READ);
-			newest = MaxValue<int64_t>(newest, fs.GetLastModifiedTime(*handle).value);
-		} catch (std::exception &) {
-			// A program being written or removed concurrently: not ours to report.
-		}
-	});
-	return newest;
-}
-
-} // namespace
-
 TabFMPrecompileResult TabFMGpuPrecompile(const PredictContext &bound_ctx, TabFMTask task, int64_t rows,
                                           int64_t features) {
 	auto ctx = bound_ctx;
@@ -2471,47 +2450,16 @@ TabFMPrecompileResult TabFMGpuPrecompile(const PredictContext &bound_ctx, TabFMT
 	auto state = TabFMState::Get(*ctx.db);
 	TabFMPrecompileResult result;
 	result.model = resolved.manifest.model;
-	// Loads/caches the backend (registered in state) and warms the shape-bucket:
-	// on ROCm this is the expensive MIGraphX compile + .mxr cache; on CPU/CUDA/MLX
-	// the backend has no per-shape compile and the call just leaves the session warm.
+	// Loads (or reuses) the model's session on its device and leaves it warm. No backend compiles per shape bucket any more (MIGraphX did): the ggml
+	// engines build their graph for a shape on its first use, so there is nothing to compile ahead and the call reports "not needed".
 	const string &device = ResolvedDeviceCached(*fs, resolved, ctx);
 	result.device = device;
 	lock_guard<mutex> device_guard(state->DeviceMutex(device));
 	auto model = LoadOrGetSession(*fs, *state, resolved, ctx);
 	auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
-	// Only the MIGraphX backend pads to a bucket and compiles per bucket. Same
-	// table as the plugin (tabfm_shape_bucket.hpp), so the reported bucket is
-	// the one the .mxr is keyed on.
-	result.bucketed = StringUtil::StartsWith(model->device_id, "rocm");
-	int64_t before = 0;
-	string mxr_dir;
-	if (result.bucketed) {
-		auto bucket = PadToShapeBucket(rows, features);
-		result.bucket_rows = bucket.padded_t;
-		result.bucket_features = bucket.padded_h;
-		// A bucket over the model's ceiling is reported, not compiled: the compile would abort the process.
-		int64_t vram_total = -1;
-		for (auto &d : DiscoverDevices()) {
-			if (d.device_id == model->device_id) {
-				vram_total = d.vram_total;
-			}
-		}
-		result.reason = RocmBucketRefusal(result.model, bucket.padded_t, bucket.padded_h, vram_total);
-		if (!result.reason.empty()) {
-			result.status = "refused";
-			result.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-			return result;
-		}
-		mxr_dir = fs->JoinPath(ctx.cache_dir, "migraphx");
-		before = NewestBucketMxr(*fs, mxr_dir, bucket.padded_t, bucket.padded_h);
-	}
 	backend->Precompile(rows, features);
-	if (result.bucketed) {
-		result.status =
-		    NewestBucketMxr(*fs, mxr_dir, result.bucket_rows, result.bucket_features) > before ? "compiled" : "cached";
-	} else {
-		result.status = "not needed";
-	}
+	result.bucketed = false;
+	result.status = "not needed";
 	result.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 	return result;
 }

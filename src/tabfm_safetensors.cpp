@@ -8,8 +8,8 @@
 //   (friction log #3: iterating a temporary is UB with nlohmann; with yyjson
 //   the document must simply outlive all yyjson_val pointers);
 // - BF16 -> F32 upcast is a plain 16-bit shift into the high half;
-// - both the source buffer and the arena are freeable right after
-//   Ort::Session creation (ORT copies injected initializers).
+// - the session keeps references to the source buffer / arena, so both
+//   live as long as the session (SessionHolder in tabfm_engine.cpp).
 
 #include "tabfm_safetensors.hpp"
 

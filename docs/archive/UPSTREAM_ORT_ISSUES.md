@@ -133,7 +133,7 @@ weights; 0/160 label differences with the real weights). That is the workaround 
 the same lever that worked for #32083 (a Slice bound read from a recycled CPU buffer).
 
 **Repro** (no weights, no licence needed: the graph is public and weight-free, initializers are
-synthesized): [`tools/gpu_test/ort_repro_tabpfn35.py`](../tools/gpu_test/ort_repro_tabpfn35.py)
+synthesized): `tools/gpu_test/ort_repro_tabpfn35.py` (removed with ONNX Runtime; see git history)
 
 ```bash
 pip install onnx numpy

@@ -10,7 +10,7 @@ by hand when a change touches a GPU path.
 
 For repeated CUDA iterations, attach a persistent network volume so uploads,
 toolchains and build trees survive across pods (S7 of
-`docs/GPU_HARDENING_PLAN.md` — proven with a marker written by one pod and
+`docs/archive/GPU_HARDENING_PLAN.md` — proven with a marker written by one pod and
 read by a fresh one):
 
 ```bash
@@ -23,63 +23,9 @@ Volumes exist only in specific datacenters (a wrong `--volume-dc` errors with
 the valid list) and pin the pod to their datacenter, where GPU stock may be
 scarce — pass an explicit `--gpu` for a type that datacenter actually stocks.
 
-## `ort_ep_check.py` — run a graph on a provider
-
-Synthesizes deterministic random initializers for the weight-free graphs in
-`resources/` and injects them the way the C++ engine does, so the graph's
-*structure* is exercised on the provider — which is where EP-specific bugs live
-(issue #21).
-
-```bash
-# locally, on CPU or on this box's ROCm
-tools/gpu_test/ort_ep_check.py resources/graph_tabicl_classification.onnx --provider cpu
-tools/gpu_test/ort_ep_check.py resources/graph_tabicl_classification.onnx --provider migraphx
-
-# two graphs must agree, ignoring outputs only one of them has
-tools/gpu_test/ort_ep_check.py a.onnx b.onnx --provider cuda --compare
-```
-
-Exit codes: `0` ran (and matched, with `--compare`), `1` a run failed, `2`
-outputs differed. `--opt-level` and `--no-mem-pattern` exist for isolating ORT
-optimiser and allocator behaviour — both were used to eliminate hypotheses in
-issue #21.
-
-## `ort_repro.py` — the standalone upstream reproducer
-
-Attached to [onnxruntime#32083](https://github.com/microsoft/onnxruntime/issues/32083).
-Self-contained: fetches the public weight-free graph over HTTPS, synthesizes
-initializers, runs it on both providers. Nothing from this repo is needed
-besides the file itself, so ORT maintainers can run it directly.
-
-```bash
-pip install onnxruntime-gpu==1.23.2 onnx numpy 'nvidia-cudnn-cu12<10'
-python ort_repro.py            # pre-fix graph:  CPU ok, CUDA fails at ScatterND
-python ort_repro.py --pinned   # bounds pinned as outputs: both providers ok
-```
-
-Keep the URLs in it working: the upstream issue tells maintainers to `curl`
-this file from `main`.
-
-## `ort_repro_tabpfn35.py` — the TabPFN-3.5 CUDA reproducer
-
-The draft upstream issue in `docs/UPSTREAM_ORT_ISSUES.md` (Draft 3, not filed) uses this script. It fetches
-the v2026.11.01 TabPFN-3.5-Fast regression ext graph (before the workaround), synthesizes its initializers
-and runs it on both providers. CUDA fails at `node_expand`, which receives `{T+S, 1, T+S}` instead of
-`{T+S, 1, H}`. `--no-arena` makes it read freed memory instead. `--pinned` applies the
-`tools/pin_cuda_shape_operands.py` workaround inline, and both providers then run.
-
-```bash
-pip install onnx numpy
-pip install --no-deps onnxruntime-gpu==1.29.0 \
-  --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/onnxruntime-cuda-12/pypi/simple/
-python ort_repro_tabpfn35.py [--no-arena | --pinned]
-```
-
-The pinned tag in the URL keeps it reproducible after `main` moves on.
-
 ## `equivalence.py` — a device switch must not change the answer
 
-The contract behind `docs/DYNAMIC_BACKENDS.md`. Runs the same graph on several
+The contract behind `docs/archive/DYNAMIC_BACKENDS.md`. Runs the same graph on several
 providers and compares each against the CPU result, which is the reference by
 definition — it is the one every user gets.
 
@@ -101,7 +47,7 @@ tools/gpu_test/equivalence.py resources/graph_tabicl_classification.onnx --provi
 A backend suffixed `-plugin` is driven through the **real backend plugin**
 (`tabfm_plugin_abi.h`, `dlopen`'d from `--plugin-dir`) instead of through ORT's
 execution provider. On GPU that distinction is the whole point: since
-`docs/DYNAMIC_BACKENDS.md` phases 1 and 3, neither ROCm nor CUDA reaches the
+`docs/archive/DYNAMIC_BACKENDS.md` phases 1 and 3, neither ROCm nor CUDA reaches the
 accelerator through this process's ORT, so `--providers cpu,cuda` measures
 ONNX Runtime while `--providers cpu,cuda-plugin` measures the shipped path.
 
@@ -163,7 +109,7 @@ fp32 agrees with CPU exactly. The bf16 differences are the documented
 opt-in tradeoff, and S3's margin analysis says what they are with precision:
 rare (1.7% here) but NOT confined to near-ties — flipped rows' fp32 margins
 reached 0.805, so bf16 can overturn confident predictions on hard data. fp32
-is the default since Track A of `docs/GPU_HARDENING_PLAN.md`; validate bf16
+is the default since Track A of `docs/archive/GPU_HARDENING_PLAN.md`; validate bf16
 against fp32 on your own data before adopting it. The class
 spread stays non-degenerate at scale (cpu a824/b837/c839 vs gpu a827/b832/c841),
 which is what rules out "the GPU returned one class and got lucky".
@@ -193,21 +139,6 @@ touch discovery or the SQL path):
 - nothing reported which backend served a query, which is why that went
   unnoticed; `tabfm_models().device` exists now because of it (ab5c6e3).
 
-## `cuda_plugin_verify.sh` — the CUDA plugin on rented hardware
-
-Builds `src/tabfm_cuda_plugin.cpp` against a real ORT-GPU distribution, loads
-it through the plugin ABI, compares CPU vs CUDA on the committed fixture, and
-checks the artifacts `tabfm_download_runtime('cuda')` declares against the real
-wheel (byte count, entry names, SONAME).
-
-```bash
-tools/gpu_test/runpod_run.py --upload tools/gpu_test/cuda_plugin_verify.sh \
-    tools/gpu_test/cuda_plugin_verify_host.cpp src/tabfm_cuda_plugin.cpp \
-    src/include/tabfm_plugin_abi.h test/fixtures/graph_fixture.onnx \
-    test/fixtures/model.safetensors \
-    --command 'bash /workspace/cuda_plugin_verify.sh'
-```
-
 ## `cuda_catalog.sh` — the catalog on CUDA, from release artefacts
 
 Runs `scenarios/cuda_catalog*.sql` for a list of models on a pod, CPU vs CUDA on the same 100-row tables,
@@ -231,8 +162,8 @@ response shapes differ (pod body, `ssh.direct` instead of `publicIp`/`portMappin
 tools/gpu_test/runpod_run.py --check-scatternd
 
 # anything else
-tools/gpu_test/runpod_run.py --with-ort --upload some.onnx \
-    --command 'python /workspace/ort_ep_check.py /workspace/some.onnx --provider cuda'
+tools/gpu_test/runpod_run.py --upload tools/gpu_test/cuda_catalog.sh \
+    --command 'bash /workspace/cuda_catalog.sh'
 
 tools/gpu_test/runpod_run.py --list                 # pods still running
 tools/gpu_test/runpod_run.py --terminate <pod-id>   # clean up after a SIGKILL

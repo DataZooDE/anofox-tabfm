@@ -12,6 +12,12 @@
 #include "tabfm_ggml_lower.hpp"
 #include "tabfm_ggml_ops.hpp"
 
+#include <thread>
+#if defined(__linux__)
+#include <sched.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -191,7 +197,9 @@ TEST_CASE("ggml_ops: every implemented op matches the ORT golden", "[tabfm][ggml
 // Review fixes (P3 crew review): robustness of the runner itself, not of one op.
 // ---------------------------------------------------------------------------------------------------------------------
 
+#ifndef _WIN32
 #include <pthread.h>
+#endif
 
 namespace {
 
@@ -236,6 +244,7 @@ void *RunDeepChain(void *arg) {
 
 } // namespace
 
+#ifndef _WIN32 // pthread stack sizes; the recursion fix itself is platform-independent
 TEST_CASE("ggml_runner: a 20000-node chain builds on a 256 KB stack (no recursion per dependency level)", "[tabfm][ggml][ggml_ops]") {
 	DeepChainJob job;
 	job.length = 20000; // even: Neg^20000 is the identity
@@ -249,6 +258,7 @@ TEST_CASE("ggml_runner: a 20000-node chain builds on a 256 KB stack (no recursio
 	REQUIRE(job.ok);
 	REQUIRE(job.result == 1.5f);
 }
+#endif
 
 TEST_CASE("ggml_runner: input data that does not match its shape is refused, not read out of bounds", "[tabfm][ggml][ggml_ops]") {
 	::anofox::onnxread::Graph g;
@@ -539,7 +549,9 @@ TEST_CASE("ggml_executor: strict fp32 pads every weight matmul past the 16-row s
 			for (auto rows : plain_rows) {
 				REQUIRE(rows == m); // without the flag the matmul keeps its own row count (and a GPU may take its small-batch kernel)
 			}
-			for (auto rows : strict.MulMatActivationRows(in, GgmlRunOptions())) {
+			const auto strict_rows = strict.MulMatActivationRows(in, GgmlRunOptions());
+			REQUIRE(strict_rows.size() == plain_rows.size()); // the same matmuls, measured
+			for (auto rows : strict_rows) {
 				REQUIRE(rows >= 17); // strict: always past the small-batch kernel
 			}
 			const auto a = plain.Run(in, GgmlRunOptions());
@@ -551,6 +563,80 @@ TEST_CASE("ggml_executor: strict fp32 pads every weight matmul past the 16-row s
 		}
 	}
 }
+
+#if defined(__linux__)
+namespace {
+std::set<std::string> TaskIds() {
+	std::set<std::string> ids;
+	for (const auto &entry : std::filesystem::directory_iterator("/proc/self/task")) {
+		ids.insert(entry.path().filename().string());
+	}
+	return ids;
+}
+std::string AllowedCpus(const std::string &tid) {
+	std::ifstream status("/proc/self/task/" + tid + "/status");
+	std::string line;
+	while (std::getline(status, line)) {
+		if (line.rfind("Cpus_allowed_list:", 0) == 0) {
+			return line.substr(line.find_first_not_of(" \t", 18));
+		}
+	}
+	return "";
+}
+} // namespace
+
+TEST_CASE("ggml_executor: a pool created from a pinned thread may still use every CPU, and the caller keeps its own pin", "[tabfm][ggml][ggml_ops]") {
+	// DuckDB pins its worker threads to cores on large machines (pin_threads = 'auto' with more than 64 CPUs). A thread inherits its creator's
+	// affinity, so a ggml pool created from such a worker had all its threads on ONE core: every barrier crawled, and a 0.4 s prediction took 19
+	// minutes on a 96-core server. The pool must take the process's CPU set; the calling thread must get its own pin back after the compute.
+	cpu_set_t process;
+	REQUIRE(sched_getaffinity(getpid(), sizeof(process), &process) == 0);
+	if (CPU_COUNT(&process) < 2) {
+		return; // nothing to spread over
+	}
+	int first = 0;
+	while (!CPU_ISSET(first, &process)) {
+		first++;
+	}
+	const auto g = ExpNegAddGraph();
+	const std::vector<float> weights = {1.0f, 2.0f, 3.0f};
+	std::string caller_before, caller_after;
+	std::vector<std::string> worker_masks;
+	std::string failure;
+	std::thread pinned([&] {
+		cpu_set_t one;
+		CPU_ZERO(&one);
+		CPU_SET(first, &one);
+		if (pthread_setaffinity_np(pthread_self(), sizeof(one), &one) != 0) {
+			failure = "could not pin the test thread";
+			return;
+		}
+		const std::string self = std::to_string(static_cast<long>(syscall(SYS_gettid)));
+		caller_before = AllowedCpus(self);
+		const auto before = TaskIds();
+		GgmlExecutorConfig config;
+		config.threads = 3;
+		config.weights = [&](const std::string &, const std::vector<int64_t> &) { return ExternalWeight {weights.data(), 3}; };
+		GgmlExecutor executor(g, config);
+		HostTensors in;
+		in["x"] = {{1, 3}, {0.0f, 1.0f, 2.0f}};
+		executor.Run(in, GgmlRunOptions());
+		for (const auto &tid : TaskIds()) {
+			if (!before.count(tid)) {
+				worker_masks.push_back(AllowedCpus(tid));
+			}
+		}
+		caller_after = AllowedCpus(self);
+	});
+	pinned.join();
+	REQUIRE(failure.empty());
+	REQUIRE(!worker_masks.empty()); // the pool's threads
+	for (const auto &mask : worker_masks) {
+		REQUIRE(mask != caller_before); // not the single core the creating thread was pinned to
+	}
+	REQUIRE(caller_after == caller_before); // the caller's own pin is restored after the compute
+}
+#endif
 
 TEST_CASE("ggml_executor: a model that does not fit the device fails at load with the numbers and the way out", "[tabfm][ggml][ggml_ops]") {
 	// 6 weights stored as bf16 occupy 24 bytes on the device (they are upcast to float32 on upload); the check must count the upcast size.

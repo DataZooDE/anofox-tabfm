@@ -4,7 +4,7 @@
 #              hip.cpp:155 assertion aborted the whole DuckDB process from one SQL call. Buckets over the largest
 #              one measured to work (4096 x 16) are now refused before the compile: a predict raises an error,
 #              tabfm_gpu_precompile reports status 'refused' with the reason, and tabfm_backends() states the
-#              ceiling (docs/ROCM_SINGLE_EVAL_POS.md, "LimiX-2M bucket ceiling").
+#              ceiling (docs/archive/ROCM_SINGLE_EVAL_POS.md, "LimiX-2M bucket ceiling").
 #
 #              Nothing here compiles, so it takes seconds, but it loads the real model on the GPU:
 #

@@ -1,25 +1,15 @@
 #pragma once
 
 //===----------------------------------------------------------------------===//
-// tabfm_ort_engine.hpp — ONNX Runtime engine + device/EP layer (WS-C)
+// tabfm_session.hpp — the in-process inference session + device layer (WS-C)
 //
-// Value-oriented API around one process-wide Ort::Env and per-model
-// Ort::Sessions (HLD §4.4, §9). Deliberately takes plain buffers/maps as
-// inputs — no dependency on the safetensors/manifest readers (WS-B); the
-// integration layer wires those together.
+// Value-oriented API around per-model sessions served by the ggml CPU engine (tabfm_ggml_session.hpp; GPUs are served by their backend
+// plugins, tabfm_plugin_backend.hpp). Deliberately takes plain buffers/maps as inputs — no dependency on the safetensors/manifest readers
+// (WS-B); the integration layer wires those together.
 //
-// Lifetime contract (license-critical): AddExternalInitializers keeps
-// REFERENCES to every injected tensor (and reads them lazily during
-// inference), so at real scale the buffers behind TabFMTensorRef must outlive
-// the SESSION, not just CreateSession(). The returned TabFMSession owns the
-// injected OrtValues and the caller keeps the source arena alive alongside it
-// (see SessionHolder in tabfm_engine.cpp). Historically believed to copy — it
-// does at fixture scale, which masked the bug; at 913 tensors / 6.6 GB it does
-// not, and dropping the buffers yields a session that runs on zeroed weights.
-// The buffers behind TabFMTensorRef must stay valid until CreateSession()
-// RETURNS at minimum, and the OrtValues until the session is destroyed; the
-// caller MUST free/munmap the source arena right after that to avoid paying
-// 2x weights of resident memory (HLD §6 as amended by S02 RESULTS).
+// Lifetime contract: the session keeps REFERENCES to every injected tensor and reads them during inference, so the buffers behind
+// TabFMTensorRef (the safetensors mapping or the bf16 upcast arena) must outlive the SESSION, not just CreateSession(). The caller keeps
+// the source arena alive alongside it (see SessionHolder in tabfm_engine.cpp).
 //===----------------------------------------------------------------------===//
 
 #include "duckdb/common/common.hpp"
@@ -78,47 +68,8 @@ struct TabFMDeviceInfo {
 	int device_ordinal = 0;
 };
 
-//! Compiled-in flavor capabilities (cmake/ort.cmake sets the macros).
-constexpr bool TabFMFlavorHasCuda() {
-#ifdef TABFM_EP_CUDA
-	return true;
-#else
-	return false;
-#endif
-}
-constexpr bool TabFMFlavorHasMIGraphX() {
-#ifdef TABFM_EP_MIGRAPHX
-	return true;
-#else
-	return false;
-#endif
-}
-constexpr bool TabFMFlavorHasCoreML() {
-#ifdef TABFM_EP_COREML
-	return true;
-#else
-	return false;
-#endif
-}
-inline const char *TabFMFlavorName() {
-#ifdef TABFM_FLAVOR_NAME
-	return TABFM_FLAVOR_NAME;
-#else
-	return "cpu";
-#endif
-}
-
-//! Create the process-wide Ort::Env if it does not exist yet. Call before the
-//! first ORT API use in any entry point: the env registers ORT's default
-//! logger, and ORT reports execution-provider load failures through that
-//! logger, so without an env those failures are replaced by "Attempt to use
-//! DefaultLogger but none has been registered" and the real cause is lost.
-//! Idempotent and cheap (the env is a leaked singleton). No ORT type crosses
-//! this boundary, so consumers still need no ORT headers.
-void EnsureOrtEnv();
-
-//! Enumerate devices this build can see. Always contains the 'cpu' row;
-//! GPU rows appear only in the cuda/rocm flavors (probes compiled per macro).
+//! Enumerate the devices this machine has. Always contains the 'cpu' row; GPU rows come from NVML (CUDA), the KFD topology (ROCm) and the Apple SoC
+//! (MLX), whether or not their plugin is installed.
 vector<TabFMDeviceInfo> DiscoverDevices();
 
 //! The ROCm rows of a KFD topology directory (`/sys/class/kfd/kfd/topology/nodes` in production): one row per compute-capable GPU node, in node order,
@@ -128,34 +79,17 @@ vector<TabFMDeviceInfo> DiscoverRocmDevicesFrom(const string &nodes_path, const 
 //! Whether the ggml CUDA plugin ships kernels for a card of this compute capability (it is built for 7.5 and newer).
 bool CudaComputeCapabilityUsable(int major, int minor);
 
-//! Resolve `SET anofox_tabfm_device` ('auto'|'cpu'|'cuda'|'rocm', already
-//! normalized by the setting validator) against the discovered devices.
-//! Throws InvalidInputException with the flavor-install hint when the
-//! requested device is not carried by this flavor, and a tabfm_devices()
-//! hint when the flavor carries it but no usable device was discovered.
-//! The flag arguments exist for unit tests; production callers use the
-//! defaults, which reflect the compiled flavor.
-TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDeviceInfo> &devices,
-                              bool flavor_has_cuda = TabFMFlavorHasCuda(),
-                              bool flavor_has_rocm = TabFMFlavorHasMIGraphX(),
-                              bool flavor_has_coreml = TabFMFlavorHasCoreML());
+//! The gfx architectures the released ggml ROCm plugin carries code objects for (AMDGPU_TARGETS in .github/workflows/gpu_plugins.yml; the
+//! release-asset check keeps the two equal). HIP code objects do not run on another architecture, so a device outside this list is reported
+//! unusable rather than chosen and failing at its first query.
+const vector<string> &GgmlRocmPluginArchs();
+bool RocmArchUsable(const string &arch);
 
-//===----------------------------------------------------------------------===//
-// MIGraphX shape buckets (HLD §9: static-shape preference)
-//===----------------------------------------------------------------------===//
+//! Resolve `SET anofox_tabfm_device` ('auto'|'cpu'|'cuda'|'rocm'|'mlx', already normalized by the setting validator) against the discovered devices.
+//! 'auto' answers the CPU here (a GPU is chosen per model by the engine); a GPU setting returns its first usable device or throws naming
+//! tabfm_devices(); 'coreml' throws pointing at 'mlx'.
+TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDeviceInfo> &devices);
 
-struct TabFMShapeBucket {
-	int64_t padded_t;
-	int64_t padded_h;
-};
-
-//! Pad (T, H) up to the nearest compiled-session bucket:
-//! T in {128, 512, 1024, 2048, 4096, 10000}, H in {16, 64, 128, 256, 512}.
-//! Padding is semantically inert: the model's `train_size` and `d` masks
-//! ignore padded rows/columns (S01 validated `d < H` parity at 5e-8).
-//! Values above the largest bucket are returned unchanged (callers guard via
-//! anofox_tabfm_max_rows / anofox_tabfm_max_features before reaching here).
-TabFMShapeBucket MIGraphXShapeBucket(int64_t rows_t, int64_t features_h);
 
 //===----------------------------------------------------------------------===//
 // Session creation & inference
@@ -191,30 +125,20 @@ struct TabFMSessionConfig {
 	//! Empty = no declared contract (skip — the built-in x/y/... contract).
 	vector<string> contract_inputs;
 	vector<string> contract_outputs;
-	//! SET anofox_tabfm_ep_path — directory holding backend-plugin / ORT
-	//! provider-EP shared libraries (docs/DYNAMIC_BACKENDS.md). Read for the
-	//! cuda device: CreateSession registers libonnxruntime_providers_cuda.so
-	//! from here at runtime instead of requiring a cuda-flavor build.
+	//! SET anofox_tabfm_ep_path — directory holding the backend plugins (the ggml GPU plugin, MLX); the plugin lanes read it, the CPU
+	//! session does not.
 	string ep_path;
 };
 
-//! Opaque engine session (pimpl over Ort::Session; keeps ORT headers out of
-//! every consumer TU).
+//! Opaque engine session (pimpl over the ggml session state; keeps the engine headers out of every consumer TU).
 class TabFMSession;
 using TabFMSessionHandle = shared_ptr<TabFMSession>;
 
-//! Build an Ort::Session from weight-free graph bytes + injected initializers.
-//!   - SessionOptions: intra_op from config, inter-op 1, and
-//!     "session.disable_prepacking"="1" (S02: -16% RSS, -60% init time).
-//!   - EPs appended per config.device_id (CUDA / MIGraphX under their macros).
-//!   - Ort error mapping: NO_SUCHFILE (external stub not injected) -> "model
-//!     weights are not loaded" with the CALL tabfm_load/tabfm_download hint;
-//!     FAIL on initializer replacement (dims/dtype mismatch) -> corrupted
-//!     checkpoint error naming the tensor when extractable.
-//! The graph bytes may be freed as soon as this returns, but the initializer
-//! buffers must OUTLIVE the returned session (ORT keeps references and reads
-//! them lazily during inference — the returned TabFMSession owns the wrapping
-//! OrtValues; the caller must keep the underlying arena alive alongside it).
+//! Build a session from weight-free graph bytes + injected initializers (the CPU device only; others throw, naming their plugin).
+//!   - weights the graph needs but were not injected -> "model weights are not loaded" with the CALL tabfm_load/tabfm_download hint;
+//!     a tensor of the wrong dims/dtype -> corrupted checkpoint error naming the tensor.
+//! The graph bytes may be freed as soon as this returns, but the initializer buffers must OUTLIVE the returned session (it reads them
+//! during inference; the caller keeps the underlying arena alive alongside it).
 TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
                                  const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config);
 

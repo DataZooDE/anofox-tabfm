@@ -65,7 +65,7 @@ class MaskWrapper35(ExportWrapper):
         y_R = torch.nan_to_num(y[0], nan=0.0, posinf=0.0, neginf=0.0)
         T = xt.shape[0]
         # Indexed, never .reshape(()): MIGraphX reads a Reshape to [] as ZERO
-        # elements and refuses the graph (docs/ROCM_TABPFN_PLAN.md).
+        # elements and refuses the graph (docs/archive/ROCM_TABPFN_PLAN.md).
         ts = train_size[0]
         dd = d[0]
         del n_rows  # 3.5 has no statistic over all rows; padded rows are only queries

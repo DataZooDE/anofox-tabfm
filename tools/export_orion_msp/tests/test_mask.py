@@ -70,22 +70,3 @@ def test_the_masked_rocm_contract_on_the_real_weights():
     m.load_state_dict(sd, strict=True)
     res = gate(m)
     assert res["ok"], res
-
-
-@pytest.mark.skipif(not WEIGHTS.exists(), reason="Orion-MSP weights not in the cache (tabfm_download)")
-def test_the_bundled_migraphx_graph_in_ort_on_the_real_weights(tmp_path):
-    """The committed resource (external data at fixed offsets into the cached safetensors) == positional torch."""
-    import shutil
-
-    from safetensors.torch import load_file
-
-    graph = REPO / "resources/graph_migraphx_orion_msp_classification.onnx"
-    m = build_model(configs.real().model_kwargs)
-    sd = {k.removeprefix(export.CKPT_KEY_PREFIX): v for k, v in load_file(str(WEIGHTS)).items()}
-    m.load_state_dict(sd, strict=True)
-    # ORT resolves external data beside the graph: stage it next to a copy of the weights it references
-    staged = tmp_path / graph.name
-    shutil.copyfile(graph, staged)
-    shutil.copyfile(WEIGHTS, tmp_path / "model.safetensors")  # ORT refuses a symlink out of the model dir
-    res = check_onnx(staged, m)
-    assert res["ok"], res

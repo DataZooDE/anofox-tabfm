@@ -5,17 +5,48 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed (breaking)
+- **ONNX Runtime is gone from every build.** The `TABFM_FLAVOR=cpu|cuda|rocm|coreml` build switch, the `TABFM_ORT_*` make variables,
+  `cmake/ort.cmake` and the `TABFM_WITH_ORT` option are removed; there is one build per platform. ONNX Runtime remains only as Python
+  development tooling (the `tools/ggml_parity` goldens and the parity scripts).
+- **The ONNX Runtime CUDA plugin** (`libanofoxort_gpu`, the onnxruntime-gpu wheel download, its SONAME patch) and **the MIGraphX ROCm plugin**
+  (the `.mxr` compile cache, shape buckets, the ~27 minute first compiles, the per-model ROCm bucket ceilings, the masked graphs and their
+  `n_rows` input) are deleted; the ggml GPU plugin replaces both. `tabfm_download_runtime('cuda')` now fetches only the plugin. A plugin file
+  left over from an older release is not used: run `CALL tabfm_accelerate()` again.
+- **All bundled `resources/graph_migraphx_*.onnx`** are deleted.
+- **CoreML** (an in-process ONNX Runtime provider) is gone; MLX serves Apple Silicon.
+- **`tabfm_devices()` `ep` values** are now `ggml` (cpu), `ggml-cuda`, `ggml-rocm` and `mlx` (were `CPUExecutionProvider`,
+  `CUDAExecutionProvider`, `MIGraphXExecutionProvider`, `MlxBackend`).
+- **`anofox_tabfm_gpu_precision = 'bf16' | 'fp16'` is refused on `cuda` and `rocm`** (it quantized the MIGraphX program before); those modes
+  remain on `mlx`. `fp32` (default, strict: TF32 off and small matmuls padded past ggml's TF32 kernel) and `tf32` (CUDA) are the GPU modes.
+
+### Deprecated
+- `SET anofox_tabfm_device = 'coreml'` is accepted, but the first prediction errors, pointing to `CALL tabfm_download_runtime('mlx')` or
+  `SET anofox_tabfm_device='cpu'`; `auto` never picks it. `'migraphx'` stays an alias for `'rocm'`.
+- `anofox_tabfm_cpu_prepack` and `anofox_tabfm_mxr_source` have no effect (their descriptions start "Deprecated, no effect").
+- `tabfm_register_model`'s `classification_migraphx_graph` / `regression_migraphx_graph` are accepted and ignored; GPUs read the
+  `*_ext_graph`.
+- `tabfm_gpu_precompile` is a warm-up that loads the session and reports `status = 'not needed'`: no backend compiles ahead of time.
+
 ### Changed
 - **The CPU engine is now ggml, not ONNX Runtime.** The vendored ggml (`vendor/ggml`, a git submodule) runs all bundled graphs: every one of the 72 ops is lowered to a
   ggml graph and checked against ONNX Runtime (455 per-op goldens, all 45 bundled graphs, Nori 1.5 on its real weights). A default CPU build no longer links or downloads ONNX
-  Runtime (`TABFM_WITH_ORT=OFF`); the ONNX Runtime CPU engine is removed (cuda/rocm/coreml flavors keep ONNX Runtime). Warm Nori 1.5 is within about
+  Runtime; the ONNX Runtime CPU engine is removed (and, below, every other ONNX Runtime build). Warm Nori 1.5 is within about
   1.2x of ONNX Runtime at 200 rows and faster at small sizes. The x86 build needs AVX2, FMA, F16C and BMI2 and refuses to run (naming the way out) on an older CPU.
   The vcpkg ONNX Runtime port (and its `ort-vcpkg` feature) and the `TABFM_CPU_ENGINE` option are removed. Differences you can see: out-of-range `Gather` indices give NaN where ONNX Runtime raised, and one loaded model runs one prediction at a time. See docs/GGML_PLAN.md.
 
 ### Added
-- **Experimental ggml GPU plugin** (`tools/ggml_plugin`, CUDA or HIP): the CPU engine on a GPU. Used instead of the ONNX Runtime/MIGraphX plugin when
-  `libanofox_tabfm_ggml-cuda_plugin.so` (or `ggml-rocm`) is in `anofox_tabfm_ep_path`. Verified on Nori 1.5 against ONNX Runtime on ROCm (Radeon 890M, end to end through SQL)
-  and CUDA (RTX 4090, through the plugin ABI); float32 checkpoints only. Not a release asset yet. See docs/api/04-gpu.md.
+- **The ggml GPU plugin serves CUDA and ROCm** (`src/tabfm_ggml_plugin.cpp`, built by `tools/ggml_plugin`): the CPU engine on a GPU, and the only
+  lane for both devices. Release assets `libanofox_tabfm_ggml-cuda_plugin.so` and `libanofox_tabfm_ggml-rocm_plugin.so` with sha256 sidecars
+  (`ggml-cuda_plugin.sha256`, `ggml-rocm_plugin.sha256`), fetched by `CALL tabfm_download_runtime('cuda'|'rocm')` or `CALL tabfm_accelerate()`
+  (`.github/workflows/gpu_plugins.yml`). The CUDA plugin is built for sm_75..sm_120 with the CUDA runtime and cuBLAS linked statically, so it needs
+  only the NVIDIA driver (`libcuda.so.1`); the ROCm plugin is built for gfx1030/1100/1101/1102/1150/1151/1200/1201, gfx90a and gfx942 and uses the
+  system's ROCm 6.4+ HIP, hipBLAS and rocBLAS. It reads the plain ext graph, so one graph serves both vendors; BF16 checkpoints (`tabfm-v1-1`)
+  are upcast to float32 on upload; it checks free VRAM before uploading and a model that does not fit fails at load naming `CALL tabfm_unload()`,
+  `anofox_tabfm_max_sessions` and `SET anofox_tabfm_device='cpu'`. Verified on Nori 1.5 against ONNX Runtime on ROCm (Radeon 890M and RX 9070 XT)
+  and CUDA (RTX 4090), end to end through SQL. An explicit `cuda`/`rocm` request without the plugin names the missing file and
+  `tabfm_download_runtime`. See docs/api/04-gpu.md.
+- **Ext graphs for `exaone-tabular` (both tasks) and `nori-30m`**, so every GPU-capable built-in model ships one.
 - **`nori-1-5`** (Synthefy Nori 1.5, "Model v3", Apache-2.0 for code and weights, ungated): the second
   REGRESSION-ONLY built-in, ~20.8 M parameters, a two-phase encoder (9 cell layers at width 128, 12 row layers
   at width 256). The engine reads the released `nori.pt` natively (`{model_config, model_state_dict,
@@ -31,6 +62,12 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   patches shared with `nori-30m`; an offline fixture and `tools/export_nori/tests/test_real_weights_v15.py`.
 
 ### Fixed
+- **A CPU prediction no longer runs on one core on machines with more than 64 CPUs.** DuckDB pins its worker threads there, and the ggml
+  thread pool inherited the calling thread's single-core affinity (a 0.4 s prediction took 19 minutes on a 96-core server); the pool now
+  uses the process's CPU set.
+- **ROCm devices are usable without MIGraphX's arch allowlist**: every compute-capable KFD node counts (the gfx1150 iGPU, for one, was
+  refused before). **CUDA devices need compute capability 7.5 or newer**; an older card is listed `usable = false` instead of failing
+  in the plugin.
 - **`tools/gpu_test/runpod_run.py` talks to RunPod REST v2** (#112): it moved from the dead
   `rest.runpod.io/v1` to `api.runpod.io/v2`.
 - **`medae` and `f1` error paths no longer leak** (#111), and the `tabfm_accelerate` message for the CPU case
@@ -227,7 +264,7 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   the compile. A predict raises an error naming the bucket and `SET anofox_tabfm_device = 'cpu'`.
   `tabfm_gpu_precompile` returns `status = 'refused'` with the reason in a new `reason` column. `tabfm_backends()`
   states the ceiling. GPUs with less VRAM get a proportionally lower ceiling. Diagnosis, measurements and a
-  four-node MIGraphX reproducer: docs/ROCM_SINGLE_EVAL_POS.md "LimiX-2M bucket ceiling",
+  four-node MIGraphX reproducer: docs/archive/ROCM_SINGLE_EVAL_POS.md "LimiX-2M bucket ceiling",
   tools/gpu_test/repro/migraphx_attention_oom.py.
 - **`tabpfn-v3` classification works from a fresh download.** Its `.ckpt` also stores `regression_borders`, which
   the classification graph does not use; the CPU offered it to ORT under the `m.` fallback name, so every
@@ -246,7 +283,7 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   3.5 both give 0/160 query-label differences, max prob diff 8.8e-06 / 3.2e-06, and regression max abs
   1.8e-05 / 4.0e-05. CPU results are bit-identical; weights layout and header shas are unchanged.
   `CudaKnownWrong` now lists nothing. Not yet re-run through the extension with `cuda_catalog.sh`. Draft
-  upstream issue: docs/UPSTREAM_ORT_ISSUES.md, Draft 3.
+  upstream issue: docs/archive/UPSTREAM_ORT_ISSUES.md, Draft 3.
 
 ### Known issues
 - **ROCm: models without a measured bucket ceiling can still abort DuckDB on a large table**, as in
@@ -277,7 +314,7 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   (`x, y_full, train_size, n_rows, d`; `tools/export_causilo --contract mask`) replaces the positional split, so
   MIGraphX can compile it per shape bucket. On gfx1201 with the real weights: 0/100 label differences from the CPU,
   regression max |diff| 3.6e-5; ~13-16 min first compile per task and bucket; warm ~0.05 s vs ~0.2 s on the CPU.
-  See docs/ROCM_CAUSILO_PLAN.md.
+  See docs/archive/ROCM_CAUSILO_PLAN.md.
 - **The whole built-in catalog is checked on `mlx` against the CPU with the real weights**
   (`test/sql/tabfm_mlx_real_models.test`, Apple M3, 100 rows). All 40 model x task pairs that ship an ext graph agree:
   0/100 label differences for every classifier, regression max |diff| at most 1.3e-4 (mitra-v2: 1.0e-3) and corr
@@ -603,7 +640,7 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 - CI fixture model (weight-free, random-init) + real weight-free ONNX graphs
   in `resources/`; model tooling under `tools/` (uv).
 - ONNX Runtime built with the MIGraphX EP for the ROCm flavor
-  (see `docs/rocm-build.md`); verified on gfx1201 (RX 9070 XT).
+  (see `docs/archive/rocm-build.md`); verified on gfx1201 (RX 9070 XT).
 - Real predict engine (`tabfm_engine.cpp`): the classify/regress surface runs
   the full TabFM pipeline — preprocess (WS-F) → manifest/graph + safetensors
   injection (WS-B) → ORT session cached in `TabFMState` (WS-C) → forward pass →
@@ -769,7 +806,7 @@ work they prompted.
   the host alone would still have dead-ended a GPU user, because that
   repository serves the cpu flavor only, so the message now names the route
   that works — building the flavor from source — and cites the repository for
-  released cpu builds. See `docs/GPU_DISTRIBUTION.md` for why a published GPU
+  released cpu builds. See `docs/archive/GPU_DISTRIBUTION.md` for why a published GPU
   artifact is not a pipeline change.
 - **The class ceiling was hardcoded and blamed the user's graph**
   ([#26](https://github.com/DataZooDE/anofox-tabfm/issues/26)). The 10-class
@@ -803,7 +840,7 @@ work they prompted.
   wired into CI (it costs money per run). Includes the standalone reproducer
   filed as [onnxruntime#32083](https://github.com/microsoft/onnxruntime/issues/32083)
   for the CUDA `Slice` bug the pins work around.
-- `docs/GPU_DISTRIBUTION.md` — why `SET custom_extension_repository` cannot hand
+- `docs/archive/GPU_DISTRIBUTION.md` — why `SET custom_extension_repository` cannot hand
   anyone a working CUDA build today, with the measurements, and the one
   unanswered question that gates the only route which would.
 
@@ -845,7 +882,7 @@ Everything in this release is CUDA, and all of it comes from
   the CUDA execution provider itself was never the problem. NVML has the same C
   ABI on both platforms, so only the loader differs (`nvml.dll` via
   `LoadLibrary` against `libnvidia-ml.so.1` via `dlopen`); the probe is
-  single-sourced. See `docs/WINDOWS_INFERENCE.md`.
+  single-sourced. See `docs/archive/WINDOWS_INFERENCE.md`.
 
 ## [v2026.08.13] - 2026-08-13
 

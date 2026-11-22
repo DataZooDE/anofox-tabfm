@@ -158,7 +158,7 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 	                          Value("~/.cache/anofox-tabfm"));
 
 	const auto default_threads = MaxValue<int64_t>(1, static_cast<int64_t>(UsableCoreCount()) / 2);
-	config.AddExtensionOption("anofox_tabfm_threads", "Thread count for CPU inference (the ggml engine's threads, or ONNX Runtime's intra-op threads on an ort build)",
+	config.AddExtensionOption("anofox_tabfm_threads", "Thread count for CPU inference (the ggml engine's worker threads)",
 	                          LogicalType::BIGINT, Value::BIGINT(default_threads), ValidateThreads);
 
 	config.AddExtensionOption("anofox_tabfm_max_rows", "Maximum rows per predict call or group",
@@ -192,12 +192,10 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_gpu_precision",
-	    "GPU numeric mode: fp32|tf32|bf16|fp16. fp32 (default) is strict — a device switch does not change answers, "
-	    "measured exact on both GPUs; on CUDA it disables TF32 tensor-core rounding. tf32 re-enables that rounding "
-	    "(CUDA only; fp32 storage, faster matmuls). bf16/fp16 quantize the MIGraphX program on ROCm (~2x faster on "
-	    "RDNA4, half the VRAM/.mxr; label flips vs fp32 are rare (~2%% measured) but NOT confined to near-ties — "
-	    "measured flips include high-confidence rows, so validate bf16 on your own data) and are rejected on CUDA "
-	    "rather than silently running fp32.",
+	    "GPU numeric mode: fp32|tf32|bf16|fp16. fp32 (default) is strict: the ggml GPU plugin (cuda, rocm) computes "
+	    "in float32 with tensor-core TF32 rounding disabled, so a device switch does not change answers beyond float "
+	    "rounding. tf32 allows that rounding on CUDA (faster matmuls). bf16/fp16 apply to the mlx device only; on "
+	    "cuda and rocm they are refused rather than silently run as fp32.",
 	    LogicalType::VARCHAR, Value("fp32"), ValidateGpuPrecision);
 
 	config.AddExtensionOption(
@@ -237,31 +235,31 @@ void RegisterTabfmSettings(ExtensionLoader &loader) {
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_cpu_prepack",
-	    "Only for the in-process ONNX Runtime of the cuda/rocm/coreml flavors: weight prepacking on the CPU EP, faster matmuls at ~+16% resident memory. No effect on the CPU device (ggml), which reads weights in place.",
+	    "Deprecated, no effect: it switched ONNX Runtime's weight prepacking, and no build contains ONNX Runtime any more. "
+	    "The CPU engine (ggml) reads weights in place. Accepted so existing scripts keep working.",
 	    LogicalType::BOOLEAN, Value::BOOLEAN(true));
 
 	config.AddExtensionOption("anofox_tabfm_device",
-	                          "Execution device: auto|cpu|cuda|rocm|coreml|mlx ('migraphx' alias). 'auto' resolves "
+	                          "Execution device: auto|cpu|cuda|rocm|mlx ('migraphx' alias for rocm). 'auto' resolves "
 	                          "per model: it picks the best device that model can actually be served on (its plugin "
 	                          "present and a graph available), else the CPU — so it never promises an accelerator a "
 	                          "model cannot use. SELECT * FROM tabfm_backends() shows the choice and the reason. "
 	                          "Naming a device explicitly is a hard request: it errors rather than falling back. "
-	                          "coreml is flavor-gated and 'auto' does not reach for it.",
+	                          "cuda and rocm are served by the ggml GPU plugin, mlx by the MLX plugin. 'coreml' is "
+	                          "accepted but deprecated: using it errors and points to 'mlx'.",
 	                          LogicalType::VARCHAR, Value("auto"), ValidateDevice);
 
 	config.AddExtensionOption("anofox_tabfm_ep_path",
-	                          "Directory holding the GPU backend plugins (anofox_tabfm_{cuda,migraphx,mlx}_plugin, "
-	                          "with this platform's library prefix and extension) and the runtime libraries they "
-	                          "load alongside themselves. Defaults to the 'runtime' subdirectory of "
+	                          "Directory holding the GPU backend plugins (anofox_tabfm_{ggml-cuda,ggml-rocm,mlx}_plugin, "
+	                          "with this platform's library prefix and extension). Defaults to the 'runtime' subdirectory of "
 	                          "anofox_tabfm_cache_dir, which is where CALL tabfm_download_runtime(...) and CALL "
 	                          "tabfm_accelerate() put them — set this only to point somewhere else.",
 	                          LogicalType::VARCHAR, Value(""));
 
 	config.AddExtensionOption(
 	    "anofox_tabfm_mxr_source",
-	    "Directory holding precompiled MIGraphX .mxr programs (offline/CI/shared cache). Before compiling a "
-	    "shape-bucket (~27 min on ROCm), a matching '<graph-stem>_<content-hash8>_<arch>_<precision>_T<t>_H<h>.mxr' here is staged into the "
-	    "cache and reused; empty ('' default) always compiles on-device. Artifacts are arch- and ROCm-version-specific.",
+	    "Deprecated, no effect: it pointed at precompiled MIGraphX .mxr programs, and the ROCm lane (the ggml GPU plugin) "
+	    "compiles nothing ahead of time. Accepted so existing scripts keep working.",
 	    LogicalType::VARCHAR, Value(""));
 }
 
