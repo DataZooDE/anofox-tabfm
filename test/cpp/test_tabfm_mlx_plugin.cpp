@@ -74,6 +74,8 @@ vector<double> Softmax(const float *row, int64_t c) {
 	return out;
 }
 
+//! The returned params point INTO `weights_dir`: pass a string that outlives them (a temporary, e.g. a string literal converted at the call,
+//! dangles at the end of the statement; ASAN reported it on macOS).
 TabFMPluginCreateParams MlxParams(const string &weights_dir, const char *arch) {
 	TabFMPluginCreateParams params {};
 	params.graph_path = ""; // deliberately unused: the forward is transcribed
@@ -306,7 +308,9 @@ TEST_CASE("mlx_plugin: a graph whose output is a strided view returns it in inde
 	auto session = CreateSessionFromPath(graph, {}, config);
 	auto cpu_output = Run(*session, input);
 
-	auto params = MlxParams("test/fixtures/mlx", "tabdpt-classification");
+	const string params_dir = "test/fixtures/mlx"; // must outlive params: MlxParams stores its c_str()
+
+	auto params = MlxParams(params_dir, "tabdpt-classification");
 	params.graph_path = graph.c_str();
 	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
 	auto mlx_output = backend->Run(input);
@@ -346,7 +350,9 @@ TEST_CASE("mlx_plugin: integer Div truncates, as ONNX Runtime's does", "[tabfm][
 	auto session = CreateSessionFromPath(graph, {}, config);
 	auto cpu_output = Run(*session, input);
 
-	auto params = MlxParams("test/fixtures/mlx", "limix-2m-classification");
+	const string params_dir = "test/fixtures/mlx"; // must outlive params: MlxParams stores its c_str()
+
+	auto params = MlxParams(params_dir, "limix-2m-classification");
 	params.graph_path = graph.c_str();
 	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
 	auto mlx_output = backend->Run(input);
@@ -385,7 +391,9 @@ TEST_CASE("mlx_plugin: float64 initializers and constants are narrowed, not rein
 	auto session = CreateSessionFromPath(graph, {}, config);
 	auto cpu_output = Run(*session, input);
 
-	auto params = MlxParams("test/fixtures/mlx", "limix-2m-regression");
+	const string params_dir = "test/fixtures/mlx"; // must outlive params: MlxParams stores its c_str()
+
+	auto params = MlxParams(params_dir, "limix-2m-regression");
 	params.graph_path = graph.c_str();
 	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
 	auto mlx_output = backend->Run(input);
