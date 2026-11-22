@@ -202,8 +202,118 @@ five real dimensions (max 5) after dropping size-1 dims: those need an op-aware 
   (`mul_mat_f`, 16 or fewer columns), which `NVIDIA_TF32_OVERRIDE=0` does not reach; the large-matmul runs above are 3.4e-3. Strict fp32 on CUDA for small tables needs a ggml change.
 - **More hardware (done).** Discrete **RX 9070 XT (gfx1201, `joachims-bigfox`)**: goldens 451/455 (same 4 rounding cases), Nori 1.5 vs ORT 6.9e-5 (24 rows) and 2.1e-3 (200 rows), warm 200 rows 0.26 s on the GPU against 0.84 s on the CPU engine; the plugin through the ABI gives the same numbers. **MLX on the Apple M3 (`joachims-air`)**: the MLX plugin built from this branch serves the Nori scenario as `mlx:0` and agrees with the ggml CPU engine to 8.7e-5 at scale 7.0. The SQL scenario through the ggml plugin was run on the gfx1150 iGPU and the RTX 4090, not repeated on the gfx1201 card.
 - **Weights at create (done).** `GgmlExecutor::PreloadWeights()`, called by the plugin's create, uploads every float32 external weight up front (a device that cannot hold the model fails at load).
-- **Still open.** The plugin is not a release
-  asset and has no CI job; `tabfm_devices()`/`tabfm_backends()` do not list the ggml lane (explicit `cuda`/`rocm` only, `auto` never picks it); Windows and Vulkan plugins; fp32 is not strict for matmuls of 16 or fewer columns on CUDA (ggml's own TF32 kernel has no switch).
+- **Still open (at P8; resolved in P9 below except Windows/Vulkan).** The plugin was not a release asset and had no CI job; `tabfm_devices()`/`tabfm_backends()` did not list the ggml lane; fp32 was not strict for matmuls of 16 or fewer columns on CUDA.
+
+## P9 result: ggml is the only engine (ONNX Runtime and MIGraphX removed), and the catalog on a GPU
+- **What changed.** No build links ONNX Runtime (`scripts/check_no_ort.sh`, a CI audit). The ggml GPU plugin is the only CUDA/ROCm lane and a release asset
+  (`.github/workflows/gpu_plugins.yml`: CUDA 12.8 linked statically, 915 MB for sm_75..sm_120 with only `libcuda.so.1` needed; ROCm 7.2 for gfx90a/942/1030/1100-1102/1150/1151/1200/1201).
+  Strict fp32 on CUDA: every matmul is padded to at least 17 activation rows (`GgmlExecutorConfig::strict_fp32`), so none takes ggml's TF32 small-batch kernel. BF16/F16 checkpoints
+  are upcast on upload. The 41 masked MIGraphX graphs are gone; every GPU-capable model reads its `ext` graph. Details: CHANGELOG `[Unreleased]`.
+- **Definition of done (real weights, SQL).** `test/sql/tabfm_gpu_use_cases.test` (churn scoring in the train/test form, a house-price regression with a categorical feature, a device
+  switch, the two refusals) and `test/sql/tabfm_gpu_registered_model.test` pass on CUDA (RTX 4090), ROCm gfx1150 (iGPU) and ROCm gfx1201 (RX 9070 XT); each asserts the GPU served it.
+- **The whole catalog on ROCm gfx1201** (`tools/gpu_test/gpu_catalog.sh`, real weights, 70 labelled + 30 query rows, 4 features; one fresh process per model and task): all 44
+  (model, task) pairs served by `rocm:0`, **no label differs from the CPU**, regression within 8e-6 of the CPU relative to the prediction range, identical quality, and a second
+  GPU run reproduces the first exactly (`repeat` = rows that changed).
+
+| model | task | served_by | label flips | max abs diff | max rel diff | repeat | quality CPU / GPU | CPU ms | GPU warm ms |
+|---|---|---|---|---|---|---|---|---|---|
+| causilo | class | rocm:0 | 0 | 1.9e-05 | - | 0 | 0.9000 / 0.9000 | 1128 | 476 |
+| causilo | regre | rocm:0 | - | 2.9e-05 | 2.4e-06 | 0 | 1.0000 / 1.0000 | 1537 | 360 |
+| exaone-tabular | class | rocm:0 | 0 | 2.2e-06 | - | 0 | 0.9333 / 0.9333 | 1619 | 475 |
+| exaone-tabular | regre | rocm:0 | - | 1.5e-06 | 1.2e-07 | 0 | 0.9999 / 0.9999 | 1571 | 639 |
+| kumo-tabular-large | class | rocm:0 | 0 | 2.6e-06 | - | 0 | 0.9667 / 0.9667 | 7581 | 669 |
+| kumo-tabular-large | regre | rocm:0 | - | 6.6e-06 | 5.4e-07 | 0 | 1.0000 / 1.0000 | 3022 | 509 |
+| kumo-tabular-medium | class | rocm:0 | 0 | 2.1e-06 | - | 0 | 0.9333 / 0.9333 | 1399 | 460 |
+| kumo-tabular-medium | regre | rocm:0 | - | 1.2e-05 | 1.0e-06 | 0 | 1.0000 / 1.0000 | 2825 | 471 |
+| kumo-tabular-small | class | rocm:0 | 0 | 2.7e-06 | - | 0 | 0.9000 / 0.9000 | 3644 | 1279 |
+| kumo-tabular-small | regre | rocm:0 | - | 2.6e-05 | 2.1e-06 | 0 | 1.0000 / 1.0000 | 822 | 531 |
+| limix-2m | class | rocm:0 | 0 | 2.6e-06 | - | 0 | 0.9667 / 0.9667 | 349 | 111 |
+| limix-2m | regre | rocm:0 | - | 2.7e-06 | 2.3e-07 | 0 | 0.9982 / 0.9982 | 266 | 291 |
+| mitra | class | rocm:0 | 0 | 5.1e-06 | - | 0 | 0.9000 / 0.9000 | 2276 | 524 |
+| mitra | regre | rocm:0 | - | 1.2e-05 | 9.7e-07 | 0 | 0.9980 / 0.9980 | 2261 | 607 |
+| mitra-v2 | class | rocm:0 | 0 | 8.8e-06 | - | 0 | 0.9333 / 0.9333 | 2099 | 582 |
+| mitra-v2 | regre | rocm:0 | - | 8.2e-05 | 6.7e-06 | 0 | 0.9973 / 0.9973 | 1897 | 672 |
+| nori-1-5 | regre | rocm:0 | - | 1.3e-05 | 1.0e-06 | 0 | 0.9999 / 0.9999 | 336 | 407 |
+| nori-30m | regre | rocm:0 | - | 1.4e-06 | 1.2e-07 | 0 | 0.9994 / 0.9994 | 1224 | 543 |
+| orion-bix | class | rocm:0 | 0 | 3.6e-06 | - | 0 | 0.8667 / 0.8667 | 476 | 382 |
+| orion-msp | class | rocm:0 | 0 | 3.2e-05 | - | 0 | 0.8667 / 0.8667 | 684 | 178 |
+| tabdpt | class | rocm:0 | 0 | 3.9e-06 | - | 0 | 0.9000 / 0.9000 | 922 | 188 |
+| tabdpt | regre | rocm:0 | - | 4.8e-06 | 3.9e-07 | 0 | 0.9998 / 0.9998 | 189 | 227 |
+| tabdpt-v1-3 | class | rocm:0 | 0 | 4.5e-06 | - | 0 | 0.9333 / 0.9333 | 1027 | 277 |
+| tabdpt-v1-3 | regre | rocm:0 | - | 1.6e-05 | 1.3e-06 | 0 | 0.9999 / 0.9999 | 218 | 275 |
+| tabfm-v1 | class | rocm:0 | 0 | 2.9e-06 | - | 0 | 0.9667 / 0.9667 | 14571 | 2153 |
+| tabfm-v1 | regre | rocm:0 | - | 5.6e-06 | 4.6e-07 | 0 | 0.9997 / 0.9997 | 15710 | 1744 |
+| tabfm-v1-1 | class | rocm:0 | 0 | 8.3e-06 | - | 0 | 0.9667 / 0.9667 | 3456 | 457 |
+| tabfm-v1-1 | regre | rocm:0 | - | 5.6e-06 | 4.6e-07 | 0 | 0.9998 / 0.9998 | 3829 | 807 |
+| tabicl-v2 | class | rocm:0 | 0 | 4.1e-06 | - | 0 | 0.9333 / 0.9333 | 467 | 141 |
+| tabicl-v2 | regre | rocm:0 | - | 2.7e-05 | 2.2e-06 | 0 | 0.9927 / 0.9927 | 740 | 444 |
+| tabpfn-v2 | class | rocm:0 | 0 | 7.6e-06 | - | 0 | 0.9667 / 0.9667 | 538 | 312 |
+| tabpfn-v2 | regre | rocm:0 | - | 6.2e-06 | 5.1e-07 | 0 | 1.0000 / 1.0000 | 432 | 129 |
+| tabpfn-v2-5 | class | rocm:0 | 0 | 3.2e-06 | - | 0 | 0.9667 / 0.9667 | 657 | 508 |
+| tabpfn-v2-5 | regre | rocm:0 | - | 1.4e-05 | 1.1e-06 | 0 | 0.9999 / 0.9999 | 477 | 224 |
+| tabpfn-v2-5-real | class | rocm:0 | 0 | 1.5e-06 | - | 0 | 0.9667 / 0.9667 | 529 | 270 |
+| tabpfn-v2-5-real | regre | rocm:0 | - | 3.1e-05 | 2.5e-06 | 0 | 0.9999 / 0.9999 | 644 | 260 |
+| tabpfn-v2-6 | class | rocm:0 | 0 | 2.5e-05 | - | 0 | 0.9000 / 0.9000 | 592 | 357 |
+| tabpfn-v2-6 | regre | rocm:0 | - | 1.0e-04 | 8.3e-06 | 0 | 0.9996 / 0.9996 | 666 | 484 |
+| tabpfn-v3 | class | rocm:0 | 0 | 5.0e-06 | - | 0 | 0.9000 / 0.9000 | 805 | 350 |
+| tabpfn-v3 | regre | rocm:0 | - | 4.9e-05 | 4.0e-06 | 0 | 1.0000 / 1.0000 | 928 | 289 |
+| tabpfn-v3-5 | class | rocm:0 | 0 | 2.2e-06 | - | 0 | 0.9667 / 0.9667 | 2295 | 634 |
+| tabpfn-v3-5 | regre | rocm:0 | - | 8.1e-05 | 6.6e-06 | 0 | 0.9998 / 0.9998 | 880 | 566 |
+| tabpfn-v3-5-fast | class | rocm:0 | 0 | 6.1e-06 | - | 0 | 0.9333 / 0.9333 | 1186 | 397 |
+| tabpfn-v3-5-fast | regre | rocm:0 | - | 9.3e-05 | 7.6e-06 | 0 | 0.9999 / 0.9999 | 398 | 372 |
+
+
+- **The whole catalog on CUDA, RTX 4090** (same loop, run against the CI-built artefacts: the manylinux extension and the release CUDA plugin, on a 256-thread EPYC host):
+  all 44 pairs served by `cuda:0`, **no label differs from the CPU**, regression within 4.9e-6 relative, scores within 3.3e-5, identical quality, repeat runs identical.
+  Strict fp32 holds on CUDA now: at P8 the same kind of 4-feature table drifted 0.4 % through ggml's TF32 small-matmul kernel; the 17-row padding removes that path.
+  (TabPFN v2 / v2.5 are gated on Hugging Face, so their converted weights were copied from the gfx1201 box rather than downloaded.)
+
+| model | task | served_by | label flips | max abs diff | max rel diff | repeat | quality CPU / GPU | CPU ms | GPU warm ms |
+|---|---|---|---|---|---|---|---|---|---|
+| causilo | class | cuda:0 | 0 | 1.8e-05 | - | 0 | 0.9000 / 0.9000 | 340 | 54 |
+| causilo | regre | cuda:0 | - | 7.2e-06 | 5.8e-07 | 0 | 1.0000 / 1.0000 | 434 | 57 |
+| exaone-tabular | class | cuda:0 | 0 | 2.3e-06 | - | 0 | 0.9333 / 0.9333 | 914 | 98 |
+| exaone-tabular | regre | cuda:0 | - | 2.4e-06 | 2.0e-07 | 0 | 0.9999 / 0.9999 | 1018 | 99 |
+| kumo-tabular-large | class | cuda:0 | 0 | 3.0e-06 | - | 0 | 0.9667 / 0.9667 | 868 | 211 |
+| kumo-tabular-large | regre | cuda:0 | - | 3.1e-06 | 2.5e-07 | 0 | 1.0000 / 1.0000 | 762 | 197 |
+| kumo-tabular-medium | class | cuda:0 | 0 | 1.5e-06 | - | 0 | 0.9333 / 0.9333 | 611 | 137 |
+| kumo-tabular-medium | regre | cuda:0 | - | 5.6e-06 | 4.6e-07 | 0 | 1.0000 / 1.0000 | 654 | 144 |
+| kumo-tabular-small | class | cuda:0 | 0 | 2.0e-06 | - | 0 | 0.9000 / 0.9000 | 305 | 68 |
+| kumo-tabular-small | regre | cuda:0 | - | 3.1e-06 | 2.5e-07 | 0 | 1.0000 / 1.0000 | 348 | 57 |
+| limix-2m | class | cuda:0 | 0 | 1.4e-06 | - | 0 | 0.9667 / 0.9667 | 346 | 41 |
+| limix-2m | regre | cuda:0 | - | 3.3e-06 | 2.8e-07 | 0 | 0.9982 / 0.9982 | 314 | 46 |
+| mitra | class | cuda:0 | 0 | 3.0e-06 | - | 0 | 0.9000 / 0.9000 | 750 | 277 |
+| mitra | regre | cuda:0 | - | 4.7e-06 | 3.9e-07 | 0 | 0.9980 / 0.9980 | 757 | 308 |
+| mitra-v2 | class | cuda:0 | 0 | 1.3e-05 | - | 0 | 0.9333 / 0.9333 | 812 | 341 |
+| mitra-v2 | regre | cuda:0 | - | 6.0e-05 | 4.9e-06 | 0 | 0.9973 / 0.9973 | 822 | 276 |
+| nori-1-5 | regre | cuda:0 | - | 1.4e-05 | 1.1e-06 | 0 | 0.9999 / 0.9999 | 584 | 65 |
+| nori-30m | regre | cuda:0 | - | 2.9e-06 | 2.3e-07 | 0 | 0.9994 / 0.9994 | 860 | 92 |
+| orion-bix | class | cuda:0 | 0 | 2.0e-06 | - | 0 | 0.8667 / 0.8667 | 307 | 54 |
+| orion-msp | class | cuda:0 | 0 | 2.6e-06 | - | 0 | 0.8667 / 0.8667 | 492 | 68 |
+| tabdpt | class | cuda:0 | 0 | 1.1e-06 | - | 0 | 0.9000 / 0.9000 | 285 | 41 |
+| tabdpt | regre | cuda:0 | - | 3.3e-06 | 2.7e-07 | 0 | 0.9998 / 0.9998 | 662 | 49 |
+| tabdpt-v1-3 | class | cuda:0 | 0 | 5.5e-06 | - | 0 | 0.9333 / 0.9333 | 300 | 32 |
+| tabdpt-v1-3 | regre | cuda:0 | - | 2.3e-05 | 1.9e-06 | 0 | 0.9999 / 0.9999 | 291 | 42 |
+| tabfm-v1 | class | cuda:0 | 0 | 3.8e-06 | - | 0 | 0.9667 / 0.9667 | 1171 | 129 |
+| tabfm-v1 | regre | cuda:0 | - | 2.2e-05 | 1.8e-06 | 0 | 0.9997 / 0.9997 | 1247 | 108 |
+| tabfm-v1-1 | class | cuda:0 | 0 | 7.7e-06 | - | 0 | 0.9667 / 0.9667 | 1881 | 95 |
+| tabfm-v1-1 | regre | cuda:0 | - | 2.2e-05 | 1.8e-06 | 0 | 0.9998 / 0.9998 | 1888 | 122 |
+| tabicl-v2 | class | cuda:0 | 0 | 4.0e-06 | - | 0 | 0.9333 / 0.9333 | 305 | 59 |
+| tabicl-v2 | regre | cuda:0 | - | 2.3e-05 | 1.9e-06 | 0 | 0.9927 / 0.9927 | 359 | 56 |
+| tabpfn-v2 | class | cuda:0 | 0 | 7.5e-06 | - | 0 | 0.9667 / 0.9667 | 328 | 58 |
+| tabpfn-v2 | regre | cuda:0 | - | 3.3e-06 | 2.7e-07 | 0 | 1.0000 / 1.0000 | 399 | 51 |
+| tabpfn-v2-5 | class | cuda:0 | 0 | 7.7e-06 | - | 0 | 0.9667 / 0.9667 | 692 | 56 |
+| tabpfn-v2-5 | regre | cuda:0 | - | 1.9e-05 | 1.6e-06 | 0 | 0.9999 / 0.9999 | 499 | 52 |
+| tabpfn-v2-5-real | class | cuda:0 | 0 | 3.0e-06 | - | 0 | 0.9667 / 0.9667 | 434 | 74 |
+| tabpfn-v2-5-real | regre | cuda:0 | - | 1.8e-05 | 1.4e-06 | 0 | 0.9999 / 0.9999 | 346 | 48 |
+| tabpfn-v2-6 | class | cuda:0 | 0 | 3.3e-05 | - | 0 | 0.9000 / 0.9000 | 408 | 51 |
+| tabpfn-v2-6 | regre | cuda:0 | - | 7.2e-06 | 5.8e-07 | 0 | 0.9996 / 0.9996 | 431 | 67 |
+| tabpfn-v3 | class | cuda:0 | 0 | 4.8e-06 | - | 0 | 0.9000 / 0.9000 | 320 | 86 |
+| tabpfn-v3 | regre | cuda:0 | - | 1.5e-05 | 1.2e-06 | 0 | 1.0000 / 1.0000 | 426 | 93 |
+| tabpfn-v3-5 | class | cuda:0 | 0 | 2.8e-06 | - | 0 | 0.9667 / 0.9667 | 535 | 135 |
+| tabpfn-v3-5 | regre | cuda:0 | - | 3.8e-05 | 3.1e-06 | 0 | 0.9998 / 0.9998 | 694 | 197 |
+| tabpfn-v3-5-fast | class | cuda:0 | 0 | 5.0e-06 | - | 0 | 0.9333 / 0.9333 | 287 | 94 |
+| tabpfn-v3-5-fast | regre | cuda:0 | - | 1.0e-05 | 8.2e-07 | 0 | 0.9999 / 0.9999 | 420 | 114 |
 
 ## P3 design notes (from the post-P2 crew review)
 - **The 78 five-real-dimension tensors** have only four shapes at T=350, H=17: (rows, features, 2, heads, head_dim) and variants, i.e. a fused
