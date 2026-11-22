@@ -504,6 +504,14 @@ const std::unordered_map<std::string, Handler> &Handlers() {
 		     Ok(mlx_arange(r.out(), start, limit, delta, in[0]->dtype(), c.s), "range");
 		     return Wrap(std::move(r));
 	     }},
+	    // Relu = max(x, 0) in x's dtype (Nori-30M's encoder, like LimiX's, uses it)
+	    {"Relu",
+	     [](const Node &, const Args &in, const Ctx &c) {
+		     Arr z(mlx_array_new_float32(0.0f)), zero, r;
+		     Ok(mlx_astype(zero.out(), z.get(), in[0]->dtype(), c.s), "relu_zero");
+		     Ok(mlx_maximum(r.out(), in[0]->get(), zero.get(), c.s), "relu");
+		     return Wrap(std::move(r));
+	     }},
 	    {"Clip",
 	     [](const Node &, const Args &in, const Ctx &c) {
 		     Arr cur = in[0]->Share();

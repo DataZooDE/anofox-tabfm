@@ -315,6 +315,58 @@ five real dimensions (max 5) after dropping size-1 dims: those need an op-aware 
 | tabpfn-v3-5-fast | class | cuda:0 | 0 | 5.0e-06 | - | 0 | 0.9333 / 0.9333 | 287 | 94 |
 | tabpfn-v3-5-fast | regre | cuda:0 | - | 1.0e-05 | 8.2e-07 | 0 | 0.9999 / 0.9999 | 420 | 114 |
 
+- **The whole catalog on MLX, Apple M3 (`joachims-air`)** (same loop; the CPU side is the ggml engine on the M3's NEON cores): all 44 pairs served by `mlx:0`,
+  **no label differs from the CPU**, regression within 3.4e-6 relative, scores within 3.3e-5, quality equal to 2e-7, repeat runs identical. Nori-30M needed
+  `Relu` in the MLX interpreter (its new ext graph keeps LimiX's Relu; Nori 1.5's exporter rewrites it to `clamp`). Running the DoD tests here also fixed two
+  MLX messages (a `tf32` refusal and a registered model without an ext graph now name the fix, as on cuda/rocm).
+
+| model | task | served_by | label flips | max abs diff | max rel diff | repeat | quality CPU / GPU | CPU ms | GPU warm ms |
+|---|---|---|---|---|---|---|---|---|---|
+| causilo | class | mlx:0 | 0 | 2.0e-05 | - | 0 | 0.9000 / 0.9000 | 306 | 142 |
+| causilo | regre | mlx:0 | - | 1.1e-05 | 8.9e-07 | 0 | 1.0000 / 1.0000 | 311 | 140 |
+| exaone-tabular | class | mlx:0 | 0 | 1.4e-06 | - | 0 | 0.9333 / 0.9333 | 522 | 152 |
+| exaone-tabular | regre | mlx:0 | - | 3.3e-06 | 2.7e-07 | 0 | 0.9999 / 0.9999 | 430 | 149 |
+| kumo-tabular-large | class | mlx:0 | 0 | 2.9e-06 | - | 0 | 0.9667 / 0.9667 | 1309 | 400 |
+| kumo-tabular-large | regre | mlx:0 | - | 7.4e-06 | 6.0e-07 | 0 | 1.0000 / 1.0000 | 1329 | 409 |
+| kumo-tabular-medium | class | mlx:0 | 0 | 1.1e-06 | - | 0 | 0.9333 / 0.9333 | 635 | 380 |
+| kumo-tabular-medium | regre | mlx:0 | - | 2.2e-05 | 1.8e-06 | 0 | 1.0000 / 1.0000 | 628 | 375 |
+| kumo-tabular-small | class | mlx:0 | 0 | 2.9e-06 | - | 0 | 0.9000 / 0.9000 | 229 | 139 |
+| kumo-tabular-small | regre | mlx:0 | - | 5.8e-06 | 4.8e-07 | 0 | 1.0000 / 1.0000 | 236 | 138 |
+| limix-2m | class | mlx:0 | 0 | 1.1e-06 | - | 0 | 0.9667 / 0.9667 | 93 | 84 |
+| limix-2m | regre | mlx:0 | - | 5.2e-06 | 4.4e-07 | 0 | 0.9982 / 0.9982 | 69 | 83 |
+| mitra | class | mlx:0 | 0 | 7.7e-06 | - | 0 | 0.9000 / 0.9000 | 861 | 136 |
+| mitra | regre | mlx:0 | - | 6.4e-06 | 5.2e-07 | 0 | 0.9980 / 0.9980 | 850 | 135 |
+| mitra-v2 | class | mlx:0 | 0 | 1.7e-05 | - | 0 | 0.9333 / 0.9333 | 1036 | 202 |
+| mitra-v2 | regre | mlx:0 | - | 4.2e-05 | 3.4e-06 | 0 | 0.9973 / 0.9973 | 871 | 207 |
+| nori-1-5 | regre | mlx:0 | - | 1.0e-05 | 8.5e-07 | 0 | 0.9999 / 0.9999 | 246 | 210 |
+| nori-30m | regre | mlx:0 | - | 2.4e-06 | 2.0e-07 | 0 | 0.9994 / 0.9994 | 492 | 199 |
+| orion-bix | class | mlx:0 | 0 | 1.5e-06 | - | 0 | 0.8667 / 0.8667 | 82 | 123 |
+| orion-msp | class | mlx:0 | 0 | 3.3e-05 | - | 0 | 0.8667 / 0.8667 | 117 | 171 |
+| tabdpt | class | mlx:0 | 0 | 1.9e-06 | - | 0 | 0.9000 / 0.9000 | 137 | 82 |
+| tabdpt | regre | mlx:0 | - | 6.2e-06 | 5.0e-07 | 0 | 0.9998 / 0.9998 | 108 | 82 |
+| tabdpt-v1-3 | class | mlx:0 | 0 | 3.2e-06 | - | 0 | 0.9333 / 0.9333 | 135 | 78 |
+| tabdpt-v1-3 | regre | mlx:0 | - | 8.1e-06 | 6.6e-07 | 0 | 0.9999 / 0.9999 | 123 | 81 |
+| tabfm-v1 | class | mlx:0 | 0 | 3.4e-06 | - | 0 | 0.9667 / 0.9667 | 2065 | 397 |
+| tabfm-v1 | regre | mlx:0 | - | 5.1e-06 | 4.2e-07 | 0 | 0.9997 / 0.9997 | 1546 | 373 |
+| tabfm-v1-1 | class | mlx:0 | 0 | 3.5e-06 | - | 0 | 0.9667 / 0.9667 | 2009 | 206 |
+| tabfm-v1-1 | regre | mlx:0 | - | 5.6e-06 | 4.6e-07 | 0 | 0.9998 / 0.9998 | 2102 | 207 |
+| tabicl-v2 | class | mlx:0 | 0 | 5.5e-06 | - | 0 | 0.9333 / 0.9333 | 226 | 86 |
+| tabicl-v2 | regre | mlx:0 | - | 1.9e-05 | 1.5e-06 | 0 | 0.9927 / 0.9927 | 110 | 86 |
+| tabpfn-v2 | class | mlx:0 | 0 | 6.6e-06 | - | 0 | 0.9667 / 0.9667 | 110 | 124 |
+| tabpfn-v2 | regre | mlx:0 | - | 4.8e-06 | 3.9e-07 | 0 | 1.0000 / 1.0000 | 115 | 125 |
+| tabpfn-v2-5 | class | mlx:0 | 0 | 5.0e-06 | - | 0 | 0.9667 / 0.9667 | 178 | 226 |
+| tabpfn-v2-5 | regre | mlx:0 | - | 3.8e-06 | 3.1e-07 | 0 | 0.9999 / 0.9999 | 141 | 166 |
+| tabpfn-v2-5-real | class | mlx:0 | 0 | 1.9e-06 | - | 0 | 0.9667 / 0.9667 | 174 | 217 |
+| tabpfn-v2-5-real | regre | mlx:0 | - | 8.6e-06 | 7.0e-07 | 0 | 0.9999 / 0.9999 | 113 | 183 |
+| tabpfn-v2-6 | class | mlx:0 | 0 | 1.6e-05 | - | 0 | 0.9000 / 0.9000 | 146 | 234 |
+| tabpfn-v2-6 | regre | mlx:0 | - | 3.8e-06 | 3.1e-07 | 0 | 0.9996 / 0.9996 | 194 | 272 |
+| tabpfn-v3 | class | mlx:0 | 0 | 4.8e-06 | - | 0 | 0.9000 / 0.9000 | 130 | 162 |
+| tabpfn-v3 | regre | mlx:0 | - | 6.2e-06 | 5.1e-07 | 0 | 1.0000 / 1.0000 | 187 | 170 |
+| tabpfn-v3-5 | class | mlx:0 | 0 | 1.9e-06 | - | 0 | 0.9667 / 0.9667 | 321 | 169 |
+| tabpfn-v3-5 | regre | mlx:0 | - | 9.5e-06 | 7.8e-07 | 0 | 0.9998 / 0.9998 | 556 | 190 |
+| tabpfn-v3-5-fast | class | mlx:0 | 0 | 5.3e-06 | - | 0 | 0.9333 / 0.9333 | 152 | 90 |
+| tabpfn-v3-5-fast | regre | mlx:0 | - | 1.0e-05 | 8.2e-07 | 0 | 0.9999 / 0.9999 | 247 | 98 |
+
 ## P3 design notes (from the post-P2 crew review)
 - **The 78 five-real-dimension tensors** have only four shapes at T=350, H=17: (rows, features, 2, heads, head_dim) and variants, i.e. a fused
   projection reshaped to [R,F,2,h,hd]. Rule: keep (R,F) merged while in the fused layout (ggml ne = [hd, h, 2, R*F]), take the size-2 axis

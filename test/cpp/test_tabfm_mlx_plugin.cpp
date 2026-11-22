@@ -25,6 +25,8 @@
 
 #include "tabfm_session.hpp"
 #include "tabfm_plugin_backend.hpp"
+#include "tabfm_onnx_reader.hpp"
+#include <iterator>
 
 #include <cmath>
 #include <cstdlib>
@@ -122,8 +124,8 @@ TEST_CASE("mlx_plugin: refuses a model it has no way to run", "[tabfm][plugin][m
 TEST_CASE("mlx_plugin: CPU and MLX agree on the same real weights", "[tabfm][plugin][mlx]") {
 	const string weights_dir = MitraCacheDir();
 	const string weights = weights_dir + "/model.safetensors";
-	// ORT resolves the ext graph's external data relative to the graph file, so
-	// the graph has to sit beside the weights it indexes.
+	// The ext graph's initializers point into model.safetensors by byte offset; the CPU reference
+	// (the ggml engine) gets those slices injected below, so the graph only has to sit beside the weights.
 	const string cpu_graph = weights_dir + "/graph_ext_mitra_classification.onnx";
 
 	if (!FileExists(weights) || !FileExists(cpu_graph)) {
@@ -142,8 +144,7 @@ TEST_CASE("mlx_plugin: CPU and MLX agree on the same real weights", "[tabfm][plu
 		        "    ln -s \"$PWD/resources/graph_ext_mitra_classification.onnx\" \""
 		     << cpu_graph
 		     << "\"\n"
-		        "  The graph must sit beside the weights: ORT resolves the ext graph's\n"
-		        "  external data relative to the graph file. See docs/MLX_SPIKE_RESULTS.md.");
+		        "  The graph sits beside the weights it indexes by byte offset. See docs/MLX_SPIKE_RESULTS.md.");
 		SUCCEED("skipped -- see the warning above for the one-time setup");
 		return;
 	}
@@ -175,7 +176,32 @@ TEST_CASE("mlx_plugin: CPU and MLX agree on the same real weights", "[tabfm][plu
 	config.intra_op_threads = 2;
 	config.device_id = "cpu";
 	config.model_tag = "mitra-classification";
-	auto session = CreateSessionFromPath(cpu_graph, {}, config);
+	// Inject every external initializer as the slice of model.safetensors it names (the ggml CPU engine reads
+	// injected weights; it does not open external-data files itself, which only ONNX Runtime did).
+	string weights_bytes;
+	{
+		std::ifstream in(weights, std::ios::binary);
+		weights_bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+	}
+	vector<TabFMTensorRef> initializers;
+	for (auto &init : ::anofox::onnxread::ParseModelFile(cpu_graph).initializers) {
+		if (init.location != ::anofox::onnxread::DataLocation::EXTERNAL) {
+			continue;
+		}
+		REQUIRE(init.data_type == 1); // mitra's weights are float32
+		const auto offset = std::stoull(init.external.at("offset"));
+		const auto length = std::stoull(init.external.at("length"));
+		REQUIRE(offset + length <= weights_bytes.size());
+		TabFMTensorRef ref;
+		ref.name = init.name;
+		ref.dtype = TabFMTensorDtype::F32;
+		ref.shape.assign(init.dims.begin(), init.dims.end());
+		ref.data = weights_bytes.data() + offset;
+		ref.size_bytes = length;
+		initializers.push_back(std::move(ref));
+	}
+	REQUIRE(!initializers.empty());
+	auto session = CreateSessionFromPath(cpu_graph, initializers, config);
 	auto cpu_output = Run(*session, input);
 
 	auto params = MlxParams(weights_dir, "mitra");

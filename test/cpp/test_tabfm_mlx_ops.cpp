@@ -68,6 +68,10 @@ TEST_CASE("mlx ops: which bundled ext graphs MLX can run", "[tabfm][mlx_ops]") {
 	REQUIRE(missing_for("graph_ext_orion_msp_classification") == V {});
 	// Nori 1.5's two-phase encoder: exported without Unique/Relu (LimiX's first MLX port failed on both)
 	REQUIRE(missing_for("graph_ext_nori15_regression") == V {});
+	// the ext graphs added when MIGraphX went away (they were MIGraphX-only before): Nori-30M keeps LimiX's Relu
+	REQUIRE(missing_for("graph_ext_nori30m_regression") == V {});
+	REQUIRE(missing_for("graph_ext_exaone_tabular_classification") == V {});
+	REQUIRE(missing_for("graph_ext_exaone_tabular_regression") == V {});
 }
 
 // The TabPFN-3.5 ext graphs run on CUDA only because their shape tensors are pinned as extra graph outputs

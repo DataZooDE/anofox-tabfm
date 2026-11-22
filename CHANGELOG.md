@@ -68,6 +68,7 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 - **ROCm devices are usable for every architecture the ggml ROCm plugin is built for** (gfx90a, gfx942, gfx1030, gfx1100-1102,
   gfx1150/1151, gfx1200/1201), no longer MIGraphX's allowlist (the gfx1150 iGPU, for one, was refused before). A card outside that list is
   `usable = false`, so `'auto'` picks the discrete card over an unsupported iGPU, and asking for it by name says what is supported.
+- **`nori-30m` runs on MLX**: the MLX graph interpreter implements `Relu` (its ext graph, new in this release, uses it).
 - **MLX names the way out like the other GPUs.** `anofox_tabfm_gpu_precision = 'tf32'` on `mlx` is refused before the plugin loads, naming
   `SET anofox_tabfm_gpu_precision='fp32'` (it failed inside the plugin with no fix); a registered model without an ext graph is told to
   register `<task>_ext_graph` instead of to make its weights directory writable.
