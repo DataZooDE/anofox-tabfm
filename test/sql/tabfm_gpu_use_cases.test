@@ -1,11 +1,11 @@
 # name: test/sql/tabfm_gpu_use_cases.test
-# description: Real-world workflows on a GPU through the ggml GPU plugin (the only CUDA / ROCm lane), with real weights, each checked against the
+# description: Real-world workflows on a GPU (the ggml GPU plugin for cuda and rocm, the MLX plugin for mlx), with real weights, each checked against the
 #              CPU (ggml) and against ground truth: churn scoring in the train / test form, a house-price regression with a categorical feature,
 #              switching the device back and forth, and the two refusals a user meets (a precision the plugin does not have, a missing plugin).
 #              Never trust "cpu and gpu agree" (CLAUDE.md): every block also asserts which device served it.
 #
 #              Needs hardware, the plugin and the weights, so it is opt-in:
-#                TABFM_REAL_WEIGHTS=1 TABFM_GPU_DEVICE=cuda|rocm TABFM_GPU_EP_PATH=<dir with libanofox_tabfm_ggml-<vendor>_plugin.so> \
+#                TABFM_REAL_WEIGHTS=1 TABFM_GPU_DEVICE=cuda|rocm|mlx TABFM_GPU_EP_PATH=<dir with the device's plugin> \
 #                  build/release/test/unittest test/sql/tabfm_gpu_use_cases.test
 #              The models are ungated and commercial; stage their weights first (the test runner has no httpfs), e.g. from the duckdb CLI:
 #                INSTALL httpfs; LOAD httpfs; LOAD anofox_tabfm;
@@ -122,20 +122,21 @@ true
 statement ok
 SET anofox_tabfm_device = '${TABFM_GPU_DEVICE}';
 
-# the ggml GPU plugin computes float32: bf16 is refused (not run as fp32 in secret), and the error says what to do
+# a numeric mode this GPU does not have is refused (never run as fp32 in secret), and the error says what to do: the ggml GPU plugin (cuda,
+# rocm) computes float32 and has no bf16; MLX has bf16/fp16 but no tf32 (CUDA's mode)
 statement ok
-SET anofox_tabfm_gpu_precision = 'bf16';
+SET anofox_tabfm_gpu_precision = CASE WHEN '${TABFM_GPU_DEVICE}' = 'mlx' THEN 'tf32' ELSE 'bf16' END;
 
 statement error
 SELECT count(*) FROM tabfm_classify('history', 'status', test := '(SELECT * EXCLUDE (true_status) FROM prospects)',
   features := ['tenure_months', 'monthly_charge', 'support_tickets', 'contract'], model := 'tabicl-v2');
 ----
-<REGEX>:.*bf16.*anofox_tabfm_gpu_precision='fp32'.*anofox_tabfm_device='cpu'.*
+<REGEX>:.*(bf16|tf32).*anofox_tabfm_gpu_precision='fp32'.*anofox_tabfm_device='cpu'.*
 
 statement ok
 SET anofox_tabfm_gpu_precision = 'fp32';
 
-# without the plugin there is no other GPU lane to fall back to: the error names the plugin file and tabfm_download_runtime
+# without the plugin there is no other lane for this GPU to fall back to: the error names the plugin file and tabfm_download_runtime
 statement ok
 SET anofox_tabfm_ep_path = '__TEST_DIR__';
 
@@ -146,4 +147,4 @@ statement error
 SELECT count(*) FROM tabfm_classify('history', 'status', test := '(SELECT * EXCLUDE (true_status) FROM prospects)',
   features := ['tenure_months', 'monthly_charge', 'support_tickets', 'contract'], model := 'tabicl-v2');
 ----
-<REGEX>:.*libanofox_tabfm_ggml-.*_plugin.*tabfm_download_runtime.*
+<REGEX>:.*libanofox_tabfm_(ggml-[a-z]+|mlx)_plugin.*tabfm_download_runtime.*

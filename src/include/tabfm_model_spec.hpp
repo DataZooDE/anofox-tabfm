@@ -392,10 +392,6 @@ inline string GpuKnownWrong(const string &backend, const string &model, const st
 	return string();
 }
 
-//===----------------------------------------------------------------------===//
-// ROCm bucket ceilings: shapes a model's MIGraphX program cannot be built for
-//
-
 inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &in) {
 	GpuServabilityResult out;
 	if (!BackendSupportsPrecision(in.backend, in.precision)) {

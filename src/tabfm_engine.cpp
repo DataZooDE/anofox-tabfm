@@ -1341,6 +1341,17 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		return nullptr; // not the MLX path
 	}
 	const string task_name = TabFMTaskName(resolved.manifest.task);
+	// A numeric mode MLX does not have (tf32 is CUDA's) is refused here, with the SET that fixes it, before the plugin is loaded; the plugin's
+	// own refusal named no way out.
+	if (!BackendSupportsPrecision("mlx", ctx.gpu_precision)) {
+		GpuServabilityInputs in;
+		in.backend = "mlx";
+		in.model = resolved.manifest.model;
+		in.task_name = task_name;
+		in.precision = ctx.gpu_precision;
+		in.model_provides_graph = true;
+		throw InvalidInputException(GpuRefusalMessage(device.device_id, EvaluateGpuServability(in).reason));
+	}
 
 	// The MLX backend executes the model's ONNX graph, so it needs the same
 	// external-data graph the CUDA plugin runs -- selected the same way, since
@@ -1366,6 +1377,11 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		break;
 	case GpuGraphSource::NONE:
 		graph_path.clear();
+		// A registered model that declares no ext graph and has no bundled one: nothing was staged or mismatched, the model simply has no GPU
+		// graph. Say that, naming the model and the registration argument that gives it one (the ggml GPU lane says the same).
+		if (!graph.data && resolved.manifest.model != "mitra") {
+			throw InvalidInputException(NoGpuGraphMessage(device.device_id, resolved.manifest.model, task_name, "ext_graph"));
+		}
 		break;
 	}
 	// No graph and no hand-port means nothing to run, so this must say so
