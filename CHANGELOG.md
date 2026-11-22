@@ -65,8 +65,13 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 - **A CPU prediction no longer runs on one core on machines with more than 64 CPUs.** DuckDB pins its worker threads there, and the ggml
   thread pool inherited the calling thread's single-core affinity (a 0.4 s prediction took 19 minutes on a 96-core server); the pool now
   uses the process's CPU set.
-- **ROCm devices are usable without MIGraphX's arch allowlist**: every compute-capable KFD node counts (the gfx1150 iGPU, for one, was
-  refused before). **CUDA devices need compute capability 7.5 or newer**; an older card is listed `usable = false` instead of failing
+- **ROCm devices are usable for every architecture the ggml ROCm plugin is built for** (gfx90a, gfx942, gfx1030, gfx1100-1102,
+  gfx1150/1151, gfx1200/1201), no longer MIGraphX's allowlist (the gfx1150 iGPU, for one, was refused before). A card outside that list is
+  `usable = false`, so `'auto'` picks the discrete card over an unsupported iGPU, and asking for it by name says what is supported.
+- **A failed prediction no longer leaks the rows of the predictions beside it.** When one branch of a query failed while predicting (for
+  example a `tabfm_cross_validate` fold whose target has more values than the model has classes), DuckDB dropped the other branches'
+  aggregate states without their destructor: their row buffers leaked in every build, and a debug build aborted at exit. The buffers are
+  now owned by the query that created them and freed with it. **CUDA devices need compute capability 7.5 or newer**; an older card is listed `usable = false` instead of failing
   in the plugin.
 - **`tools/gpu_test/runpod_run.py` talks to RunPod REST v2** (#112): it moved from the dead
   `rest.runpod.io/v1` to `api.runpod.io/v2`.

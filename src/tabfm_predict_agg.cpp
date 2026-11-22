@@ -19,6 +19,7 @@
 #include "telemetry.hpp"
 
 #include <cstdlib>
+#include <mutex>
 
 #include <cmath>
 
@@ -42,7 +43,31 @@ namespace {
 //===--------------------------------------------------------------------===//
 // Bind data
 //===--------------------------------------------------------------------===//
+//! The predict aggregate's per-group row buffers are owned by the query that created them, not only by the aggregate states that point at
+//! them: DuckDB does not destroy every state on every path (when one branch of a UNION ALL fails during finalize, the hash-aggregate states
+//! of another branch were dropped without their destructor callback), and a lost buffer leaked in every build and tripped the debug
+//! allocator's allocation_count == 0 check at exit. Each bind-data object holds an owner token; every buffer created under it is registered
+//! with it, and the token's destruction frees what its states still hold. A copy of the bind data gets its own token.
+uint64_t NextRowBufferOwner();
+void ReleaseRowBufferOwner(uint64_t owner);
+struct RowBufferOwner {
+	uint64_t id = NextRowBufferOwner();
+	RowBufferOwner() = default;
+	RowBufferOwner(const RowBufferOwner &) : id(NextRowBufferOwner()) {
+	}
+	RowBufferOwner &operator=(const RowBufferOwner &) {
+		ReleaseRowBufferOwner(id);
+		id = NextRowBufferOwner();
+		return *this;
+	}
+	~RowBufferOwner() {
+		ReleaseRowBufferOwner(id);
+	}
+};
+
 struct PredictBindData : public FunctionData {
+	//! Owns the row buffers this query's aggregate states create (see RowBufferOwner). Declared first so it is destroyed last.
+	RowBufferOwner buffer_owner;
 	//! "tabfm_predict_agg" or "tabfm_predict_win" (error-text prefix)
 	string function_name;
 	string target;
@@ -623,20 +648,87 @@ struct WindowRowReader {
 	}
 };
 
+//! Every live row buffer by id, with the bind-data owner it belongs to. Ids, not pointers, are the handles: a freed buffer's address can be
+//! reused, so a stale free by pointer could hit a new buffer; a stale id is simply not found. Never destroyed (no static-destruction order
+//! against DuckDB's default allocator); empty whenever no query is running.
+struct RowBufferRegistry {
+	std::mutex lock;
+	uint64_t next_id = 1;
+	uint64_t next_owner = 1;
+	unordered_map<uint64_t, std::pair<uint64_t, unique_ptr<PredictRowBuffer>>> buffers;
+};
+
+RowBufferRegistry &RowBuffers() {
+	static auto *registry = new RowBufferRegistry();
+	return *registry;
+}
+
+uint64_t NextRowBufferOwner() {
+	auto &registry = RowBuffers();
+	std::lock_guard<std::mutex> guard(registry.lock);
+	return registry.next_owner++;
+}
+
+void ReleaseRowBufferOwner(uint64_t owner) {
+	vector<unique_ptr<PredictRowBuffer>> orphans; // freed outside the lock
+	{
+		auto &registry = RowBuffers();
+		std::lock_guard<std::mutex> guard(registry.lock);
+		for (auto it = registry.buffers.begin(); it != registry.buffers.end();) {
+			if (it->second.first == owner) {
+				orphans.push_back(std::move(it->second.second));
+				it = registry.buffers.erase(it);
+			} else {
+				++it;
+			}
+		}
+	}
+}
+
 struct PredictAggState {
+	//! fast access to the buffer; valid while rows_id is registered
 	PredictRowBuffer *rows;
+	//! the registry handle that owns `rows` (0 = none)
+	uint64_t rows_id;
 	WindowRowReader *reader;
 };
+
+void NewRows(PredictAggState &state, const PredictBindData &bind) {
+	auto buffer = make_uniq<PredictRowBuffer>(bind.row_type);
+	state.rows = buffer.get();
+	auto &registry = RowBuffers();
+	std::lock_guard<std::mutex> guard(registry.lock);
+	state.rows_id = registry.next_id++;
+	registry.buffers.emplace(state.rows_id, std::make_pair(bind.buffer_owner.id, std::move(buffer)));
+}
+
+//! Free a state's row buffer by its handle. Idempotent: a buffer the owner already reclaimed is not found and nothing happens.
+void ReleaseRows(PredictAggState &state) {
+	if (state.rows_id) {
+		unique_ptr<PredictRowBuffer> doomed;
+		{
+			auto &registry = RowBuffers();
+			std::lock_guard<std::mutex> guard(registry.lock);
+			auto it = registry.buffers.find(state.rows_id);
+			if (it != registry.buffers.end()) {
+				doomed = std::move(it->second.second);
+				registry.buffers.erase(it);
+			}
+		}
+	}
+	state.rows = nullptr;
+	state.rows_id = 0;
+}
 
 void PredictStateInitialize(data_ptr_t state_ptr) {
 	auto &state = *reinterpret_cast<PredictAggState *>(state_ptr);
 	state.rows = nullptr;
+	state.rows_id = 0;
 	state.reader = nullptr;
 }
 
 void FreeState(PredictAggState &state) {
-	delete state.rows;
-	state.rows = nullptr;
+	ReleaseRows(state);
 	delete state.reader;
 	state.reader = nullptr;
 }
@@ -687,7 +779,7 @@ void PredictAggUpdate(Vector inputs[], AggregateInputData &aggr_input_data, idx_
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (!state.rows) {
-			state.rows = new PredictRowBuffer(bind.row_type);
+			NewRows(state, bind);
 		}
 		// incremental guardrail: anofox_tabfm_max_rows per predict/group (FR-3.4)
 		if (state.rows->collection.Count() >= bind.max_rows) {
@@ -722,12 +814,13 @@ void PredictAggCombine(Vector &source_vector, Vector &target_vector, AggregateIn
 		if (!target.rows) {
 			// transfer ownership; row order is not load-bearing (S04 #6)
 			target.rows = source.rows;
+			target.rows_id = source.rows_id;
 			source.rows = nullptr;
+			source.rows_id = 0;
 			continue;
 		}
 		target.rows->collection.Combine(source.rows->collection);
-		delete source.rows;
-		source.rows = nullptr;
+		ReleaseRows(source);
 		if (target.rows->collection.Count() > bind.max_rows) {
 			throw InvalidInputException(
 			    "tabfm: predict group exceeds anofox_tabfm_max_rows (%llu). Raise it with "

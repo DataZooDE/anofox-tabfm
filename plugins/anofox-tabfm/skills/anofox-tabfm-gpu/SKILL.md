@@ -43,9 +43,9 @@ the ROCm plugin uses the system's ROCm 6.4+ (HIP, hipBLAS, rocBLAS); MLX needs `
 5. **A model must fit the card.** Weights are uploaded when the session is created, after a free-memory
    check; a model that does not fit fails at load naming `CALL tabfm_unload()`, `SET anofox_tabfm_max_sessions = 1`
    and `SET anofox_tabfm_device='cpu'`. Sessions are cached per (model, device, precision) and add up.
-6. **Which cards are usable.** CUDA needs compute capability 7.5 (Turing) or newer. On ROCm every GPU node is
-   usable, iGPUs included; the published plugin has kernels for gfx1030/1100/1101/1102/1150/1151/1200/1201,
-   gfx90a and gfx942. Every built-in model ships an ext graph, so each runs on CUDA, ROCm and MLX as far as
+6. **Which cards are usable.** CUDA needs compute capability 7.5 (Turing) or newer. On ROCm a card (iGPUs
+   included) is usable when the published plugin has kernels for its arch: gfx1030/1100/1101/1102/1150/1151/1200/1201,
+   gfx90a and gfx942; any other is `usable = false`, and `'auto'` passes over it. Every built-in model ships an ext graph, so each runs on CUDA, ROCm and MLX as far as
    `tabfm_backends()` says. CoreML is gone (`'coreml'` errors and points to `mlx`); `'migraphx'` is an alias
    for `rocm`.
 

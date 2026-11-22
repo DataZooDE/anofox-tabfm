@@ -66,10 +66,13 @@ Which cards count as usable in `tabfm_devices()`:
 - **CUDA:** NVIDIA cards of compute capability 7.5 (Turing) or newer. The plugin carries kernels for
   `sm_75`, `sm_80`, `sm_86`, `sm_89`, `sm_90`, `sm_100` and `sm_120` (plus PTX for newer cards); an older
   card is listed with `usable = false`.
-- **ROCm:** every compute-capable GPU node in the KFD topology, discrete cards and APU iGPUs alike (there is
-  no arch allowlist). The published plugin carries kernels for `gfx1030`, `gfx1100`, `gfx1101`, `gfx1102`,
-  `gfx1150`, `gfx1151`, `gfx1200`, `gfx1201`, `gfx90a` and `gfx942`; on another arch, build the plugin for it
-  ([BUILDING.md](../BUILDING.md#gpu-plugins-from-source)).
+- **ROCm:** a GPU node in the KFD topology, discrete card or APU iGPU, whose architecture the published plugin
+  carries kernels for: `gfx1030`, `gfx1100`, `gfx1101`, `gfx1102`, `gfx1150`, `gfx1151`, `gfx1200`, `gfx1201`,
+  `gfx90a` and `gfx942`. Any other card is listed with `usable = false`, so `'auto'` passes over it (an
+  unsupported iGPU in front of a supported discrete card, say), and `SET anofox_tabfm_device = 'rocm'` with only
+  such a card names it and the supported list. The list is compiled into the extension; a plugin you build for
+  another arch ([BUILDING.md](../BUILDING.md#gpu-plugins-from-source)) also needs that arch added to
+  `GgmlRocmPluginArchs` in `src/tabfm_devices.cpp`.
 - **MLX:** Apple Silicon running an arm64 process (under Rosetta the row is `usable = false`).
 
 ## Backend support matrix
