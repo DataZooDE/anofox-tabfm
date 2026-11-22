@@ -6,7 +6,7 @@
 #   cmake --build build/ggml-cuda
 #
 # The output is libanofox_tabfm_ggml-cuda_plugin.so / libanofox_tabfm_ggml-rocm_plugin.so (no 'lib' and a .dll on Windows). Put it in the
-# directory anofox_tabfm_ep_path names: the host prefers it over the ORT-CUDA / MIGraphX plugin when it is there (TryGgmlGpuBackend).
+# directory anofox_tabfm_ep_path names (tabfm_download_runtime('cuda'|'rocm') puts it there): it is the only plugin for CUDA and ROCm (TryGgmlGpuBackend).
 cmake_minimum_required(VERSION 3.18)
 project(anofox_tabfm_ggml_plugin CXX C)
 
