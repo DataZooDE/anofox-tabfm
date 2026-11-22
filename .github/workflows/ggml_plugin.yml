@@ -33,13 +33,13 @@ jobs:
     container: nvidia/cuda:12.4.1-devel-ubuntu22.04
     steps:
       - name: Tools
-        run: apt-get update -qq && apt-get install -y -qq git cmake ninja-build libnccl-dev
+        run: apt-get update -qq && apt-get install -y -qq git cmake ninja-build
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - name: Configure
         # sm_75 (Turing) .. sm_90 (Hopper); the GPU needs no PTX JIT on these, and the CPU part is baseline x86-64 (GGML_NATIVE=OFF).
-        run: cmake -S tools/ggml_plugin -B build/ggml-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DTABFM_GGML_GPU=cuda "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90"
+        run: cmake -S tools/ggml_plugin -B build/ggml-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DTABFM_GGML_GPU=cuda -DGGML_CUDA_NCCL=OFF "-DCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90"
       - name: Build
         run: cmake --build build/ggml-cuda
       - name: Sanity - the plugin ABI entry point is exported and the file has the host's name
