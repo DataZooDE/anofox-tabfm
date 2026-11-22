@@ -30,7 +30,20 @@ set(GGML_NATIVE OFF CACHE BOOL "" FORCE)      # a distributable plugin must not 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)        # ggml is static and goes into a shared library
 set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(TABFM_GGML_CUDA_STATIC ON CACHE BOOL "Link the CUDA runtime and cuBLAS into the CUDA plugin statically (only the NVIDIA driver is then needed on the user's machine)")
 add_subdirectory("${_root}/vendor/ggml" ggml EXCLUDE_FROM_ALL)
+if(TABFM_GGML_GPU STREQUAL "cuda" AND TABFM_GGML_CUDA_STATIC AND NOT WIN32)
+    # ggml's own GGML_STATIC adds -static to every link, which a shared plugin cannot take; select the static CUDA targets for ggml-cuda instead (Windows has no
+    # static cuBLAS). The libraries travel as $<LINK_ONLY:CUDA::...> in the static archive's interface, so rewrite both properties. Checked by scripts/check_plugin_deps.sh.
+    find_package(CUDAToolkit REQUIRED)
+    foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)
+        get_target_property(_libs ggml-cuda ${_prop})
+        if(_libs)
+            string(REGEX REPLACE "CUDA::(cudart|cublasLt|cublas)([>;]|$)" "CUDA::\\1_static\\2" _libs "${_libs}")
+            set_property(TARGET ggml-cuda PROPERTY ${_prop} "${_libs}")
+        endif()
+    endforeach()
+endif()
 # NaN is valid data for these graphs; ggml's CPU kernels assert !isnan in a debug build.
 foreach(_t ggml ggml-base ggml-cpu)
     target_compile_definitions(${_t} PRIVATE NDEBUG)

@@ -166,6 +166,14 @@ void NvmlClose(NvmlHandle lib) {
 }
 #endif
 
+} // anonymous namespace
+
+bool CudaComputeCapabilityUsable(int major, int minor) {
+	return major * 10 + minor >= 75; // the plugin is built for sm_75 (Turing) and newer; an older card has no kernel image
+}
+
+namespace {
+
 void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 	NvmlHandle nvml = nullptr;
 	for (auto *candidate : kNvmlLibraries) {
@@ -240,7 +248,7 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 			// that ships. If the plugin turns out not to be configured,
 			// TryCudaBackend throws a message naming the fix rather than
 			// quietly running on CPU.
-			device.usable = true;
+			device.usable = CudaComputeCapabilityUsable(cc_major, cc_minor);
 			devices.push_back(std::move(device));
 		}
 	}
@@ -298,19 +306,6 @@ string GfxArchFromTargetVersion(uint64_t version) {
 	return string(buffer);
 }
 
-//! MIGraphX official coverage (state 2026-07): CDNA data-center cards and
-//! recent Radeon on Linux. Kept intentionally explicit — an unsupported gfx
-//! arch shows up as usable=false in tabfm_devices() with the arch named.
-bool MIGraphXClaimsArch(const string &gfx) {
-	static const char *SUPPORTED[] = {"gfx900",  "gfx906",  "gfx908",  "gfx90a",  "gfx940",  "gfx941", "gfx942",
-	                                  "gfx1030", "gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201"};
-	for (auto *arch : SUPPORTED) {
-		if (gfx == arch) {
-			return true;
-		}
-	}
-	return false;
-}
 
 int64_t SumVramBanks(const string &node_path) {
 	int64_t total = 0;
@@ -351,12 +346,18 @@ void ProbeRocmDevices(vector<TabFMDeviceInfo> &devices) {
 	if (stat("/dev/kfd", &kfd_stat) != 0) {
 		return; // no KFD -> no ROCm rows
 	}
-	const string driver = AmdgpuDriverVersion();
+	for (auto &device : DiscoverRocmDevicesFrom("/sys/class/kfd/kfd/topology/nodes", AmdgpuDriverVersion())) {
+		devices.push_back(std::move(device));
+	}
+}
 
-	const string nodes_path = "/sys/class/kfd/kfd/topology/nodes";
+} // anonymous namespace
+
+vector<TabFMDeviceInfo> DiscoverRocmDevicesFrom(const string &nodes_path, const string &driver) {
+	vector<TabFMDeviceInfo> devices;
 	DIR *dir = opendir(nodes_path.c_str());
 	if (!dir) {
-		return;
+		return devices;
 	}
 	// Sort node ids for stable ordinals.
 	vector<string> node_names;
@@ -397,10 +398,13 @@ void ProbeRocmDevices(vector<TabFMDeviceInfo> &devices) {
 		device.vram_total = SumVramBanks(node_path);
 		device.vram_free = -1; // needs rocm_smi; NULL is honest
 		device.driver = driver;
-		device.usable = MIGraphXClaimsArch(device.arch);
+		device.usable = true; // a compute-capable KFD node: the ggml HIP plugin runs the architectures it was built for and says so itself at create when it was not built for this one
 		devices.push_back(std::move(device));
 	}
+	return devices;
 }
+
+namespace {
 
 #endif // !_WIN32
 

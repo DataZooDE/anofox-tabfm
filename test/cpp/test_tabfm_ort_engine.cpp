@@ -24,6 +24,7 @@
 #include <cmath>
 #include <set>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <unordered_map>
 
@@ -311,6 +312,54 @@ TEST_CASE("tabfm_devices: MIGraphX shape buckets", "[tabfm][ort_engine][devices]
 //===----------------------------------------------------------------------===//
 // Device discovery + resolution
 //===----------------------------------------------------------------------===//
+
+#ifndef _WIN32
+//! A fake /sys/class/kfd/kfd/topology/nodes: node 0 is the CPU (gfx_target_version 0), then the given GPUs as (gfx_target_version, simd_count).
+static string MakeFakeKfdTopology(const string &tag, const vector<std::pair<uint64_t, uint64_t>> &gpus) {
+	namespace fs = std::filesystem;
+	const fs::path root = fs::temp_directory_path() / ("anofox_tabfm_fake_kfd_" + tag);
+	fs::remove_all(root);
+	auto write_node = [&](int index, uint64_t gfx_target_version, uint64_t simd_count, const string &name) {
+		const fs::path dir = root / std::to_string(index);
+		fs::create_directories(dir);
+		std::ofstream(dir / "properties") << "cpu_cores_count 16\nsimd_count " << simd_count << "\ngfx_target_version " << gfx_target_version << "\n";
+		std::ofstream(dir / "name") << name << "\n";
+	};
+	write_node(0, 0, 0, "");
+	int index = 1;
+	for (const auto &gpu : gpus) {
+		write_node(index, gpu.first, gpu.second, "gpu" + std::to_string(index));
+		index++;
+	}
+	return root.string();
+}
+
+TEST_CASE("tabfm_devices: every compute-capable KFD node is a usable rocm device, whatever its architecture", "[tabfm][ort_engine][devices]") {
+	// The ggml HIP plugin runs the architectures it was built for, not only the ones MIGraphX claims: an iGPU (gfx1150) and a new discrete card (gfx1201)
+	// were both reported unusable by the old allowlist, and the CPU node and a node without compute units must never appear.
+	const auto root = MakeFakeKfdTopology("two_gpus", {{110500, 64}, {120001, 2048}, {90000, 0}});
+	const auto devices = DiscoverRocmDevicesFrom(root, "6.4.0");
+	REQUIRE(devices.size() == 2);
+	REQUIRE(devices[0].device_id == "rocm:0");
+	REQUIRE(devices[0].arch == "gfx1150");
+	REQUIRE(devices[0].device_ordinal == 0);
+	REQUIRE(devices[0].usable);
+	REQUIRE(devices[1].device_id == "rocm:1");
+	REQUIRE(devices[1].arch == "gfx1201");
+	REQUIRE(devices[1].device_ordinal == 1);
+	REQUIRE(devices[1].usable);
+	REQUIRE(devices[1].driver == "6.4.0");
+	REQUIRE(DiscoverRocmDevicesFrom(root + "/does_not_exist", "").empty());
+}
+#endif
+
+TEST_CASE("tabfm_devices: a CUDA card is usable when the plugin ships kernels for its compute capability", "[tabfm][ort_engine][devices]") {
+	REQUIRE(CudaComputeCapabilityUsable(7, 5));   // Turing, the oldest build target
+	REQUIRE(CudaComputeCapabilityUsable(8, 9));   // Ada
+	REQUIRE(CudaComputeCapabilityUsable(12, 0));  // Blackwell
+	REQUIRE(!CudaComputeCapabilityUsable(6, 1));  // Pascal: no kernel image, so refuse it up front rather than fail at the first query
+	REQUIRE(!CudaComputeCapabilityUsable(7, 0));  // Volta
+}
 
 TEST_CASE("tabfm_devices: discovery always yields the usable cpu row", "[tabfm][ort_engine][devices]") {
 	auto devices = DiscoverDevices();

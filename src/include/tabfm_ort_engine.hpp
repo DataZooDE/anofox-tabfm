@@ -121,6 +121,13 @@ void EnsureOrtEnv();
 //! GPU rows appear only in the cuda/rocm flavors (probes compiled per macro).
 vector<TabFMDeviceInfo> DiscoverDevices();
 
+//! The ROCm rows of a KFD topology directory (`/sys/class/kfd/kfd/topology/nodes` in production): one row per compute-capable GPU node, in node order,
+//! `rocm:N` with N the ordinal the ggml HIP backend uses. A seam so the discovery rules can be tested with a fake topology.
+vector<TabFMDeviceInfo> DiscoverRocmDevicesFrom(const string &nodes_path, const string &driver);
+
+//! Whether the ggml CUDA plugin ships kernels for a card of this compute capability (it is built for 7.5 and newer).
+bool CudaComputeCapabilityUsable(int major, int minor);
+
 //! Resolve `SET anofox_tabfm_device` ('auto'|'cpu'|'cuda'|'rocm', already
 //! normalized by the setting validator) against the discovered devices.
 //! Throws InvalidInputException with the flavor-install hint when the
