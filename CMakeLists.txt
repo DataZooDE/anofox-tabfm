@@ -262,6 +262,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_plugin_backend.cpp
     test/cpp/test_tabfm_mlx_plugin.cpp
     test/cpp/test_tabfm_mlx_ops.cpp
+    test/cpp/test_tabfm_owned_registry.cpp
     test/cpp/test_tabfm_cpu_budget.cpp
     test/cpp/test_tabfm_metrics.cpp
     test/cpp/test_tabfm_metrics_regression.cpp

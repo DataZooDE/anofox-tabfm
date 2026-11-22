@@ -1,5 +1,6 @@
 #include "tabfm_predict.hpp"
 #include "tabfm_state.hpp"
+#include "tabfm_owned_registry.hpp"
 #include "tabfm_preprocess.hpp"
 #include "tabfm_registration.hpp"
 
@@ -43,30 +44,9 @@ namespace {
 //===--------------------------------------------------------------------===//
 // Bind data
 //===--------------------------------------------------------------------===//
-//! The predict aggregate's per-group row buffers are owned by the query that created them, not only by the aggregate states that point at
-//! them: DuckDB does not destroy every state on every path (when one branch of a UNION ALL fails during finalize, the hash-aggregate states
-//! of another branch were dropped without their destructor callback), and a lost buffer leaked in every build and tripped the debug
-//! allocator's allocation_count == 0 check at exit. Each bind-data object holds an owner token; every buffer created under it is registered
-//! with it, and the token's destruction frees what its states still hold. A copy of the bind data gets its own token.
-uint64_t NextRowBufferOwner();
-void ReleaseRowBufferOwner(uint64_t owner);
-struct RowBufferOwner {
-	uint64_t id = NextRowBufferOwner();
-	RowBufferOwner() = default;
-	RowBufferOwner(const RowBufferOwner &) : id(NextRowBufferOwner()) {
-	}
-	RowBufferOwner &operator=(const RowBufferOwner &) {
-		ReleaseRowBufferOwner(id);
-		id = NextRowBufferOwner();
-		return *this;
-	}
-	~RowBufferOwner() {
-		ReleaseRowBufferOwner(id);
-	}
-};
-
+//! The row buffers this aggregate creates are owned by the query (tabfm_owned_registry.hpp): DuckDB does not destroy every state on every path.
 struct PredictBindData : public FunctionData {
-	//! Owns the row buffers this query's aggregate states create (see RowBufferOwner). Declared first so it is destroyed last.
+	//! Owns the row buffers this query's aggregate states create; every copy of the bind data shares it (see RowBufferOwner).
 	RowBufferOwner buffer_owner;
 	//! "tabfm_predict_agg" or "tabfm_predict_win" (error-text prefix)
 	string function_name;
@@ -648,43 +628,6 @@ struct WindowRowReader {
 	}
 };
 
-//! Every live row buffer by id, with the bind-data owner it belongs to. Ids, not pointers, are the handles: a freed buffer's address can be
-//! reused, so a stale free by pointer could hit a new buffer; a stale id is simply not found. Never destroyed (no static-destruction order
-//! against DuckDB's default allocator); empty whenever no query is running.
-struct RowBufferRegistry {
-	std::mutex lock;
-	uint64_t next_id = 1;
-	uint64_t next_owner = 1;
-	unordered_map<uint64_t, std::pair<uint64_t, unique_ptr<PredictRowBuffer>>> buffers;
-};
-
-RowBufferRegistry &RowBuffers() {
-	static auto *registry = new RowBufferRegistry();
-	return *registry;
-}
-
-uint64_t NextRowBufferOwner() {
-	auto &registry = RowBuffers();
-	std::lock_guard<std::mutex> guard(registry.lock);
-	return registry.next_owner++;
-}
-
-void ReleaseRowBufferOwner(uint64_t owner) {
-	vector<unique_ptr<PredictRowBuffer>> orphans; // freed outside the lock
-	{
-		auto &registry = RowBuffers();
-		std::lock_guard<std::mutex> guard(registry.lock);
-		for (auto it = registry.buffers.begin(); it != registry.buffers.end();) {
-			if (it->second.first == owner) {
-				orphans.push_back(std::move(it->second.second));
-				it = registry.buffers.erase(it);
-			} else {
-				++it;
-			}
-		}
-	}
-}
-
 struct PredictAggState {
 	//! fast access to the buffer; valid while rows_id is registered
 	PredictRowBuffer *rows;
@@ -694,27 +637,15 @@ struct PredictAggState {
 };
 
 void NewRows(PredictAggState &state, const PredictBindData &bind) {
-	auto buffer = make_uniq<PredictRowBuffer>(bind.row_type);
+	auto buffer = std::make_shared<PredictRowBuffer>(bind.row_type);
 	state.rows = buffer.get();
-	auto &registry = RowBuffers();
-	std::lock_guard<std::mutex> guard(registry.lock);
-	state.rows_id = registry.next_id++;
-	registry.buffers.emplace(state.rows_id, std::make_pair(bind.buffer_owner.id, std::move(buffer)));
+	state.rows_id = RegisterOwned(bind.buffer_owner, std::move(buffer));
 }
 
 //! Free a state's row buffer by its handle. Idempotent: a buffer the owner already reclaimed is not found and nothing happens.
 void ReleaseRows(PredictAggState &state) {
 	if (state.rows_id) {
-		unique_ptr<PredictRowBuffer> doomed;
-		{
-			auto &registry = RowBuffers();
-			std::lock_guard<std::mutex> guard(registry.lock);
-			auto it = registry.buffers.find(state.rows_id);
-			if (it != registry.buffers.end()) {
-				doomed = std::move(it->second.second);
-				registry.buffers.erase(it);
-			}
-		}
+		ReleaseOwned(state.rows_id);
 	}
 	state.rows = nullptr;
 	state.rows_id = 0;
