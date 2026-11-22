@@ -102,6 +102,9 @@ jobs:
           wget -qO- https://repo.radeon.com/rocm/rocm.gpg.key | gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
           echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.4 jammy main" | \
             sudo tee /etc/apt/sources.list.d/rocm.list
+          # AMD's packages must win over Ubuntu's same-named ones (Ubuntu ships an unrelated rocm-device-libs 5.0.0, a higher version
+          # number than ROCm 7's): pin repo.radeon.com, as AMD's install guide does.
+          printf 'Package: *\nPin: release o=repo.radeon.com\nPin-Priority: 600\n' | sudo tee /etc/apt/preferences.d/rocm-pin-600
           sudo apt-get update -qq
           # rocm-device-libs: the amdgcn bitcode clang links into every HIP kernel (without it CMake's HIP compiler check fails with
           # "cannot find ROCm device library")
@@ -111,8 +114,10 @@ jobs:
         run: |
           export PATH=/opt/rocm/bin:/opt/rocm/lib/llvm/bin:$PATH ROCM_PATH=/opt/rocm HIP_PATH=/opt/rocm
           L=/opt/rocm/lib/llvm/bin
+          BC=$(dirname "$(find /opt/rocm/ -name ocml.bc -print -quit)")
+          echo "device libraries: $BC"; test -f "$BC/ocml.bc"
           cmake -S tools/ggml_plugin -B build/ggml-rocm -G Ninja -DCMAKE_BUILD_TYPE=Release -DTABFM_GGML_GPU=hip -DGGML_HIP_NO_VMM=ON \
-            -DCMAKE_CXX_COMPILER=$L/clang++ -DCMAKE_C_COMPILER=$L/clang -DCMAKE_HIP_COMPILER=$L/clang++ -DCMAKE_HIP_FLAGS=--rocm-path=/opt/rocm -DCMAKE_PREFIX_PATH=/opt/rocm \
+            -DCMAKE_CXX_COMPILER=$L/clang++ -DCMAKE_C_COMPILER=$L/clang -DCMAKE_HIP_COMPILER=$L/clang++ "-DCMAKE_HIP_FLAGS=--rocm-path=/opt/rocm --rocm-device-lib-path=$BC" -DCMAKE_PREFIX_PATH=/opt/rocm \
             "-DAMDGPU_TARGETS=gfx1030;gfx1100;gfx1101;gfx1102;gfx1150;gfx1151;gfx1200;gfx1201;gfx90a;gfx942"
           cmake --build build/ggml-rocm -j4
           cp build/ggml-rocm/libanofox_tabfm_ggml-rocm_plugin.so .
