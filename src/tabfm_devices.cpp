@@ -254,6 +254,21 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 // device index the plugin is handed.
 //===----------------------------------------------------------------------===//
 
+} // anonymous namespace
+
+// Portable: ResolveDevice explains a refusal with this list on every platform, even where the KFD probe below does not exist.
+const vector<string> &GgmlRocmPluginArchs() {
+	static const vector<string> archs = {"gfx90a", "gfx942", "gfx1030", "gfx1100", "gfx1101", "gfx1102", "gfx1150", "gfx1151", "gfx1200", "gfx1201"};
+	return archs;
+}
+
+bool RocmArchUsable(const string &arch) {
+	const auto &archs = GgmlRocmPluginArchs();
+	return std::find(archs.begin(), archs.end(), arch) != archs.end();
+}
+
+namespace {
+
 #ifndef _WIN32
 
 bool ReadKfdProperty(const string &properties_path, const string &key, uint64_t &value) {
@@ -325,16 +340,6 @@ void ProbeRocmDevices(vector<TabFMDeviceInfo> &devices) {
 }
 
 } // anonymous namespace
-
-const vector<string> &GgmlRocmPluginArchs() {
-	static const vector<string> archs = {"gfx90a", "gfx942", "gfx1030", "gfx1100", "gfx1101", "gfx1102", "gfx1150", "gfx1151", "gfx1200", "gfx1201"};
-	return archs;
-}
-
-bool RocmArchUsable(const string &arch) {
-	const auto &archs = GgmlRocmPluginArchs();
-	return std::find(archs.begin(), archs.end(), arch) != archs.end();
-}
 
 vector<TabFMDeviceInfo> DiscoverRocmDevicesFrom(const string &nodes_path, const string &driver) {
 	vector<TabFMDeviceInfo> devices;

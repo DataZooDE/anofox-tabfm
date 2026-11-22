@@ -103,14 +103,16 @@ jobs:
           echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.4 jammy main" | \
             sudo tee /etc/apt/sources.list.d/rocm.list
           sudo apt-get update -qq
-          sudo apt-get install -y -qq hipblas-dev rocblas-dev hip-dev rocm-llvm ninja-build
+          # rocm-device-libs: the amdgcn bitcode clang links into every HIP kernel (without it CMake's HIP compiler check fails with
+          # "cannot find ROCm device library")
+          sudo apt-get install -y -qq hipblas-dev rocblas-dev hip-dev rocm-llvm rocm-device-libs rocm-cmake ninja-build
       - name: Build the plugin
         # RDNA2..RDNA4 consumer cards and the APU iGPUs (gfx1150/1151 verified), plus CDNA data-center cards. HIP is linked from the user's ROCm install.
         run: |
-          export PATH=/opt/rocm/bin:/opt/rocm/lib/llvm/bin:$PATH
+          export PATH=/opt/rocm/bin:/opt/rocm/lib/llvm/bin:$PATH ROCM_PATH=/opt/rocm HIP_PATH=/opt/rocm
           L=/opt/rocm/lib/llvm/bin
           cmake -S tools/ggml_plugin -B build/ggml-rocm -G Ninja -DCMAKE_BUILD_TYPE=Release -DTABFM_GGML_GPU=hip -DGGML_HIP_NO_VMM=ON \
-            -DCMAKE_CXX_COMPILER=$L/clang++ -DCMAKE_C_COMPILER=$L/clang -DCMAKE_HIP_COMPILER=$L/clang++ \
+            -DCMAKE_CXX_COMPILER=$L/clang++ -DCMAKE_C_COMPILER=$L/clang -DCMAKE_HIP_COMPILER=$L/clang++ -DCMAKE_HIP_FLAGS=--rocm-path=/opt/rocm -DCMAKE_PREFIX_PATH=/opt/rocm \
             "-DAMDGPU_TARGETS=gfx1030;gfx1100;gfx1101;gfx1102;gfx1150;gfx1151;gfx1200;gfx1201;gfx90a;gfx942"
           cmake --build build/ggml-rocm -j4
           cp build/ggml-rocm/libanofox_tabfm_ggml-rocm_plugin.so .
