@@ -564,6 +564,7 @@ void FlatOpKernel(ggml_tensor *dst, int ith, int /*nth*/, void *userdata) {
 
 struct Lowering {
 	ggml_context *ctx;
+	bool strict_fp32 = false; // see GgmlExecutorConfig::strict_fp32
 	std::unordered_map<std::string, ShapeValue> shapes;
 	std::unordered_map<std::string, ggml_tensor *> tensors;
 	std::unordered_map<const ggml_tensor *, ggml_tensor *> transposed_from; // copy -> the tensor whose last two dimensions it swapped
@@ -818,10 +819,23 @@ struct Lowering {
 		} else {
 			BT = ggml_cont(ctx, ggml_permute(ctx, B, 1, 0, 2, 3));
 		}
-		ggml_tensor *r = ggml_mul_mat(ctx, BT, A);
+		ggml_tensor *r = MulMat(BT, A);
 		return Unfold(n, r, out_shape);
 	}
 
+
+	//! `weight` x `activations` through ggml's matmul. Strict fp32 (GgmlExecutorConfig::strict_fp32) pads the activations to ggml's cuBLAS threshold of 17 rows
+	//! (ggml's CUDA small-batch kernel, at 16 rows or fewer, runs TF32 tensor-core instructions) and slices the extra zero rows off the result.
+	ggml_tensor *MulMat(ggml_tensor *weight, ggml_tensor *activations) {
+		constexpr int64_t kSmallBatchRows = 16;
+		const int64_t rows = activations->ne[1];
+		if (!strict_fp32 || rows > kSmallBatchRows) {
+			return ggml_mul_mat(ctx, weight, activations);
+		}
+		ggml_tensor *padded = ggml_pad(ctx, Contiguous(activations), 0, static_cast<int>(kSmallBatchRows + 1 - rows), 0, 0);
+		ggml_tensor *r = ggml_mul_mat(ctx, weight, padded);
+		return ggml_cont(ctx, ggml_view_4d(ctx, r, r->ne[0], rows, r->ne[2], r->ne[3], r->nb[1], r->nb[2], r->nb[3], 0));
+	}
 
 	//! The elementwise and reduction kernels read rows with stride one: a strided view (a Slice with a step) is copied first.
 	ggml_tensor *Dim0Contiguous(ggml_tensor *t) { return t->nb[0] == ggml_type_size(t->type) ? t : ggml_cont(ctx, t); }
@@ -1343,7 +1357,43 @@ struct Compiled {
 };
 
 //! A persistent, executor-owned copy of an external weight (the device path): returns the tensor to read, creating and uploading it on first use.
-using WeightProvider = std::function<ggml_tensor *(const std::string &name, const Ne4 &ne, const float *host)>;
+using WeightProvider = std::function<ggml_tensor *(const std::string &name, const Ne4 &ne, const float *host, int onnx_type)>;
+
+//! ONNX element types a weight kept outside the ONNX file can be stored as (the device path upcasts 10 and 16 to float32 on upload).
+bool IsStoredWeightType(int onnx_type) {
+	return onnx_type == 1 || onnx_type == 10 || onnx_type == 16;
+}
+
+float HalfToFloat(uint16_t h) {
+	const uint32_t sign = static_cast<uint32_t>(h & 0x8000u) << 16;
+	uint32_t exp = (h >> 10) & 0x1Fu, mant = h & 0x3FFu, bits;
+	if (exp == 0) {
+		if (mant == 0) {
+			bits = sign; // +-0
+		} else { // subnormal half -> normal float
+			exp = 127 - 15 + 1;
+			while (!(mant & 0x400u)) {
+				mant <<= 1;
+				exp--;
+			}
+			bits = sign | (exp << 23) | ((mant & 0x3FFu) << 13);
+		}
+	} else if (exp == 0x1Fu) {
+		bits = sign | 0x7F800000u | (mant << 13); // inf / NaN
+	} else {
+		bits = sign | ((exp - 15 + 127) << 23) | (mant << 13);
+	}
+	float f;
+	std::memcpy(&f, &bits, 4);
+	return f;
+}
+
+float BFloat16ToFloat(uint16_t b) {
+	const uint32_t bits = static_cast<uint32_t>(b) << 16;
+	float f;
+	std::memcpy(&f, &bits, 4);
+	return f;
+}
 
 //! Phase timings on stderr when TABFM_GGML_PROFILE is set (a debugging aid).
 struct PhaseClock {
@@ -1463,6 +1513,7 @@ std::unique_ptr<Compiled> CompileGraph(const ::anofox::onnxread::Graph &graph, c
 
 	Lowering low;
 	low.ctx = ctx.get();
+	low.strict_fp32 = options.strict_fp32;
 	low.shapes = std::move(evaluated.values);
 
 	// Leaves: graph inputs and float initializers. Their data is copied in after the allocator placed them.
@@ -1545,12 +1596,20 @@ std::unique_ptr<Compiled> CompileGraph(const ::anofox::onnxread::Graph &graph, c
 				throw std::runtime_error("ggml lowering: weight '" + t.name + "' has " + std::to_string(external.count) + " values for a shape of " +
 				                         std::to_string(count));
 			}
+			if (external.onnx_type != t.data_type) {
+				throw std::runtime_error("ggml lowering: weight '" + t.name + "' is declared as ONNX type " + std::to_string(t.data_type) + " but was supplied as type " +
+				                         std::to_string(external.onnx_type));
+			}
 			if (provider) {
 				Node pseudo;
 				pseudo.name = t.name;
 				pseudo.op_type = "<weight>";
-				low.tensors[t.name] = provider(t.name, ToStorage(pseudo, Shape(t.dims.begin(), t.dims.end())), external.data);
+				low.tensors[t.name] = provider(t.name, ToStorage(pseudo, Shape(t.dims.begin(), t.dims.end())), external.data, external.onnx_type);
 				return;
+			}
+			if (external.onnx_type != 1) {
+				throw std::runtime_error("ggml lowering: weight '" + t.name + "' is stored as ONNX type " + std::to_string(external.onnx_type) +
+				                         " (bf16/fp16); only a device executor upcasts those on upload (the CPU session upcasts while injecting)");
 			}
 			leaf(t.name, Shape(t.dims.begin(), t.dims.end()), external.data);
 			return;
@@ -1584,7 +1643,7 @@ std::unique_ptr<Compiled> CompileGraph(const ::anofox::onnxread::Graph &graph, c
 			return it->second;
 		}
 		const auto init = inits.find(name);
-		if (init != inits.end() && init->second->data_type == 1) {
+		if (init != inits.end() && IsStoredWeightType(init->second->data_type)) {
 			materialize_initializer(*init->second);
 			return low.tensors.at(name);
 		}
@@ -2161,7 +2220,7 @@ std::unique_ptr<Compiled> CompileGraph(const ::anofox::onnxread::Graph &graph, c
 				}
 				const int64_t s_dim = sa.back(), rows = Numel(sa) / s_dim, cols = Numel(sb) / s_dim;
 				ggml_tensor *a2 = low.As(n, in(0), {rows, s_dim}), *b2 = low.As(n, in(1), {cols, s_dim});
-				out = low.Unfold(n, ggml_mul_mat(ctx.get(), b2, a2), out_shape);
+				out = low.Unfold(n, low.MulMat(b2, a2), out_shape);
 			} else if (eq == "...hd,hds->...s") {
 				if (sa.size() < 2 || sb.size() != 3 || sa[sa.size() - 2] != sb[0] || sa.back() != sb[1]) {
 					Fail(n, "Einsum '" + eq + "': h and d do not match");
@@ -2593,7 +2652,7 @@ struct GgmlExecutor::Impl {
 	}
 
 	//! The persistent device copy of an external weight: allocated and uploaded the first time a graph needs it.
-	ggml_tensor *DeviceWeight(const std::string &name, const Ne4 &ne, const float *host) {
+	ggml_tensor *DeviceWeight(const std::string &name, const Ne4 &ne, const float *host, int onnx_type = 1) {
 		const auto found = weights_on_device.find(name);
 		if (found != weights_on_device.end()) {
 			const ggml_tensor *have = found->second;
@@ -2606,17 +2665,35 @@ struct GgmlExecutor::Impl {
 		// Allocate before creating the tensor object: a failed allocation must not burn one of the table's fixed slots (a full ggml context aborts).
 		ggml_backend_buffer_t buffer = ggml_backend_buft_alloc_buffer(runtime.sched_bufts.front(), std::max<size_t>(weight_bytes, 1));
 		if (!buffer) {
-			throw std::runtime_error("ggml lowering: out of device memory uploading weight '" + name + "' (" + std::to_string(weight_bytes) + " bytes)");
+			throw std::runtime_error("ggml lowering: out of device memory uploading weight '" + name + "' (" + std::to_string(weight_bytes) +
+			                         " bytes). Free the device (CALL tabfm_unload() for a model you no longer use, or SET anofox_tabfm_max_sessions = 1), use a smaller model, "
+			                         "or SET anofox_tabfm_device='cpu'.");
 		}
 		ggml_tensor *t = ggml_new_tensor_4d(weight_ctx.get(), GGML_TYPE_F32, ne[0], ne[1], ne[2], ne[3]);
 		ggml_set_name(t, name.c_str());
 		weight_buffers.emplace_back(buffer);
 		ggml_backend_buffer_set_usage(buffer, GGML_BACKEND_BUFFER_USAGE_WEIGHTS); // the scheduler places ops where their weights live
 		ggml_backend_tensor_alloc(buffer, t, ggml_backend_buffer_get_base(buffer));
-		ggml_backend_tensor_set(t, host, 0, ggml_nbytes(t));
+		if (onnx_type == 1) {
+			ggml_backend_tensor_set(t, host, 0, ggml_nbytes(t));
+		} else {
+			// bf16 / fp16 weights are upcast to float32 here, in chunks from the caller's (memory-mapped) bytes, so no second full host copy exists.
+			const uint16_t *raw = reinterpret_cast<const uint16_t *>(host);
+			const size_t total = static_cast<size_t>(ne[0] * ne[1] * ne[2] * ne[3]);
+			std::vector<float> chunk(std::min<size_t>(total, size_t(1) << 20));
+			for (size_t at = 0; at < total; at += chunk.size()) {
+				const size_t n = std::min(chunk.size(), total - at);
+				for (size_t i = 0; i < n; i++) {
+					chunk[i] = onnx_type == 16 ? BFloat16ToFloat(raw[at + i]) : HalfToFloat(raw[at + i]);
+				}
+				ggml_backend_tensor_set(t, chunk.data(), at * sizeof(float), n * sizeof(float));
+			}
+		}
 		weights_on_device[name] = t;
 		return t;
 	}
+
+	Compiled *Acquire(const HostTensors &inputs, const GgmlRunOptions &options, std::unique_ptr<Compiled> &transient);
 
 	~Impl() {
 		cache.clear(); // compiled graphs (and their schedulers) before the backends and buffers they use
@@ -2638,42 +2715,58 @@ GgmlExecutor::GgmlExecutor(const ::anofox::onnxread::Graph &graph, GgmlExecutorC
 
 GgmlExecutor::~GgmlExecutor() = default;
 
-HostTensors GgmlExecutor::Run(const HostTensors &inputs, const GgmlRunOptions &options) {
-	std::lock_guard<std::mutex> guard(impl_->mutex);
-	const std::string signature = SignatureOf(impl_->graph, inputs, options);
-	Compiled *compiled = nullptr;
-	for (auto it = impl_->cache.begin(); it != impl_->cache.end(); ++it) {
+//! The compiled graph for these inputs: the cached one (most recently used first) or a fresh compile. `transient` holds a graph that must not be cached.
+Compiled *GgmlExecutor::Impl::Acquire(const HostTensors &inputs, const GgmlRunOptions &options, std::unique_ptr<Compiled> &transient) {
+	Impl &impl = *this;
+	const std::string signature = SignatureOf(impl.graph, inputs, options);
+	for (auto it = impl.cache.begin(); it != impl.cache.end(); ++it) {
 		if ((*it)->signature == signature) {
-			impl_->cache.splice(impl_->cache.begin(), impl_->cache, it); // most recently used goes first
-			compiled = impl_->cache.front().get();
-			break;
+			impl.cache.splice(impl.cache.begin(), impl.cache, it); // most recently used goes first
+			return impl.cache.front().get();
 		}
 	}
 	const bool discard_after = [] {
 		const char *p = std::getenv("TABFM_GGML_PROFILE");
 		return p && std::string(p) == "2"; // the scheduler-allocated profile run cannot be reused
 	}();
+	GgmlRunOptions compile_options = options;
+	compile_options.weights = impl.config.weights;
+	compile_options.strict_fp32 = impl.config.strict_fp32;
+	WeightProvider provider;
+	if (!impl.runtime.sched_backends.empty()) {
+		provider = [&impl](const std::string &name, const Ne4 &ne, const float *host, int onnx_type) { return impl.DeviceWeight(name, ne, host, onnx_type); };
+	}
+	auto fresh = CompileGraph(impl.graph, inputs, compile_options, impl.config.weights, provider);
+	impl.compiles++;
+	if (discard_after) {
+		transient = std::move(fresh);
+		return transient.get();
+	}
+	impl.cache.push_front(std::move(fresh));
+	while (impl.cache.size() > std::max<size_t>(1, impl.config.cache_entries)) {
+		impl.cache.pop_back();
+	}
+	return impl.cache.front().get();
+}
+
+std::vector<int64_t> GgmlExecutor::MulMatActivationRows(const HostTensors &inputs, const GgmlRunOptions &options) {
+	std::lock_guard<std::mutex> guard(impl_->mutex);
 	std::unique_ptr<Compiled> transient;
-	if (!compiled) {
-		GgmlRunOptions compile_options = options;
-		compile_options.weights = impl_->config.weights;
-		WeightProvider provider;
-		if (!impl_->runtime.sched_backends.empty()) {
-			provider = [this](const std::string &name, const Ne4 &ne, const float *host) { return impl_->DeviceWeight(name, ne, host); };
-		}
-		auto fresh = CompileGraph(impl_->graph, inputs, compile_options, impl_->config.weights, provider);
-		impl_->compiles++;
-		if (discard_after) {
-			transient = std::move(fresh);
-			compiled = transient.get();
-		} else {
-			impl_->cache.push_front(std::move(fresh));
-			while (impl_->cache.size() > std::max<size_t>(1, impl_->config.cache_entries)) {
-				impl_->cache.pop_back();
-			}
-			compiled = impl_->cache.front().get();
+	Compiled *compiled = impl_->Acquire(inputs, options, transient);
+	std::vector<int64_t> rows;
+	for (int i = 0; i < ggml_graph_n_nodes(compiled->g); i++) {
+		const ggml_tensor *t = ggml_graph_node(compiled->g, i);
+		if (t->op == GGML_OP_MUL_MAT) {
+			rows.push_back(t->src[1]->ne[1]);
 		}
 	}
+	return rows;
+}
+
+HostTensors GgmlExecutor::Run(const HostTensors &inputs, const GgmlRunOptions &options) {
+	std::lock_guard<std::mutex> guard(impl_->mutex);
+	std::unique_ptr<Compiled> transient;
+	Compiled *compiled = impl_->Acquire(inputs, options, transient);
 	try {
 		return ExecuteCompiled(*compiled, impl_->runtime, inputs);
 	} catch (...) {
@@ -2696,6 +2789,37 @@ size_t GgmlExecutor::PreloadWeights() {
 	if (impl_->runtime.sched_backends.empty() || !impl_->config.weights) {
 		return 0;
 	}
+	// The model has to fit: the weights stay resident in float32 (bf16/fp16 are upcast on upload). Fail here, at load, with the numbers and the way out,
+	// instead of part way through the upload (or the first query).
+	size_t needed = 0;
+	for (const auto &t : impl_->graph.initializers) {
+		const bool inline_data = !t.raw.empty() || !t.floats.empty() || !t.int64s.empty() || !t.int32s.empty();
+		size_t count = 1;
+		for (auto d : t.dims) {
+			count *= static_cast<size_t>(d);
+		}
+		if (IsStoredWeightType(t.data_type) && !inline_data && count > 0) {
+			const ExternalWeight external = impl_->config.weights(t.name, t.dims);
+			if (external.data && external.count == count && external.onnx_type == t.data_type && !impl_->weights_on_device.count(t.name)) {
+				needed += count * sizeof(float);
+			}
+		}
+	}
+	size_t free_bytes = 0;
+	if (impl_->config.device_memory_probe) {
+		free_bytes = impl_->config.device_memory_probe();
+	} else if (impl_->device) {
+		size_t total = 0;
+		ggml_backend_dev_memory(ggml_backend_get_device(impl_->device.get()), &free_bytes, &total);
+		if (total == 0) {
+			free_bytes = 0; // the backend cannot say: no precheck
+		}
+	}
+	if (free_bytes > 0 && needed > free_bytes) {
+		throw std::runtime_error("ggml lowering: out of device memory: this model's weights need " + std::to_string(needed) + " bytes on the device but only " +
+		                         std::to_string(free_bytes) + " bytes are free. Free the device (CALL tabfm_unload() for a model you no longer use, or SET anofox_tabfm_max_sessions = 1 "
+		                         "so fewer models stay loaded), use a smaller model, or SET anofox_tabfm_device='cpu'.");
+	}
 	size_t uploaded = 0;
 	for (const auto &t : impl_->graph.initializers) {
 		const bool inline_data = !t.raw.empty() || !t.floats.empty() || !t.int64s.empty() || !t.int32s.empty();
@@ -2703,18 +2827,18 @@ size_t GgmlExecutor::PreloadWeights() {
 		for (auto d : t.dims) {
 			count *= static_cast<size_t>(d);
 		}
-		if (t.data_type != 1 || inline_data || count == 0) {
-			continue; // only the float32 weights kept outside the ONNX file are persistent device tensors
+		if (!IsStoredWeightType(t.data_type) || inline_data || count == 0) {
+			continue; // only the float weights kept outside the ONNX file are persistent device tensors
 		}
 		const ExternalWeight external = impl_->config.weights(t.name, t.dims);
-		if (!external.data || external.count != count) {
+		if (!external.data || external.count != count || external.onnx_type != t.data_type) {
 			continue;
 		}
 		try {
 			Node pseudo; // the same call, with the same layout, materialize_initializer makes
 			pseudo.name = t.name;
 			pseudo.op_type = "<weight>";
-			impl_->DeviceWeight(t.name, ToStorage(pseudo, Shape(t.dims.begin(), t.dims.end())), external.data);
+			impl_->DeviceWeight(t.name, ToStorage(pseudo, Shape(t.dims.begin(), t.dims.end())), external.data, external.onnx_type);
 			uploaded++;
 		} catch (const std::bad_alloc &) {
 			throw;
@@ -2744,6 +2868,7 @@ HostTensors GgmlRunGraph(const ::anofox::onnxread::Graph &graph, const HostTenso
 	config.weights = options.weights;
 	config.cache_entries = 1;
 	config.device = options.device;
+	config.strict_fp32 = options.strict_fp32;
 	GgmlExecutor executor(graph, std::move(config));
 	return executor.Run(inputs, options);
 }

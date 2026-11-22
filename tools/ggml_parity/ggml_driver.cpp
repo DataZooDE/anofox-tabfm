@@ -148,6 +148,8 @@ std::map<std::string, StTensor> ParseHeader(const std::string &json) {
 // comparison is a tolerance (NaN equals NaN, infinities match in sign); the point is to find the ops a device gets wrong.
 #include <dirent.h>
 
+static bool g_strict_fp32 = false;
+
 static HostTensor ParseGoldenTensor(std::istringstream &line) {
 	std::string dtype, dims;
 	line >> dtype >> dims;
@@ -211,6 +213,7 @@ static int RunGoldens(const std::string &dir, const std::string &device, int thr
 			GgmlRunOptions options;
 			options.threads = threads;
 			options.device = device;
+			options.strict_fp32 = g_strict_fp32;
 			const auto got = GgmlRunGraph(graph, inputs, options);
 			bool ok = true;
 			for (const auto &want : expected) {
@@ -262,6 +265,8 @@ int main(int argc, char **argv) {
 			dir = v;
 		} else if (k == "--tag") {
 			tag = v;
+		} else if (k == "--strict-fp32") {
+			g_strict_fp32 = v != "0"; // `--strict-fp32 1`: pad small matmuls past the CUDA small-batch kernel (the plugin does this for precision=fp32); also set NVIDIA_TF32_OVERRIDE=0
 		} else if (k == "--device") {
 			device = v;
 		} else if (k == "--threads") {
@@ -303,6 +308,7 @@ int main(int argc, char **argv) {
 	const auto header = ParseHeader(std::string(st.data() + 8, static_cast<size_t>(header_len)));
 	const char *data_begin = st.data() + 8 + header_len;
 	GgmlExecutorConfig config;
+	config.strict_fp32 = g_strict_fp32;
 	config.threads = threads;
 	config.device = device;
 	config.weights = [&](const std::string &name, const std::vector<int64_t> &dims) -> ExternalWeight {

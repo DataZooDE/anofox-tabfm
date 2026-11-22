@@ -32,8 +32,9 @@ using HostTensors = std::map<std::string, HostTensor>;
 
 //! A float32 weight kept outside the ONNX file: `count` is the number of floats at `data`, checked against the initializer's shape.
 struct ExternalWeight {
-	const float *data = nullptr;
+	const float *data = nullptr; // `count` elements of the type below (reinterpreted: for 10 and 16 these are 2-byte values, not floats)
 	size_t count = 0;
+	int onnx_type = 1;           // ONNX element type of the bytes at `data`: 1 float32, 10 float16, 16 bfloat16 (the latter two only on a device path, upcast on upload)
 };
 
 //! Where the data of an initializer the ONNX file keeps outside itself (safetensors) lives: the float32 buffer for `name`, valid for the whole
@@ -53,6 +54,7 @@ struct GgmlRunOptions {
 	std::set<std::string> bool_inputs;          // float-held graph inputs that are bool masks (their data is 0/1)
 	std::vector<std::string> outputs;           // outputs to return; empty = all graph outputs. Nodes nothing requested depends on are not run.
 	std::string device = "cpu";                 // see GgmlExecutorConfig::device (used by the one-shot GgmlRunGraph; an executor has its own)
+	bool strict_fp32 = false;                   // see GgmlExecutorConfig::strict_fp32 (the executor fills this in from its own configuration)
 };
 
 //! Run `graph` on the float `inputs` (plus the typed inputs in `options`) and return its outputs, through ggml. Inline initializers are read from the
@@ -72,6 +74,12 @@ struct GgmlExecutorConfig {
 	//! through the backend scheduler. "cpu-sched": the same scheduler path on the CPU backend with executor-owned weight copies (how the GPU code path is tested
 	//! without a GPU). A "gpu" request with no GPU device in the build throws, naming what the build contains.
 	std::string device = "cpu";
+	//! Strict float32 matmuls on a GPU. ggml's CUDA backend multiplies float32 weights with tensor-core TF32 instructions when the activations have 16 or
+	//! fewer rows (its small-batch kernel), and the NVIDIA TF32 switch does not reach that kernel. With this set, every weight matmul is padded to 17 activation
+	//! rows (zero rows, sliced off afterwards) so ggml takes its cuBLAS path, which honours the switch. Costs a few rows of extra work on tiny matmuls.
+	bool strict_fp32 = false;
+	//! Free device memory in bytes (a test seam, and for backends ggml cannot ask): when set it replaces the query of the device itself in PreloadWeights.
+	std::function<size_t()> device_memory_probe;
 };
 
 //! The ggml devices this build can run on, e.g. "CPU", "CUDA0", "ROCm0": a diagnostic for `device` errors and the backend table.
@@ -88,12 +96,15 @@ public:
 	//! the executor's own configuration applies).
 	HostTensors Run(const HostTensors &inputs, const GgmlRunOptions &options);
 
-	//! Drop every compiled graph and its activation memory (the next call recompiles).
 	//! Uploads every float32 external weight into device memory now (a device executor does it lazily, the first time a graph needs each one), so device
 	//! out-of-memory and the one-time upload cost land at load, not in the first query. A weight whose layout the lowering cannot place is skipped here
 	//! and reported by the run that needs it. A no-op for the CPU device. Returns the number of weights uploaded.
 	size_t PreloadWeights();
+	//! Drop every compiled graph and its activation memory (the next call recompiles).
 	void Trim();
+	//! A test and diagnostics hook: compiles (or reuses) the graph for these inputs WITHOUT running it and returns, for every matrix multiplication in it, the
+	//! number of activation rows the backend will see (src1->ne[1]).
+	std::vector<int64_t> MulMatActivationRows(const HostTensors &inputs, const GgmlRunOptions &options);
 
 	//! Number of graphs compiled so far (a test hook: a repeated signature must not recompile).
 	size_t CompileCount() const;

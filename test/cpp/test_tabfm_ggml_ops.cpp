@@ -482,6 +482,186 @@ TEST_CASE("ggml_executor: PreloadWeights uploads the external weights up front o
 	}
 }
 
+TEST_CASE("ggml_executor: strict fp32 pads every weight matmul past the 16-row small-batch kernel and keeps the results", "[tabfm][ggml][ggml_ops]") {
+	// ggml's CUDA small-batch matmul (<= 16 activation rows) runs TF32 tensor-core instructions that the NVIDIA TF32 switch cannot turn off; strict fp32 must
+	// route every weight matmul to the cuBLAS path by giving it more than 16 rows. A MatMul graph and the Einsum "...s,jhds->...jhd" site both go through it.
+	const std::vector<float> weights = [] {
+		std::vector<float> w(8 * 4);
+		for (size_t i = 0; i < w.size(); i++) {
+			w[i] = std::sin(static_cast<float>(i) * 0.7f);
+		}
+		return w;
+	}();
+	auto weight_tensor = [](std::vector<int64_t> dims) {
+		::anofox::onnxread::Tensor t;
+		t.name = "w";
+		t.dims = std::move(dims);
+		t.data_type = 1;
+		t.location = ::anofox::onnxread::DataLocation::EXTERNAL;
+		return t;
+	};
+	::anofox::onnxread::Graph matmul;
+	matmul.inputs = {"x"};
+	matmul.initializers.push_back(weight_tensor({8, 4}));
+	matmul.nodes = {MakeNode("MatMul", {"x", "w"}, "y")};
+	matmul.outputs = {"y"};
+	::anofox::onnxread::Graph einsum;
+	einsum.inputs = {"x"};
+	einsum.initializers.push_back(weight_tensor({2, 2, 1, 8})); // j h d s: 4 output columns over s = 8
+	{
+		auto n = MakeNode("Einsum", {"x", "w"}, "y");
+		::anofox::onnxread::Attribute eq;
+		eq.name = "equation";
+		eq.type = 3;
+		eq.s = "...s,jhds->...jhd";
+		n.attributes.push_back(eq);
+		einsum.nodes = {n};
+	}
+	einsum.outputs = {"y"};
+	for (const ::anofox::onnxread::Graph *graph : {&matmul, &einsum}) {
+		for (int64_t m : {1, 4, 9, 16, 17, 40}) {
+			INFO((graph == &matmul ? "MatMul" : "Einsum") << " with " << m << " activation rows");
+			std::vector<float> x(static_cast<size_t>(m) * 8);
+			for (size_t i = 0; i < x.size(); i++) {
+				x[i] = std::cos(static_cast<float>(i) * 0.3f);
+			}
+			HostTensors in;
+			in["x"] = {{m, 8}, x};
+			GgmlExecutorConfig config;
+			config.threads = 2;
+			config.device = "cpu-sched";
+			config.weights = [&](const std::string &, const std::vector<int64_t> &) { return ExternalWeight {weights.data(), 32, 1}; };
+			GgmlExecutor plain(*graph, config);
+			config.strict_fp32 = true;
+			GgmlExecutor strict(*graph, config);
+			const auto plain_rows = plain.MulMatActivationRows(in, GgmlRunOptions());
+			REQUIRE(!plain_rows.empty());
+			for (auto rows : plain_rows) {
+				REQUIRE(rows == m); // without the flag the matmul keeps its own row count (and a GPU may take its small-batch kernel)
+			}
+			for (auto rows : strict.MulMatActivationRows(in, GgmlRunOptions())) {
+				REQUIRE(rows >= 17); // strict: always past the small-batch kernel
+			}
+			const auto a = plain.Run(in, GgmlRunOptions());
+			const auto b = strict.Run(in, GgmlRunOptions());
+			REQUIRE(a.at("y").shape == b.at("y").shape);
+			for (size_t i = 0; i < a.at("y").data.size(); i++) {
+				REQUIRE(a.at("y").data[i] == Approx(b.at("y").data[i]).margin(1e-6)); // the zero rows add nothing
+			}
+		}
+	}
+}
+
+TEST_CASE("ggml_executor: a model that does not fit the device fails at load with the numbers and the way out", "[tabfm][ggml][ggml_ops]") {
+	// 6 weights stored as bf16 occupy 24 bytes on the device (they are upcast to float32 on upload); the check must count the upcast size.
+	::anofox::onnxread::Graph g;
+	g.inputs = {"x"};
+	::anofox::onnxread::Tensor w;
+	w.name = "w__stored";
+	w.dims = {3, 2};
+	w.data_type = 16;
+	w.location = ::anofox::onnxread::DataLocation::EXTERNAL;
+	g.initializers.push_back(w);
+	::anofox::onnxread::Node cast = MakeNode("Cast", {"w__stored"}, "w");
+	::anofox::onnxread::Attribute to;
+	to.name = "to";
+	to.i = 1;
+	cast.attributes.push_back(to);
+	g.nodes = {cast, MakeNode("MatMul", {"x", "w"}, "y")};
+	g.outputs = {"y"};
+	const std::vector<uint16_t> bf16 = {0x3F80, 0x4000, 0x4040, 0x4080, 0x40A0, 0x40C0};
+	GgmlExecutorConfig config;
+	config.threads = 1;
+	config.device = "cpu-sched";
+	config.weights = [&](const std::string &, const std::vector<int64_t> &) {
+		return ExternalWeight {reinterpret_cast<const float *>(bf16.data()), 6, 16};
+	};
+	config.device_memory_probe = [] { return size_t(16); }; // 16 bytes free, 24 needed
+	GgmlExecutor too_small(g, config);
+	try {
+		too_small.PreloadWeights();
+		FAIL("a model larger than the free device memory must be refused");
+	} catch (const std::runtime_error &error) {
+		const std::string message = error.what();
+		REQUIRE(message.find("24 bytes") != std::string::npos);                  // what the weights need (after the upcast)
+		REQUIRE(message.find("16 bytes") != std::string::npos);                  // what is free
+		REQUIRE(message.find("anofox_tabfm_max_sessions") != std::string::npos); // the ways out
+		REQUIRE(message.find("tabfm_unload") != std::string::npos);
+		REQUIRE(message.find("anofox_tabfm_device='cpu'") != std::string::npos);
+	}
+	config.device_memory_probe = [] { return size_t(24); }; // exactly enough
+	GgmlExecutor fits(g, config);
+	REQUIRE(fits.PreloadWeights() == 1u);
+}
+
+TEST_CASE("ggml_executor: bf16 and f16 external weights are upcast on upload to the device path", "[tabfm][ggml][ggml_ops]") {
+	// The Google TabFM 1.1 ext graphs store weights as BF16 (`<name>__stored`) and Cast(to=1) them; the CPU session upcasts while injecting, a device
+	// executor must do the same on upload. y = MatMul(x, Cast(w__stored)) against the same graph on pre-upcast float32 weights.
+	const std::vector<float> w = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f}; // [3, 2]
+	std::vector<uint16_t> bf16, f16 = {0x3C00, 0x4000, 0x4200, 0x4400, 0x4500, 0x4600}; // 1..6 in half precision
+	for (float v : w) {
+		uint32_t bits;
+		std::memcpy(&bits, &v, 4);
+		bf16.push_back(static_cast<uint16_t>(bits >> 16)); // exact for these values
+	}
+	auto stored_graph = [&](int onnx_type) {
+		::anofox::onnxread::Graph g;
+		g.inputs = {"x"};
+		::anofox::onnxread::Tensor t;
+		t.name = "w__stored";
+		t.dims = {3, 2};
+		t.data_type = onnx_type;
+		t.location = ::anofox::onnxread::DataLocation::EXTERNAL;
+		g.initializers.push_back(t);
+		auto cast = MakeNode("Cast", {"w__stored"}, "w");
+		::anofox::onnxread::Attribute to;
+		to.name = "to";
+		to.type = 2;
+		to.i = 1;
+		cast.attributes.push_back(to);
+		g.nodes = {cast, MakeNode("MatMul", {"x", "w"}, "y")};
+		g.outputs = {"y"};
+		return g;
+	};
+	::anofox::onnxread::Graph reference;
+	reference.inputs = {"x"};
+	{
+		::anofox::onnxread::Tensor t;
+		t.name = "w";
+		t.dims = {3, 2};
+		t.data_type = 1;
+		t.location = ::anofox::onnxread::DataLocation::EXTERNAL;
+		reference.initializers.push_back(t);
+		reference.nodes = {MakeNode("MatMul", {"x", "w"}, "y")};
+		reference.outputs = {"y"};
+	}
+	HostTensors in;
+	in["x"] = {{2, 3}, {1.0f, 0.5f, -1.0f, 2.0f, 0.0f, 3.0f}};
+	GgmlExecutorConfig base;
+	base.threads = 2;
+	base.device = "cpu-sched";
+	GgmlExecutorConfig ref_config = base;
+	ref_config.weights = [&](const std::string &, const std::vector<int64_t> &) { return ExternalWeight {w.data(), 6, 1}; };
+	GgmlExecutor ref_executor(reference, ref_config);
+	const auto expected = ref_executor.Run(in, GgmlRunOptions());
+	for (int onnx_type : {16, 10}) {
+		INFO("stored as ONNX type " << onnx_type);
+		const void *raw = onnx_type == 16 ? static_cast<const void *>(bf16.data()) : static_cast<const void *>(f16.data());
+		GgmlExecutorConfig config = base;
+		config.weights = [&](const std::string &, const std::vector<int64_t> &) {
+			return ExternalWeight {static_cast<const float *>(raw), 6, onnx_type};
+		};
+		const auto graph = stored_graph(onnx_type); // the executor keeps a reference to its graph
+		GgmlExecutor executor(graph, config);
+		REQUIRE(executor.PreloadWeights() == 1u); // the weight is uploaded up front too
+		const auto out = executor.Run(in, GgmlRunOptions());
+		REQUIRE(out.at("y").shape == expected.at("y").shape);
+		for (size_t i = 0; i < expected.at("y").data.size(); i++) {
+			REQUIRE(out.at("y").data[i] == expected.at("y").data[i]); // the upcast is exact, so the results are identical
+		}
+	}
+}
+
 TEST_CASE("ggml_executor: a failed run does not poison the cached graph, and a missing input is named", "[tabfm][ggml][ggml_ops]") {
 	const auto g = ExpNegAddGraph();
 	const std::vector<float> weights = {10.0f, 20.0f, 30.0f};

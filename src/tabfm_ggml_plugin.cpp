@@ -232,15 +232,16 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 			const MappedFile &file = *backend->files[found->second];
 			const size_t offset = static_cast<size_t>(std::stoull(off->second));
 			const size_t count = ElementCount(t.dims);
-			if (t.data_type != 1) {
+			if (t.data_type != 1 && t.data_type != 10 && t.data_type != 16) {
 				throw std::runtime_error("the weight '" + t.name + "' is stored as ONNX type " + std::to_string(t.data_type) +
-				                         " (bf16/fp16); the ggml GPU backend reads float32 checkpoints only. Use the ONNX Runtime or MIGraphX plugin for this model");
+				                         "; the ggml GPU backend reads float32, float16 and bfloat16 weights (the latter two are upcast to float32 on upload)");
 			}
-			if (offset + count * sizeof(float) > file.size()) {
+			const size_t element_bytes = t.data_type == 1 ? sizeof(float) : sizeof(uint16_t);
+			if (offset + count * element_bytes > file.size()) {
 				throw std::runtime_error("the weight '" + t.name + "' does not fit the checkpoint file '" + loc->second +
 				                         "' (is the graph for a different checkpoint, or the file truncated?)");
 			}
-			backend->weights[t.name] = {reinterpret_cast<const float *>(file.data() + offset), count};
+			backend->weights[t.name] = {reinterpret_cast<const float *>(file.data() + offset), count, static_cast<int>(t.data_type)};
 		}
 		for (const auto &name : backend->graph.inputs) {
 			if (!initializer_names.count(name)) {
@@ -262,6 +263,7 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		// The GPU runs the matmuls; the threads serve the CPU kernels the GPU backend cannot (TopK, Where, the float64 islands).
 		config.threads = static_cast<int>(std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
 		config.device = "gpu:" + std::to_string(params->device_ordinal);
+		config.strict_fp32 = precision == "fp32"; // see GgmlExecutorConfig::strict_fp32: ggml's small-batch CUDA kernel ignores the TF32 switch
 		auto *self = backend.get();
 		config.weights = [self](const std::string &name, const std::vector<int64_t> &dims) -> ExternalWeight {
 			const auto it = self->weights.find(name);
