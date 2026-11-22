@@ -12,7 +12,7 @@
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_model_spec.hpp"
 #include "tabfm_ort_engine.hpp"
-#include "tabfm_model_spec.hpp"
+#include "tabfm_registry.hpp"
 
 #include "../../duckdb/third_party/yyjson/include/yyjson.hpp"
 
@@ -236,4 +236,26 @@ TEST_CASE("tabfm_bundled_resources: Orion-BiX and Orion-MSP bundle masked MIGrap
 		REQUIRE(disk.find("model.safetensors") != string::npos);
 		REQUIRE(GetBundledResource(BundledGpuGraphId(model, "migraphx", "regression")).data == nullptr);
 	}
+}
+
+// The ggml GPU plugin reads the plain external-data ("ext") graph for both CUDA and ROCm; the MIGraphX-only masked graphs are going away. So every model that
+// bundles a masked MIGraphX graph must also bundle an ext graph, or it would lose its GPU path.
+TEST_CASE("tabfm_bundled_resources: every model with a GPU graph bundles the ext graph the ggml GPU plugin reads", "[tabfm][bundled]") {
+	size_t checked = 0;
+	for (const auto &spec : BuiltinModelSpecs()) {
+		for (const auto &task : spec.tasks) {
+			const string task_name = TabFMTaskName(task.first);
+			const bool has_migraphx = GetBundledResource(BundledGpuGraphId(spec.id, "migraphx", task_name)).data != nullptr;
+			if (!has_migraphx) {
+				continue;
+			}
+			INFO("model " << spec.id << " task " << task_name);
+			const auto ext = GetBundledResource(BundledGpuGraphId(spec.id, "ext", task_name));
+			REQUIRE(ext.data != nullptr);
+			REQUIRE(ext.size > 0);
+			REQUIRE(!ExpectedWeightsHeaderShaFor(spec.id, task_name).empty()); // the offsets are pinned to one safetensors header
+			checked++;
+		}
+	}
+	REQUIRE(checked >= 30); // the catalog bundles masked graphs for dozens of (model, task) pairs
 }

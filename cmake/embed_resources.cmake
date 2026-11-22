@@ -178,6 +178,7 @@ set(_tabfm_inputs
     # tabfm_download writes beside the checkpoint (header sha in ExpectedWeightsHeaderShaFor).
     "graph_nori30m_regression.onnx"
     "graph_migraphx_nori30m_regression.onnx"
+    "graph_ext_nori30m_regression.onnx"
     "tensor_map_nori30m_regression.json"
     # Nori 1.5 (Synthefy, Model v3, two-phase encoder; Apache-2.0) -- regression ONLY, (x, y)-only like 30M but a
     # different architecture, hence its own stem. The engine reads nori.pt natively ({model_config,
@@ -197,7 +198,9 @@ set(_tabfm_inputs
     "graph_exaone_tabular_classification.onnx"
     "graph_exaone_tabular_regression.onnx"
     "graph_migraphx_exaone_tabular_classification.onnx"
+    "graph_ext_exaone_tabular_classification.onnx"
     "graph_migraphx_exaone_tabular_regression.onnx"
+    "graph_ext_exaone_tabular_regression.onnx"
     "tensor_map_exaone_tabular_classification.json"
     "tensor_map_exaone_tabular_regression.json"
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
