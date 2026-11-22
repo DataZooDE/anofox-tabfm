@@ -266,13 +266,12 @@ inline bool BackendSupportsPrecision(const string &backend, const string &precis
 	if (precision.empty() || precision == "fp32") {
 		return true; // every backend's reference mode
 	}
-	if (backend == "cuda") {
-		// tf32 is Ampere+ tensor-core rounding; bf16/fp16 are MIGraphX
-		// quantize modes with no CUDA equivalent here.
+	if (backend == "cuda" || backend == "rocm" || backend == "migraphx") {
+		// The ggml GPU plugin computes float32. "tf32" keeps the hardware's TF32 tensor-core matmuls (CUDA, Ampere and newer); there is no bf16/fp16 mode.
 		return precision == "tf32";
 	}
-	if (backend == "rocm" || backend == "migraphx" || backend == "mlx") {
-		// tf32 is CUDA's mode and has no Metal or MIGraphX equivalent.
+	if (backend == "mlx") {
+		// MLX casts to bf16/fp16; tf32 is CUDA's mode and has no Metal equivalent.
 		return precision == "bf16" || precision == "fp16";
 	}
 	return false;
@@ -375,7 +374,7 @@ inline bool VanishedDeviceMustThrow(const string &resolved_id, const string &dev
 //! The graph-kind name a model registers for a backend, as it appears in
 //! CALL tabfm_register_model (…_ext_graph / …_migraphx_graph).
 inline string GpuGraphKindFor(const string &backend) {
-	return (backend == "rocm" || backend == "migraphx") ? "migraphx_graph" : "ext_graph";
+	return "ext_graph"; // cuda, rocm and mlx all read the plain external-data graph
 }
 
 //! Why a bundled ext graph is refused on CUDA although the plugin loads it. Empty today: every bundled ext
@@ -475,8 +474,8 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 	if (!BackendSupportsPrecision(in.backend, in.precision)) {
 		out.reason = "anofox_tabfm_gpu_precision='" + in.precision + "' is not implemented on the '" + in.backend +
 		             "' backend" +
-		             (in.backend == "cuda" ? " (fp32 or tf32; bf16/fp16 are MIGraphX modes)"
-		                                   : " (fp32, bf16 or fp16; tf32 is a CUDA tensor-core mode)");
+		             (in.backend == "mlx" ? " (fp32, bf16 or fp16; tf32 is a CUDA tensor-core mode)"
+		                                  : " (fp32 or tf32; the ggml GPU backend has no bf16/fp16 mode)");
 		return out;
 	}
 	out.source = SelectGpuGraph(in.model_provides_graph, in.bundled_graph_exists, in.bundled_header_matches);
@@ -522,10 +521,6 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		             "': it declares no " + GpuGraphKindFor(in.backend) +
 		             (in.bundled_graph_exists ? " and the bundled GPU graph does not match its weights"
 		                                      : " and none is bundled for it");
-		if (in.backend == "rocm" && !in.bundled_graph_exists) {
-			out.reason += " (MIGraphX compiles per fixed shape; models that read the train/test split from y's "
-			              "length cannot be bucketed — see docs/ROCM_SINGLE_EVAL_POS.md)";
-		}
 		return out;
 	}
 }

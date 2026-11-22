@@ -143,21 +143,38 @@ SET anofox_tabfm_gpu_precision = 'tf32';
 
 query I
 SELECT count(*) FROM tabfm_backends()
-WHERE backend IN ('rocm', 'mlx') AND supported IS NULL;
+WHERE backend = 'mlx' AND supported IS NULL;
 ----
 0
 
-# Restricted to devices that are actually usable AND whose plugin is present:
-# a card the driver lists but MIGraphX will not claim, or a lane with no
-# plugin installed, is refused for THAT reason before precision is ever
-# considered — so counting those rows would fail the test on an AMD box off
-# the allowlist, which is a perfectly normal machine.
+# Restricted to devices that are actually usable AND whose plugin is present: a lane with no plugin installed is refused for THAT reason before
+# precision is ever considered, so counting those rows would fail the test on a machine without plugins.
 query I
 SELECT count(*) FROM tabfm_backends() b
 JOIN tabfm_devices() d ON d.device_id = b.device
-WHERE b.backend IN ('rocm', 'mlx') AND d.usable
+WHERE b.backend = 'mlx' AND d.usable
   AND b.reason NOT LIKE '%not installed%'
   AND b.reason NOT LIKE '%tf32%';
+----
+0
+
+# CUDA and ROCm are served by the same ggml GPU plugin: float32 (tf32 allowed). bf16 and fp16 have no mode there, so those rows are a permanent NO that
+# names the precision, never the unknown state.
+statement ok
+SET anofox_tabfm_gpu_precision = 'bf16';
+
+query I
+SELECT count(*) FROM tabfm_backends()
+WHERE backend IN ('cuda', 'rocm') AND supported IS NULL;
+----
+0
+
+query I
+SELECT count(*) FROM tabfm_backends() b
+JOIN tabfm_devices() d ON d.device_id = b.device
+WHERE b.backend IN ('cuda', 'rocm') AND d.usable
+  AND b.reason NOT LIKE '%not installed%'
+  AND b.reason NOT LIKE '%bf16%';
 ----
 0
 

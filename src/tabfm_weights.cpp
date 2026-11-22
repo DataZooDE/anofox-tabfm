@@ -597,33 +597,8 @@ void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk
 
 namespace {
 
-//! One backend -> the wheel that carries its provider .so(s),
-//! and which entries inside it to extract. Deliberately narrow: only what has
-//! been verified to exist in the wheel (see docs/DYNAMIC_BACKENDS.md phase 3
-//! measurements) is offered — an unlisted backend errors naming what is.
-//! One file to lift out of the wheel. `dest_name` exists because the ORT core
-//! must land under the exact name the plugin's DT_NEEDED asks for.
-//! `patch_soname` renames the core in flight (upstream SONAME →
-//! libanofoxort_gpu.so, equal length, docs/GPU_HARDENING_PLAN.md S2): a core
-//! keeping upstream's SONAME gets shadowed by any host-loaded ORT, so the
-//! shipped runtime carries a private name and the plugin links against it.
-struct RuntimeEntry {
-	string zip_path;
-	string dest_name;
-	bool patch_soname = false;
-};
-
-struct RuntimeArtifact {
-	string wheel_url;
-	int64_t wheel_bytes = 0;
-	vector<RuntimeEntry> zip_entries;
-	//! The backend plugin itself, fetched from this repo's GitHub release
-	//! assets (built by .github/workflows/gpu_plugins.yml — neither plugin
-	//! needs a GPU to build). Empty url = no plugin-carrying release is pinned
-	//! in this build yet.
-	string plugin_name;
-	string plugin_url;
-};
+} // namespace
+} // namespace (the module's outer anonymous namespace: ResolveRuntimeArtifact is declared in tabfm_weights.hpp)
 
 //! The release tag and url shape now live in tabfm_plugin_artifacts.hpp, so
 //! dispatch and download cannot disagree about which release a plugin is
@@ -648,26 +623,9 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 	if (!error.empty()) {
 		return false;
 	}
-	if (backend == "cuda") {
-		out.wheel_url = "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/"
-		                "_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.29/"
-		                "onnxruntime_gpu-1.29.0-cp312-cp312-manylinux_2_28_x86_64.whl";
-		out.wheel_bytes = 475434900;
-		// The ORT *core* comes along too, not just the providers: the CUDA
-		// backend is a standalone plugin with its own shared runtime, because a
-		// statically-linked ORT cannot host these provider libraries at all (see
-		// src/tabfm_cuda_plugin.cpp). Core and providers must come from one
-		// distribution — pairing a CPU-flavor core with a GPU provider crashes.
-		out.zip_entries = {{"onnxruntime/capi/libonnxruntime.so.1.29.0", ORT_RENAMED_SONAME, /*patch_soname=*/true},
-		                   {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so"},
-		                   {"onnxruntime/capi/libonnxruntime_providers_shared.so",
-		                    "libonnxruntime_providers_shared.so"}};
-		out.plugin_name = PluginFileName("cuda");
-		out.plugin_url = PluginReleaseUrl(out.plugin_name);
-		return true;
-	}
-	if (backend == "rocm") {
-		out.plugin_name = PluginFileName("rocm");
+	if (backend == "cuda" || backend == "rocm") {
+		// The ggml GPU plugin is self-contained (CUDA linked statically; HIP from the ROCm install): the plugin alone, no runtime archive.
+		out.plugin_name = PluginFileName(backend);
 		out.plugin_url = PluginReleaseUrl(out.plugin_name);
 		return true;
 	}
@@ -685,6 +643,9 @@ bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string 
 	error = UnsupportedPluginPlatform(backend, HostPluginOs(), HostPluginArch());
 	return false;
 }
+
+namespace {
+namespace {
 
 struct DownloadRuntimeBindData : public TableFunctionData {
 	string backend;
@@ -1666,23 +1627,18 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 					state->rows.push_back(std::move(row));
 					continue;
 				}
-				// The ggml GPU plugin, when installed, serves an explicit cuda/rocm request on the plain ext graph (TryGgmlGpuBackend in tabfm_engine.cpp):
-				// the row is judged as that lane (ext graph, the plugin's precision rule), whatever MIGraphX's arch allowlist says about the card.
-				const bool ggml_lane = (row.backend == "cuda" || row.backend == "rocm") && !ep_path.empty() &&
-				                       PluginAvailableCached(ep_path, "ggml-" + row.backend);
-				if (!device.usable && !ggml_lane) {
+				if (!device.usable) {
 					row.reason = "the device was discovered but is not usable on this machine — see SELECT * FROM "
 					             "tabfm_devices() for its driver state";
 					state->rows.push_back(std::move(row));
 					continue;
 				}
-				const bool is_rocm = row.backend == "rocm" && !ggml_lane;
-				const string kind = is_rocm ? "migraphx" : "ext";
-				const string &model_graph = is_rocm ? artifacts.migraphx_graph : artifacts.ext_graph;
-				auto bundled = GetBundledResource(BundledGpuGraphId(spec.id, kind, task_name));
+				// cuda, rocm and mlx all read the plain external-data ("ext") graph
+				const string &model_graph = artifacts.ext_graph;
+				auto bundled = GetBundledResource(BundledGpuGraphId(spec.id, "ext", task_name));
 
 				GpuServabilityInputs in;
-				in.backend = ggml_lane ? "cuda" : row.backend; // "cuda" names the ext-graph kind and the fp32|tf32 precision rule the ggml plugin implements
+				in.backend = row.backend;
 				in.model = spec.id;
 				in.task_name = task_name;
 				in.precision = precision;
@@ -1714,7 +1670,7 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 					                                           ckpt_present, converted_failure);
 				}
 				// A graph the backend runs but is measured to get wrong (or fail on) is refused by name.
-				in.known_wrong = ggml_lane ? string() : GpuKnownWrong(row.backend, spec.id, task_name);
+				in.known_wrong = GpuKnownWrong(row.backend, spec.id, task_name);
 				// MLX executes the graph op by op: the same question 'auto' asks, about the graph that
 				// would be served -- the model's own, else the bundled one once it matches the weights.
 				if (row.backend == "mlx") {
@@ -1727,10 +1683,6 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				auto verdict = EvaluateGpuServability(in);
 				row.supported = verdict.supported;
 				row.reason = verdict.reason;
-				// Served, but only up to a shape-bucket ceiling: say so, because a larger table is refused.
-				if (row.supported && row.backend == "rocm" && !ggml_lane) {
-					row.reason = RocmBucketCeilingNote(spec.id);
-				}
 				// Plugin presence is checked AFTER servability, and only when
 				// the model would otherwise run. Both can be true at once --
 				// tabdpt on ROCm has no MIGraphX graph AND no plugin installed
@@ -1738,7 +1690,7 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				// install one and then be disappointed, because the structural
 				// reason is the permanent one. So: say what cannot change
 				// first, and only offer the fix that would actually work.
-				if (row.supported && !ggml_lane && (row.backend == "cuda" || row.backend == "rocm" || row.backend == "mlx") &&
+				if (row.supported && (row.backend == "cuda" || row.backend == "rocm" || row.backend == "mlx") &&
 				    !PluginAvailableCached(ep_path, row.backend)) {
 					row.supported = false;
 					// A file that is there but will not load (most often a plugin left over from an older

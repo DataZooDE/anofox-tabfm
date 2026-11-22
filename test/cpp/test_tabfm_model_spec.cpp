@@ -523,7 +523,7 @@ TEST_CASE("servability: stale converted weights name the fix, not a graph regist
 	REQUIRE(out.reason.find("declares no") == string::npos);
 
 	// A remedy never makes a precision the backend cannot run look like a weights problem.
-	in.precision = "tf32";
+	in.precision = "bf16"; // the ggml GPU plugin has no bf16 mode (tf32 is accepted on cuda and rocm)
 	out = EvaluateGpuServability(in);
 	REQUIRE(out.reason.find("not implemented") != string::npos);
 }
@@ -554,8 +554,10 @@ TEST_CASE("servability: the nine ROCm-blocked models say WHY, not just no",
 	auto out = EvaluateGpuServability(in);
 	REQUIRE(!out.supported);
 	REQUIRE(out.reason.find("tabdpt") != string::npos);
-	REQUIRE(out.reason.find("ROCM_SINGLE_EVAL_POS") != string::npos);
-	REQUIRE(out.reason.find("migraphx_graph") != string::npos);
+	// the ggml plugin reads the plain ext graph and has no shape buckets: the reason points at ext_graph, never at the MIGraphX bucketing analysis
+	REQUIRE(out.reason.find("ROCM_SINGLE_EVAL_POS") == string::npos);
+	REQUIRE(out.reason.find("cannot be bucketed") == string::npos);
+	REQUIRE(out.reason.find("ext_graph") != string::npos);
 }
 
 TEST_CASE("servability: a precision the backend cannot run makes it unservable there",
@@ -564,11 +566,22 @@ TEST_CASE("servability: a precision the backend cannot run makes it unservable t
 	// precision the plugin refuses turns a working CPU query into an error.
 	auto cuda = ServableBase("cuda");
 	cuda.model_provides_graph = true;
-	cuda.precision = "bf16"; // MIGraphX mode, no CUDA equivalent
+	cuda.precision = "bf16"; // the ggml GPU plugin computes float32 (tf32 optionally): no bf16 mode
 	auto out = EvaluateGpuServability(cuda);
 	REQUIRE(!out.supported);
 	REQUIRE(out.reason.find("bf16") != string::npos);
 	REQUIRE(out.reason.find("cuda") != string::npos);
+	// rocm is served by the same plugin: bf16 and fp16 are refused there too, with a reason that no longer blames MIGraphX
+	for (const char *half : {"bf16", "fp16"}) {
+		auto rocm = ServableBase("rocm");
+		rocm.model_provides_graph = true;
+		rocm.precision = half;
+		out = EvaluateGpuServability(rocm);
+		REQUIRE(!out.supported);
+		REQUIRE(out.reason.find(half) != string::npos);
+		REQUIRE(out.reason.find("rocm") != string::npos);
+		REQUIRE(out.reason.find("MIGraphX") == string::npos);
+	}
 
 	// tf32 is CUDA's own mode and has no Metal/MIGraphX equivalent
 	auto mlx = ServableBase("mlx");
@@ -583,24 +596,26 @@ TEST_CASE("servability: each backend's real precision set", "[tabfm][model_spec]
 		REQUIRE(BackendSupportsPrecision(backend, "fp32"));
 		REQUIRE(BackendSupportsPrecision(backend, ""));
 	}
-	REQUIRE(BackendSupportsPrecision("cuda", "tf32"));
-	REQUIRE(!BackendSupportsPrecision("cuda", "bf16"));
-	REQUIRE(!BackendSupportsPrecision("cuda", "fp16"));
-
-	// MIGraphX quantizes; MLX casts. Both do bf16/fp16, neither does tf32.
-	for (const char *backend : {"rocm", "mlx"}) {
-		REQUIRE(BackendSupportsPrecision(backend, "bf16"));
-		REQUIRE(BackendSupportsPrecision(backend, "fp16"));
-		REQUIRE(!BackendSupportsPrecision(backend, "tf32"));
+	// the ggml GPU plugin serves cuda AND rocm: float32 (tf32 keeps the hardware's matmul mode), no bf16/fp16 quantized programs
+	for (const char *backend : {"cuda", "rocm", "migraphx"}) {
+		REQUIRE(BackendSupportsPrecision(backend, "tf32"));
+		REQUIRE(!BackendSupportsPrecision(backend, "bf16"));
+		REQUIRE(!BackendSupportsPrecision(backend, "fp16"));
 	}
+
+	// MLX casts: it does bf16/fp16, not tf32.
+	REQUIRE(BackendSupportsPrecision("mlx", "bf16"));
+	REQUIRE(BackendSupportsPrecision("mlx", "fp16"));
+	REQUIRE(!BackendSupportsPrecision("mlx", "tf32"));
 }
 
 TEST_CASE("servability: the graph kind matches what tabfm_register_model accepts",
           "[tabfm][model_spec][servability]") {
 	REQUIRE(GpuGraphKindFor("cuda") == "ext_graph");
 	REQUIRE(GpuGraphKindFor("mlx") == "ext_graph");
-	REQUIRE(GpuGraphKindFor("rocm") == "migraphx_graph");
-	REQUIRE(GpuGraphKindFor("migraphx") == "migraphx_graph");
+	// rocm is read by the same ggml plugin as cuda: the plain ext graph, not a fixed-shape MIGraphX graph
+	REQUIRE(GpuGraphKindFor("rocm") == "ext_graph");
+	REQUIRE(GpuGraphKindFor("migraphx") == "ext_graph");
 }
 
 //===----------------------------------------------------------------------===//

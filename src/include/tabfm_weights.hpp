@@ -9,6 +9,7 @@
 #pragma once
 
 #include "duckdb/common/string.hpp"
+#include "duckdb/common/vector.hpp"
 
 namespace duckdb {
 namespace anofox {
@@ -23,6 +24,26 @@ namespace anofox {
 //! an auth failure — 404s, connection errors and the missing-httpfs
 //! MissingExtensionException must keep their own remediation.
 string HttpAuthRemediation(const string &error, const string &url);
+
+//! One file to lift out of a downloaded runtime archive (no backend uses one any more: kept for the archive path's shape).
+struct RuntimeEntry {
+	string zip_path;
+	string dest_name;
+	bool patch_soname = false;
+};
+
+//! What tabfm_download_runtime fetches for a backend: the plugin from this repo's release assets (built by .github/workflows/gpu_plugins.yml), plus
+//! an optional runtime archive (`wheel_url`, empty for every backend now that CUDA and ROCm are served by the self-contained ggml plugin).
+struct RuntimeArtifact {
+	string wheel_url;
+	int64_t wheel_bytes = 0;
+	vector<RuntimeEntry> zip_entries;
+	string plugin_name;
+	string plugin_url;
+};
+
+//! Resolve what tabfm_download_runtime(`backend`) must fetch on THIS host. False with `error` set for a backend that is unknown or not published here.
+bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string &error);
 
 } // namespace anofox
 } // namespace duckdb

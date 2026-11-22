@@ -1,0 +1,149 @@
+# name: test/sql/tabfm_gpu_use_cases.test
+# description: Real-world workflows on a GPU through the ggml GPU plugin (the only CUDA / ROCm lane), with real weights, each checked against the
+#              CPU (ggml) and against ground truth: churn scoring in the train / test form, a house-price regression with a categorical feature,
+#              switching the device back and forth, and the two refusals a user meets (a precision the plugin does not have, a missing plugin).
+#              Never trust "cpu and gpu agree" (CLAUDE.md): every block also asserts which device served it.
+#
+#              Needs hardware, the plugin and the weights, so it is opt-in:
+#                TABFM_REAL_WEIGHTS=1 TABFM_GPU_DEVICE=cuda|rocm TABFM_GPU_EP_PATH=<dir with libanofox_tabfm_ggml-<vendor>_plugin.so> \
+#                  build/release/test/unittest test/sql/tabfm_gpu_use_cases.test
+#              The models are ungated and commercial; stage their weights first (the test runner has no httpfs), e.g. from the duckdb CLI:
+#                INSTALL httpfs; LOAD httpfs; LOAD anofox_tabfm;
+#                CALL tabfm_download('classification', model := 'tabicl-v2'); CALL tabfm_download('regression', model := 'mitra');
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_REAL_WEIGHTS
+
+require-env TABFM_GPU_DEVICE
+
+require-env TABFM_GPU_EP_PATH
+
+# ---- Use case 1: score churn risk for prospects from a labelled customer history (train / test form) --------------------------------------------
+# Churn is likely for short tenure with many support tickets, or a high monthly charge on a month-to-month contract.
+statement ok
+CREATE TABLE history AS SELECT i AS customer_id, (i % 60) + 1 AS tenure_months, 20 + (i * 7 % 90) AS monthly_charge, i * 13 % 6 AS support_tickets,
+  CASE i % 3 WHEN 0 THEN 'month' WHEN 1 THEN 'year' ELSE 'two_year' END AS contract,
+  CASE WHEN ((i * 13 % 6) >= 3 AND (i % 60) < 24) OR ((20 + (i * 7 % 90)) > 95 AND i % 3 = 0) THEN 'churned' ELSE 'stayed' END AS status
+FROM range(400) r(i);
+
+statement ok
+CREATE TABLE prospects AS SELECT customer_id, tenure_months, monthly_charge, support_tickets, contract, status AS true_status
+FROM (SELECT 1000 + i AS customer_id, (i * 11 % 60) + 1 AS tenure_months, 20 + (i * 17 % 90) AS monthly_charge, i * 5 % 6 AS support_tickets,
+        CASE i % 3 WHEN 0 THEN 'month' WHEN 1 THEN 'year' ELSE 'two_year' END AS contract,
+        CASE WHEN ((i * 5 % 6) >= 3 AND (i * 11 % 60) < 24) OR ((20 + (i * 17 % 90)) > 95 AND i % 3 = 0) THEN 'churned' ELSE 'stayed' END AS status
+      FROM range(150) r(i));
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE churn_cpu AS SELECT customer_id, yhat, yhat_score FROM tabfm_classify('history', 'status', test := '(SELECT * EXCLUDE (true_status) FROM prospects)',
+  features := ['tenure_months', 'monthly_charge', 'support_tickets', 'contract'], keep := ['customer_id'], model := 'tabicl-v2');
+
+statement ok
+SET anofox_tabfm_ep_path = '${TABFM_GPU_EP_PATH}';
+
+statement ok
+SET anofox_tabfm_device = '${TABFM_GPU_DEVICE}';
+
+statement ok
+CREATE TABLE churn_gpu AS SELECT customer_id, yhat, yhat_score FROM tabfm_classify('history', 'status', test := '(SELECT * EXCLUDE (true_status) FROM prospects)',
+  features := ['tenure_months', 'monthly_charge', 'support_tickets', 'contract'], keep := ['customer_id'], model := 'tabicl-v2');
+
+# served by the GPU, not by a silent CPU fallback
+query I
+SELECT count(*) FROM tabfm_models() WHERE model = 'tabicl-v2' AND loaded AND device LIKE '${TABFM_GPU_DEVICE}:%';
+----
+1
+
+# every prospect scored once
+query I
+SELECT count(*) FROM churn_gpu;
+----
+150
+
+# the GPU gives the CPU's answer: the same label for every prospect, probabilities to 1e-3
+query II
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat), max(abs(c.yhat_score - g.yhat_score)) < 1e-3 FROM churn_cpu c JOIN churn_gpu g USING (customer_id);
+----
+0	true
+
+# and it is a useful answer: most prospects are classified correctly
+query I
+SELECT avg((g.yhat = p.true_status)::INT) >= 0.85 FROM churn_gpu g JOIN prospects p USING (customer_id);
+----
+true
+
+# ---- Use case 2: estimate listing prices from sold homes (regression with a categorical neighbourhood) ------------------------------------------
+statement ok
+CREATE TABLE sold AS SELECT i AS home_id, 50 + (i * 37 % 150) AS living_m2, 1 + (i % 5) AS bedrooms, 1950 + (i * 7 % 70) AS built,
+  CASE i % 4 WHEN 0 THEN 'center' WHEN 1 THEN 'north' WHEN 2 THEN 'river' ELSE 'suburb' END AS area,
+  (50 + (i * 37 % 150)) * CASE i % 4 WHEN 0 THEN 5200 WHEN 1 THEN 3900 WHEN 2 THEN 4600 ELSE 3100 END + (1 + (i % 5)) * 8000 + ((1950 + (i * 7 % 70)) - 1950) * 900 AS price
+FROM range(300) r(i);
+
+statement ok
+CREATE TABLE listings AS SELECT 5000 + i AS home_id, 50 + (i * 23 % 150) AS living_m2, 1 + (i * 3 % 5) AS bedrooms, 1950 + (i * 11 % 70) AS built,
+  CASE i % 4 WHEN 0 THEN 'center' WHEN 1 THEN 'north' WHEN 2 THEN 'river' ELSE 'suburb' END AS area,
+  (50 + (i * 23 % 150)) * CASE i % 4 WHEN 0 THEN 5200 WHEN 1 THEN 3900 WHEN 2 THEN 4600 ELSE 3100 END + (1 + (i * 3 % 5)) * 8000 + ((1950 + (i * 11 % 70)) - 1950) * 900 AS true_price
+FROM range(80) r(i);
+
+statement ok
+CREATE TABLE price_gpu AS SELECT home_id, yhat FROM tabfm_regress('sold', 'price', test := '(SELECT * EXCLUDE (true_price) FROM listings)',
+  features := ['living_m2', 'bedrooms', 'built', 'area'], keep := ['home_id'], model := 'mitra');
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE price_cpu AS SELECT home_id, yhat FROM tabfm_regress('sold', 'price', test := '(SELECT * EXCLUDE (true_price) FROM listings)',
+  features := ['living_m2', 'bedrooms', 'built', 'area'], keep := ['home_id'], model := 'mitra');
+
+# switching back to the CPU really switched (a device switch rebuilds the session, CLAUDE.md): both sessions exist, one per device
+query I
+SELECT count(DISTINCT CASE WHEN device = 'cpu' THEN 'cpu' ELSE 'gpu' END) FROM tabfm_models() WHERE model = 'mitra' AND loaded;
+----
+2
+
+# the GPU estimate agrees with the CPU one to 0.5% of the price, and both explain the prices well
+query I
+SELECT max(abs(c.yhat - g.yhat) / c.yhat) < 0.005 FROM price_cpu c JOIN price_gpu g USING (home_id);
+----
+true
+
+query I
+SELECT 1 - sum(power(g.yhat - l.true_price, 2)) / sum(power(l.true_price - (SELECT avg(true_price) FROM listings), 2)) >= 0.9
+FROM price_gpu g JOIN listings l USING (home_id);
+----
+true
+
+# ---- Use case 3: the refusals a user meets name the way out --------------------------------------------------------------------------------------
+statement ok
+SET anofox_tabfm_device = '${TABFM_GPU_DEVICE}';
+
+# the ggml GPU plugin computes float32: bf16 is refused (not run as fp32 in secret), and the error says what to do
+statement ok
+SET anofox_tabfm_gpu_precision = 'bf16';
+
+statement error
+SELECT count(*) FROM tabfm_classify('history', 'status', test := '(SELECT * EXCLUDE (true_status) FROM prospects)',
+  features := ['tenure_months', 'monthly_charge', 'support_tickets', 'contract'], model := 'tabicl-v2');
+----
+<REGEX>:.*bf16.*anofox_tabfm_device='cpu'.*
+
+statement ok
+SET anofox_tabfm_gpu_precision = 'fp32';
+
+# without the plugin there is no other GPU lane to fall back to: the error names the plugin file and tabfm_download_runtime
+statement ok
+SET anofox_tabfm_ep_path = '__TEST_DIR__';
+
+statement ok
+CALL tabfm_unload();
+
+statement error
+SELECT count(*) FROM tabfm_classify('history', 'status', test := '(SELECT * EXCLUDE (true_status) FROM prospects)',
+  features := ['tenure_months', 'monthly_charge', 'support_tickets', 'contract'], model := 'tabicl-v2');
+----
+<REGEX>:.*libanofox_tabfm_ggml-.*_plugin.*tabfm_download_runtime.*

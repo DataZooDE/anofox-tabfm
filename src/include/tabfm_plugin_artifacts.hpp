@@ -48,13 +48,26 @@ inline string PluginLibrarySuffix(const string &os) {
 	return ".so";
 }
 
-//! The plugin's own name for a device. 'rocm' is driven by MIGraphX and the
-//! artifact has always been named for the library, not the device.
+//! The plugin's own name for a device. CUDA and ROCm are both served by the ggml GPU plugin (src/tabfm_ggml_plugin.cpp), one build per vendor:
+//! `ggml-cuda` and `ggml-rocm`. The old library name 'migraphx' still resolves to the ROCm plugin. MLX keeps its own plugin.
 inline string PluginBaseName(const string &backend) {
-	if (backend == "rocm" || backend == "migraphx") {
-		return "migraphx";
+	if (backend == "cuda" || backend == "ggml-cuda") {
+		return "ggml-cuda";
+	}
+	if (backend == "rocm" || backend == "migraphx" || backend == "ggml-rocm") {
+		return "ggml-rocm";
 	}
 	return backend;
+}
+
+//! The error for an explicit cuda/rocm request when the ggml GPU plugin is not in anofox_tabfm_ep_path. It is the only GPU lane for those devices, so the
+//! message names the file, where it looked and the two ways out.
+inline string GgmlGpuPluginMissingMessage(const string &vendor, const string &ep_path, const string &plugin_file) {
+	const string where = ep_path.empty() ? string("anofox_tabfm_ep_path is not set")
+	                                     : "it is not in anofox_tabfm_ep_path '" + ep_path + "'";
+	return "anofox_tabfm: device '" + vendor + "' needs the ggml GPU backend plugin " + plugin_file + ", but " + where + ". CALL tabfm_download_runtime('" +
+	       vendor + "') to fetch it (it is saved to anofox_tabfm_ep_path), or SET anofox_tabfm_ep_path to the directory that holds it, or SET "
+	       "anofox_tabfm_device='cpu' to run on the CPU.";
 }
 
 //! Plugin filename for a backend on a given platform. Windows drops the 'lib'
@@ -103,8 +116,8 @@ inline string UnsupportedPluginPlatform(const string &backend, const string &os,
 		if (os == "linux" && arch == "amd64") {
 			return "";
 		}
-		return "tabfm_download_runtime: no CUDA plugin or runtime is published for " + where +
-		       " — the CUDA backend is built and verified for linux/amd64 only. " +
+		return "tabfm_download_runtime: no CUDA plugin is published for " + where +
+		       " — the ggml CUDA backend is built and verified for linux/amd64 only. " +
 		       (os == "osx" ? "On Apple Silicon use the MLX backend instead: CALL tabfm_download_runtime('mlx')."
 		                    : "SET anofox_tabfm_device='cpu' to run on the CPU.");
 	}
@@ -113,7 +126,7 @@ inline string UnsupportedPluginPlatform(const string &backend, const string &os,
 			return "";
 		}
 		return "tabfm_download_runtime: no ROCm plugin is published for " + where +
-		       " — MIGraphX runs on linux/amd64 only, and the AMD compute stack has no build for " + os +
+		       " — the ggml HIP backend is built and verified for linux/amd64 only, and the AMD compute stack has no build for " + os +
 		       ". SET anofox_tabfm_device='cpu' to run on the CPU.";
 	}
 	if (backend == "mlx") {

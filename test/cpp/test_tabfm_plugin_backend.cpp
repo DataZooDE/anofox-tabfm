@@ -16,6 +16,7 @@
 
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_plugin_artifacts.hpp"
+#include "tabfm_weights.hpp"
 
 #include <filesystem>
 #include <fstream>
@@ -345,16 +346,56 @@ TEST_CASE("mxr cache key: stem extraction handles plain names and extensionless 
 // ones the developer's machine is not.
 
 TEST_CASE("plugin_artifacts: filenames follow each platform's convention", "[tabfm][plugin_artifacts]") {
-	REQUIRE(PluginFileNameFor("cuda", "linux") == "libanofox_tabfm_cuda_plugin.so");
+	// cuda and rocm are both served by the ggml GPU plugin, one file per vendor
+	REQUIRE(PluginFileNameFor("cuda", "linux") == "libanofox_tabfm_ggml-cuda_plugin.so");
 	REQUIRE(PluginFileNameFor("mlx", "osx") == "libanofox_tabfm_mlx_plugin.dylib");
 	// Windows DLLs carry no 'lib' prefix — that is what CMake emits there, so
 	// guessing otherwise would look for a file the build never produces.
-	REQUIRE(PluginFileNameFor("cuda", "windows") == "anofox_tabfm_cuda_plugin.dll");
+	REQUIRE(PluginFileNameFor("cuda", "windows") == "anofox_tabfm_ggml-cuda_plugin.dll");
 
-	// 'rocm' is the device; MIGraphX is the library that drives it, and the
-	// artifact has always been named for the library.
-	REQUIRE(PluginFileNameFor("rocm", "linux") == "libanofox_tabfm_migraphx_plugin.so");
+	// 'rocm' is the device, and 'migraphx' (the old library name) still resolves to it
+	REQUIRE(PluginFileNameFor("rocm", "linux") == "libanofox_tabfm_ggml-rocm_plugin.so");
 	REQUIRE(PluginFileNameFor("migraphx", "linux") == PluginFileNameFor("rocm", "linux"));
+	// the artifact names are idempotent: asking for the plugin's own name finds the same file
+	REQUIRE(PluginFileNameFor("ggml-cuda", "linux") == PluginFileNameFor("cuda", "linux"));
+	REQUIRE(PluginFileNameFor("ggml-rocm", "linux") == PluginFileNameFor("rocm", "linux"));
+}
+
+TEST_CASE("plugin_artifacts: an explicit cuda or rocm request without the ggml plugin names the file and the way to get it", "[tabfm][plugin_artifacts]") {
+	// With the ggml plugin as the ONLY GPU lane there is no other plugin to fall back to: the error must say which file is missing, where it looked, and
+	// the two ways out (fetch it, or run on the CPU) — never the old "libmigraphx"/"onnxruntime" wording.
+	for (const char *vendor : {"cuda", "rocm"}) {
+		INFO("vendor " << vendor);
+		const auto file = PluginFileName(vendor);
+		const auto message = GgmlGpuPluginMissingMessage(vendor, "/opt/tabfm/ep", file);
+		REQUIRE(message.find("device '" + string(vendor) + "'") != string::npos);
+		REQUIRE(message.find(file) != string::npos);
+		REQUIRE(message.find("/opt/tabfm/ep") != string::npos);
+		REQUIRE(message.find("tabfm_download_runtime('" + string(vendor) + "')") != string::npos);
+		REQUIRE(message.find("anofox_tabfm_device='cpu'") != string::npos);
+		REQUIRE(message.find("MIGraphX") == string::npos);
+		REQUIRE(message.find("ONNX Runtime") == string::npos);
+	}
+	// no ep_path configured at all is its own sentence
+	const auto unset = GgmlGpuPluginMissingMessage("cuda", "", PluginFileName("cuda"));
+	REQUIRE(unset.find("anofox_tabfm_ep_path is not set") != string::npos);
+}
+
+TEST_CASE("plugin_artifacts: tabfm_download_runtime('cuda') fetches only the self-contained ggml plugin, no ONNX Runtime wheel", "[tabfm][plugin_artifacts]") {
+	if (HostPluginOs() != "linux" || HostPluginArch() != "amd64") {
+		return; // the published platform; elsewhere the refusal tests above apply
+	}
+	for (const char *backend : {"cuda", "rocm"}) {
+		INFO("backend " << backend);
+		RuntimeArtifact artifact;
+		string error;
+		REQUIRE(ResolveRuntimeArtifact(backend, artifact, error));
+		REQUIRE(error.empty());
+		REQUIRE(artifact.plugin_name == PluginFileName(backend));
+		REQUIRE(artifact.wheel_url.empty()); // the 475 MB onnxruntime-gpu wheel is gone: the plugin links CUDA statically
+		REQUIRE(artifact.wheel_bytes == 0);
+		REQUIRE(artifact.zip_entries.empty());
+	}
 }
 
 TEST_CASE("plugin_artifacts: the published platform for each backend is the only one accepted",
@@ -369,8 +410,8 @@ TEST_CASE("plugin_artifacts: Windows CUDA is refused before the download, not af
           "[tabfm][plugin_artifacts]") {
 	// Windows discovers an NVIDIA card through NVML like any other platform,
 	// so a user can reasonably ask for 'cuda' there. The wheel is manylinux and
-	// no Windows plugin is built, so without this the request walked a 475 MB
-	// download and ended at a missing library.
+	// no Windows plugin is built (the ggml CUDA plugin is Linux-only so far), so
+	// without this the request walked a download and ended at a missing library.
 	auto refusal = UnsupportedPluginPlatform("cuda", "windows", "amd64");
 	REQUIRE(!refusal.empty());
 	REQUIRE(refusal.find("windows/amd64") != string::npos);
@@ -410,10 +451,10 @@ TEST_CASE("plugin_artifacts: release asset urls are built from the single pinned
 	// One definition of the tag; a stale one is caught by the loader's ABI
 	// check rather than by anyone remembering to bump it.
 	REQUIRE(string(TABFM_PLUGIN_RELEASE_TAG).find("v20") == 0);
-	auto url = PluginReleaseAssetUrl("libanofox_tabfm_cuda_plugin.so", TABFM_PLUGIN_RELEASE_TAG);
+	auto url = PluginReleaseAssetUrl("libanofox_tabfm_ggml-cuda_plugin.so", TABFM_PLUGIN_RELEASE_TAG);
 	REQUIRE(url.find("https://github.com/DataZooDE/anofox-tabfm/releases/download/") == 0);
 	REQUIRE(url.find(TABFM_PLUGIN_RELEASE_TAG) != string::npos);
-	REQUIRE(StringUtil::EndsWith(url, "libanofox_tabfm_cuda_plugin.so"));
+	REQUIRE(StringUtil::EndsWith(url, "libanofox_tabfm_ggml-cuda_plugin.so"));
 	// An empty tag yields no url at all rather than a 404-shaped one.
 	REQUIRE(PluginReleaseAssetUrl("x.so", "").empty());
 }
@@ -432,8 +473,8 @@ TEST_CASE("plugin_artifacts: this host resolves to a platform it knows", "[tabfm
 TEST_CASE("plugin_artifacts: the sidecar asset is named for the backend's base name",
           "[tabfm][plugin_artifacts]") {
 	// CI writes `sha256sum <files> | tee <base>_plugin.sha256`.
-	REQUIRE(PluginSha256AssetName("cuda") == "cuda_plugin.sha256");
-	REQUIRE(PluginSha256AssetName("rocm") == "migraphx_plugin.sha256");
+	REQUIRE(PluginSha256AssetName("cuda") == "ggml-cuda_plugin.sha256");
+	REQUIRE(PluginSha256AssetName("rocm") == "ggml-rocm_plugin.sha256");
 	REQUIRE(PluginSha256AssetName("mlx") == "mlx_plugin.sha256");
 }
 
