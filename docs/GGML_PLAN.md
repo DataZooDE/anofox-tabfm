@@ -154,7 +154,7 @@ five real dimensions (max 5) after dropping size-1 dims: those need an op-aware 
 
 ## P6 follow-up: ORT removal started (done)
 - Removed: `vcpkg_ports/{onnxruntime,onnx,flatbuffers}`, the `ort-vcpkg` manifest feature, the Makefile `TABFM_ORT_VCPKG` block, and the cpu-flavor `find_package(onnxruntime)`
-  branch of `cmake/ort.cmake`. The dead upstream download default is now a configure-time error that asks for `TABFM_ORT_URL`.
+  branch of `cmake/ort.cmake`. The dead upstream download default became a configure-time error (both removed with ONNX Runtime in P9, below).
 - Kept (needed): `cmake/ort.cmake` for the `cuda`/`rocm`/`coreml` flavors and the `TABFM_CPU_ENGINE=ort` oracle build (with a user-supplied archive); the ORT-CUDA plugin, which links
   its own renamed ONNX Runtime from a wheel; the `TABFM_WITH_ORT` `#ifdef`s. Python `onnxruntime` stays the reference for goldens and graph parity.
 - Then (user decision): the ONNX Runtime CPU engine and the `TABFM_CPU_ENGINE` option are removed too; the CPU device is always ggml and ggml is mandatory. ONNX Runtime stays only for the in-process cuda/rocm/coreml flavors (`TABFM_WITH_ORT`), the ORT-CUDA plugin, and Python `onnxruntime` as the parity reference.
@@ -417,7 +417,7 @@ five real dimensions (max 5) after dropping size-1 dims: those need an op-aware 
 - `src/tabfm_shape_eval.cpp`: host evaluation of all int/bool/shape tensors for an input-shape signature (Shape, Gather, Concat,
   Slice, Cast, Range, ConstantOfShape, comparisons, Where on ints). Output: concrete shape per tensor + folded constants.
 - `src/tabfm_ggml_lower.cpp`: per-op lowering table `op -> native ggml | composite | custom` plus the rank-reduction pass.
-- `src/tabfm_ggml_engine.cpp`: `GgmlBackend : TabFMBackend` (interface in `tabfm_ort_engine.hpp`), graph cache keyed by
+- `src/tabfm_ggml_engine.cpp`: `GgmlBackend : TabFMBackend` (interface then in the since-removed ORT engine header, now `tabfm_session.hpp`), graph cache keyed by
   (graph, T, H, train_size, d), `ggml_gallocr` reuse, ggml threadpool. `SplitGgmlBackend` for prepare/query models (tabicl, kumo)
   mirrors `SplitOrtBackend` (tabfm_engine.cpp:777) incl. the context cache.
 - `src/include/tabfm_ggml_ops.hpp`: `GgmlSupportedOps()` mirroring `tabfm_mlx_ops.hpp`, with a test that reads the lowering source and
@@ -467,7 +467,7 @@ refused with the op list; never a silent wrong answer.
 
 **P5 Engine integration.** `GgmlBackend`/`SplitGgmlBackend` behind the factories, weights injected by name, memory estimate for
 `anofox_tabfm_max_memory` re-measured (rows^2 x features), error texts name the fixing SET/CALL, thread budget, graph-cache eviction.
-Red first: the existing C++ engine tests (`test_tabfm_ort_engine.cpp`, context cache, state) re-run against the ggml backend through a
+Red first: the existing C++ engine tests (now `test_tabfm_session.cpp`, context cache, state) re-run against the ggml backend through a
 shared fixture; SQL suites on the ggml build. Docs/skills/CHANGELOG updated here.
 
 **P6 Flip and clean-up.** Default `TABFM_CPU_ENGINE=ggml` once P4 is green for all models; keep an ORT build in CI for one release as the
@@ -486,7 +486,7 @@ CPU but splits the graph, so it needs its own measurements. ORT-CUDA, MIGraphX a
 
 ## Critical files
 Modify: `src/tabfm_engine.cpp` (factories ~1150, 1973, 2002), `CMakeLists.txt` (engine option, sources, tests), `.gitmodules`.
-Reuse unchanged: `src/include/tabfm_ort_engine.hpp` (backend interface), `src/tabfm_onnx_reader.cpp`, the `tabfm_mlx_ops.hpp` pattern,
+Reuse unchanged: the backend interface (then in the since-removed ORT engine header, now `src/include/tabfm_session.hpp`), `src/tabfm_onnx_reader.cpp`, the `tabfm_mlx_ops.hpp` pattern,
 `tabfm_cpu_budget.cpp`, existing fixtures + golden.json.
 New: `src/tabfm_graph_ir.*`, `src/tabfm_shape_eval.cpp`, `src/tabfm_ggml_lower.cpp`, `src/tabfm_ggml_engine.cpp`,
 `src/include/tabfm_ggml_ops.hpp`, `test/cpp/test_tabfm_ggml_{ops,parity,lower}.cpp`, `tools/ggml_parity/`, `tools/bench_cpu/`, `vendor/ggml`.

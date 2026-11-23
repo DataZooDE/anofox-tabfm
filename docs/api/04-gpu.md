@@ -30,13 +30,13 @@ fetches one by name. Each plugin is a release asset with a sha256 sidecar (`ggml
 checksum does not match is not used. A plugin is also checked against the extension's plugin ABI version
 on load, so a mismatched pair refuses rather than misbehaves. A plugin also lists the graph inputs it binds,
 and the extension refuses a graph that declares one it does not (plugin ABI 2: a plugin left over from
-an older release is refused by `device := 'auto'`, which then uses the CPU, and `tabfm_backends()` names
+an older release is refused under `anofox_tabfm_device = 'auto'`, which then uses the CPU, and `tabfm_backends()` names
 the file and `CALL tabfm_accelerate()` as the fix). They land in the `runtime` subdirectory of
 `anofox_tabfm_cache_dir`, unless `anofox_tabfm_ep_path` points elsewhere. Building a plugin from source:
 [BUILDING.md](../BUILDING.md#gpu-plugins-from-source).
 
 The ggml GPU plugin reads the plain external-data graph of each model (the `ext` graph), so one graph
-serves both vendors and every GPU-capable built-in model ships one. Its weights are read from the
+serves both vendors and every built-in model ships one. Its weights are read from the
 downloaded safetensors and uploaded to the device once, when the session is created; BF16 checkpoints
 (`tabfm-v1-1`) are upcast to float32 on the way. Ops the GPU backend has no kernel for run on the CPU
 inside the same graph, so a model never needs a separate GPU graph.
@@ -49,7 +49,6 @@ inside the same graph, so a model never needs a separate GPU graph.
 | `CALL tabfm_download_runtime(backend)` | `file, bytes, status` | fetch one plugin: `'cuda'`, `'rocm'` or `'mlx'` |
 | `SELECT * FROM tabfm_devices()` | `device_id, ep, name, arch, vram_total, vram_free, driver, usable` | the devices found: always `cpu`, plus any CUDA, ROCm or MLX device, `usable = false` when present but unsupported. `ep` names the engine that serves the device: `ggml` (cpu), `ggml-cuda`, `ggml-rocm`, `mlx` |
 | `SELECT * FROM tabfm_backends()` | `model, task, device, backend, supported, reason` | which device can serve which model, and why not; `supported` is `NULL` while the weights are not downloaded |
-| `CALL tabfm_gpu_precompile(task [, rows, features], model := '<id>')` | `task, rows, features, device, status, model, bucket_rows, bucket_features, seconds, reason` | load the model's session on its device and leave it warm. No backend compiles ahead of time any more, so `status` is always `not needed` and `bucket_rows` / `bucket_features` are `NULL`; kept so existing scripts keep working |
 | `SELECT model, device FROM tabfm_models()` | | which device serves each loaded model right now |
 
 ## Choosing the device
@@ -86,11 +85,9 @@ backend serves on your machine.
 | CUDA (ggml GPU plugin) | Linux x64, NVIDIA driver for CUDA 12.8, compute capability ≥ 7.5 | every built-in model, both tasks (each ships an ext graph) | RTX 4090: per-op goldens 444/455 bit-for-bit (the rest float rounding), Nori 1.5 against ONNX Runtime 3.4e-3 on logits of scale 11, end to end through SQL with `tabfm_models()` reporting `cuda:0`. Full catalogue with the release build (`tools/gpu_test/gpu_catalog.sh`): all 44 model×task pairs served by `cuda:0`, 0 label differences against the CPU, regression within 4.9e-6 of the prediction range; the GPU use-case suite passes |
 | ROCm (ggml GPU plugin) | Linux x64, ROCm ≥ 6.4 | every built-in model, both tasks (each ships an ext graph) | Radeon 890M iGPU (gfx1150): per-op goldens 451/455, Nori 1.5 end to end through SQL (`rocm:0`, 6.6e-5 against the CPU at scale 7.0), and the GPU use-case suite (`test/sql/tabfm_gpu_use_cases.test`: churn scoring, house prices, device switch, refusals). RX 9070 XT (gfx1201): goldens 451/455, Nori 1.5 against ONNX Runtime 2.1e-3 at 200 rows, warm 200 rows 0.26 s against 0.84 s on the CPU; full catalogue: all 44 model×task pairs served by `rocm:0`, 0 label differences, regression within 8e-6; the GPU use-case suite passes |
 | MLX (plugin) | macOS arm64 (Apple Silicon) | every task of every built-in model (all ship an ext graph) | Apple M3, real weights: all 44 model×task pairs through SQL against the CPU (`tools/gpu_test/gpu_catalog.sh`): 0 label differences, regression within 3.4e-6 of the prediction range, identical quality; earlier 100-row run (`test/sql/tabfm_mlx_real_models.test`) 0/100 label differences; 4000-row stress, device/precision alternation |
-| CoreML | — | — | **removed** — it was an ONNX Runtime provider; MLX serves Apple Silicon |
 
-There is no ahead-of-time compile on any backend: a GPU session builds its ggml graph for a shape the first
-time it sees it and keeps it for the next call of that shape, so the first call of a shape is slower than
-later ones, but there is no minutes-long compile and nothing to precompile.
+The first call of a new shape builds its graph, so it is slower than later calls of that shape. To warm a
+model, run one small prediction.
 
 ## Precision
 
@@ -99,15 +96,14 @@ later ones, but there is no minutes-long compile and nothing to precompile.
 | value | backends | meaning |
 |---|---|---|
 | `fp32` | all | strict: a device switch does not change answers beyond float rounding. On CUDA the plugin disables TF32 tensor-core rounding (`NVIDIA_TF32_OVERRIDE=0` before the CUDA runtime starts) and pads small matmuls so they avoid ggml's own small-batch TF32 kernel |
-| `tf32` | CUDA (accepted on ROCm, which has no TF32 switch to flip) | keeps the hardware's TF32 tensor-core matmuls: fp32 storage, faster matmuls, ~1e-3 relative error per matmul |
+| `tf32` | CUDA (accepted on ROCm, which has no TF32 switch to flip; refused on MLX) | keeps the hardware's TF32 tensor-core matmuls: fp32 storage, faster matmuls, ~1e-3 relative error per matmul |
 | `bf16`, `fp16` | MLX | MLX casts the program; validate on your own data. On `cuda` and `rocm` these are **refused** with an error: the ggml GPU plugin has no reduced-precision mode, and a silent fp32 run under another name would be a lie |
 
 The TF32 switch is process-wide and latched by the first CUDA initialisation, so set
 `anofox_tabfm_gpu_precision` before the first CUDA predict of the process; an `NVIDIA_TF32_OVERRIDE` you set
-in the environment yourself wins. Quantized label flips against fp32 are model-dependent and **not confined
-to near-ties**: measured on earlier backends, `tabfm-v1` bf16 flipped ~2% of rows including high-confidence
-ones, `mitra` bf16 30% of query rows at near-ties. A mode a backend cannot honour is an error, never a silent
-fp32 run.
+in the environment yourself wins. Label flips under a reduced precision against fp32 are model-dependent
+and not confined to near-ties, so validate on your own data before using `bf16` / `fp16` on MLX. A mode a
+backend cannot honour is an error, never a silent fp32 run.
 
 ## GPU memory
 
@@ -136,9 +132,9 @@ flag, but published by a separate submission that can trail a release). See
 
 ## Removed and deprecated
 
-The ONNX Runtime CUDA plugin (`libanofoxort_gpu`), the MIGraphX ROCm plugin (`.mxr` compile cache, shape
-buckets, masked graphs, the `limix-2m` bucket ceiling) and the in-process `cuda` / `rocm` / `coreml` builds
-are gone. What is still accepted, so existing scripts keep working:
+Removed: the ONNX Runtime CUDA plugin (`libanofoxort_gpu`), the MIGraphX ROCm plugin and its `.mxr` compile cache, and the
+in-process `cuda` / `rocm` / `coreml` builds; CoreML was an ONNX Runtime provider, and MLX serves Apple Silicon. What is still
+accepted, so existing scripts keep working:
 
 | name | now |
 |---|---|
@@ -146,6 +142,6 @@ are gone. What is still accepted, so existing scripts keep working:
 | `SET anofox_tabfm_device = 'migraphx'` | an alias for `rocm` |
 | `anofox_tabfm_mxr_source`, `anofox_tabfm_cpu_prepack` | no effect |
 | `tabfm_register_model(..., classification_migraphx_graph / regression_migraphx_graph := ...)` | accepted and ignored; GPUs read the `*_ext_graph` |
-| `CALL tabfm_gpu_precompile(...)` | a warm-up that reports `not needed` |
+| `CALL tabfm_gpu_precompile(task [, rows, features], model := '<id>')` | deprecated: loads the session and reports `status = 'not needed'` (`bucket_rows` / `bucket_features` are `NULL`); warm with one small prediction instead |
 
 The design notes of the removed backends are in [archive/](../archive/README.md).

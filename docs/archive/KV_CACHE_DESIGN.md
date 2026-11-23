@@ -101,7 +101,7 @@ blocker found — ready for its own implementation goal.
 
 ## Implemented for TabICL — `anofox_tabfm_context_cache`
 
-> **Superseded (Phase 1 of [CONTEXT_CACHE_PLAN.md](CONTEXT_CACHE_PLAN.md)).** This section records the first
+> **Superseded (Phase 1 of [CONTEXT_CACHE_PLAN.md](../CONTEXT_CACHE_PLAN.md)).** This section records the first
 > generation (#38/#40): one cached context, opt-in, fitted values from a query pass. The shipped design is the
 > exact "kv" pair, default-on, with a byte-bounded multi-context cache; the engine no longer serves a pair
 > without `context_logits`.

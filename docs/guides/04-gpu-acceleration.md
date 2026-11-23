@@ -54,9 +54,12 @@ errors, rather than quietly running on the CPU.
 - **CUDA** (Linux x64): only the NVIDIA driver. The plugin links the CUDA runtime and cuBLAS statically, so
   no CUDA toolkit is needed; the card must be compute capability 7.5 (Turing) or newer.
 - **ROCm** (Linux x64): a ROCm 6.4 or newer install, whose HIP, hipBLAS and rocBLAS libraries the plugin
-  loads. Every AMD GPU node the kernel driver exposes is usable, iGPUs included.
+  loads. A card, iGPUs included, is usable when the published plugin carries kernels for its arch: gfx1030,
+  gfx1100, gfx1101, gfx1102, gfx1150, gfx1151, gfx1200, gfx1201, gfx90a and gfx942. Any other card is listed
+  with `usable = false` and `'auto'` passes over it.
 - **MLX** (macOS arm64): `brew install mlx mlx-c`.
 
-There is no first-run compile: a GPU session is ready as soon as its weights are on the device. A model too
+A GPU session is ready as soon as its weights are on the device; the first call of a new shape builds its
+graph and is a little slower than later ones. A model too
 large for the card's free memory fails at load, naming `CALL tabfm_unload()`, `anofox_tabfm_max_sessions`
 and `SET anofox_tabfm_device='cpu'` as the ways out ([GPU memory](../api/04-gpu.md#gpu-memory)).

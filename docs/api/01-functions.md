@@ -148,7 +148,7 @@ the `keep` columns and the target column (`NULL` on the scored rows), plus:
 | `tabfm_download`, `tabfm_load`, `tabfm_unload`, `tabfm_remove` | table (`CALL`) | the weight lifecycle | [Models and weights](02-models-and-weights.md#managing-weights) |
 | `tabfm_register_model`, `tabfm_unregister_model` | table (`CALL`) | your own model, in SQL | [Models and weights](02-models-and-weights.md#registering-your-own-model) |
 | `tabfm_devices()`, `tabfm_backends()` | table | devices found; which device can serve which model | [GPU](04-gpu.md) |
-| `tabfm_accelerate`, `tabfm_download_runtime`, `tabfm_gpu_precompile` | table (`CALL`) | GPU setup; `tabfm_gpu_precompile` only warms a session now | [GPU](04-gpu.md) |
+| `tabfm_accelerate`, `tabfm_download_runtime` | table (`CALL`) | GPU setup (`tabfm_gpu_precompile` is deprecated: it reports `not needed`) | [GPU](04-gpu.md) |
 | `tabfm_accuracy`, `tabfm_precision`, `tabfm_recall`, `tabfm_f1`, `tabfm_roc_auc`, `tabfm_log_loss`, `tabfm_ece` | aggregate | classification metrics | [Evaluation](07-evaluation.md) |
 | `tabfm_rmse`, `tabfm_mae`, `tabfm_r2`, `tabfm_mape`, `tabfm_medae` | aggregate | regression metrics | [Evaluation](07-evaluation.md) |
 | `tabfm_crps`, `tabfm_log_score`, `tabfm_interval_score` | aggregate | scoring rules for a predictive distribution | [Evaluation](07-evaluation.md#scoring-rules-for-a-predictive-distribution) |

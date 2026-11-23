@@ -39,7 +39,6 @@ review that has been carried out, superseded or dropped.
 | Document | What it is |
 |---|---|
 | [BUILDING.md](BUILDING.md) | Building and testing from source, the ggml engine, the GPU plugins |
-| [REAL_MODELS.md](REAL_MODELS.md) | Each real model: how it was ported and verified, licences, gated Hugging Face repositories |
 | [GENERATE.md](GENERATE.md) | How generation and imputation work, what binning costs, what this is not |
 
 ### Design
@@ -48,16 +47,14 @@ review that has been carried out, superseded or dropped.
 |---|---|
 | [GGML_PLAN.md](GGML_PLAN.md) | The ggml engine: replacing ONNX Runtime on the CPU, then on CUDA and ROCm (the ggml GPU plugin) |
 | [GGML_LOWERING.md](GGML_LOWERING.md) | How an ONNX graph is lowered to a ggml graph |
-| [KV_CACHE_DESIGN.md](KV_CACHE_DESIGN.md) | The context cache behind `anofox_tabfm_context_cache` |
-| [CONTEXT_CACHE_PLAN.md](CONTEXT_CACHE_PLAN.md) | Next steps for the context cache (#37): SQL surface, the ICL key/value contract, every model, phases; with the tabicl-v2 spike |
+| [CONTEXT_CACHE_PLAN.md](CONTEXT_CACHE_PLAN.md) | The context cache (#37): SQL surface, the ICL key/value contract, every model, phases; with the tabicl-v2 spike (the first design, from the ONNX Runtime era, is [archive/KV_CACHE_DESIGN.md](archive/KV_CACHE_DESIGN.md)) |
 
 ### Reports
 
 | Document | What it is |
 |---|---|
-| [GPU_AND_MEMORY_FINDINGS.md](GPU_AND_MEMORY_FINDINGS.md) | ROCm and weight-loading memory findings (2026-07-04) |
+| [REAL_MODELS.md](REAL_MODELS.md) | Each real model: how it was ported and verified, licences, gated Hugging Face repositories (current GPU status in [api/04-gpu.md](api/04-gpu.md#backend-support-matrix)) |
 | [MLX_SPIKE_RESULTS.md](MLX_SPIKE_RESULTS.md) | The Apple MLX backend spike |
-| [RUST_CANDLE_FEASIBILITY.md](RUST_CANDLE_FEASIBILITY.md) | Replacing ONNX Runtime with candle: feasibility |
 
 ### History (plans and reviews)
 
@@ -67,15 +64,14 @@ review that has been carried out, superseded or dropped.
 | [GENERATE_PLAN.md](GENERATE_PLAN.md) | Synthetic data generation and imputation |
 | [MLX_PLAN.md](MLX_PLAN.md) | The Apple MLX backend |
 | [MULTI_MODEL_PLAN.md](MULTI_MODEL_PLAN.md) | The multi-model registry |
-| [PERFORMANCE_PLAN.md](PERFORMANCE_PLAN.md) | Performance plan (2026-07-04) |
-| [PHASE_COMPLETION_PLAN.md](PHASE_COMPLETION_PLAN.md) | Completing the dynamic-backends phases |
 | [PURE_SQL_SURFACE_PLAN.md](PURE_SQL_SURFACE_PLAN.md) | The pure-SQL model surface |
-| [CODE_REVIEW_2026-07-04.md](CODE_REVIEW_2026-07-04.md) | Consolidated code review (2026-07-04) |
 
 ### Archive
 
 The ONNX Runtime / MIGraphX / CoreML backends were removed; their design notes, plans and reports
 (dynamic backends, GPU distribution and hardening, the ROCm spikes and masked graphs, CoreML, Windows
-inference on ONNX Runtime, the upstream ONNX Runtime issues) are kept for history in [archive/](archive/README.md).
+inference on ONNX Runtime, the upstream ONNX Runtime issues, the first context-cache design, the July 2026 performance plan,
+code review and memory findings, the candle feasibility study, the memory-estimator plan) are kept for history in
+[archive/](archive/README.md).
 
 [CHANGELOG.md](../CHANGELOG.md) lists every release.

@@ -11,6 +11,13 @@ Reproduce with `tools/mlx_spike` (`uv sync`, then the commands named per spike).
 Every input is seeded from a literal, so a re-run reproduces these numbers rather
 than merely numbers of the same magnitude.
 
+> **Status (2026-11-23).** The verdicts and tolerances below still back the MLX plugin. Where the text compares with
+> "ORT", ONNX Runtime was the CPU reference at the time; the CPU now runs on the ggml engine, and ONNX Runtime survives
+> only as the Python parity oracle (`tools/ggml_parity`). The MLX plugin now also interprets any shipped ONNX graph
+> (`src/tabfm_mlx_graph.cpp`); mitra's hand port remains the fast path. `mlx_spike.tolerance_probe`,
+> `mlx_spike.sm5_all_models` and `tools/gpu_test/equivalence.py` were removed with the ONNX Runtime tooling, so the
+> commands below that name them are history (recover them from git).
+
 **CORRECTION (scope).** The plan states "no Apple Silicon is available to this
 environment; every spike and verification runs on your macOS machine", and
 front-loads Python spikes to keep the human's time on the Mac short. That is no
@@ -272,54 +279,11 @@ Verified to configure and build.
 
 ## Blocker for M1, found while wiring the build (not MLX's fault)
 
-**The extension's prebuilt-ORT path does not configure on macOS.** That is
-`make debug` and `make test_debug` — the development and test-suite path.
-`make release` (cpu flavor) is unaffected: `Makefile` defaults
-`TABFM_ORT_VCPKG=1`, which builds ONNX Runtime from the vcpkg port and links it
-statically, so it never fetches an archive. An earlier draft of this section
-said "does not configure on macOS" without that qualification, which was
-broader than the evidence.
-
-`cmake/ort.cmake` pinned `osx-universal2` prebuilt archives, and Microsoft no
-longer publishes them:
-
-| ORT release | macOS assets |
-|---|---|
-| v1.29.0 (`TABFM_ORT_VERSION` default) | `onnxruntime-osx-arm64-1.29.0.tgz` only |
-| v1.28.0 / v1.27.0 / v1.26.0 | `osx-arm64` only |
-
-so configure died on a 404. This predates the MLX work and blocks nothing in the
-spikes above — the plugin builds standalone and was verified standalone — but it
-does block the practical M1 workflow, since `make test_debug` is how the engine
-integration would be exercised.
-
-**Fixed**: macOS now fetches `osx-arm64`, and `osx_amd64` is dropped from the
-build matrix. Two things learned the hard way while verifying it, both worth
-keeping:
-
-- `OSX_BUILD_ARCH` is **set but empty** for a normal host build and carries a
-  value only when the DuckDB matrix cross-compiles. A guard written as
-  `if(DEFINED OSX_BUILD_ARCH AND ...)` therefore rejects every native macOS
-  build. Test it for truthiness.
-- The guard belongs inside `_tabfm_fetch_prebuilt_ort`, not in the platform
-  mapping: only that path needs a macOS archive to exist, and the cpu release
-  build (vcpkg ORT) legitimately never reaches it.
-
-It was not a one-line swap. The retired comment explained the universal2 choice:
-"The DuckDB extension matrix cross-builds osx_amd64 (`OSX_BUILD_ARCH=x86_64`) on
-an arm64 runner, so we cannot key off the host." That is still true of the
-matrix; what changed is that the archive carrying both slices stopped existing.
-Moving to `osx-arm64` leaves the osx_amd64 target with no ORT at all, so this
-was a decision about whether x86_64 macOS remains a supported platform — taken
-deliberately rather than as a side effect of unblocking MLX. Pinning macOS back
-to 1.23.2 was the alternative, and it collides with this PR's phase 2, which
-needs ORT >= 1.28 for CUDA.
-
-*Unrelated trap in the same area*: a stale `build/release/CMakeCache.txt` keeps
-whatever `TABFM_ORT_VERSION` it was first configured with, because
-`set(... CACHE ...)` does not overwrite an existing entry. A cache from an older
-checkout will silently build against a different ORT than the source says.
-`rm -rf build/release` when the version matters.
+The extension's prebuilt ONNX Runtime archive no longer existed for macOS universal2, so `make debug` did not configure on
+macOS until the build fetched `osx-arm64` and `osx_amd64` left the build matrix. ONNX Runtime has since been removed from
+every build (the CPU runs on ggml, `docs/GGML_PLAN.md`), so the details of that fix are history; the one lesson that still
+applies to any CMake work here: `OSX_BUILD_ARCH` is **set but empty** for a normal host build and carries a value only when
+the DuckDB matrix cross-compiles, so test it for truthiness, not with `if(DEFINED ...)`.
 
 ---
 

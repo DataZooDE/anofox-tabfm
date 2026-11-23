@@ -159,9 +159,9 @@ step: [Getting Started](docs/guides/01-getting-started.md#licence-acknowledgemen
 Which model to pick, and how they compared: [Choosing a model](docs/guides/02-choosing-a-model.md). Sizes,
 backends and attribution texts: [Models and weights](docs/api/02-models-and-weights.md).
 
-**Memory on the CPU.** `mitra`'s row attention grows with the square of the context: about 3 GB per 1,000
-context rows at 15 features, so 2,000 rows peak near 7 GB and 4,000 exceed 15 GB, well below the default
-`anofox_tabfm_max_rows` (10,000). Sample the context to fit your RAM ([#107](https://github.com/DataZooDE/anofox-tabfm/issues/107)).
+**Memory on the CPU.** `mitra`'s row attention grows faster than the context: on the ggml engine a call with
+1,000 context rows at 15 features peaks at about 1 GB, 2,000 rows at 2 GB and 4,000 rows at 5.5 GB, and the
+default `anofox_tabfm_max_rows` (10,000) allows far more. Sample the context to fit your RAM ([#107](https://github.com/DataZooDE/anofox-tabfm/issues/107)).
 
 ## Claude Code skills
 
@@ -222,10 +222,10 @@ The full index, including design notes and the history of plans and reviews, is
 
 | Document | What it is |
 |---|---|
-| [docs/REAL_MODELS.md](docs/REAL_MODELS.md) | Reference: each real model, how it was ported and verified, licences, gated repositories |
+| [docs/REAL_MODELS.md](docs/REAL_MODELS.md) | Report: each real model, how it was ported and verified, licences, gated repositories |
 | [docs/GENERATE.md](docs/GENERATE.md) | Reference: how generation and imputation work, and what binning costs |
 | [docs/BUILDING.md](docs/BUILDING.md) | Reference: building and testing from source |
-| [docs/GGML_PLAN.md](docs/GGML_PLAN.md), [docs/KV_CACHE_DESIGN.md](docs/KV_CACHE_DESIGN.md) | Design: the ggml engine on the CPU and in the CUDA / ROCm plugin; the context cache |
+| [docs/GGML_PLAN.md](docs/GGML_PLAN.md), [docs/CONTEXT_CACHE_PLAN.md](docs/CONTEXT_CACHE_PLAN.md) | Design: the ggml engine on the CPU and in the CUDA / ROCm plugin; the context cache |
 | [docs/MLX_SPIKE_RESULTS.md](docs/MLX_SPIKE_RESULTS.md) | Report: the MLX spike |
 | [docs/archive/](docs/archive/README.md) | History: the removed ONNX Runtime, MIGraphX and CoreML backends |
 | [docs/README.md](docs/README.md#history-plans-and-reviews) | History: the plans and reviews behind each feature |
@@ -241,7 +241,7 @@ The full index, including design notes and the history of plans and reviews, is
 | <a id="multiple-models-the-registry"></a><a id="managing-weights-and-devices"></a>The registry, managing weights | [Choosing a model](docs/guides/02-choosing-a-model.md), [Models and weights](docs/api/02-models-and-weights.md) |
 | <a id="a-full-worked-example"></a><a id="evaluation-cross-validation--scoring"></a><a id="plot-with-anofox-visualization"></a>Worked example, evaluation, plotting | [Evaluate and compare](docs/guides/03-evaluate-and-compare.md), [Evaluation](docs/api/07-evaluation.md), [Plotting](docs/api/08-plotting.md) |
 | <a id="settings"></a>Settings | [Settings](docs/api/05-settings.md) |
-| <a id="flavors-cpu--gpu"></a><a id="status--scope"></a>Flavors (CPU / GPU), Status & scope | [GPU acceleration](docs/guides/04-gpu-acceleration.md), [GPU](docs/api/04-gpu.md) |
+| <a id="flavors-cpu--gpu"></a><a id="status--scope"></a>GPU (formerly Flavors), Status & scope | [GPU acceleration](docs/guides/04-gpu-acceleration.md), [GPU](docs/api/04-gpu.md) |
 | <a id="building"></a>Building | [docs/BUILDING.md](docs/BUILDING.md) |
 
 ## Status

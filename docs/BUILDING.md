@@ -38,7 +38,7 @@ Requires CMake ≥ 3.10 (≥ 3.19 to also build the bundled C++ unit tests), a C
 
 The CPU device runs on **ggml** (`vendor/ggml`, a pinned git submodule compiled into the extension, CPU backend only, no OpenMP,
 AVX2/FMA baseline on x86-64). No build links **ONNX Runtime**: there is no download, no vcpkg ORT port and no build flavor; the
-`TABFM_FLAVOR` switch, the `TABFM_ORT_*` make variables, `TABFM_WITH_ORT` and `cmake/ort.cmake` are gone. The bundled ONNX graphs are
+`TABFM_FLAVOR` switch, the `TABFM_ORT_*` make variables, `TABFM_WITH_ORT` and `cmake/ort.cmake` are removed. The bundled ONNX graphs are
 lowered op by op to ggml graphs (`docs/GGML_PLAN.md`, `docs/GGML_LOWERING.md`); every op is checked against ONNX Runtime's output
 (`tools/ggml_parity/`). Python `onnxruntime` remains only as development tooling: the oracle for the per-op goldens and the parity scripts.
 

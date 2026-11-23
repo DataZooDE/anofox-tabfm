@@ -5,8 +5,8 @@ description: >
   NVIDIA CUDA and AMD ROCm (both served by the ggml GPU plugin) and Apple MLX
   backend plugins loaded at runtime, device discovery, per-model backend
   support, precision modes and GPU memory. Use when making predictions faster
-  on a GPU, running `tabfm_accelerate` / `tabfm_download_runtime` /
-  `tabfm_gpu_precompile`, reading `tabfm_devices()` / `tabfm_backends()`,
+  on a GPU, running `tabfm_accelerate` / `tabfm_download_runtime`, reading
+  `tabfm_devices()` / `tabfm_backends()`,
   setting `anofox_tabfm_device`, `anofox_tabfm_gpu_precision` or
   `anofox_tabfm_ep_path`, checking which device actually served a query, or
   troubleshooting a GPU that is not used.
@@ -45,9 +45,8 @@ the ROCm plugin uses the system's ROCm 6.4+ (HIP, hipBLAS, rocBLAS); MLX needs `
    and `SET anofox_tabfm_device='cpu'`. Sessions are cached per (model, device, precision) and add up.
 6. **Which cards are usable.** CUDA needs compute capability 7.5 (Turing) or newer. On ROCm a card (iGPUs
    included) is usable when the published plugin has kernels for its arch: gfx1030/1100/1101/1102/1150/1151/1200/1201,
-   gfx90a and gfx942; any other is `usable = false`, and `'auto'` passes over it. Every built-in model ships an ext graph, so each runs on CUDA, ROCm and MLX as far as
-   `tabfm_backends()` says. CoreML is gone (`'coreml'` errors and points to `mlx`); `'migraphx'` is an alias
-   for `rocm`.
+   gfx90a and gfx942; any other is `usable = false`, and `'auto'` passes over it. Every built-in model ships
+   an ext graph, so each runs on CUDA, ROCm and MLX as far as `tabfm_backends()` says.
 
 ## Set up
 
@@ -94,20 +93,19 @@ SELECT model, task, device FROM tabfm_models() WHERE loaded;
 
 ## Warm-up
 
-There is no ahead-of-time compile on any backend. `tabfm_gpu_precompile` is kept as a warm-up: it loads the
-model's session on its device and reports `status = 'not needed'` (`bucket_rows` / `bucket_features` are NULL).
-
-```sql
-CALL tabfm_gpu_precompile('classification', model := 'mitra');
-```
+The first call of a new shape builds its graph and is slower than later ones; to warm a model, run one small
+prediction.
 
 ## Precision
 
 | `anofox_tabfm_gpu_precision` | backends | meaning |
 |---|---|---|
 | `fp32` (default) | all | strict: switching device does not change answers beyond float rounding (TF32 off on CUDA, small matmuls padded past ggml's TF32 kernel) |
-| `tf32` | CUDA (accepted on ROCm, which has no TF32 switch) | TF32 tensor-core matmuls, fp32 storage. Process-wide, latched at the first CUDA use |
+| `tf32` | CUDA (accepted on ROCm, which has no TF32 switch; refused on MLX) | TF32 tensor-core matmuls, fp32 storage. Process-wide, latched at the first CUDA use |
 | `bf16`, `fp16` | MLX | reduced precision; refused on CUDA and ROCm |
 
-A mode the backend cannot honour is an error, never a silent fp32 run. Deprecated and without effect:
-`anofox_tabfm_mxr_source`, `anofox_tabfm_cpu_prepack`.
+A mode the backend cannot honour is an error, never a silent fp32 run.
+
+Deprecated names, accepted so old scripts keep working: `'coreml'` (errors, points to `mlx`), `'migraphx'` (an
+alias for `rocm`), `anofox_tabfm_mxr_source` and `anofox_tabfm_cpu_prepack` (no effect), `tabfm_gpu_precompile`
+(reports `not needed`); do not use them in new SQL.

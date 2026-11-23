@@ -35,7 +35,7 @@ model other than `tabfm-v1` has touched a GPU, and `tabfm_impute` /
 |---|---|---|
 | **CPU** | ORT linked **statically** into the extension | published artifact: no `libonnxruntime.so` in `NEEDED`, zero exported `Ort*` symbols, 69 MB |
 | **CUDA** | an ORT execution provider that **ORT itself `dlopen`s** | provider needs *no* ORT symbols (0 of 335 undefined are ORT-namespace); links only libc/libstdc++/CUDA; exports one entry point, `GetProvider` |
-| **ROCm** | **not an ORT EP at all** — our own MIGraphX backend over the header-only C++ wrapper on `libmigraphx_c` | `cmake/ort.cmake` `find_library(migraphx_c … REQUIRED)`; ORT's own MIGraphX EP is a dead end (re-inlines initializers, 2 GB protobuf ceiling — `docs/GPU_AND_MEMORY_FINDINGS.md`) |
+| **ROCm** | **not an ORT EP at all** — our own MIGraphX backend over the header-only C++ wrapper on `libmigraphx_c` | `cmake/ort.cmake` `find_library(migraphx_c … REQUIRED)`; ORT's own MIGraphX EP is a dead end (re-inlines initializers, 2 GB protobuf ceiling — `docs/archive/GPU_AND_MEMORY_FINDINGS.md`) |
 | **CoreML** | an ORT EP, **not** compiled into the core we ship | published macOS artifact contains zero CoreML internals; the lone `CoreMLExecutionProvider` string is our own probe literal |
 
 So three of the four are already "a library loaded at runtime" in shape. The

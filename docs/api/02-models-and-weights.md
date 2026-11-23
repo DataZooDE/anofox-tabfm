@@ -20,7 +20,7 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 
 | `model` | by | tasks | licence id | `commercial` | gated | weights | notes |
 |---|---|---|---|---|---|---|---|
-| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB per task | CPU memory grows with the square of the context rows: peak RSS 3.5 GB at 1,000 rows x 15 features, 6.8 GB at 2,000, over 15 GB at 4,000 (#107) |
+| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB per task | CPU memory grows faster than the context rows: peak RSS 1.0 GB at 1,000 rows x 15 features, 2.0 GB at 2,000, 5.5 GB at 4,000 (#107) |
 | `mitra-v2` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB / ~307 MB | recommended up to 32,768 rows and 256 features; the classifier runs mitra's graph |
 | `tabdpt` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~254 MB, one file for both tasks | TabDPT v1.2 |
 | `tabdpt-v1-3` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~252 MB, one file for both tasks | TabDPT v1.3 |
@@ -68,7 +68,7 @@ Every lifecycle function takes the task first and `model :=` (or falls back to
 
 | Call | What it does |
 |---|---|
-| `CALL tabfm_download(task [, revision], model := '<id>')` | fetch the weights into the cache; one row per file (`file, url, bytes, status`). For `nori-30m`, `nori-1-5` and the Kumo models a second row (`url` NULL) is the `model.safetensors` it writes from the checkpoint for the GPU graphs: `converted`, or `cached` when already there. A missing or outdated converted file is also rewritten from the checkpoint the next time a predict, `tabfm_gpu_precompile` or `tabfm_backends()` resolves the model, so a cache left by an older release is not refused on the GPU |
+| `CALL tabfm_download(task [, revision], model := '<id>')` | fetch the weights into the cache; one row per file (`file, url, bytes, status`). For `nori-30m`, `nori-1-5` and the Kumo models a second row (`url` NULL) is the `model.safetensors` it writes from the checkpoint for the GPU graphs: `converted`, or `cached` when already there. A missing or outdated converted file is also rewritten from the checkpoint the next time a predict or `tabfm_backends()` resolves the model, so a cache left by an older release is not refused on the GPU |
 | `CALL tabfm_load(task, model := '<id>')` | check that the weights are downloaded and fail with the fix if not; the session itself is built on the first predict |
 | `CALL tabfm_unload([task], model := '<id>')` | free a loaded session (all of them without a task); memory returns to baseline |
 | `CALL tabfm_remove(task [, revision], model := '<id>')` | delete the weights from the cache |
@@ -94,8 +94,7 @@ The `context_*` columns are `false` / zero for a session that does not use the [
 
 `device` is empty until a predict warms a session; it is how you check that a GPU is used
 ([GPU acceleration](../guides/04-gpu-acceleration.md#2-check-what-serves-each-model)). To warm a GPU
-session ahead of the first query, run one small predict, or `tabfm_gpu_precompile`, which loads the session and
-reports `not needed` ([GPU](04-gpu.md#functions)).
+session ahead of the first query, run one small predict.
 
 For a gated or private HF repo, add a bearer token — no custom credential store:
 
@@ -136,7 +135,7 @@ against a fixed training table, cross-validation folds and per-segment `UNION AL
 - **Memory.** `anofox_tabfm_context_cache_memory` (default `256MB`) bounds the cached contexts per loaded model;
   the least recently used goes first. The budget is instance-wide (one cache per loaded model serves every
   connection) and read when a statement runs. `tabfm_unload()` drops the contexts with the session. With the
-  cache on, a model also holds a second session (prepare + query): about +300 MB for `tabicl-v2`.
+  cache on, a model also holds a second session (prepare + query): about +200 MB for `tabicl-v2`.
 - **Batches within one call.** `opts := MAP{'query_batch': 'N'}` scores the test rows N at a time against one
   encoded context, so it bounds the peak memory of a large call without re-encoding the context per batch.
   Each pass has a fixed cost that grows with the context (about 60 ms at 2000 support rows), so keep N in the

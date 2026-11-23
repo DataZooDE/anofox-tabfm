@@ -17,6 +17,9 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   left over from an older release is not used: run `CALL tabfm_accelerate()` again.
 - **All bundled `resources/graph_migraphx_*.onnx`** are deleted.
 - **CoreML** (an in-process ONNX Runtime provider) is gone; MLX serves Apple Silicon.
+- **Development tooling of the removed backends** (no user-visible effect): the `graph_invariants.yml` CI workflow and the
+  shape-pin tools it guarded (an ONNX Runtime CUDA workaround), the masked MIGraphX export contract (`--contract mask`) in every
+  exporter, `tools/gpu_test/equivalence.py`, and the `TABFM_DISABLE_EXTERNAL_DATA` environment variable.
 - **`tabfm_devices()` `ep` values** are now `ggml` (cpu), `ggml-cuda`, `ggml-rocm` and `mlx` (were `CPUExecutionProvider`,
   `CUDAExecutionProvider`, `MIGraphXExecutionProvider`, `MlxBackend`).
 - **`anofox_tabfm_gpu_precision = 'bf16' | 'fp16'` is refused on `cuda` and `rocm`** (it quantized the MIGraphX program before); those modes
@@ -36,6 +39,9 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   Runtime; the ONNX Runtime CPU engine is removed (and, below, every other ONNX Runtime build). Warm Nori 1.5 is within about
   1.2x of ONNX Runtime at 200 rows and faster at small sizes. The x86 build needs AVX2, FMA, F16C and BMI2 and refuses to run (naming the way out) on an older CPU.
   The vcpkg ONNX Runtime port (and its `ort-vcpkg` feature) and the `TABFM_CPU_ENGINE` option are removed. Differences you can see: out-of-range `Gather` indices give NaN where ONNX Runtime raised, and one loaded model runs one prediction at a time. See docs/GGML_PLAN.md.
+- **Much less CPU memory for large contexts.** `mitra` (15 features) peaks at about 1.0 GB with 1,000 context rows, 2.0 GB with 2,000
+  and 5.5 GB with 4,000, where ONNX Runtime needed 3.5 GB, 6.8 GB and over 15 GB (#107). The context cache's second session costs about
+  +200 MB for `tabicl-v2` (was +300 MB). The docs carry the new figures.
 
 ### Added
 - **The ggml GPU plugin serves CUDA and ROCm** (`src/tabfm_ggml_plugin.cpp`, built by `tools/ggml_plugin`): the CPU engine on a GPU, and the only
@@ -48,15 +54,14 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   `anofox_tabfm_max_sessions` and `SET anofox_tabfm_device='cpu'`. Verified on Nori 1.5 against ONNX Runtime on ROCm (Radeon 890M and RX 9070 XT)
   and CUDA (RTX 4090), end to end through SQL. An explicit `cuda`/`rocm` request without the plugin names the missing file and
   `tabfm_download_runtime`. See docs/api/04-gpu.md.
-- **Ext graphs for `exaone-tabular` (both tasks) and `nori-30m`**, so every GPU-capable built-in model ships one.
+- **Ext graphs for `exaone-tabular` (both tasks) and `nori-30m`**, so every built-in model ships one.
 - **`nori-1-5`** (Synthefy Nori 1.5, "Model v3", Apache-2.0 for code and weights, ungated): the second
   REGRESSION-ONLY built-in, ~20.8 M parameters, a two-phase encoder (9 cell layers at width 128, 12 row layers
   at width 256). The engine reads the released `nori.pt` natively (`{model_config, model_state_dict,
   inference_config}`, no EMA copy); the 999-quantile head is reduced in-graph to its mean and the engine runs
   one forward on the raw table. `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only.
-  Verified on the real weights on the CPU, on CUDA (RTX 3090, through a model registered in SQL with the
-  graph_ext_nori15_regression ext graph, not the built-in), on MLX (Apple M3) and on ROCm (RX 9070 XT, a
-  bundled masked graph, one bucket verified). Its recommended limits are 2,000 rows
+  Verified on the real weights on the CPU, on CUDA and ROCm (the ggml GPU plugin, reading its ext graph
+  `graph_ext_nori15_regression`) and on MLX (Apple M3). Its recommended limits are 2,000 rows
   and 100 features, one at a time (CPU memory grows with rows² x features, about twice Nori-30M's). See
   docs/REAL_MODELS.md.
 - **`tools/export_nori` exports Nori 1.5**: patch 5 (drops `int(eval_pos)` from `PromptQuantilePLEEncoder`)
@@ -77,7 +82,8 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 - **A failed prediction no longer leaks the rows of the predictions beside it.** When one branch of a query failed while predicting (for
   example a `tabfm_cross_validate` fold whose target has more values than the model has classes), DuckDB dropped the other branches'
   aggregate states without their destructor: their row buffers leaked in every build, and a debug build aborted at exit. The buffers are
-  now owned by the query that created them and freed with it. **CUDA devices need compute capability 7.5 or newer**; an older card is listed `usable = false` instead of failing
+  now owned by the query that created them and freed with it.
+- **CUDA devices need compute capability 7.5 or newer**; an older card is listed `usable = false` instead of failing
   in the plugin.
 - **`tools/gpu_test/runpod_run.py` talks to RunPod REST v2** (#112): it moved from the dead
   `rest.runpod.io/v1` to `api.runpod.io/v2`.

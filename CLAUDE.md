@@ -78,7 +78,7 @@ cmake -S tools/ggml_plugin -B build/ggml-rocm -G Ninja -DTABFM_GGML_GPU=hip -DAM
 
 ## Backend plugins (HLD D9)
 
-There are no build flavors: `TABFM_FLAVOR`, `TABFM_ORT_*`, `TABFM_WITH_ORT` and `cmake/ort.cmake` are gone, and
+There are no build flavors: `TABFM_FLAVOR`, `TABFM_ORT_*`, `TABFM_WITH_ORT` and `cmake/ort.cmake` are removed, and
 **a GPU is never a build**. Every GPU backend is a standalone plugin the extension `dlopen`s at runtime through
 `src/include/tabfm_plugin_abi.h`:
 

@@ -25,3 +25,10 @@ things that no longer exist.
 | [ROCM_CAUSILO_PLAN.md](ROCM_CAUSILO_PLAN.md) | Causilo on MIGraphX |
 | [COREML_PLAN.md](COREML_PLAN.md), [COREML_LOCAL_PLAN.md](COREML_LOCAL_PLAN.md) | CoreML acceleration (dropped in favour of MLX) |
 | [WINDOWS_INFERENCE.md](WINDOWS_INFERENCE.md) | Inference on Windows with ONNX Runtime |
+| [KV_CACHE_DESIGN.md](KV_CACHE_DESIGN.md) | The first context-cache design (ORT and MIGraphX backends); the current plan is [CONTEXT_CACHE_PLAN.md](../CONTEXT_CACHE_PLAN.md) |
+| [GPU_AND_MEMORY_FINDINGS.md](GPU_AND_MEMORY_FINDINGS.md) | ROCm (ORT MIGraphX EP) and weight-loading memory findings (2026-07-04) |
+| [PERFORMANCE_PLAN.md](PERFORMANCE_PLAN.md) | Performance plan (2026-07-04): bf16 on MIGraphX, `.mxr` precompile |
+| [PHASE_COMPLETION_PLAN.md](PHASE_COMPLETION_PLAN.md) | Completing the dynamic-backends phases |
+| [CODE_REVIEW_2026-07-04.md](CODE_REVIEW_2026-07-04.md) | Code review of the ONNX Runtime engine (2026-07-04) |
+| [RUST_CANDLE_FEASIBILITY.md](RUST_CANDLE_FEASIBILITY.md) | Replacing ONNX Runtime with candle: feasibility (superseded by ggml) |
+| [MEMORY_ESTIMATOR_PLAN.md](MEMORY_ESTIMATOR_PLAN.md) | A memory estimator for the ORT and MIGraphX backends |
