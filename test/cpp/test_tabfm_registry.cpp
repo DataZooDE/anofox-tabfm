@@ -427,6 +427,53 @@ TEST_CASE("registry: Nori-30M ships built in, Apache-2.0 and ungated, REGRESSION
 	REQUIRE_THAT(reg.IdsWithTask(TabFMTask::REGRESSION), Contains("nori-30m"));
 }
 
+TEST_CASE("registry: Nori 1.5 ships built in next to Nori-30M, Apache-2.0 and ungated, REGRESSION ONLY, read natively from nori.pt",
+          "[tabfm][registry]") {
+	auto reg = ModelRegistry::Build();
+	REQUIRE(reg.Has("nori-1-5"));
+	REQUIRE(reg.Has("nori-30m")); // a new size, not a replacement
+	auto &m = reg.Get("nori-1-5");
+
+	// Apache-2.0 for code and weights (card front matter, body and repo LICENSE agree), HF repo ungated. NOTICE
+	// says the codebase originated as a fork of LimiX, so the attribution names Synthefy.
+	REQUIRE(m.license.id == "apache-2.0");
+	REQUIRE(m.license.commercial == true);
+	REQUIRE(m.license.redistributable == true);
+	REQUIRE(m.license.gate_setting.empty());
+	REQUIRE_THAT(m.license.attribution, Contains("Synthefy"));
+
+	// Regression only: "Nori 1.5 predicts regression targets only" (upstream release notes), and the
+	// two-phase forward refuses any task_type but "reg"
+	REQUIRE(m.HasCapability("regress"));
+	REQUIRE_FALSE(m.HasCapability("classify"));
+	REQUIRE(m.HasTask(TabFMTask::REGRESSION));
+	REQUIRE_FALSE(m.HasTask(TabFMTask::CLASSIFICATION));
+	// the profile only matters by its suffix: the model standardises its own features and the graph the target
+	REQUIRE(m.preprocessing_profile == "nori_v15_raw");
+	REQUIRE(m.tasks.at(TabFMTask::REGRESSION).graph == "graph_nori15_regression");
+	// measured caps (CPU, 200 query rows, docs/REAL_MODELS.md): peak RSS grows with rows^2 x features, about twice
+	// Nori-30M's at the same size, so the 5000 x 100 that nori-30m carries would need ~100 GB here. Each limit ALONE
+	// stays within ~13 GB: 2000 x 20 peaks at 7.5 GB, 1000 x 100 at 12.8 GB (both together do not fit).
+	REQUIRE(m.size_regime.max_rows == 2000);
+	REQUIRE(m.size_regime.max_features == 100);
+
+	// the released nori.pt (Model v3 layout: model_config, model_state_dict, inference_config), pinned to the
+	// commit the graph was exported from. 83,176,401 bytes; the engine reads it natively.
+	auto &t = m.tasks.at(TabFMTask::REGRESSION);
+	REQUIRE(t.repo == "Synthefy/Nori-1-5");
+	REQUIRE(t.revision == "79afc5a65b2775d0c62977211a63620ce87846c7");
+	REQUIRE(t.files.size() == 1);
+	REQUIRE_THAT(t.files[0].url, Contains("/resolve/79afc5a65b2775d0c62977211a63620ce87846c7/nori.pt"));
+	REQUIRE(t.files[0].bytes == 83176401);
+	REQUIRE_THAT(t.files[0].path, Catch::Matchers::EndsWith(".ckpt"));
+
+	// the unsupported-task error names the models that CAN classify, and nori-1-5 is not among them
+	auto classify = reg.IdsWithTask(TabFMTask::CLASSIFICATION);
+	REQUIRE_THAT(classify, Contains("mitra"));
+	REQUIRE(classify.find("nori-1-5") == string::npos);
+	REQUIRE_THAT(reg.IdsWithTask(TabFMTask::REGRESSION), Contains("nori-1-5"));
+}
+
 TEST_CASE("registry: EXAONE Tabular ships built in, non-commercial (EXAONE NC 1.2) and gated, one checkpoint per task",
           "[tabfm][registry]") {
 	auto reg = ModelRegistry::Build();
@@ -501,7 +548,7 @@ TEST_CASE("registry: Kumo-Tabular ships built in at three sizes, commercial and 
 		REQUIRE(m.preprocessing_profile == "kumo_tabular_v1_minimal");
 		REQUIRE(m.size_regime.max_classes == 10);
 		REQUIRE(m.size_regime.max_features == 500);
-		// measured cap: the masked graph attends over all rows; 10000 rows needed ~30 GB on the SMALL model
+		// measured cap: the graph attends over all rows; 10000 rows needed ~30 GB on the SMALL model
 		REQUIRE(m.size_regime.max_rows == 5000);
 
 		for (auto task : {TabFMTask::CLASSIFICATION, TabFMTask::REGRESSION}) {
@@ -592,7 +639,7 @@ TEST_CASE("registry: every other built-in already produces usable fitted values 
 	auto reg = ModelRegistry::Build({});
 	for (auto &id : {"mitra", "mitra-v2", "tabpfn-v2", "tabpfn-v2-5", "tabpfn-v2-5-real", "tabpfn-v2-6",
 	                 "tabpfn-v3", "tabpfn-v3-5", "tabpfn-v3-5-fast", "orion-bix", "orion-msp", "tabdpt",
-	                 "tabdpt-v1-3", "causilo", "limix-2m", "exaone-tabular", "nori-30m"}) {
+	                 "tabdpt-v1-3", "causilo", "limix-2m", "exaone-tabular", "nori-30m", "nori-1-5"}) {
 		INFO(id);
 		REQUIRE(reg.Has(id));
 		REQUIRE_FALSE(reg.Get(id).FittedSecondPass(TabFMTask::CLASSIFICATION));

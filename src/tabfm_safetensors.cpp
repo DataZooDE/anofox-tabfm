@@ -8,8 +8,8 @@
 //   (friction log #3: iterating a temporary is UB with nlohmann; with yyjson
 //   the document must simply outlive all yyjson_val pointers);
 // - BF16 -> F32 upcast is a plain 16-bit shift into the high half;
-// - both the source buffer and the arena are freeable right after
-//   Ort::Session creation (ORT copies injected initializers).
+// - the session keeps references to the source buffer / arena, so both
+//   live as long as the session (SessionHolder in tabfm_engine.cpp).
 
 #include "tabfm_safetensors.hpp"
 
@@ -237,7 +237,7 @@ SafetensorsView ParseSafetensors(const_data_ptr_t buffer, idx_t buffer_size, con
 		// Overflow-checked shape product: a crafted header could otherwise declare
 		// dimensions whose product wraps idx_t to a small value that matches a tiny
 		// data_offsets range, smuggling a huge shape past validation and over a
-		// too-small backing buffer (OOB reads downstream in ORT).
+		// too-small backing buffer (OOB reads downstream in the engine).
 		idx_t element_count = 1;
 		for (auto dim : info.shape) {
 			auto d = static_cast<idx_t>(dim); // dim already validated non-negative

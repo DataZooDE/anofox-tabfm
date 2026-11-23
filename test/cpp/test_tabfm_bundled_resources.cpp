@@ -11,8 +11,8 @@
 
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_model_spec.hpp"
-#include "tabfm_ort_engine.hpp"
-#include "tabfm_model_spec.hpp"
+#include "tabfm_session.hpp"
+#include "tabfm_registry.hpp"
 
 #include "../../duckdb/third_party/yyjson/include/yyjson.hpp"
 
@@ -97,48 +97,8 @@ TEST_CASE("tabfm_bundled_resources: unknown ids and paths do not match", "[tabfm
 	REQUIRE(GetBundledResource("resources/graph_classification.onnx").data == nullptr);
 }
 
-// The message the previous test asserts is produced by a PLATFORM-SPECIFIC ORT
-// phrasing, so that test can only ever check the shape of the platform it runs
-// on. These pin every phrasing seen in the wild on every platform — the Windows
-// one went unmatched for the whole life of the Windows build, because the C++
-// suite was never executed in CI and no Linux run could have noticed.
-TEST_CASE("tabfm_ort_engine: missing-weights phrasings are recognised everywhere", "[tabfm][ort]") {
-	SECTION("Windows: the env reports the failed stat via FormatMessage") {
-		REQUIRE(IsMissingWeightsMessage(
-		    "Exception during initialization: file_size: The system cannot find the file specified.: "
-		    "\"graph_classification.onnx.data\"",
-		    6));
-	}
-	SECTION("POSIX: from a path, and from bytes") {
-		REQUIRE(IsMissingWeightsMessage("Load model failed: cannot get file size", 6));
-		REQUIRE(IsMissingWeightsMessage(
-		    "Exception during initialization: initializer.cc:45 !model_path.empty() was false. "
-		    "model_path must not be empty.",
-		    6));
-		REQUIRE(IsMissingWeightsMessage("open file failed: No such file or directory", 6));
-	}
-	SECTION("the ORT_NO_SUCHFILE code alone is enough") {
-		// 3 == ORT_NO_SUCHFILE. Spelled numerically because this TU deliberately
-		// does not pull in the ONNX Runtime headers; the value is fixed by ORT's
-		// stable C ABI enum.
-		REQUIRE(IsMissingWeightsMessage("anything at all", 3));
-	}
-	SECTION("export-time external-data phrasings") {
-		REQUIRE(IsMissingWeightsMessage("External data path does not exist", 1));
-		REQUIRE(IsMissingWeightsMessage("failed to load external data file", 1));
-	}
-	SECTION("unrelated failures are NOT swallowed as missing weights") {
-		// These must fall through to the corrupted-checkpoint and generic
-		// branches; matching them here would hide a real diagnostic.
-		REQUIRE_FALSE(IsMissingWeightsMessage("Replacement tensor's dimensions do not match", 1));
-		REQUIRE_FALSE(IsMissingWeightsMessage("data type does not match", 1));
-		REQUIRE_FALSE(IsMissingWeightsMessage("Node (foo) has an invalid attribute", 1));
-		REQUIRE_FALSE(IsMissingWeightsMessage("", 1));
-	}
-}
-
 TEST_CASE("tabfm_bundled_resources: bundled graph is a valid weight-free ONNX graph", "[tabfm][bundled]") {
-	// Loading the real bundled graph through ORT with no injected weights must
+	// Loading the real bundled graph with no injected weights must
 	// fail cleanly with the weights-not-loaded remediation (S01/S02): this both
 	// proves the embedded bytes are a loadable graph and that the built-in flow
 	// will surface the right error when weights are missing.
@@ -155,57 +115,31 @@ TEST_CASE("tabfm_bundled_resources: bundled graph is a valid weight-free ONNX gr
 		string message = error.what();
 		// Print what was actually thrown when the mapping misses: this assertion
 		// only runs on CI for the platforms that execute the C++ suite, and a
-		// bare npos != npos says nothing about which ORT phrasing slipped through.
+		// bare npos != npos says nothing about what slipped through.
 		INFO("session creation threw: " << message);
 		REQUIRE(message.find("model weights are not loaded") != string::npos);
 		REQUIRE(message.find("tabfm_download") != string::npos);
 	}
 }
 
-// TabICL v2 and LimiX-2M read the train/test split from len(y), which a fixed-shape MIGraphX compile cannot
-// bucket (docs/ROCM_SINGLE_EVAL_POS.md). Each now bundles a second, MASKED graph per task for ROCm
-// (tools/export_tabicl, tools/export_limix: --contract mask), keyed to the weights by the header sha the CPU
-// path already pins. The graph must declare the masked contract's inputs: the plugin binds by name, and a
-// positional (x, y) graph compiled at the bucket shape would treat every padded row as context.
-TEST_CASE("tabfm_bundled_resources: TabICL v2 and LimiX-2M bundle masked ROCm graphs", "[tabfm][bundled]") {
-	auto contains = [](const BundledResource &res, const string &needle) {
-		const auto *begin = reinterpret_cast<const char *>(res.data);
-		return std::search(begin, begin + res.size, needle.begin(), needle.end()) != begin + res.size;
-	};
-	for (auto *model : {"tabicl-v2", "limix-2m"}) {
-		for (auto *task : {"classification", "regression"}) {
-			auto id = BundledGpuGraphId(model, "migraphx", task);
-			INFO("model " << model << " task " << task << " id " << id);
-			auto res = GetBundledResource(id);
-			REQUIRE(res.data != nullptr);
-			REQUIRE(res.size > 0);
-			for (auto *input : {"train_size", "n_rows"}) {
-				REQUIRE(contains(res, input));
+// Every GPU plugin (the ggml CUDA/ROCm plugin, MLX) reads the plain external-data ("ext") graph, and every ext graph is pinned to the one
+// safetensors header its absolute offsets were computed against.
+TEST_CASE("tabfm_bundled_resources: GPU models bundle the ext graph the GPU plugins read", "[tabfm][bundled]") {
+	size_t ext_graphs = 0;
+	for (const auto &spec : BuiltinModelSpecs()) {
+		for (const auto &task : spec.tasks) {
+			const string task_name = TabFMTaskName(task.first);
+			INFO("model " << spec.id << " task " << task_name);
+			const auto ext = GetBundledResource(BundledGpuGraphId(spec.id, task_name));
+			if (ext.data == nullptr) {
+				continue; // a CPU-only model
 			}
-			// the same weights the CPU/CUDA graphs were built against: one sha per file, unchanged by masking
-			REQUIRE(!ExpectedWeightsHeaderShaFor(model, task).empty());
+			REQUIRE(ext.size > 0);
+			REQUIRE(!ExpectedWeightsHeaderShaFor(spec.id, task_name).empty());
+			ext_graphs++;
 		}
 	}
-	REQUIRE(BundledGpuGraphId("tabicl-v2", "migraphx", "classification") == "graph_migraphx_tabicl_classification");
-	REQUIRE(BundledGpuGraphId("limix-2m", "migraphx", "regression") == "graph_migraphx_limix2m_regression");
-}
-
-// Orion-BiX and Orion-MSP read the train/test split from len(y) on the CPU, which a fixed-shape MIGraphX compile
-// cannot bucket (docs/ROCM_SINGLE_EVAL_POS.md). Each bundles a second, MASKED graph for ROCm
-// (tools/export_orion_*: --contract mask): x, y (full length), train_size, d. Its external data points into the
-// same model.safetensors the CUDA ext graph reads, so ExpectedWeightsHeaderShaFor is unchanged.
-TEST_CASE("tabfm_bundled_resources: Orion-BiX and Orion-MSP bundle masked MIGraphX graphs", "[tabfm][bundled]") {
-	for (auto *model : {"orion-bix", "orion-msp"}) {
-		const auto id = BundledGpuGraphId(model, "migraphx", "classification");
-		INFO("model: " << model << " id: " << id);
-		auto res = GetBundledResource(id);
-		REQUIRE(res.data != nullptr);
-		auto disk = ReadDiskFile(ResourcesDir() + "/" + id + ".onnx");
-		REQUIRE(res.size == disk.size());
-		REQUIRE(std::memcmp(res.data, disk.data(), disk.size()) == 0);
-		// the split is a VALUE: the masked contract declares train_size and d (the positional graph has neither)
-		REQUIRE(disk.find("train_size") != string::npos);
-		REQUIRE(disk.find("model.safetensors") != string::npos);
-		REQUIRE(GetBundledResource(BundledGpuGraphId(model, "migraphx", "regression")).data == nullptr);
-	}
+	REQUIRE(ext_graphs >= 33); // the catalog serves dozens of (model, task) pairs on a GPU
+	// Nori 1.5's ext graph reads the same converted weights its CPU graph does: one header
+	REQUIRE(ExpectedWeightsHeaderShaFor("nori-1-5", "regression") == "6da735b26d65fd2281525b127938f45c48d9eeef7bc20156ba6a87caaeed6029");
 }

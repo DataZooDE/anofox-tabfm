@@ -1,0 +1,4 @@
+# op Einsum
+in a f32 - 40200000
+in b f32 4 3f7e086e 7fc00000 3ea01a3b 7f800000
+out y f32 4 401ec545 7fc00000 3f4820ca 7f800000

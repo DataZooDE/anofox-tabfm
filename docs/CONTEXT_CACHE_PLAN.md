@@ -5,7 +5,7 @@
 [Phase 1b](#phase-1b-admission-on-the-second-sighting) adds the admission rule (a context is kept on its second
 sighting) and records why the key stays order-sensitive. The sections after them are the design and spike this
 round was built from, kept as written.
-Background: [KV_CACHE_DESIGN.md](KV_CACHE_DESIGN.md), which records what shipped in #38 and #40.
+Background: [archive/KV_CACHE_DESIGN.md](archive/KV_CACHE_DESIGN.md), which records what shipped in #38 and #40.
 
 ## Phase 1: what shipped
 
@@ -424,7 +424,7 @@ The options considered:
 |---|---|---|---|
 | A. transparent cache (today's design, extended) | none: `tabfm_classify` as it is, plus settings | Every existing query benefits, including the reporter's harness, chunked scoring, cross-validation folds and the per-segment `UNION ALL` pattern. The key is the exact preprocessed tensors, so a hit cannot be wrong. Nothing for the user to keep alive or invalidate | Every call still reads and preprocesses the support rows (milliseconds against seconds). Memory is spent without being asked for, unless it is bounded |
 | B. prepared-context handle: `CALL tabfm_fit('ctx', 'history', 'churned', model := ...)`, then `tabfm_classify(test := 'prospects', context := 'ctx')` | 2 new functions, 1 new argument, plus `tabfm_contexts()` / `tabfm_drop_context()` | Explicit lifetime and memory. Skips re-reading the support table | The user has to manage a handle. A snapshot of a table that has since changed returns stale answers, silently, which is the failure the verbatim key exists to rule out. It does not compose with `tabfm_cross_validate` or the `_by` macros without a parallel API. The engine still needs everything in A |
-| C. transparent cache keyed by a hash of rows + model + preprocessing | as A | Cheaper lookup with many entries | A collision answers from someone else's training data (KV_CACHE_DESIGN.md). Acceptable only as an index in front of a verbatim compare, which makes it A |
+| C. transparent cache keyed by a hash of rows + model + preprocessing | as A | Cheaper lookup with many entries | A collision answers from someone else's training data (archive/KV_CACHE_DESIGN.md). Acceptable only as an index in front of a verbatim compare, which makes it A |
 
 **Why A.**
 - B's one real advantage, skipping the read and preprocessing of the support rows, is worth
@@ -539,21 +539,15 @@ others are not, so each model's pair needs its own parity check (Tests, item 1) 
 
 ## GPU plugins
 
-CPU first. Today the setting refuses every non-ORT device (`tabfm_engine.cpp`: "device '%s' cannot
-serve this model while anofox_tabfm_context_cache is ..."). Under the recommendation it would fall back
-to the combined graph instead, because the cache becomes default-on and must not break GPU calls.
+> **Status (2026-11-23).** This section was written for the ONNX Runtime CUDA plugin and the MIGraphX ROCm plugin,
+> both since removed. CUDA and ROCm are now served by the ggml GPU plugin, which reads the same `ext` graphs as the
+> CPU and has no per-shape compile; MLX interprets the graph. The cache is still CPU-only: a GPU device serves the
+> combined graph.
 
-- **CUDA (ORT CUDA EP).** The same pair runs as is. Phase 1 copies the cached state host to device per
-  call, about 70 MB at S=1000, which is a few ms over PCIe against a forward pass of 0.1 s or more.
-  Phase 2 keeps the state device-resident with `Ort::IoBinding`, under the per-device lock that already
-  guards the backend.
-- **ROCm (MIGraphX plugin).** It compiles per fixed shape (`.mxr` per bucket). The query graph's shape
-  depends on S (the K/V length) as well as on Q and H, so it needs the masked contract that tabdpt and
-  the TabPFN family already use (pad S to a bucket and pass a key mask; ROCM_SINGLE_EVAL_POS.md). That
-  multiplies the buckets by the S-buckets. Later phase, measure compile cost first.
-- **MLX.** The plugin interprets the ONNX graph op by op (`tabfm_mlx_graph.cpp`). The kv graphs use the
-  same ops as the combined graph, so they should run once the engine passes named state through the
-  plugin ABI. That ABI change is the work.
+What carries over: the prepare/query pair uses the same ops as the combined graph, so every GPU plugin can run it once
+the engine passes named state (the cached context) through the plugin ABI. That ABI change is the work. A first phase
+can copy the cached state host to device per call (about 70 MB at S=1000, a few ms over PCIe against a forward pass of
+0.1 s or more); a second keeps it device-resident under the per-device lock that already guards the backend.
 
 ## Tests
 
@@ -590,10 +584,10 @@ to the combined graph instead, because the cache becomes default-on and must not
 |---|---|---|
 | 0 (#89) | This document. The spike module. The engine reads `context_logits` from prepare when present (prototype, behind the existing off-by-default setting), with a kv-contract CI fixture and its test | spike numbers in this doc; test green |
 | 1 (shipped, Phase 1 PR) | `export_tabicl --split-context` emits the **kv** pair (classification), and the regression pair with the target scaler. Bundle both for `tabicl-v2` in `resources/`. Real-weights parity in CI's real-model job | `tabicl-v2` ships an exact pair |
-| 2 (shipped, Phase 1 PR) | `anofox_tabfm_context_cache_memory`, LRU over several contexts, `context_bytes` in `tabfm_models()`. Default the setting to `true` for exact pairs. Non-ORT devices fall back to the combined graph instead of erroring | the reporter's harness runs unchanged and gets the warm-call numbers |
+| 2 (shipped, Phase 1 PR) | `anofox_tabfm_context_cache_memory`, LRU over several contexts, `context_bytes` in `tabfm_models()`. Default the setting to `true` for exact pairs. GPU devices fall back to the combined graph instead of erroring | the reporter's harness runs unchanged and gets the warm-call numbers |
 | 3 (query_batch shipped in Phase 1; row order planned) | `opts.query_batch`: query chunking inside one call. Canonical row order before encoding, on every call (measured worthwhile: an unordered context at `threads = 8` never hits; needs the exactness decision in Phase 1b part 2) | chunked scoring costs one encode per call, not one per chunk |
 | 4 | Further models, in the order in [Per model](#per-model), each with its own parity row | per model |
-| 5 | CUDA device-resident state (IoBinding); ROCm masked S-buckets; MLX named-state ABI | per backend |
+| 5 | GPU plugins (ggml CUDA/ROCm, MLX): a named-state plugin ABI, then device-resident state | per backend |
 
 ## Reproduce
 

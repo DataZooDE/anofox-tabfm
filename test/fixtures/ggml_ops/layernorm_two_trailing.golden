@@ -1,0 +1,3 @@
+# op LayerNormalization
+in x f32 2,3,4 bfaa1764 bf4234e5 3fa3ad3f 3f211f7f 3edf9e1d bfe742af 3eb800cc 3fbd4bb2 c00de4ac bd0d3d77 bf979b77 be5bd3f2 bf88bc2b 3f663e54 3ef8d689 3f9399ed 3fb1bd22 3f0b7d82 bf0d9894 3f96389d bf7f7f95 bf8b4622 3d95a53c 4003c1c3
+out y f32 2,3,4 3fd13fac 3ee2ab7f 3e17fe76 bfb5d5ea bf678dea 3f768d3b 3fb5742a bf3fdf9a 3ec43b2a bf902bb8 3e5982f4 bea19ee7 3fc96985 3f9f11d2 bf00d88e bfb5d643 bf819c4b 3e2a66cf 401c97f6 bec2d26a 3e5ff5f1 c031c8e4 bf3b4044 bff34ea8

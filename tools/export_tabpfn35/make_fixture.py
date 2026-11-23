@@ -44,7 +44,7 @@ def main() -> None:
     for task in ("classification", "regression"):
         graph = OUT / f"graph_tabpfn35_{task}.onnx"
         tmap_path = OUT / f"tensor_map_tabpfn35_{task}.json"
-        export_graph(model, graph, task=task, example=CFG.example, masked=False)
+        export_graph(model, graph, task=task, example=CFG.example)
         maps[task] = xp.postprocess(graph, sd)
         write_map(tmap_path, maps[task], task=task, safetensors_rel=ST)
         xp.delete_weight_data(graph)

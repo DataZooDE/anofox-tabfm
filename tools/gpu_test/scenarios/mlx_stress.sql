@@ -3,7 +3,7 @@
 -- The small end-to-end check proves routing. This one is here to break things,
 -- at sizes a user would actually reach, and it is written to catch the specific
 -- failure modes the GPU hardening work paid for once already
--- (docs/GPU_HARDENING_PLAN.md) rather than to produce a green tick:
+-- (docs/archive/GPU_HARDENING_PLAN.md) rather than to produce a green tick:
 --
 --   * every stage prints *_SERVED_BY. "cpu and mlx agree" is also what a silent
 --     CPU fallback prints, so agreement is worthless without the device column.

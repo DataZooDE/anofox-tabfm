@@ -8,13 +8,13 @@ description: >
   augmented rows, upsampling a rare segment, filling NULLs in a table, choosing
   generation options (seed, temperature, bins, column_order, rounds), or checking
   the fidelity and limits of generated data.
-version: 2026.11.17
+version: 2026.11.23
 user-invocable: false
 ---
 
 # Anofox TabFM — Generate and Impute Cheat Sheet
 
-**Extension:** anofox_tabfm v2026.11.17 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
+**Extension:** anofox_tabfm v2026.11.23 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
 
 The in-context engine used backwards: instead of predicting one column it models the table as a joint
 distribution, one column at a time (the chain rule), so relationships between columns survive, not only each
@@ -23,8 +23,8 @@ column's marginal.
 ## Critical gotchas
 
 1. **Weights.** Generation needs only the model's **classification** weights, so classify-only models work.
-   Imputing a **numeric** column also needs its **regression** weights. `nori-30m` is regress-only:
-   `tabfm_generate` refuses it, `tabfm_impute` fills numeric columns only.
+   Imputing a **numeric** column also needs its **regression** weights. `nori-30m` and `nori-1-5` are regress-only:
+   `tabfm_generate` refuses them, `tabfm_impute` fills numeric columns only.
 2. **Values never leave the observed range.** Continuous columns are sampled through quantile bins
    (`bins`, at most 10): resolution is capped and extrapolation is impossible. A wide empty stretch
    (iris petal length 1.9-3.0) is always a bin edge and never filled in.

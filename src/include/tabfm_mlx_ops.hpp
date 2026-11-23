@@ -28,7 +28,7 @@ inline const std::set<std::string> &MlxImplementedOps() {
 	    "Einsum", "Equal", "Erf", "Exp", "Expand", "Floor", "Gather", "GatherElements", "GatherND", "Gemm",
 	    "Greater", "GreaterOrEqual", "Identity", "IsInf", "IsNaN", "LayerNormalization", "Less", "LessOrEqual",
 	    "Log", "MatMul", "Max", "Min", "Mod", "Mul", "Neg", "Not", "Or", "Pad", "Pow", "Range", "Reciprocal",
-	    "ReduceMax", "ReduceMean", "ReduceMin", "ReduceProd", "ReduceSum", "Reshape", "Round", "ScatterElements", "ScatterND",
+	    "ReduceMax", "ReduceMean", "ReduceMin", "ReduceProd", "ReduceSum", "Relu", "Reshape", "Round", "ScatterElements", "ScatterND",
 	    "SequenceAt", "Shape", "Sigmoid", "Sign", "Sin", "Size", "Slice", "Softmax", "Softplus",
 	    "SplitToSequence", "Sqrt", "Squeeze", "Sub", "Tanh", "TopK", "Transpose", "Unsqueeze", "Where"};
 	return ops;

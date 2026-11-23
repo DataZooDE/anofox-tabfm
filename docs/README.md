@@ -11,7 +11,7 @@ documents explain how things came to be; where they disagree with the guides or 
 | [Getting Started](guides/01-getting-started.md) | Install, download a model, a first prediction on iris |
 | [Choosing a model](guides/02-choosing-a-model.md) | The registry, selecting a model, your own model, how the models compare |
 | [Evaluate and compare](guides/03-evaluate-and-compare.md) | A churn walk-through, cross-validation, plotting |
-| [GPU acceleration](guides/04-gpu-acceleration.md) | `tabfm_accelerate()`, checking the device, the ROCm first-run compile |
+| [GPU acceleration](guides/04-gpu-acceleration.md) | `tabfm_accelerate()`, checking the device, placing models yourself |
 | [Generate and impute](guides/05-generate-and-impute.md) | Synthetic rows and filling NULLs |
 | [Claude Code skills](guides/06-claude-code.md) | The Claude Code plugin: install, the five skills, how they are checked |
 
@@ -38,46 +38,40 @@ review that has been carried out, superseded or dropped.
 
 | Document | What it is |
 |---|---|
-| [BUILDING.md](BUILDING.md) | Building and testing from source, flavors, the GPU plugins |
-| [REAL_MODELS.md](REAL_MODELS.md) | Each real model: how it was ported and verified, licences, gated Hugging Face repositories |
+| [BUILDING.md](BUILDING.md) | Building and testing from source, the ggml engine, the GPU plugins |
 | [GENERATE.md](GENERATE.md) | How generation and imputation work, what binning costs, what this is not |
-| [rocm-build.md](rocm-build.md) | Legacy toolchain: an ONNX Runtime with the MIGraphX EP for the `rocm` flavor (the ROCm plugin does not need it) |
 
 ### Design
 
 | Document | What it is |
 |---|---|
-| [DYNAMIC_BACKENDS.md](DYNAMIC_BACKENDS.md) | One artifact, GPU backends as runtime plugins, the equivalence suite |
-| [KV_CACHE_DESIGN.md](KV_CACHE_DESIGN.md) | The context cache behind `anofox_tabfm_context_cache` |
-| [CONTEXT_CACHE_PLAN.md](CONTEXT_CACHE_PLAN.md) | Next steps for the context cache (#37): SQL surface, the ICL key/value contract, every model, phases; with the tabicl-v2 spike |
-| [GPU_DISTRIBUTION.md](GPU_DISTRIBUTION.md) | Shipping GPU support |
+| [GGML_PLAN.md](GGML_PLAN.md) | The ggml engine: replacing ONNX Runtime on the CPU, then on CUDA and ROCm (the ggml GPU plugin) |
+| [GGML_LOWERING.md](GGML_LOWERING.md) | How an ONNX graph is lowered to a ggml graph |
+| [CONTEXT_CACHE_PLAN.md](CONTEXT_CACHE_PLAN.md) | The context cache (#37): SQL surface, the ICL key/value contract, every model, phases; with the tabicl-v2 spike (the first design, from the ONNX Runtime era, is [archive/KV_CACHE_DESIGN.md](archive/KV_CACHE_DESIGN.md)) |
 
 ### Reports
 
 | Document | What it is |
 |---|---|
-| [GPU_AND_MEMORY_FINDINGS.md](GPU_AND_MEMORY_FINDINGS.md) | ROCm and weight-loading memory findings (2026-07-04) |
+| [REAL_MODELS.md](REAL_MODELS.md) | Each real model: how it was ported and verified, licences, gated Hugging Face repositories (current GPU status in [api/04-gpu.md](api/04-gpu.md#backend-support-matrix)) |
 | [MLX_SPIKE_RESULTS.md](MLX_SPIKE_RESULTS.md) | The Apple MLX backend spike |
-| [ROCM_TABDPT_SPIKE.md](ROCM_TABDPT_SPIKE.md) | Converting tabdpt to run on ROCm |
-| [ROCM_SINGLE_EVAL_POS.md](ROCM_SINGLE_EVAL_POS.md) | Why some models cannot use ROCm's fixed-shape compilation |
-| [RUST_CANDLE_FEASIBILITY.md](RUST_CANDLE_FEASIBILITY.md) | Replacing ONNX Runtime with candle: feasibility |
-| [WINDOWS_INFERENCE.md](WINDOWS_INFERENCE.md) | Windows inference (resolved 2026-07-05) |
 
 ### History (plans and reviews)
 
 | Document | What it is |
 |---|---|
 | [ANOFOX_CONTRACT_PLAN.md](ANOFOX_CONTRACT_PLAN.md) | The anofox integration contract behind the `_by` macros |
-| [COREML_PLAN.md](COREML_PLAN.md), [COREML_LOCAL_PLAN.md](COREML_LOCAL_PLAN.md) | CoreML acceleration (dropped in favour of MLX) |
 | [GENERATE_PLAN.md](GENERATE_PLAN.md) | Synthetic data generation and imputation |
-| [GPU_HARDENING_PLAN.md](GPU_HARDENING_PLAN.md) | GPU hardening: root causes and spikes |
 | [MLX_PLAN.md](MLX_PLAN.md) | The Apple MLX backend |
 | [MULTI_MODEL_PLAN.md](MULTI_MODEL_PLAN.md) | The multi-model registry |
-| [PERFORMANCE_PLAN.md](PERFORMANCE_PLAN.md) | Performance plan (2026-07-04) |
-| [PHASE_COMPLETION_PLAN.md](PHASE_COMPLETION_PLAN.md) | Completing the dynamic-backends phases |
 | [PURE_SQL_SURFACE_PLAN.md](PURE_SQL_SURFACE_PLAN.md) | The pure-SQL model surface |
-| [ROCM_TABPFN_PLAN.md](ROCM_TABPFN_PLAN.md) | TabPFN on ROCm |
-| [CODE_REVIEW_2026-07-04.md](CODE_REVIEW_2026-07-04.md) | Consolidated code review (2026-07-04) |
-| [UPSTREAM_ORT_ISSUES.md](UPSTREAM_ORT_ISSUES.md) | Upstream ONNX Runtime issue drafts |
+
+### Archive
+
+The ONNX Runtime / MIGraphX / CoreML backends were removed; their design notes, plans and reports
+(dynamic backends, GPU distribution and hardening, the ROCm spikes and masked graphs, CoreML, Windows
+inference on ONNX Runtime, the upstream ONNX Runtime issues, the first context-cache design, the July 2026 performance plan,
+code review and memory findings, the candle feasibility study, the memory-estimator plan) are kept for history in
+[archive/](archive/README.md).
 
 [CHANGELOG.md](../CHANGELOG.md) lists every release.

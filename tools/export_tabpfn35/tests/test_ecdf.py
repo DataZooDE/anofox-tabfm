@@ -44,11 +44,11 @@ def test_positional_matches_upstream(name, num_train, num_buckets):
 @pytest.mark.parametrize("name", ["continuous", "ties", "mixed"])
 @pytest.mark.parametrize("num_train", [1, 7, 40])
 @pytest.mark.parametrize("num_buckets", [8192, 16, 5])
-def test_masked_rows_match_upstream(name, num_train, num_buckets):
-    """Padded rows after the real ones must not move any real row's rank.
+def test_extra_rows_match_upstream(name, num_train, num_buckets):
+    """Rows after the train set (the query rows) must not move any train row's rank.
 
-    The masked contract pads x to a bucket with junk rows; the train set is still
-    the first `num_train` rows, but the tensors are longer than upstream's.
+    The train set is the first `num_train` rows; extreme rows appended after them are
+    ranked but never ranked against.
     """
     x = _cases()[name]
     want = _upstream(x, num_train, num_buckets)

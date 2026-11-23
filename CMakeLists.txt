@@ -22,8 +22,66 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Dependencies ---
 
-# ONNX Runtime, flavor-aware (cpu | cuda | rocm) — defines tabfm_onnxruntime.
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/ort.cmake)
+# --- ggml CPU engine (docs/GGML_PLAN.md) ---
+#
+# The CPU device always runs on the vendored ggml (vendor/ggml, a git submodule): there is no other engine and no option to pick one, and a checkout
+# without the submodule does not configure. GPUs are served by plugins (tools/ggml_plugin for CUDA and ROCm, the MLX plugin below for Apple); nothing
+# links ONNX Runtime.
+
+# ggml's CPU backend refuses to configure on MSVC arm64 without GGML_NATIVE (ggml-cpu/CMakeLists.txt); everywhere else the baseline build is the default.
+set(_tabfm_ggml_native_default OFF)
+if(MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
+    set(_tabfm_ggml_native_default ON)
+endif()
+option(TABFM_GGML_NATIVE "Compile ggml for this machine's CPU (fast, but the binary may crash on older CPUs)" ${_tabfm_ggml_native_default})
+if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml/CMakeLists.txt")
+    message(FATAL_ERROR "vendor/ggml is empty. Run: git submodule update --init vendor/ggml")
+endif()
+# Static, CPU backend only. No OpenMP: libgomp's spin-waiting starves ggml's own thread pool (measured 24 s
+# vs 4 s on Nori 1.5), and the engine's threads come from anofox_tabfm_threads, not OMP_NUM_THREADS.
+set(_tabfm_saved_shared ${BUILD_SHARED_LIBS})
+set(_tabfm_saved_pic ${CMAKE_POSITION_INDEPENDENT_CODE})
+set(BUILD_SHARED_LIBS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+# CPU backend only. ggml defaults Metal, Accelerate and BLAS to ON on Apple, which would add backends this
+# wrapper does not link (undefined ggml_backend_metal_reg, no frameworks, a Metal shader library nobody asked
+# for). The GPU backends are a separate plan (P8).
+set(GGML_METAL OFF CACHE BOOL "" FORCE)
+set(GGML_BLAS OFF CACHE BOOL "" FORCE)
+set(GGML_ACCELERATE OFF CACHE BOOL "" FORCE)
+set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
+# Static ggml gets default visibility in the loadable extension; hide it so an interposing ggml elsewhere in the
+# process (a llama.cpp host, a preloaded library) cannot capture our calls through --allow-multiple-definition.
+set(_tabfm_saved_cvis ${CMAKE_C_VISIBILITY_PRESET})
+set(_tabfm_saved_cxxvis ${CMAKE_CXX_VISIBILITY_PRESET})
+set(CMAKE_C_VISIBILITY_PRESET hidden)
+set(CMAKE_CXX_VISIBILITY_PRESET hidden)
+set(GGML_NATIVE ${TABFM_GGML_NATIVE} CACHE BOOL "" FORCE)
+# tinyBLAS: ggml's tuned float SGEMM for the CPU backend (off by default in a standalone ggml build). The matmuls are most of the compute.
+set(GGML_LLAMAFILE ON CACHE BOOL "" FORCE)
+add_subdirectory(vendor/ggml EXCLUDE_FROM_ALL)
+# ggml's CPU kernels carry plain assert()s such as !isnan(x) in softmax. They are live in a Debug build, and NaN is valid data
+# here (the graphs mask attention with NaN and the goldens feed NaN rows on purpose): a Debug build would abort() the whole
+# process where a Release build returns NaN. GGML_ASSERT (shape/type contracts) is a separate macro and stays on.
+foreach(_tgt ggml ggml-base ggml-cpu)
+    if(TARGET ${_tgt})
+        target_compile_definitions(${_tgt} PRIVATE NDEBUG)
+    endif()
+endforeach()
+# DuckDB export()s the extension targets and rejects non-imported build-tree dependencies (install(EXPORT) fails
+# with 'requires target ggml that is not in any export set'), so it is an IMPORTED
+# INTERFACE target. Wrap the static archives the same way; consumers add_dependencies() on `ggml` for build order.
+add_library(tabfm_ggml INTERFACE IMPORTED GLOBAL)
+set_target_properties(tabfm_ggml PROPERTIES
+    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml/include"
+    INTERFACE_LINK_LIBRARIES "$<TARGET_FILE:ggml>;$<TARGET_FILE:ggml-cpu>;$<TARGET_FILE:ggml-base>;Threads::Threads;${CMAKE_DL_LIBS}")
+set(BUILD_SHARED_LIBS ${_tabfm_saved_shared})
+set(CMAKE_POSITION_INDEPENDENT_CODE ${_tabfm_saved_pic})
+set(CMAKE_C_VISIBILITY_PRESET ${_tabfm_saved_cvis})
+set(CMAKE_CXX_VISIBILITY_PRESET ${_tabfm_saved_cxxvis})
 
 # Embed the weight-free graphs + tensor maps from resources/ into the binary
 # (built-in model flow needs no companion files) — sets
@@ -60,7 +118,7 @@ set(EXTENSION_SOURCES
         src/tabfm_registry.cpp
         src/tabfm_ckpt.cpp
         src/tabfm_safetensors.cpp
-        src/tabfm_ort_engine.cpp
+        src/tabfm_session.cpp
         src/tabfm_devices.cpp
         src/tabfm_preprocess.cpp
         src/tabfm_ensemble.cpp
@@ -79,6 +137,7 @@ set(EXTENSION_SOURCES
         src/tabfm_onnx_reader.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
 )
+list(APPEND EXTENSION_SOURCES src/tabfm_ggml_engine.cpp src/tabfm_ggml_lower.cpp src/tabfm_ggml_session.cpp src/tabfm_shape_eval.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
@@ -88,8 +147,9 @@ foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
     target_sources(${_tgt} PRIVATE $<TARGET_OBJECTS:posthog_telemetry_obj>)
     target_include_directories(${_tgt} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include)
+    add_dependencies(${_tgt} ggml)
+    target_link_libraries(${_tgt} tabfm_ggml)
     target_link_libraries(${_tgt}
-        tabfm_onnxruntime
         datazoo_banner
         OpenSSL::SSL
         OpenSSL::Crypto)
@@ -109,24 +169,6 @@ if(WIN32)
     target_link_libraries(${LOADABLE_EXTENSION_NAME} iphlpapi ws2_32)
 endif()
 
-# The extension links onnxruntime.dll (dynamic). On Windows the loader searches
-# the host EXE's directory before System32 — but Windows ML ships an OLD
-# C:\Windows\System32\onnxruntime.dll (v1.17) that otherwise loads first and
-# returns a null OrtApi for our compiled ORT_API_VERSION, crashing on first use
-# (docs/WINDOWS_INFERENCE.md). Stage our prebuilt onnxruntime.dll next to the
-# test + shell binaries so ours wins the search. TABFM_ORT_LIB_DIR is set by
-# cmake/ort.cmake on the prebuilt-archive path (the CI cpu-flavor default).
-if(WIN32 AND TABFM_ORT_LIB_DIR)
-    file(GLOB _tabfm_ort_dlls "${TABFM_ORT_LIB_DIR}/*.dll")
-    if(_tabfm_ort_dlls)
-        add_custom_command(TARGET ${LOADABLE_EXTENSION_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_tabfm_ort_dlls} "${CMAKE_BINARY_DIR}/test/"
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different ${_tabfm_ort_dlls} "${CMAKE_BINARY_DIR}/"
-            COMMENT "anofox_tabfm: staging ONNX Runtime DLL(s) next to test/shell binaries (Windows DLL search)")
-    endif()
-endif()
-
 # GCC 14 COMDAT vs non-COMDAT conflict on Linux for DuckDB v1.5+ (see
 # extension_config.cmake for the full explanation).
 if(UNIX AND NOT APPLE)
@@ -134,38 +176,11 @@ if(UNIX AND NOT APPLE)
     target_link_options(${LOADABLE_EXTENSION_NAME} PRIVATE -Wl,--allow-multiple-definition)
 endif()
 
-# --- MIGraphX backend plugin (docs/DYNAMIC_BACKENDS.md phase 1) ---
-#
-# A standalone shared library, built and shipped independently of the cpu/cuda
-# extension binary: the ROCm backend becomes something tabfm_download_runtime
-# fetches and the engine dlopens at runtime, not a compile-time flavor choice.
-# Optional and silent when absent — cpu/cuda CI machines carry no MIGraphX
-# install and must not fail configure over a plugin they cannot use.
-set(TABFM_MIGRAPHX_DIR "/opt/rocm" CACHE PATH "MIGraphX install prefix (include/ + lib/libmigraphx_c) for the plugin build")
-find_library(TABFM_MIGRAPHX_PLUGIN_LIB migraphx_c
-    PATHS "${TABFM_MIGRAPHX_DIR}/lib" "${TABFM_MIGRAPHX_DIR}/lib64" NO_DEFAULT_PATH)
-if(TABFM_MIGRAPHX_PLUGIN_LIB AND EXISTS "${TABFM_MIGRAPHX_DIR}/include/migraphx/migraphx.hpp")
-    message(STATUS "anofox_tabfm: building the migraphx backend plugin from ${TABFM_MIGRAPHX_DIR}")
-    add_library(anofox_tabfm_migraphx_plugin SHARED src/tabfm_migraphx_plugin.cpp)
-    target_include_directories(anofox_tabfm_migraphx_plugin PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
-        "${TABFM_MIGRAPHX_DIR}/include")
-    target_link_libraries(anofox_tabfm_migraphx_plugin PRIVATE "${TABFM_MIGRAPHX_PLUGIN_LIB}")
-    target_compile_features(anofox_tabfm_migraphx_plugin PRIVATE cxx_std_17)
-    set_target_properties(anofox_tabfm_migraphx_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    set(TABFM_MIGRAPHX_PLUGIN_BUILT TRUE)
-else()
-    message(STATUS "anofox_tabfm: no MIGraphX install found at ${TABFM_MIGRAPHX_DIR}, skipping the migraphx backend plugin")
-endif()
-
 # --- Apple MLX backend plugin (docs/MLX_PLAN.md, spikes in docs/MLX_SPIKE_RESULTS.md) ---
 #
-# Same shape as the MIGraphX plugin, and for the same reason: MLX is a runtime
-# we drive directly, not an ORT execution provider. Unlike both GPU plugins it
-# carries no ONNX graph at all -- MLX has no ONNX importer and none exists, so
-# the mitra forward is transcribed from mitra_model_patched.py into
-# src/tabfm_mlx_plugin.cpp. That makes it model-specific by construction; it
-# refuses any architecture but mitra at create time.
+# A plugin the extension dlopens, like the ggml GPU plugin (tools/ggml_plugin). MLX has no ONNX importer, so the
+# plugin runs the model's ONNX graph through its own interpreter (src/tabfm_mlx_graph.cpp + src/tabfm_onnx_reader.cpp);
+# mitra also has a forward transcribed from mitra_model_patched.py, kept as its fast path.
 #
 # Optional and silent when absent, like the others: Linux and Intel-Mac CI
 # runners carry no MLX and must not fail configure over a plugin they cannot
@@ -215,64 +230,6 @@ int main() {
     endif()
 endif()
 
-# The CUDA backend plugin (docs/DYNAMIC_BACKENDS.md phase 3), same deal as the
-# MIGraphX one above: a standalone .so fetched by tabfm_download_runtime('cuda')
-# and dlopen'd at runtime, never linked into the extension binary.
-#
-# It links its OWN shared libonnxruntime from an ORT *GPU* distribution rather
-# than reusing the extension's ORT. That is not incidental — the release build
-# links ORT statically, and a statically-linked core cannot load ORT's prebuilt
-# provider libraries (symbol interposition corrupts the heap; see the header of
-# src/tabfm_cuda_plugin.cpp). Point TABFM_ORT_GPU_DIR at an unpacked
-# onnxruntime-linux-x64-gpu_cudaNN archive, whose core and providers ship in one
-# directory and match by construction.
-#
-# Optional and silent when absent — cpu CI machines carry no ORT-GPU archive and
-# must not fail configure over a plugin they cannot use.
-set(TABFM_ORT_GPU_DIR "" CACHE PATH "Unpacked ONNX Runtime GPU archive (include/ + lib/libonnxruntime.so) for the cuda plugin build")
-if(TABFM_ORT_GPU_DIR AND EXISTS "${TABFM_ORT_GPU_DIR}/include/onnxruntime_cxx_api.h")
-    find_library(TABFM_ORT_GPU_LIB onnxruntime PATHS "${TABFM_ORT_GPU_DIR}/lib" NO_DEFAULT_PATH)
-endif()
-if(TABFM_ORT_GPU_LIB)
-    message(STATUS "anofox_tabfm: building the cuda backend plugin from ${TABFM_ORT_GPU_DIR}")
-    # The plugin links a RENAMED copy of the ORT-GPU core (SONAME + basename
-    # libanofoxort_gpu.so, an equal-length byte patch — GPU_HARDENING_PLAN S2):
-    # keeping upstream's SONAME would let any host-loaded libonnxruntime.so.1
-    # shadow the plugin's runtime. tabfm_download_runtime('cuda') performs the
-    # same rename on the wheel core it extracts, so DT_NEEDED matches at both
-    # ends. The python one-liner mirrors PatchOrtSonameInPlace
-    # (tabfm_soname_patch.hpp): NUL-terminated match, exactly one occurrence.
-    set(TABFM_ORT_GPU_RENAMED_DIR "${CMAKE_CURRENT_BINARY_DIR}/anofox_ort_gpu")
-    set(TABFM_ORT_GPU_RENAMED_LIB "${TABFM_ORT_GPU_RENAMED_DIR}/libanofoxort_gpu.so")
-    find_package(Python3 COMPONENTS Interpreter REQUIRED)
-    add_custom_command(
-        OUTPUT "${TABFM_ORT_GPU_RENAMED_LIB}"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${TABFM_ORT_GPU_RENAMED_DIR}"
-        COMMAND ${Python3_EXECUTABLE} -c "import sys; d = open(sys.argv[1], 'rb').read(); old = b'libonnxruntime.so.1\x00'; new = b'libanofoxort_gpu.so\x00'; n = d.count(old); assert n == 1, f'expected exactly one SONAME string, found {n}'; open(sys.argv[2], 'wb').write(d.replace(old, new))" "${TABFM_ORT_GPU_LIB}" "${TABFM_ORT_GPU_RENAMED_LIB}"
-        DEPENDS "${TABFM_ORT_GPU_LIB}"
-        COMMENT "anofox_tabfm: renaming the ORT-GPU core SONAME (S2 shadowing fix)"
-        VERBATIM)
-    add_custom_target(anofox_ort_gpu_renamed DEPENDS "${TABFM_ORT_GPU_RENAMED_LIB}")
-    add_library(anofox_tabfm_cuda_plugin SHARED src/tabfm_cuda_plugin.cpp)
-    add_dependencies(anofox_tabfm_cuda_plugin anofox_ort_gpu_renamed)
-    target_include_directories(anofox_tabfm_cuda_plugin PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src/include
-        "${TABFM_ORT_GPU_DIR}/include")
-    target_link_directories(anofox_tabfm_cuda_plugin PRIVATE "${TABFM_ORT_GPU_RENAMED_DIR}")
-    target_link_libraries(anofox_tabfm_cuda_plugin PRIVATE "-l:libanofoxort_gpu.so")
-    target_compile_features(anofox_tabfm_cuda_plugin PRIVATE cxx_std_17)
-    set_target_properties(anofox_tabfm_cuda_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    # $ORIGIN so the shipped plugin finds the renamed core + provider libraries
-    # that tabfm_download_runtime('cuda') unpacks alongside it, wherever the
-    # user pointed anofox_tabfm_ep_path.
-    set_target_properties(anofox_tabfm_cuda_plugin PROPERTIES
-        BUILD_RPATH "${TABFM_ORT_GPU_RENAMED_DIR}"
-        INSTALL_RPATH "$ORIGIN")
-    set(TABFM_CUDA_PLUGIN_BUILT TRUE)
-else()
-    message(STATUS "anofox_tabfm: no ONNX Runtime GPU archive at TABFM_ORT_GPU_DIR, skipping the cuda backend plugin")
-endif()
-
 # --- C++ unit tests (Catch2, compiled into DuckDB's test/unittest binary) ---
 #
 # Registered through a deferred call because this CMakeLists is processed via
@@ -283,7 +240,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_scaffold.cpp
     test/cpp/test_tabfm_safetensors.cpp
     test/cpp/test_tabfm_manifest.cpp
-    test/cpp/test_tabfm_ort_engine.cpp
+    test/cpp/test_tabfm_session.cpp
     test/cpp/test_tabfm_model_spec.cpp
     test/cpp/test_tabfm_registry.cpp
     test/cpp/test_tabfm_ckpt.cpp
@@ -293,10 +250,9 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_bundled_resources.cpp
     test/cpp/test_tabfm_weights.cpp
     test/cpp/test_tabfm_plugin_backend.cpp
-    test/cpp/test_tabfm_migraphx_plugin.cpp
-    test/cpp/test_tabfm_cuda_plugin.cpp
     test/cpp/test_tabfm_mlx_plugin.cpp
     test/cpp/test_tabfm_mlx_ops.cpp
+    test/cpp/test_tabfm_owned_registry.cpp
     test/cpp/test_tabfm_cpu_budget.cpp
     test/cpp/test_tabfm_metrics.cpp
     test/cpp/test_tabfm_metrics_regression.cpp
@@ -304,8 +260,9 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_scoring.cpp
     test/cpp/test_tabfm_context_cache.cpp
 )
+list(APPEND TABFM_CPP_TEST_SOURCES test/cpp/test_tabfm_ggml_engine.cpp test/cpp/test_tabfm_ggml_lowering.cpp test/cpp/test_tabfm_ggml_ops.cpp test/cpp/test_tabfm_ggml_nori.cpp test/cpp/test_tabfm_ggml_graphs.cpp test/cpp/test_tabfm_rank_reduce.cpp test/cpp/test_tabfm_shape_eval.cpp)
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
-    # Backend-plugin fixtures (docs/DYNAMIC_BACKENDS.md phase 1). The real GPU
+    # Backend-plugin fixtures. The real GPU
     # backend needs hardware CI does not have, which would leave the LOADER —
     # where an ABI mismatch is undefined behaviour rather than a wrong answer —
     # untested. These stand in for it: real shared libraries, one correct and
@@ -330,15 +287,6 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
         TABFM_FAKE_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_fake_plugin>"
         TABFM_FAKE_PLUGIN_BAD_ABI_PATH="$<TARGET_FILE:anofox_tabfm_fake_plugin_bad_abi>")
-    if(TABFM_MIGRAPHX_PLUGIN_BUILT)
-        # Real GPU test: only on a machine that actually built the plugin
-        # (a MIGraphX install present). Skips itself (no device / no bundled
-        # migraphx graph) rather than failing on a machine with the library
-        # but no GPU.
-        add_dependencies(anofox_tabfm_unittest_tests anofox_tabfm_migraphx_plugin)
-        target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
-            TABFM_MIGRAPHX_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_migraphx_plugin>")
-    endif()
     if(TABFM_MLX_PLUGIN_BUILT)
         # Apple MLX (docs/MLX_PLAN.md): only where the plugin was built, i.e.
         # an arm64 Mac with MLX installed. The equivalence case additionally
@@ -348,20 +296,14 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
         target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
             TABFM_MLX_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_mlx_plugin>")
     endif()
-    if(TABFM_CUDA_PLUGIN_BUILT)
-        # Same deal for CUDA: only on a machine that had an ORT-GPU archive to
-        # build the plugin against. Skips itself without a device or a real
-        # model cache rather than failing the build.
-        add_dependencies(anofox_tabfm_unittest_tests anofox_tabfm_cuda_plugin)
-        target_compile_definitions(anofox_tabfm_unittest_tests PRIVATE
-            TABFM_CUDA_PLUGIN_PATH="$<TARGET_FILE:anofox_tabfm_cuda_plugin>")
-    endif()
     target_compile_features(anofox_tabfm_unittest_tests PRIVATE cxx_std_17)
     target_include_directories(anofox_tabfm_unittest_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src/include
         ${CMAKE_SOURCE_DIR}/third_party/catch
     )
-    target_link_libraries(anofox_tabfm_unittest_tests PRIVATE duckdb_static tabfm_onnxruntime)
+    target_link_libraries(anofox_tabfm_unittest_tests PRIVATE duckdb_static)
+    add_dependencies(anofox_tabfm_unittest_tests ggml)
+    target_link_libraries(anofox_tabfm_unittest_tests PRIVATE tabfm_ggml)
 
     function(anofox_tabfm_register_cpp_tests)
         if(TARGET unittest)

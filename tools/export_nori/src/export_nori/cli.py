@@ -22,25 +22,28 @@ from export_nori import configs, export
 from export_nori.nori_patches import build_model
 
 TASK = "regression"
+CHECKPOINTS = {
+    "fixture": "Synthefy/Nori-30M@63c9f7facf9fb32c37ce3fc2fba331d524696318 :: nori.pt",
+    "real": "Synthefy/Nori-30M@63c9f7facf9fb32c37ce3fc2fba331d524696318 :: nori.pt",
+    "fixture15": "Synthefy/Nori-1-5@79afc5a65b2775d0c62977211a63620ce87846c7 :: nori.pt",
+    "real15": "Synthefy/Nori-1-5@79afc5a65b2775d0c62977211a63620ce87846c7 :: nori.pt",
+}
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="export_nori")
-    ap.add_argument("--config", required=True, choices=["fixture", "real"])
+    ap.add_argument("--config", required=True, choices=["fixture", "real", "fixture15", "real15"],
+                    help="fixture/real: Nori-30M. fixture15/real15: Nori 1.5 (Model v3, two-phase encoder).")
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--skip-parity", action="store_true")
-    ap.add_argument("--contract", choices=["positional", "mask"], default="positional",
-                    help="positional: (x, y) with the split = len(y) (the CPU graph). mask: x, y (full length), "
-                         "train_size, d, n_rows -- the ROCm/MIGraphX contract (nori_mask.py).")
     args = ap.parse_args(argv)
-    masked = args.contract == "mask"
 
     cfg = configs.get(args.config)
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    graph_path = out / (f"graph_mask_nori_{TASK}.onnx" if masked else f"graph_nori_{TASK}.onnx")
-    map_path = out / (f"tensor_map_mask_nori_{TASK}.json" if masked else f"tensor_map_nori_{TASK}.json")
+    graph_path = out / f"graph_nori_{TASK}.onnx"
+    map_path = out / f"tensor_map_nori_{TASK}.json"
 
     print(f"[export_nori] building random-weight Nori ({args.config}) ...", flush=True)
     t0 = time.time()
@@ -48,13 +51,10 @@ def main(argv=None) -> int:
     n_params = sum(p.numel() for p in model.parameters())
     print(f"[export_nori] {n_params:,} params ({time.time()-t0:.1f}s)", flush=True)
 
+
     t0 = time.time()
-    if masked:
-        wrapper = export.export_mask_graph(model, graph_path, dim_rows=cfg.dim_rows,
-                                           dim_features=cfg.dim_features, example=cfg.example)
-    else:
-        wrapper = export.export_graph(model, graph_path, dim_rows=cfg.dim_rows, dim_train=cfg.dim_train,
-                                      dim_features=cfg.dim_features, example=cfg.example)
+    wrapper = export.export_graph(model, graph_path, dim_rows=cfg.dim_rows, dim_train=cfg.dim_train,
+                                  dim_features=cfg.dim_features, example=cfg.example)
     print(f"[export_nori] dynamo export done ({time.time()-t0:.1f}s)", flush=True)
 
     t0 = time.time()
@@ -65,16 +65,7 @@ def main(argv=None) -> int:
     export.write_tensor_map(map_path, tensor_map, task=TASK, safetensors_rel="model.ckpt")
 
     parity = None
-    if masked and not args.skip_parity:
-        from export_nori.mask_parity import check_onnx
-        t0 = time.time()
-        parity = check_onnx(graph_path, model)
-        print(f"[export_nori] masked ORT-vs-positional parity ({time.time()-t0:.1f}s): worst "
-              f"{parity['worst']:.2e} -> {'OK' if parity['ok'] else 'FAIL'}", flush=True)
-        if not parity["ok"]:
-            print("[export_nori] PARITY FAILED", file=sys.stderr)
-            return 1
-    elif not args.skip_parity:
+    if not args.skip_parity:
         t0 = time.time()
         parity = export.check_parity(graph_path, wrapper, cfg.parity_shapes)
         print(f"[export_nori] parity ({time.time()-t0:.1f}s): worst {parity['worst']:.2e} "
@@ -101,10 +92,10 @@ def main(argv=None) -> int:
             "repo": "https://github.com/Synthefy/synthefy-nori",
             "code_license": "Apache-2.0",
             "weights_license": "Apache-2.0",
-            "checkpoint": "Synthefy/Nori-30M@63c9f7facf9fb32c37ce3fc2fba331d524696318 :: nori.pt",
+            "checkpoint": CHECKPOINTS[cfg.name],
         },
         "input_signature": {"x": "[1,T,H] f32", "y": "[1,S] f32 (S=eval_pos, RAW training targets only)"},
-        "output": {"logits": "[1,T,1] RAW-space point estimate per row: the mean of the 999-quantile "
+        "output": {"logits": "[1,T,1] RAW-space point estimate per row: the mean of the quantile "
                              "head (upstream's default quantile_collapse='mean')"},
         "H_dynamic": True, "train_size": "runtime (implicit = len(y))",
         "dim_rows": list(cfg.dim_rows), "dim_train": list(cfg.dim_train),
@@ -116,10 +107,7 @@ def main(argv=None) -> int:
         "versions": {"torch": _torch.__version__, "onnx": _onnx.__version__,
                      "onnxruntime": _ort.__version__, "onnxscript": _onnxscript.__version__},
     }
-    if masked:
-        report["input_signature"] = {"x": "[1,T,H] f32", "y": "[1,T] f32 FULL length (-100 off-context)",
-                                     "train_size": "[1] i64", "d": "[1] i64", "n_rows": "[1] i64"}
-    (out / f"export_report_{'mask_' if masked else ''}nori_{TASK}.json").write_text(json.dumps(report, indent=2) + "\n")
+    (out / f"export_report_nori_{TASK}.json").write_text(json.dumps(report, indent=2) + "\n")
 
     print(f"[export_nori] graph: {graph_path} ({graph_path.stat().st_size/1e6:.2f} MB, weight-free)")
     print(f"[export_nori] map:   {map_path}")

@@ -60,6 +60,8 @@
 #                # Nori-30M (Synthefy, Apache-2.0, ungated) needs NO converter either: the engine reads
 #                # nori.pt ({model_config, ema_state_dict}) natively. Regression only:
 #                CALL tabfm_download('regression', model := 'nori-30m');
+#                # Nori 1.5 (Model v3): nori.pt is {model_config, model_state_dict, inference_config}, read natively.
+#                CALL tabfm_download('regression', model := 'nori-1-5');
 #
 #                # EXAONE Tabular (LG AI Research, non-commercial EXAONE NC 1.2 weights; the HF repo is
 #                # ungated) needs NO converter: LG publish safetensors keyed by the module namespace. One
@@ -280,8 +282,8 @@ true
 # zero-padded the context rows, so every training row decoded to argmax(zeros)
 # -- one constant label for the whole context. README describes this column as
 # "in-context fitted values, handy for a sanity check"; it was neither fitted
-# nor a sanity check. Found by comparing the CPU path against the masked ROCm
-# graph, which computes the head over all rows.
+# nor a sanity check. Found by comparing the CPU path against a graph that
+# computes the head over all rows.
 #
 # A model that genuinely predicts one class everywhere would also produce 1
 # here, so the data below is built with three well-separated classes.
@@ -734,8 +736,8 @@ true
 # TabPFN-3.5 and TabPFN-3.5-Fast (Prior Labs). One published safetensors per
 # variant serves both tasks with no conversion, and each task's graph uses only
 # its own head -- so these are also the check that the engine injects exactly
-# what each map names (tensor maps marked "complete") rather than offering ORT
-# the other head. Measured on this split (CPU): 3.5 acc 0.969 / R^2 0.99997,
+# what each map names (tensor maps marked "complete") rather than offering the
+# engine the other head. Measured on this split (CPU): 3.5 acc 0.969 / R^2 0.99997,
 # 3.5-Fast acc 0.953 / R^2 0.99993; fitted and query accuracy on sep_t 1.0, fitted
 # regression corr 0.999998 (the duplicate route; the embedding route measured
 # 0.65-0.86 on real weights and is not used for regression).
@@ -877,6 +879,63 @@ true
 # Regression only, with the weights on disk too: classification is refused, naming models that classify.
 statement error
 SELECT * FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'nori-30m')
+----
+<REGEX>:.*does not support task 'classification'.*Models that support it:.*
+
+# ---------------------------------------------------------------------------
+# Nori 1.5 (Synthefy, Model v3): REGRESSION ONLY, query rows AND context rows, from the natively read nori.pt
+# ({model_config, model_state_dict, inference_config}: no EMA copy, so this also reads the reader's
+# model_state_dict path on the real file).
+#
+# A different architecture from Nori-30M (a two-phase encoder) behind the same wrapper contract: the graph is
+# (x, y)-only, the model standardises its own features, the wrapper standardises the target in-graph and reduces
+# the 999-quantile head to its mean, so the engine must do neither (profile nori_v15_raw). One forward, not
+# upstream's 4-member ensemble. Parity with upstream's own forward is exercised out-of-band
+# (tools/export_nori/tests/test_real_weights_v15.py: diabetes max |delta| 0.083 on a target std of 77, R2 0.3927
+# vs 0.3926).
+#
+# Measured on these tables (CPU, 2026-11-21): shared split query R2 0.99995; reg_t context corr 0.99999; reg_in
+# query corr 0.99997, worst error 0.36. reg_t is the EXTRAPOLATION table (queries outside the context's range):
+# query corr(yhat, f1) is only 0.51 with predictions reaching 58.7 against a truth of 72.3, where nori-30m
+# reaches 0.9955 / 74.2. Nori 1.5 therefore holds a linear trend less well outside its context than nori-30m.
+
+statement ok
+CREATE TABLE r_nori15 AS
+SELECT row_id, yhat FROM tabfm_regress('ctx_reg', 'tgt', test := 'qry', model := 'nori-1-5');
+
+query I
+SELECT count(*) FROM r_nori15 WHERE yhat IS NULL
+----
+0
+
+query I
+SELECT 1 - sum(power(r.yhat - t.tgt, 2)) / sum(power(t.tgt - (SELECT avg(tgt) FROM truth), 2)) >= 0.99
+FROM r_nori15 r JOIN truth t USING (row_id)
+----
+true
+
+query I
+SELECT corr(yhat, target) > 0.99
+FROM tabfm_regress('reg_t', 'target', model := 'nori-1-5') WHERE is_training;
+----
+true
+
+# extrapolation: monotone with the trend, but weaker than nori-30m (see the header)
+query I
+SELECT corr(yhat, f1) > 0.4
+FROM tabfm_regress('reg_t', 'target', model := 'nori-1-5') WHERE NOT is_training;
+----
+true
+
+query I
+SELECT corr(yhat, f1 * 0.7 + 3) > 0.999 AND max(abs(yhat - (f1 * 0.7 + 3))) < 1.0
+FROM tabfm_regress('reg_in', 'target', model := 'nori-1-5') WHERE NOT is_training;
+----
+true
+
+# Regression only, with the weights on disk too: classification is refused, naming models that classify.
+statement error
+SELECT * FROM tabfm_classify('ctx_cls', 'y', test := 'qry', model := 'nori-1-5')
 ----
 <REGEX>:.*does not support task 'classification'.*Models that support it:.*
 
@@ -1142,11 +1201,18 @@ SELECT count(*) FROM tabfm_classify('k11', 'lbl', model := 'kumo-tabular-small')
 
 # ---------------------------------------------------------------------------
 # tabfm_download writes the GPU weights of the checkpoint-shipped models itself: the model.safetensors
-# beside the .ckpt that the bundled ext/migraphx graphs read by offset (it used to need
+# beside the .ckpt that the bundled ext graphs read by offset (it used to need
 # tools/export_*/convert_*_weights). A second row reports it: 'converted' when written now, 'cached' when
 # a file with the pinned header is already there.
 query TT
 SELECT parse_filename(file), status IN ('converted', 'cached') FROM tabfm_download('regression', model := 'nori-30m')
+ORDER BY 1
+----
+model.ckpt	true
+model.safetensors	true
+
+query TT
+SELECT parse_filename(file), status IN ('converted', 'cached') FROM tabfm_download('regression', model := 'nori-1-5')
 ORDER BY 1
 ----
 model.ckpt	true

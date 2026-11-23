@@ -12,11 +12,11 @@
 // Only the dtypes TabFM needs are supported: F32, BF16, I64 (HLD §4.3).
 // Parsing is buffer-level (caller owns the bytes: mmap or plain read); the
 // returned view points into the caller's buffer and never copies tensor data.
-// MaterializeF32Arena builds the injection-ready set for the ORT engine:
+// MaterializeF32Arena builds the injection-ready set for the engine:
 // BF16 tensors are upcast to F32 into an owned arena (S02: exact 16-bit shift
 // into the high half); F32 and I64 tensors pass through pointing at the
-// source buffer. Both the source buffer and the arena may be freed right
-// after Ort::Session creation (S02: ORT copies injected initializers).
+// source buffer. The session keeps references to both, so they must live as
+// long as the session does.
 //===----------------------------------------------------------------------===//
 
 #pragma once
@@ -96,7 +96,7 @@ inline float Bf16ToF32(uint16_t bits) {
 	return result;
 }
 
-//! One tensor after materialization for ORT injection.
+//! One tensor after materialization for injection into the engine.
 struct MaterializedTensor {
 	//! Dtype as stored in the safetensors file.
 	SafetensorsDtype source_dtype = SafetensorsDtype::F32;

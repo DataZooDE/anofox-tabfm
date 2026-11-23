@@ -146,7 +146,7 @@ FROM tabfm_regress('rctx', 'target', test := 'rqry', model := 'tabicl-v2') p JOI
 true
 
 # --- TabPFN-3: the classifier's .ckpt also stores `regression_borders`, which its graph does not use ------
-# Before its tensor map said "complete", the CPU offered that tensor to ORT under the "m." fallback name and
+# Before its tensor map said "complete", the CPU offered that tensor to the session under the "m." fallback name and
 # every prediction failed ("Failed to find existing initializer with name m.regression_borders"), and
 # tabfm_download wrote no GPU file. Both files it writes are byte-identical to convert_weights.py's.
 

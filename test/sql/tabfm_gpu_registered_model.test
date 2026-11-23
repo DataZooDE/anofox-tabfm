@@ -1,0 +1,84 @@
+# name: test/sql/tabfm_gpu_registered_model.test
+# description: A user-registered model on a GPU through the ggml GPU plugin (cuda or rocm). The plugin reads the plain external-data graph
+#              (`*_ext_graph`); a registration that only names a `*_migraphx_graph` (accepted and ignored: that backend was
+#              removed) is refused by name instead of silently running on the CPU. With an ext graph the model is served by the GPU and gives
+#              the CPU's answer, and tabfm_gpu_precompile is a warm-up that compiles nothing.
+#
+#              Weight-free (the committed fixture), but it needs a GPU and the plugin:
+#                TABFM_GPU_DEVICE=cuda|rocm TABFM_GPU_EP_PATH=<dir with libanofox_tabfm_ggml-<vendor>_plugin.so> \
+#                  build/release/test/unittest test/sql/tabfm_gpu_registered_model.test
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require-env TABFM_GPU_DEVICE
+
+require-env TABFM_GPU_EP_PATH
+
+statement ok
+SET anofox_tabfm_ep_path = '${TABFM_GPU_EP_PATH}';
+
+# a sensor-fault classifier: two readings per machine, a label for the inspected ones
+statement ok
+CREATE TABLE readings AS SELECT i AS machine_id, (hash(i * 3) % 100) / 25.0 AS vibration, (hash(i * 7) % 100) / 25.0 AS temperature,
+  CASE WHEN i < 24 THEN CASE WHEN (hash(i * 3) % 100) + (hash(i * 7) % 100) > 100 THEN 'fault' ELSE 'ok' END END AS label
+FROM range(40) r(i);
+
+# ---- an old registration that names only a *_migraphx_graph (removed backend): no GPU path, and the error says which argument gives it one ----
+statement ok
+CALL tabfm_register_model(id := 'mgx-only', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_migraphx_graph := 'graph_ext_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal');
+
+statement ok
+SET anofox_tabfm_device = '${TABFM_GPU_DEVICE}';
+
+statement error
+SELECT count(*) FROM tabfm_classify('readings', 'label', features := ['vibration', 'temperature'], keep := ['machine_id'], model := 'mgx-only');
+----
+<REGEX>:.*mgx-only.*ext_graph.*
+
+# ---- the same model with an ext graph: served by the GPU ----
+statement ok
+CALL tabfm_register_model(id := 'ext-fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx',
+  classification_ext_graph := 'graph_ext_fixture.onnx',
+  classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json',
+  license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal');
+
+# the warm-up loads the session on the GPU and compiles nothing ahead of time
+query IIIIII
+SELECT task, rows, features, starts_with(device, '${TABFM_GPU_DEVICE}:'), status, bucket_rows IS NULL AND bucket_features IS NULL
+FROM tabfm_gpu_precompile('classification', 40, 2, model := 'ext-fixture');
+----
+classification	40	2	true	not needed	true
+
+statement ok
+CREATE TABLE gpu_pred AS SELECT * FROM tabfm_classify('readings', 'label', features := ['vibration', 'temperature'], keep := ['machine_id'], model := 'ext-fixture');
+
+query I
+SELECT count(*) FROM tabfm_models() WHERE model = 'ext-fixture' AND loaded AND starts_with(device, '${TABFM_GPU_DEVICE}:');
+----
+1
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE cpu_pred AS SELECT * FROM tabfm_classify('readings', 'label', features := ['vibration', 'temperature'], keep := ['machine_id'], model := 'ext-fixture');
+
+# every machine scored once (the single-table form scores the labelled rows too), with the CPU's label
+query II
+SELECT count(*), count(*) FILTER (WHERE c.yhat <> g.yhat) FROM cpu_pred c JOIN gpu_pred g USING (machine_id);
+----
+40	0
+
+# rows and features below 1 are refused before anything is loaded
+statement error
+SELECT * FROM tabfm_gpu_precompile('classification', 0, 2, model := 'ext-fixture');
+----
+rows and features must be >= 1

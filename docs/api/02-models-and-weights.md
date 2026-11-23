@@ -20,7 +20,7 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 
 | `model` | by | tasks | licence id | `commercial` | gated | weights | notes |
 |---|---|---|---|---|---|---|---|
-| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB per task | CPU memory grows with the square of the context rows: peak RSS 3.5 GB at 1,000 rows x 15 features, 6.8 GB at 2,000, over 15 GB at 4,000 (#107) |
+| `mitra` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB per task | CPU memory grows faster than the context rows: peak RSS 1.0 GB at 1,000 rows x 15 features, 2.0 GB at 2,000, 5.5 GB at 4,000 (#107) |
 | `mitra-v2` | AWS AutoGluon | classify, regress | `apache-2.0` | `true` | no | ~303 MB / ~307 MB | recommended up to 32,768 rows and 256 features; the classifier runs mitra's graph |
 | `tabdpt` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~254 MB, one file for both tasks | TabDPT v1.2 |
 | `tabdpt-v1-3` | Layer 6 AI | classify, regress | `apache-2.0` | `true` | no | ~252 MB, one file for both tasks | TabDPT v1.3 |
@@ -28,6 +28,7 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 | `orion-bix` | Lexsi Labs | classify | `mit` | `true` | no | ~315 MB | classify only |
 | `orion-msp` | Lexsi Labs | classify | `mit` | `true` | no | ~336 MB | classify only |
 | `nori-30m` | Synthefy | regress | `apache-2.0` | `true` | no | ~117 MB | regress only, so `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only; recommended at most 5,000 rows and 100 features |
+| `nori-1-5` | Synthefy | regress | `apache-2.0` | `true` | no | ~83 MB | Nori 1.5 ("Model v3"), ~20.8 M parameters; regress only, so `tabfm_generate` refuses it and `tabfm_impute` fills numeric columns only; a two-phase encoder; recommended at most 2,000 rows and 100 features, one at a time: CPU memory grows with rows² x features (2,000 x 20 peaks at 7.5 GB, 1,000 x 100 at 12.8 GB) |
 | `kumo-tabular-small` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~110 MB / ~114 MB | OpenMDW-1.1: keep the agreement and NVIDIA's notice when you distribute ([THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md)); recommended at most 5,000 rows |
 | `kumo-tabular-medium` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~246 MB / ~250 MB | as `kumo-tabular-small` |
 | `kumo-tabular-large` | NVIDIA | classify, regress | `openmdw-1.1` | `true` | no | ~855 MB / ~863 MB | as `kumo-tabular-small` |
@@ -40,7 +41,7 @@ row and feature caps are the global `anofox_tabfm_max_rows` / `anofox_tabfm_max_
 | `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~876 MB, one file for both tasks | no hosted service |
 | `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | `false` | yes | ~334 MB, one file for both tasks | 3.5 with 8 instead of 24 layers; no hosted service |
 | `causilo` | Nums AI | classify, regress | `causilo-license-v1.0` | `false` | yes | ~144 MB / ~148 MB | hosted, API or SaaS use needs a separate licence |
-| `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | `false` | yes | ~83 MB / ~85 MB | EXAONE AI Model License 1.2 - NC; recommended at most 3,000 rows and 100 features; CPU and ROCm only |
+| `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | `false` | yes | ~83 MB / ~85 MB | EXAONE AI Model License 1.2 - NC; recommended at most 3,000 rows and 100 features |
 | `tabfm-v1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | `false` | yes | 6.56 GB (classification) | non-commercial, no redistribution |
 | `tabfm-v1-1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | `false` | yes | ~821 MB / ~825 MB | same licence as v1, 4x fewer parameters |
 
@@ -55,7 +56,7 @@ background (how each was ported, what is verified, licences in full, LimiX's att
 
 The extension ships only **weight-free** ONNX graphs, compiled into the extension; the weights are your own
 Hugging Face download, cached under `anofox_tabfm_cache_dir` (default `~/.cache/anofox-tabfm`). After
-`tabfm_download` a model works with no companion files. The engine (preprocess → ONNX Runtime forward →
+`tabfm_download` a model works with no companion files. The engine (preprocess → ggml forward →
 decode) is checked against each model's PyTorch reference ([docs/REAL_MODELS.md](../REAL_MODELS.md)); for TabFM v1 per-row outputs match to ~1e-5. A **model
 registry** (`model :=`, `tabfm_list_models()`, `tabfm_register_model`) makes another model a data change,
 not new C++. For an air-gapped machine, pre-seed the cache directory.
@@ -67,7 +68,7 @@ Every lifecycle function takes the task first and `model :=` (or falls back to
 
 | Call | What it does |
 |---|---|
-| `CALL tabfm_download(task [, revision], model := '<id>')` | fetch the weights into the cache; one row per file (`file, url, bytes, status`). For `nori-30m` and the Kumo models a second row (`url` NULL) is the `model.safetensors` it writes from the checkpoint for the GPU graphs: `converted`, or `cached` when already there. A missing or outdated converted file is also rewritten from the checkpoint the next time a predict, `tabfm_gpu_precompile` or `tabfm_backends()` resolves the model, so a cache left by an older release is not refused on the GPU |
+| `CALL tabfm_download(task [, revision], model := '<id>')` | fetch the weights into the cache; one row per file (`file, url, bytes, status`). For `nori-30m`, `nori-1-5` and the Kumo models a second row (`url` NULL) is the `model.safetensors` it writes from the checkpoint for the GPU graphs: `converted`, or `cached` when already there. A missing or outdated converted file is also rewritten from the checkpoint the next time a predict or `tabfm_backends()` resolves the model, so a cache left by an older release is not refused on the GPU |
 | `CALL tabfm_load(task, model := '<id>')` | check that the weights are downloaded and fail with the fix if not; the session itself is built on the first predict |
 | `CALL tabfm_unload([task], model := '<id>')` | free a loaded session (all of them without a task); memory returns to baseline |
 | `CALL tabfm_remove(task [, revision], model := '<id>')` | delete the weights from the cache |
@@ -92,8 +93,8 @@ SELECT * FROM tabfm_models();
 The `context_*` columns are `false` / zero for a session that does not use the [context cache](#context-cache).)
 
 `device` is empty until a predict warms a session; it is how you check that a GPU is used
-([GPU acceleration](../guides/04-gpu-acceleration.md#2-check-what-serves-each-model)). To warm a ROCm
-session ahead of the first query, use `tabfm_gpu_precompile` ([GPU](04-gpu.md#rocm-compile-time)).
+([GPU acceleration](../guides/04-gpu-acceleration.md#2-check-what-serves-each-model)). To warm a GPU
+session ahead of the first query, run one small predict.
 
 For a gated or private HF repo, add a bearer token — no custom credential store:
 
@@ -134,7 +135,7 @@ against a fixed training table, cross-validation folds and per-segment `UNION AL
 - **Memory.** `anofox_tabfm_context_cache_memory` (default `256MB`) bounds the cached contexts per loaded model;
   the least recently used goes first. The budget is instance-wide (one cache per loaded model serves every
   connection) and read when a statement runs. `tabfm_unload()` drops the contexts with the session. With the
-  cache on, a model also holds a second ORT session (prepare + query): about +300 MB for `tabicl-v2`.
+  cache on, a model also holds a second session (prepare + query): about +200 MB for `tabicl-v2`.
 - **Batches within one call.** `opts := MAP{'query_batch': 'N'}` scores the test rows N at a time against one
   encoded context, so it bounds the peak memory of a large call without re-encoding the context per batch.
   Each pass has a fixed cost that grows with the context (about 60 ms at 2000 support rows), so keep N in the
@@ -181,8 +182,9 @@ The only external thing is the weight-free ONNX graph; every other field is a na
 `gate_setting`, `preprocessing_profile`, `max_rows` / `max_features` / `max_classes`, `base_dir`,
 `fitted_second_pass` (a list of tasks, `['classification', 'regression']`: the engine scores the context rows a
 second time as queries to get their fitted values, for a model whose graph mixes a context row's own label into
-that row's output; the manifest field of the same name does the same), `contract_inputs` / `contract_outputs`, the GPU graph variants (`classification_ext_graph`,
-`regression_ext_graph`, `classification_migraphx_graph`, `regression_migraphx_graph`) and, for several files
+that row's output; the manifest field of the same name does the same), `contract_inputs` / `contract_outputs`, the GPU graphs (`classification_ext_graph`,
+`regression_ext_graph`: the plain external-data graph every GPU backend reads; `classification_migraphx_graph` /
+`regression_migraphx_graph` are still accepted but ignored, since the MIGraphX backend was removed) and, for several files
 per task, the parallel lists `classification_files` / `classification_file_urls` /
 `classification_file_bytes` (and the `regression_` equivalents). The `preprocessing_profile` suffix decides
 how the engine scales inputs: `_raw` passes features and target unscaled (the graph normalises them itself),

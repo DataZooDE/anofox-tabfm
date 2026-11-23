@@ -34,15 +34,10 @@ import sys
 import time
 
 
-def run_sql(duckdb_bin, sql, timeout, suppressions=None):
+def run_sql(duckdb_bin, sql, timeout):
     """Run SQL through the DuckDB CLI, returning (stdout, stderr, ok)."""
     env = dict(os.environ)
     env.setdefault("DATAZOO_DISABLE_TELEMETRY", "1")
-    # A sanitizer build otherwise fails every cell on ONNX Runtime's own
-    # 14-byte static-init leak, which has nothing to do with what is being
-    # measured (see test/lsan.supp).
-    if suppressions and os.path.exists(suppressions):
-        env["LSAN_OPTIONS"] = f"suppressions={suppressions}"
     try:
         proc = subprocess.run(
             [duckdb_bin, "-unsigned", "-init", "/dev/null", "-csv", "-noheader"],
@@ -61,9 +56,8 @@ def build_sql(model, device, ep_path, precision, n_rows, n_features, n_context, 
     """One session: build the table, warm once, then time `repeats` runs.
 
     The warm-up is not optional and is excluded from the timings. A first call
-    pays for session construction, weight injection and -- on MIGraphX -- a
-    shape-bucket compile that can take minutes. Including it would report a
-    one-off cost as the steady-state latency.
+    pays for session construction, weight loading and graph building.
+    Including it would report a one-off cost as the steady-state latency.
     """
     feature_cols = ", ".join(
         f"((i * {7 + k}) % 97)::DOUBLE AS f{k}" for k in range(n_features)
@@ -112,13 +106,12 @@ def measure(args, model, device, n_rows, n_features):
     cancels. What remains, divided by N, is the warm per-inference cost.
     """
     n_context = max(1, int(n_rows * args.context_fraction))
-    supp = os.path.join(os.path.dirname(__file__), "..", "..", "test", "lsan.supp")
 
     def session(repeats):
         sql = build_sql(model, device, args.ep_path, args.precision,
                         n_rows, n_features, n_context, repeats, args.setup_sql)
         start = time.perf_counter()
-        out, err, ok = run_sql(args.duckdb, sql, args.timeout, supp)
+        out, err, ok = run_sql(args.duckdb, sql, args.timeout)
         return (time.perf_counter() - start) * 1000.0, out, err, ok
 
     # Baseline first: if the cell is going to fail, fail before paying for N.
@@ -184,7 +177,7 @@ def main():
     ap.add_argument("--setup-sql", default="", help="SQL run before each session (e.g. CALL tabfm_register_model(...) "
                                                    "for a model that is not built in). Runs in BOTH the timed and "
                                                    "baseline sessions, so it cancels out of the differenced number.")
-    ap.add_argument("--timeout", type=int, default=3600, help="per-cell seconds (MIGraphX cold compile is minutes)")
+    ap.add_argument("--timeout", type=int, default=900, help="per-cell seconds (a cold load of a large model is slow)")
     args = ap.parse_args()
 
     models = [m.strip() for m in args.models.split(",") if m.strip()]

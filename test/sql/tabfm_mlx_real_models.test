@@ -8,7 +8,7 @@
 #              for device 'mlx' explicitly (a silent CPU fallback would also "agree with the CPU") and
 #              reads the serving device from tabfm_models().
 #
-#              It covers EVERY built-in model x task (43 pairs: 40 served and compared, 3 refused because
+#              It covers EVERY built-in model x task (44 pairs: 41 served and compared, 3 refused because
 #              no ext graph ships for them). Needs Apple silicon and every model's weights downloaded (see
 #              tabfm_real_models.test for the CALL tabfm_download lines). tabfm_download writes the
 #              model.safetensors a .ckpt model's GPU graph needs, except for tabpfn-v2-5-real, whose
@@ -512,6 +512,39 @@ SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM 
 true
 
 # ---------------------------------------------------------------------------
+# nori-1-5
+# Nori 1.5 (Synthefy Model v3, regression only): a two-phase encoder, served from graph_ext_nori15_regression.
+# Its ops are all in MlxImplementedOps() (test_tabfm_mlx_ops.cpp), which is necessary but not sufficient: this
+# block is the check that the interpreter's ANSWER agrees with the CPU's.
+# Measured (Apple M3, 100 rows x 8 features, 2026-11-20): regression max |diff| 1.2e-5 (8.8e-7 of the CPU's
+# range), corr 0.9999999999996, a second MLX call identical; CPU 649 ms, MLX 312 ms cold / 215 ms warm.
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE nori_1_5_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'nori-1-5') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE nori_1_5_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'nori-1-5') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'nori-1-5' AND task = 'regression'
+----
+true
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM nori_1_5_cr c JOIN nori_1_5_gr g USING (rid)
+----
+true
+
+# ---------------------------------------------------------------------------
 # causilo
 # Measured: 0/100 labels; regression max |diff| 1.6e-5.
 
@@ -967,4 +1000,4 @@ nori-30m	regression	false
 query I
 SELECT count(*) FROM tabfm_backends() WHERE backend = 'mlx' AND supported
 ----
-40
+41

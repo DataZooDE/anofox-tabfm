@@ -7,7 +7,7 @@ require anofox_tabfm
 statement ok
 LOAD anofox_tabfm
 
-# At least one device is always discovered (the cpu row exists in every flavor)
+# At least one device is always discovered (the cpu row always exists)
 query I
 SELECT count(*) >= 1 FROM tabfm_devices();
 ----
@@ -25,7 +25,7 @@ SELECT device_id, ep, usable, vram_total IS NULL, vram_free IS NULL, name <> '',
 FROM tabfm_devices()
 WHERE device_id = 'cpu';
 ----
-cpu	CPUExecutionProvider	true	true	true	true	true
+cpu	ggml	true	true	true	true	true
 
 # Column names and types exactly as specified (SQL-API §3)
 query II
@@ -57,7 +57,7 @@ true
 
 query I
 SELECT coalesce(bool_and(
-           device_id = 'mlx:0' AND ep = 'MlxBackend'
+           device_id = 'mlx:0' AND ep = 'mlx'
            AND vram_total IS NULL AND vram_free IS NULL
            AND name <> ''), true)
 FROM tabfm_devices() WHERE device_id LIKE 'mlx%';
@@ -77,3 +77,12 @@ query I
 SELECT count(*) = 1 FROM tabfm_devices() WHERE device_id = 'cpu' AND usable;
 ----
 true
+
+# The ep column names the engine that serves each device: the ggml CPU engine, the ggml GPU plugin for CUDA and ROCm, MLX for Apple. It used to carry
+# ONNX Runtime execution-provider names, which no build contains any more.
+query I
+SELECT count(*) FROM tabfm_devices()
+WHERE NOT ((device_id = 'cpu' AND ep = 'ggml') OR (device_id LIKE 'cuda:%' AND ep = 'ggml-cuda') OR (device_id LIKE 'rocm:%' AND ep = 'ggml-rocm')
+           OR (device_id LIKE 'mlx:%' AND ep = 'mlx'));
+----
+0

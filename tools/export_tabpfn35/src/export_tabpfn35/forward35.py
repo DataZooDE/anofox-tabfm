@@ -2,8 +2,7 @@
 
 Why not trace `TabPFNV3p5.forward` itself, the way tools/export_tabpfn traces v3?
 Four things in it cannot be exported, and patching them one by one would leave a
-graph that only works in the process that installed the patches (the trap the
-2.5-line masked path fell into, tools/export_tabpfn tests/test_mask_export_isolated.py):
+graph that only works in the process that installed the patches:
 
   1. the in-context ECDF uses `torch.searchsorted` (no ONNX operator) -- see ecdf.py;
   2. `num_present_classes = y.max().item() + 1` sizes the decoder's one-hot, a
@@ -12,15 +11,13 @@ graph that only works in the process that installed the patches (the trap the
      Python loops and registries keyed on runtime shapes;
   4. the multiclass target-range guard (`(y < 0).any()`), a data-dependent branch.
 
-So, as for TabPFN-3's masked graph (tabpfn_mask_v3.py), the blocks are re-driven
-from their own weights -- `blk.attn.q_projection`, ... -- and nothing upstream is
+So the blocks are re-driven from their own weights -- `blk.attn.q_projection`, ... -- and nothing upstream is
 monkeypatched. The result is checked against upstream's own forward on every row
 (tests/test_forward_parity.py, and parity_real.py on the released weights).
 
 ONE forward serves both graph contracts. Train rows are the first `n_train` rows
 and every attention whose keys are train rows MASKS the others rather than slicing
-them, so `n_train` may be a runtime value (masked contract, for MIGraphX's fixed
-shapes) or the length of `y` (positional contract, for ORT). Padded feature
+them, so `n_train` is a runtime value (the length of `y`). Padded feature
 columns (`d` < H) are excluded the same way, and the neighbour wrap that builds
 each column's feature group wraps at the real width `d`, not the padded one.
 
@@ -30,8 +27,7 @@ Differences from upstream that are NOT approximations:
   classes present and pads the probabilities back with zeros; an absent class has
   an all-zero value column, so attention returns exactly that zero either way.
 * `nn.Linear(1, n)` layers (the softmax-scaling MLPs' first layer, the regression
-  target encoders) are computed elementwise. Same arithmetic; MIGraphX's GPU
-  compile dies on a K=1 matmul feeding a broadcast Mul (docs/ROCM_TABPFN_PLAN.md).
+  target encoders) are computed elementwise. Same arithmetic.
 """
 
 from __future__ import annotations
@@ -148,8 +144,7 @@ def _neighbour_index(H, d, shift, dev):
 def _group(model, parts_RiBC, d):
     """[B, Ri, H, 3G]: upstream `_group_features` over (x, nan-indicator, ecdf).
 
-    Gathered in the row-major layout and transposed once after the concat (a
-    Concat of Transposes kills MIGraphX's `simplify_reshapes`, see tabpfn_mask_v3).
+    Gathered in the row-major layout and transposed once after the concat.
     """
     H = parts_RiBC[0].shape[-1]
     idx = [_neighbour_index(H, d, 2 ** i, parts_RiBC[0].device)

@@ -1,21 +1,14 @@
 # name: test/sql/tabfm_rocm_real_models.test
-# description: TabICL v2 and LimiX-2M on ROCm (MIGraphX), with the real weights: served on rocm:0 through
-#              their MASKED graphs (tools/export_tabicl, tools/export_limix: --contract mask), and agreeing
-#              with the CPU (ONNX Runtime, the positional graph) on every row.
+# description: TabICL v2 and LimiX-2M on ROCm with the real weights: served on rocm:0 through the ggml ROCm
+#              plugin (their ext graphs), and agreeing with the CPU on every row.
 #
-#              Both models read the train/test split from len(y), which a fixed-shape MIGraphX compile cannot
-#              bucket (docs/ROCM_SINGLE_EVAL_POS.md); the masked graph takes the split as a value. This file is
-#              the check that the masked graph computes what the positional one does ON THE GPU: it asks for
-#              device 'rocm' explicitly (a silent CPU fallback would also "agree with the CPU") and reads the
-#              serving device from tabfm_models().
-#
-#              Needs an AMD GPU with MIGraphX, the plugin built by `make release`, and the weights downloaded
+#              It asks for device 'rocm' explicitly (a silent CPU fallback would also "agree with the CPU") and
+#              reads the serving device from tabfm_models(). Needs an AMD GPU the plugin carries kernels for, the
+#              ggml-rocm plugin (TABFM_GPU_EP_PATH) and the weights downloaded
 #              (CALL tabfm_download('classification'|'regression', model := 'tabicl-v2'|'limix-2m'); for LimiX
-#              the download also writes the model.safetensors beside model.ckpt that MIGraphX reads). The first
-#              run compiles one program per model, task and (128 x 16) bucket -- tens of minutes each, cached
-#              as .mxr afterwards (docs/REAL_MODELS.md has the measured times):
+#              the download also writes the model.safetensors beside model.ckpt that the GPU reads):
 #
-#                TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1 ./build/release/test/unittest test/sql/tabfm_rocm_real_models.test
+#                TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1 TABFM_GPU_EP_PATH=build/ggml-rocm ./build/release/test/unittest test/sql/tabfm_rocm_real_models.test
 # group: [anofox_tabfm]
 
 require anofox_tabfm
@@ -24,13 +17,15 @@ require-env TABFM_REAL_WEIGHTS
 
 require-env TABFM_ROCM
 
+require-env TABFM_GPU_EP_PATH
+
 statement ok
 SET anofox_tabfm_accept_hf_license = true;
 
 statement ok
-SET anofox_tabfm_ep_path = 'build/release/extension/anofox_tabfm';
+SET anofox_tabfm_ep_path = '${TABFM_GPU_EP_PATH}';
 
-# 100 rows x 8 features (the 128 x 16 bucket), 70 context rows and 30 queries; three classes and a smooth target.
+# 100 rows x 8 features, 70 context rows and 30 queries; three classes and a smooth target.
 statement ok
 CREATE TABLE g AS SELECT i AS rid, sin(i * 0.11) f1, cos(i * 0.07) f2, (i % 13) / 13.0 f3, ln(1 + (i % 31)) f4,
   (i % 5)::DOUBLE f5, sin(i * 0.3) * cos(i * 0.05) f6, (i * 7 % 11)::DOUBLE f7, i / 100.0 f8,
@@ -48,7 +43,7 @@ CREATE TABLE gr AS SELECT * EXCLUDE (label) FROM g;
 # ---------------------------------------------------------------------------
 # tabicl-v2
 
-# the catalogue says ROCm can serve it, for both tasks (the masked graph is bundled and matches the weights)
+# the catalogue says ROCm can serve it, for both tasks (the ext graph is bundled and matches the weights)
 query TT
 SELECT task, supported FROM tabfm_backends() WHERE backend = 'rocm' AND model = 'tabicl-v2' ORDER BY task
 ----
@@ -93,7 +88,7 @@ SELECT count(*), max(abs(c.yhat - g.yhat)) < 1e-3 AND corr(c.yhat, g.yhat) > 0.9
 # ---------------------------------------------------------------------------
 # limix-2m
 
-# the catalogue says ROCm can serve it, for both tasks (the masked graph is bundled and matches the weights)
+# the catalogue says ROCm can serve it, for both tasks (the ext graph is bundled and matches the weights)
 query TT
 SELECT task, supported FROM tabfm_backends() WHERE backend = 'rocm' AND model = 'limix-2m' ORDER BY task
 ----

@@ -1,5 +1,7 @@
 #include "tabfm_predict.hpp"
+#include "tabfm_session.hpp"
 #include "tabfm_state.hpp"
+#include "tabfm_owned_registry.hpp"
 #include "tabfm_preprocess.hpp"
 #include "tabfm_registration.hpp"
 
@@ -19,6 +21,7 @@
 #include "telemetry.hpp"
 
 #include <cstdlib>
+#include <mutex>
 
 #include <cmath>
 
@@ -42,7 +45,10 @@ namespace {
 //===--------------------------------------------------------------------===//
 // Bind data
 //===--------------------------------------------------------------------===//
+//! The row buffers this aggregate creates are owned by the query (tabfm_owned_registry.hpp): DuckDB does not destroy every state on every path.
 struct PredictBindData : public FunctionData {
+	//! Owns the row buffers this query's aggregate states create; every copy of the bind data shares it (see RowBufferOwner).
+	RowBufferOwner buffer_owner;
 	//! "tabfm_predict_agg" or "tabfm_predict_win" (error-text prefix)
 	string function_name;
 	string target;
@@ -529,18 +535,8 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, duckdb_comp
 	if (context.TryGetCurrentSetting("anofox_tabfm_default_model", setting) && !setting.IsNull()) {
 		bind->context.default_model = setting.ToString();
 	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_cache_dir", setting) && !setting.IsNull()) {
-		bind->context.cache_dir = ExpandHomeDirectory(setting.ToString());
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_device", setting) && !setting.IsNull()) {
-		bind->context.device = setting.ToString();
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", setting) && !setting.IsNull()) {
-		bind->context.gpu_precision = StringUtil::Lower(setting.ToString());
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_cpu_prepack", setting) && !setting.IsNull()) {
-		bind->context.cpu_prepack = BooleanValue::Get(setting);
-	}
+	// cache_dir, device, gpu_precision and ep_path (which defaults to where tabfm_download_runtime puts the plugin)
+	CaptureGpuDispatchSettings(context, bind->context);
 	// On by default (the setting's default is true); a session that never reads the setting keeps the
 	// combined graph, which is why PredictContext's own default is false.
 	bind->context.context_cache = true;
@@ -548,16 +544,6 @@ unique_ptr<FunctionData> PredictBindInternal(ClientContext &context, duckdb_comp
 		bind->context.context_cache = BooleanValue::Get(setting);
 	}
 	// anofox_tabfm_context_cache_memory is instance-wide and read at execution (tabfm_engine.cpp).
-	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
-		bind->context.mxr_source = setting.ToString();
-	}
-	// ep_path defaults to where tabfm_download_runtime puts the plugin, so a
-	// download is usable without a second SET naming the same directory.
-	string ep_setting;
-	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
-		ep_setting = setting.ToString();
-	}
-	bind->context.ep_path = ResolveEpPath(ep_setting, bind->context.cache_dir);
 	if (context.TryGetCurrentSetting("anofox_tabfm_max_sessions", setting) && !setting.IsNull()) {
 		bind->context.max_sessions = BigIntValue::Get(setting.DefaultCastAs(LogicalType::BIGINT));
 	}
@@ -624,19 +610,37 @@ struct WindowRowReader {
 };
 
 struct PredictAggState {
+	//! fast access to the buffer; valid while rows_id is registered
 	PredictRowBuffer *rows;
+	//! the registry handle that owns `rows` (0 = none)
+	uint64_t rows_id;
 	WindowRowReader *reader;
 };
+
+void NewRows(PredictAggState &state, const PredictBindData &bind) {
+	auto buffer = std::make_shared<PredictRowBuffer>(bind.row_type);
+	state.rows = buffer.get();
+	state.rows_id = RegisterOwned(bind.buffer_owner, std::move(buffer));
+}
+
+//! Free a state's row buffer by its handle. Idempotent: a buffer the owner already reclaimed is not found and nothing happens.
+void ReleaseRows(PredictAggState &state) {
+	if (state.rows_id) {
+		ReleaseOwned(state.rows_id);
+	}
+	state.rows = nullptr;
+	state.rows_id = 0;
+}
 
 void PredictStateInitialize(data_ptr_t state_ptr) {
 	auto &state = *reinterpret_cast<PredictAggState *>(state_ptr);
 	state.rows = nullptr;
+	state.rows_id = 0;
 	state.reader = nullptr;
 }
 
 void FreeState(PredictAggState &state) {
-	delete state.rows;
-	state.rows = nullptr;
+	ReleaseRows(state);
 	delete state.reader;
 	state.reader = nullptr;
 }
@@ -687,7 +691,7 @@ void PredictAggUpdate(Vector inputs[], AggregateInputData &aggr_input_data, idx_
 	for (idx_t i = 0; i < count; i++) {
 		auto &state = *states[sdata.sel->get_index(i)];
 		if (!state.rows) {
-			state.rows = new PredictRowBuffer(bind.row_type);
+			NewRows(state, bind);
 		}
 		// incremental guardrail: anofox_tabfm_max_rows per predict/group (FR-3.4)
 		if (state.rows->collection.Count() >= bind.max_rows) {
@@ -722,12 +726,13 @@ void PredictAggCombine(Vector &source_vector, Vector &target_vector, AggregateIn
 		if (!target.rows) {
 			// transfer ownership; row order is not load-bearing (S04 #6)
 			target.rows = source.rows;
+			target.rows_id = source.rows_id;
 			source.rows = nullptr;
+			source.rows_id = 0;
 			continue;
 		}
 		target.rows->collection.Combine(source.rows->collection);
-		delete source.rows;
-		source.rows = nullptr;
+		ReleaseRows(source);
 		if (target.rows->collection.Count() > bind.max_rows) {
 			throw InvalidInputException(
 			    "tabfm: predict group exceeds anofox_tabfm_max_rows (%llu). Raise it with "
@@ -1007,13 +1012,10 @@ void CaptureGpuDispatchSettings(ClientContext &context, PredictContext &ctx) {
 		ctx.cache_dir = ExpandHomeDirectory(setting.ToString());
 	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_device", setting) && !setting.IsNull()) {
-		ctx.device = setting.ToString();
+		ctx.device = NormalizeDeviceSetting(setting.ToString());
 	}
 	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", setting) && !setting.IsNull()) {
 		ctx.gpu_precision = StringUtil::Lower(setting.ToString());
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
-		ctx.mxr_source = setting.ToString();
 	}
 	// ep_path LAST: it defaults off cache_dir, so it must be read after it.
 	string ep_setting;

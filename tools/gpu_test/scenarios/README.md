@@ -1,70 +1,43 @@
 # GPU scenarios — the checks a unit test cannot reach
 
-Each file is SQL you run against a build with a GPU backend plugin available.
-Prepend the `SET anofox_tabfm_ep_path=...` line each script names, then:
+Each file is SQL you run against a build with a GPU backend plugin available. Prepend the
+`SET anofox_tabfm_ep_path=...` line each script names, then:
 
 ```bash
-{ echo "SET anofox_tabfm_ep_path='$PWD/build/debug/extension/anofox_tabfm';"; \
-  cat tools/gpu_test/scenarios/<file>.sql; } | ./build/debug/duckdb
+{ echo "SET anofox_tabfm_ep_path='$PWD/build/ggml-rocm';"; \
+  cat tools/gpu_test/scenarios/<file>.sql; } | ./build/release/duckdb
 ```
 
-They exist because every GPU bug on this branch was found by running the real
-SQL surface on real hardware, and none of them was reachable from the C++
-suite: those tests build device lists by hand and never touch discovery, the
-session cache, or the aggregate.
+They exist because the GPU bugs were found by running the real SQL surface on real hardware, and none of them
+was reachable from the C++ suite: those tests build device lists by hand and never touch discovery, the session
+cache, or the aggregate.
 
-**Every scenario prints `*_SERVED_BY`. Read it first.** "cpu and gpu agree" is
-also exactly what a silent CPU fallback prints — that is not hypothetical, it
-is what made this repo's first GPU equivalence result a cpu-vs-cpu comparison
-reporting a perfect score.
+**Every scenario prints `*_SERVED_BY`. Read it first.** "cpu and gpu agree" is also exactly what a silent CPU
+fallback prints; that is what made this repo's first GPU equivalence result a cpu-vs-cpu comparison reporting a
+perfect score.
 
-| scenario | what it is the only cover for | result on gfx1201 (real TabFM v1 weights) |
-|---|---|---|
-| `a_concurrency.sql` | four predicts in one query as parallel pipelines, finalizing on one device — the path `#42`'s per-device lock guards. A lock bug here corrupts results rather than erroring, so equality with the sequential answer is the assertion, not "it didn't crash". | `rocm:0`, 400 rows, **0 mismatches** |
-| `b_regress.sql` | the regression task on a GPU at all. Continuous output, so closeness rather than label agreement. | `rocm:0`, max abs diff `0.004837`, corr `0.999943` |
-| `c_wide.sql` | 20 feature columns, so the H64 shape bucket instead of the H16 every other run uses. | `rocm:0`, 7 disagreements / 100 (bf16) |
-| `rocm_fixture.sql` | the **weight-free** ROCm smoke test: the committed fixture's MIGraphX variant compiles + serves in seconds, no download/license. Run before pushing ROCm-path changes. | `FIXTURE_SERVED_BY=rocm:0`, 9 rows |
-| `registered_model_gpu.sql` | a **registered** model carrying its own `migraphx_graph` served by the ROCm plugin — the model-provided GPU-graph dispatch (GPU_HARDENING_PLAN P3) that bundled-graph runs never touch. Paths inside are machine-local (the weight cache); adjust `base_dir` before running. | `REGISTERED_SERVED_BY=rocm:0`, `PATHS_DISAGREE=0` |
-| `user_workflow.sql` | a workflow shaped like a user's: `read_csv_auto` with inferred types, categorical columns, NULLs in **both** features and label, then joining predictions back and aggregating by a business dimension. | `cpu` then `rocm:0`, **0 disagreements**, 25 rows joined |
-| `nonfinite_targets.sql` | a NaN-marked missing target answers exactly like a NULL-marked one on the GPU, and the GPU agrees with the CPU. The rule is applied before any device is chosen, so this holds by construction, which is also what a silent CPU fallback would print: hence `SERVED_BY` for every run. Weight-free (the committed fixture's MIGraphX graph); classification only, so it does not cover regression on a GPU. | `NULL_SERVED_BY=rocm:0`, `NAN_SERVED_BY=rocm:0`, NaN vs NULL **0/20**, GPU vs CPU **0/20** |
-| `auto_per_model.sql` | per-model `auto` resolving to a *different* device per model in one session — `mitra` and `tabdpt` to the GPU, `orion-bix` to CPU because no MIGraphX graph exists for it (it was `tabdpt`, then `tabpfn-v2`, then `tabpfn-v3`, then `tabicl-v2` until each was converted), each asserted by `SERVED_BY` plus a `tabfm_backends()` invariant. Re-check the negative model whenever a conversion lands: it silently stops being a negative. | `rocm:0` / `rocm:0` / `cpu`, `AUTO_IS_PER_MODEL=true`, `AUTO_NEVER_UNSUPPORTED=true` |
-| `tabfm_v1_1_rocm.sql` | `tabfm-v1-1` (TabFM 1.1.0) on ROCm with its real **BF16** weights, which its MIGraphX graph Casts in-graph — the only BF16 checkpoint on the ROCm path. Standard split, both tasks, GPU vs CPU. Needs `tabfm_download` for both tasks first. | `V11_GPU_SERVED_BY=rocm:0`, **0/64** label disagreements, score Δ 1.1e-05, reg max abs diff 1.1e-05 / corr 1.0; cold compile 36 min clf / 24 min reg (T512 H16, fp32) |
-| `tabicl_limix_rocm.sql` | `tabicl-v2` and `limix-2m` on ROCm through their MASKED graphs, both tasks, real weights, GPU vs CPU on every row plus warm timings (the parity half is also `test/sql/tabfm_rocm_real_models.test`). LimiX needs the `model.safetensors` that `tabfm_download` writes. | `rocm:0` for all four; **0/100** label disagreements (both models); reg max abs diff 4.4e-5 (TabICL) / 3.5e-4 (LimiX); warm 0.02 s vs 0.11-0.14 s CPU; cold compile 2.6-3.8 min per task (T128 H16, fp32) |
-| `orion_rocm.sql` | `orion-bix` and `orion-msp` on ROCm through their masked graphs, GPU vs CPU, plus `auto` picking the GPU for them. Needs `tabfm_download` for both. | `BIX_SERVED_BY=rocm:0`, `MSP_SERVED_BY=rocm:0`, **0/100** label disagreements each; cold compile 134 s / 259 s (T128 H16, fp32) |
-| `mlx_all_models.sql` | every registered model on MLX against CPU. MLX runs the model's own ONNX graph through its own interpreter, so coverage is a property of the op table, not of a per-model list — an op-table change can break exactly one model and nothing else would notice. Ends with an error contract: tabdpt must be REFUSED by name (`ConstantOfShape`), never silently served on CPU. | M3, macOS 27.0: mitra `mlx:0`, **0/64 disagreeing**; tabdpt refused as expected |
-| `cuda_catalog.sql` (+ `_classification`, `_regression`) | the whole catalog on CUDA against the CPU, one (model, task) per fresh process, driven by `tools/gpu_test/cuda_catalog.sh` on a rented pod with the **released** extension and plugin (nothing built on the pod). Every row prints `served_by`; `n_gpu = 0` means the CUDA call errored and the log has the message. | RTX 4090, v2026.10.31: 36 pairs on `cuda:0`, **0 label differences**, regression max abs ≤ 6e-5; `nori-30m`/`exaone-tabular` refused (no ext graph); `tabpfn-v3-5(-fast)` failed in ORT's CUDA EP (fixed since by pinning its shape tensors, `tools/pin_cuda_shape_operands.py`; not yet re-run through this catalog). ~36 min of pod time for the full catalog incl. `tabfm-v1` |
-| `mlx_stress.sql` | MLX at 4000x30, mid-session device switches, reduced precision, and awkward shapes (single class, zero-variance feature, NULLs). | macOS/arm64 only |
+| scenario | what it is the only cover for |
+|---|---|
+| `cuda_catalog.sql` (+ `_classification`, `_regression`) | the whole catalog on a GPU against the CPU, one (model, task) per fresh process, driven by `tools/gpu_test/gpu_catalog.sh` (which rewrites the device to `cuda`, `rocm` or `mlx`). Every row prints `served_by`; `n_gpu = 0` means the GPU call errored and the log has the message. Results per platform: `docs/GGML_PLAN.md` (P9) and `docs/api/04-gpu.md`. |
+| `ggml_plugin_gpu.sql` | the ggml GPU plugin through the SQL surface on the committed fixture. |
+| `a_concurrency.sql` | four predicts in one query as parallel pipelines, finalizing on one device (the path the per-device lock guards). A lock bug here corrupts results rather than erroring, so equality with the sequential answer is the assertion. |
+| `b_regress.sql` | the regression task on a GPU: continuous output, so closeness rather than label agreement. |
+| `c_wide.sql` | 20 feature columns, wider than every other scenario. |
+| `rocm_fixture.sql` | the **weight-free** ROCm smoke test: the committed fixture's external-data graph (`graph_ext_fixture.onnx`, registered as `classification_ext_graph`) serves in seconds, no download or license. Run before pushing ROCm-path changes. |
+| `user_workflow.sql` | a workflow shaped like a user's: `read_csv_auto` with inferred types, categorical columns, NULLs in **both** features and label, then joining predictions back and aggregating by a business dimension. |
+| `nonfinite_targets.sql` | a NaN-marked missing target answers exactly like a NULL-marked one on the GPU, and the GPU agrees with the CPU. Weight-free (the fixture's external-data graph); classification only. |
+| `auto_per_model.sql` | per-model `auto` resolving to a *different* device per model in one session: `mitra` to the GPU, a fixture registered without an ext graph to the CPU, each asserted by `SERVED_BY` plus a `tabfm_backends()` invariant. |
+| `mlx_all_models.sql` | every registered model on MLX against CPU. MLX runs the model's own ONNX graph through its own interpreter, so coverage is a property of the op table, not of a per-model list: an op-table change can break exactly one model and nothing else would notice. |
+| `mlx_stress.sql` | MLX at 4000x30, mid-session device switches, reduced precision (MLX keeps bf16/fp16), and awkward shapes (single class, zero-variance feature, NULLs). macOS/arm64 only. |
 
 Notes worth keeping:
 
-- **These files are not run by CI, so they rot silently — and they did.** The
-  feature-column guard made a context relation carrying a column the `test`
-  relation lacks a hard error. Both MLX scenarios built one `ctx` holding both
-  label columns and a `qry` holding neither, so after that guard landed every
-  call in both files failed at the *first* block. Nothing reported it, because
-  nothing ran them. They now build one context table per task. When a guard is
-  added to the predict surface, grep this directory before assuming it only
-  affects user SQL.
-- A scenario that compares only the `test` rows cannot see a change to the
-  *fitted* rows. If a change moves output rows the scenario does not select,
-  the scenario passes and means nothing — worth checking whenever a fix changes
-  which rows a graph's head covers.
-- **A model missing from a scenario may be missing because it cannot run.**
-  tabdpt is absent from `mlx_all_models.sql` because the interpreter has no
-  `ConstantOfShape`, which its graph uses 32 times — not because nobody added
-  it. Adding it as an agreement check made the file raise. Check
-  `tabfm_backends()` and the plugin's op table before concluding a gap is an
-  oversight.
-
-- `customers.csv` has `yes`/`no` in the label column, which `read_csv_auto`
-  infers as BOOLEAN — so predictions come back `true`/`false`. Comparing
-  against `'yes'` only works because DuckDB casts it. That is the kind of thing
-  a synthetic `range()` table never shows you.
-- bf16 flips a small number of near-tie argmaxes; the same comparisons at
-  fp32 agree with CPU exactly. fp32 is the default since Track A of
-  `docs/GPU_HARDENING_PLAN.md` (these scenarios SET bf16 explicitly, and now
-  measure the opt-in rather than the default). Real-shaped data flips fewer
-  than synthetic — 0 here versus 7/100 on `c_wide`.
-- The first run of any new shape bucket costs a MIGraphX compile (~27 min
-  measured for both T4096 and H64). Budget for it, or stay inside a bucket that
-  is already cached.
+- **These files are not run by CI, so they rot silently, and they did.** The feature-column guard made a context
+  relation carrying a column the `test` relation lacks a hard error; both MLX scenarios built one `ctx` holding
+  both label columns and a `qry` holding neither, so every call failed at the first block and nothing reported
+  it. When a guard is added to the predict surface, grep this directory before assuming it only affects user SQL.
+- A scenario that compares only the `test` rows cannot see a change to the *fitted* rows. If a change moves
+  output rows the scenario does not select, the scenario passes and means nothing.
+- `customers.csv` has `yes`/`no` in the label column, which `read_csv_auto` infers as BOOLEAN, so predictions
+  come back `true`/`false`. A synthetic `range()` table never shows you that.
+- On CUDA and ROCm only `fp32` (default) and `tf32` exist; `bf16`/`fp16` are refused there (MLX keeps them).

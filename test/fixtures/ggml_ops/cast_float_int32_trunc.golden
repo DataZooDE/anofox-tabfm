@@ -1,0 +1,3 @@
+# op Cast
+in x f32 7 3fd9999a bfd9999a 3e4ccccd be4ccccd 40400000 c0400000 4a03126e
+out y i64 7 1 -1 0 0 3 -3 2147483

@@ -2,7 +2,7 @@
 name: anofox-tabfm-models
 description: >
   Choosing, downloading and managing models for the anofox_tabfm DuckDB extension:
-  the 23 built-in tabular foundation models (Mitra, TabPFN 2 / 2.5 / 2.6 / 3 / 3.5,
+  the 24 built-in tabular foundation models (Mitra, TabPFN 2 / 2.5 / 2.6 / 3 / 3.5,
   TabICL v2, TabDPT, LimiX-2M, Kumo-Tabular, EXAONE, Nori, Orion, Causilo, Google
   TabFM), their licences and commercial use, the licence gate, Hugging Face
   tokens, and registering your own ONNX model. Use when picking a model,
@@ -11,13 +11,13 @@ description: >
   `anofox_tabfm_default_model` or `anofox_tabfm_accept_hf_license`, calling
   `tabfm_register_model`, tuning the context cache, or checking whether a model
   may be used commercially.
-version: 2026.11.17
+version: 2026.11.23
 user-invocable: false
 ---
 
 # Anofox TabFM — Models and Weights Cheat Sheet
 
-**Extension:** anofox_tabfm v2026.11.17 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
+**Extension:** anofox_tabfm v2026.11.23 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
 
 ## Critical gotchas
 
@@ -47,7 +47,7 @@ ORDER BY model;
 Columns: `model, family, capabilities, license, commercial, max_rows, max_features, max_classes, downloaded,
 attribution`. `capabilities` is `'classify, regress'`, `'classify'` or `'regress'`.
 
-## Model catalogue (23 built-in)
+## Model catalogue (24 built-in)
 
 Sizes are per task (classification / regression) unless one file serves both. "rows" is the recommended
 context size from `tabfm_list_models()`.
@@ -62,6 +62,7 @@ context size from `tabfm_list_models()`.
 | `orion-bix` | Lexsi Labs | classify | `mit` | yes | no | ~315 MB | 100k / 512 | classify only |
 | `orion-msp` | Lexsi Labs | classify | `mit` | yes | no | ~336 MB | 100k / 512 | classify only |
 | `nori-30m` | Synthefy | regress | `apache-2.0` | yes | no | ~117 MB | 5k / 100 | regress only; `tabfm_generate` refuses it |
+| `nori-1-5` | Synthefy | regress | `apache-2.0` | yes | no | ~83 MB | 2k / 100 | regress only; `tabfm_generate` refuses it; `tabfm_impute` fills numeric columns only |
 | `kumo-tabular-small` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no | ~110 / ~114 MB | 5k / 500 | keep the OpenMDW agreement and NVIDIA's notice when distributing |
 | `kumo-tabular-medium` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no | ~246 / ~250 MB | 5k / 500 | as small |
 | `kumo-tabular-large` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no | ~855 / ~863 MB | 5k / 500 | as small |
@@ -74,7 +75,7 @@ context size from `tabfm_list_models()`.
 | `tabpfn-v3-5` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~876 MB, both tasks | 10k / 500 | no hosted service |
 | `tabpfn-v3-5-fast` | Prior Labs | classify, regress | `tabpfn-3-5-license-v1.0` | **no** | yes | ~334 MB, both tasks | 10k / 500 | 8 of 3.5's 24 layers |
 | `causilo` | Nums AI | classify, regress | `causilo-license-v1.0` | **no** | yes | ~144 / ~148 MB | 10k / 500 | hosted, API or SaaS use needs a separate licence |
-| `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | **no** | yes | ~83 / ~85 MB | 3k / 100 | CPU and ROCm only |
+| `exaone-tabular` | LG AI Research | classify, regress | `exaone-nc-1.2` | **no** | yes | ~83 / ~85 MB | 3k / 100 | |
 | `tabfm-v1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | **no** | yes | 6.56 GB (classification) | — | the original; slow and large |
 | `tabfm-v1-1` | Google | classify, regress | `tabfm-non-commercial-v1.0` | **no** | yes | ~821 / ~825 MB | 100k / 500 | v1's licence, 4x fewer parameters |
 
@@ -157,9 +158,9 @@ Other arguments: `display_name`, `family`, `regression_graph`, `regression_weigh
 `_bytes`, `weights_repo`, `weights_revision`, per-task `classification_tensor_map` / `regression_tensor_map`,
 `commercial`, `gate_setting`, `preprocessing_profile`, `max_rows` / `max_features` / `max_classes`,
 `fitted_second_pass` (the tasks whose context rows' own outputs are not fitted values, e.g. `['regression']`), `base_dir`
-(relative paths resolve against it), `contract_inputs` / `contract_outputs`, the GPU graph variants
-(`classification_ext_graph`, `regression_ext_graph`, `classification_migraphx_graph`,
-`regression_migraphx_graph`) and multi-file lists (`classification_files`, `classification_file_urls`,
+(relative paths resolve against it), `contract_inputs` / `contract_outputs`, the GPU graphs
+(`classification_ext_graph`, `regression_ext_graph`: what every GPU backend reads; the old
+`classification_migraphx_graph` / `regression_migraphx_graph` are accepted and ignored) and multi-file lists (`classification_files`, `classification_file_urls`,
 `classification_file_bytes` and the `regression_` equivalents).
 
 ## Context cache (`tabicl-v2` on the CPU)
@@ -193,7 +194,7 @@ FROM tabfm_models() WHERE context_cache;
 | `anofox_tabfm_max_features` | `500` | enforced features per call |
 | `anofox_tabfm_max_sessions` | `4` | cached sessions across models, devices and precisions |
 | `anofox_tabfm_max_memory` | `''` | refuse a call when resident memory, plus the measured cost of an identical earlier shape, reaches this; a new shape is unguarded |
-| `anofox_tabfm_threads` | cores / 2 | ONNX Runtime CPU threads |
+| `anofox_tabfm_threads` | cores / 2 | CPU inference threads (ggml engine) |
 | `anofox_tabfm_cpu_prepack` | `true` | faster CPU matmuls for about 16% more memory |
 | `anofox_tabfm_trace_level` | `warn` | `error` / `warn` / `info` / `debug` / `trace` |
 

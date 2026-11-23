@@ -41,9 +41,9 @@ EXTENSION_NAME = "anofox_tabfm"
 SMOKE_QUERY = "SELECT count(*) AS n FROM anofox_tabfm_devices();"
 
 # End-to-end inference on the shipped artifact. devices() proves functions are
-# callable; it never touches ONNX Runtime. This registers the committed
+# callable; it never touches the inference engine. This registers the committed
 # weight-free fixture model (no network, no license gate) and runs a real
-# classify through the ORT session — the code path a user hits first, and the
+# classify through the ggml session — the code path a user hits first, and the
 # one a green build has already shipped broken once (an artifact can resolve
 # lazily and only fail at Run). The final SELECT is the house served-by proof:
 # "it returned rows" is also what a silently wrong device prints.
@@ -217,7 +217,7 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
             _fail("the smoke query returned no output", proc)
         print(f"      -> {proc.stdout.strip()}")
 
-        # 4. Real inference through ONNX Runtime on the fixture model, plus the
+        # 4. Real inference through the ggml engine on the fixture model, plus the
         #    served-by proof that the CPU backend actually ran it.
         repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         fixtures = os.path.join(repo_root, "test", "fixtures").replace("\\", "/")
@@ -237,9 +237,9 @@ def run_smoke_test(extension_path: str, duckdb_version: str, arch: str) -> None:
                 proc,
             )
         print(f"      -> rows={lines[-2]} served_by={lines[-1]}")
-        # ONNX operator schemas must be registered once, by ONNX Runtime. A build whose onnx library also
-        # registers them at static-init time prints hundreds of "Schema error ... already registered" lines
-        # on the first model run (vcpkg_ports/onnx: ONNX_DISABLE_STATIC_REGISTRATION).
+        # Regression guard: no onnx library is linked any more (the engine parses the graph itself). One that
+        # registered the ONNX operator schemas at static-init time printed hundreds of "Schema error ... already
+        # registered" lines on the first model run.
         noise = [ln for ln in (proc.stderr or "").splitlines() if "already registered" in ln]
         if noise:
             _fail(f"the first model run printed {len(noise)} ONNX schema registration error(s) on stderr, "

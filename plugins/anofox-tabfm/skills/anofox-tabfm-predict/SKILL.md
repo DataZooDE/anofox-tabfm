@@ -9,13 +9,13 @@ description: >
   choosing features or `opts`, keeping a row key with `keep`, reading `yhat` /
   `yhat_score` / `proba`, scoring
   per segment, or bounding memory with `query_batch`.
-version: 2026.11.17
+version: 2026.11.23
 user-invocable: false
 ---
 
 # Anofox TabFM — Predict Cheat Sheet
 
-**Extension:** anofox_tabfm v2026.11.17 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
+**Extension:** anofox_tabfm v2026.11.23 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
 
 A tabular foundation model is an in-context learner: it reads your labelled rows as context and predicts
 the rest in one forward pass. There is no fit step, no training loop and no saved model: each call sees
@@ -155,11 +155,11 @@ distinct segment values) rather than writing it by hand, and materialise a filte
 ## Large calls and repeated calls
 
 - **Memory:** the context dominates memory, so the first lever is a smaller context (sample it, below).
-  Attention cost grows with the square of the rows: `mitra` on the CPU needs about 3 GB per 1,000 context
-  rows at 15 features, and 4,000 rows are OOM-killed on 16 GB although `anofox_tabfm_max_rows` allows 10,000.
+  Attention cost grows faster than the rows: `mitra` on the CPU peaks at about 1 GB with 1,000 context rows
+  at 15 features, 2 GB at 2,000 and 5.5 GB at 4,000, while `anofox_tabfm_max_rows` allows 10,000.
   `opts := MAP{'query_batch': 'N'}` scores the test rows in batches with the same answers, but re-runs the
   whole context per batch (except `tabicl-v2` on the CPU): a last resort against an OOM, not a speed-up
-  (`mitra`, 1,000 + 1,000 rows: 2.4x the CPU time at `query_batch` 250, 4.1x at 100).
+  (`mitra`, 1,000 + 1,000 rows: 2.4x the CPU time at `query_batch` 250, 5.2x at 100).
   `SET anofox_tabfm_max_memory = '16GB'` refuses a call when the process is already that large, or when a
   pass of exactly the same rows x features was measured to cross it; a shape not seen before is unguarded,
   so it cannot stop the first large call of a new size from being OOM-killed.
@@ -217,6 +217,6 @@ FROM pred;
 | `predict group exceeds anofox_tabfm_max_rows` | sample the context, or `SET anofox_tabfm_max_rows = <n>;` |
 | `'<model>' supports at most N classes` | fewer classes, or decompose (one-vs-rest); when it adds `'<target>' is DOUBLE: to predict a quantity use tabfm_regress`, do that |
 | `task 'regression' requires a numeric target` | cast the target, or use `tabfm_classify` |
-| `model '<id>' does not support task '<task>'` | e.g. `orion-bix` is classify-only, `nori-30m` regress-only |
+| `model '<id>' does not support task '<task>'` | e.g. `orion-bix` is classify-only, `nori-30m` and `nori-1-5` regress-only |
 | `unknown option '<key>'` | the message lists the valid keys |
 | `... is refused rather than risking an OOM kill` | a smaller context, `CALL tabfm_unload();`, or as a last resort `query_batch` |

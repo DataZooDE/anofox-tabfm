@@ -1,0 +1,4 @@
+# op Greater
+in a f32 3,1 7fc00000 bda65112 bf46047b
+in b f32 1,4 7f800000 be943a63 7fc00000 3f88f8df
+out y bool 3,4 0 0 0 0 0 1 0 0 0 0 0 0

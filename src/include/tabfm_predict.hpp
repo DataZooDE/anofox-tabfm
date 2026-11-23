@@ -87,7 +87,7 @@ struct TabFMPredictResult {
 // ENGINE SEAM
 //
 // The predict surface is final; only this interface's implementation changes.
-// The real engine (tabfm_engine.cpp) runs Preprocessor → ORT forward → decode,
+// The real engine (tabfm_engine.cpp) runs Preprocessor → ggml forward → decode,
 // with the session cached in the DB-instance TabFMState and the forward pass
 // serialized per device (HLD §4.6/§6). Inputs:
 //
@@ -244,14 +244,12 @@ struct PredictContext {
 	string default_model;
 	//! SET anofox_tabfm_cache_dir (already ~-expanded is not required here).
 	string cache_dir;
-	//! SET anofox_tabfm_threads (ORT intra-op).
+	//! SET anofox_tabfm_threads (ggml threads per forward pass).
 	int64_t threads = 1;
-	//! SET anofox_tabfm_device ('auto'|'cpu'|'cuda'|'rocm').
+	//! SET anofox_tabfm_device ('auto'|'cpu'|'cuda'|'rocm'|'mlx'; NormalizeDeviceSetting turns 'migraphx' into 'rocm').
 	string device = "auto";
-	//! SET anofox_tabfm_gpu_precision ('bf16'|'fp16'|'fp32') — MIGraphX compile
-	//! precision on the ROCm GPU (RDNA4 runs bf16/fp16 at ~2x fp32). bf16 keeps
-	//! fp32's exponent range → safest. Ignored by the CPU/CUDA ORT paths.
-	string gpu_precision = "bf16";
+	//! SET anofox_tabfm_gpu_precision: 'fp32' | 'tf32' on cuda/rocm, 'fp32' | 'bf16' | 'fp16' on mlx. Ignored by the CPU.
+	string gpu_precision = "fp32";
 	//! SET anofox_tabfm_max_memory in bytes, 0 = disabled. Carried into the
 	//! engine as well as checked at bind: the bind-time check only sees memory
 	//! already held, and the forward pass is where a single call grows.
@@ -271,25 +269,16 @@ struct PredictContext {
 	//! SET anofox_tabfm_context_cache_admit = 'first': keep a context on its first
 	//! sighting. Default ('second'): keep it the second time its key is seen.
 	bool context_cache_admit_first = false;
-	//! SET anofox_tabfm_cpu_prepack — ORT weight prepacking on the CPU EP: faster
-	//! matmuls at ~+16% RSS. On by default now that external-data keeps RSS low.
-	bool cpu_prepack = true;
-	//! SET anofox_tabfm_mxr_source — directory of precompiled MIGraphX .mxr programs
-	//! (offline/CI/shared). A matching bucket artifact is staged into the cache
-	//! instead of compiling on-device (~27 min). '' → always compile. ROCm only.
-	string mxr_source;
-	//! SET anofox_tabfm_ep_path — directory holding backend-plugin shared
-	//! libraries (docs/DYNAMIC_BACKENDS.md phase 1), e.g.
-	//! libanofox_tabfm_migraphx_plugin.so. '' → the rocm device path throws
-	//! rather than silently running on CPU (tier 4: a requested device that
-	//! cannot actually be driven must error, never fall back quietly).
+	//! SET anofox_tabfm_ep_path — directory holding the backend plugins (libanofox_tabfm_ggml-{cuda,rocm}_plugin, the MLX plugin). A GPU
+	//! that was asked for by name and whose plugin is not there throws rather than silently running on the CPU (tier 4: a requested device
+	//! that cannot actually be driven must error, never fall back quietly).
 	string ep_path;
 };
 
 //! Read the settings that steer GPU dispatch into `ctx`.
 //!
-//! Every bind that can reach a GPU needs the same five: device, gpu_precision,
-//! ep_path, cache_dir and mxr_source. They were read independently in four
+//! Every bind that can reach a GPU needs the same four: device, gpu_precision,
+//! ep_path and cache_dir. They were read independently in four
 //! places, and the fourth (PrecompileBind) silently missed the ep_path default
 //! when it was added -- so precompile refused with "SET anofox_tabfm_ep_path"
 //! on machines where the plugin was installed and every predict was using it.
@@ -317,7 +306,7 @@ public:
 };
 
 //! The process-wide TabFM engine (tabfm_engine.cpp): resolves the model from
-//! the manifest, loads/caches an ORT session, preprocesses, runs one forward
+//! the manifest, loads/caches a session, preprocesses, runs one forward
 //! pass and decodes. Errors with the SQL-API §5 remediation text when the
 //! model's weights are not available.
 PredictEngine &GetPredictEngine();
@@ -328,25 +317,13 @@ struct TabFMPrecompileResult {
 	string model;
 	//! The device that serves it (the resolved id: "cpu", "rocm:0", "cuda:0", "mlx:0").
 	string device;
-	//! True when the device compiles per shape bucket (ROCm/MIGraphX); bucket_rows/_features are
-	//! then the padded (T, H) the program was built for.
-	bool bucketed = false;
-	int64_t bucket_rows = 0;
-	int64_t bucket_features = 0;
-	//! "compiled" (a new .mxr was written), "cached" (the bucket's program was already in memory or
-	//! on disk), "not needed" (the device has no per-shape compile: CPU, CUDA, MLX), or "refused" (the
-	//! bucket is over the model's ROCm ceiling, RocmBucketRefusal; nothing was compiled).
+	//! "not needed": no backend compiles ahead of time (the engines build a graph for a shape on its first use); the session is loaded and warm.
 	string status;
-	//! Why the bucket was refused; "" otherwise.
-	string reason;
 	//! Wall time of the call, model load included.
 	double seconds = 0;
 };
 
-//! Warm the model for a (rows, features) shape without predicting: loads/caches
-//! the session and, on the ROCm GPU, compiles + caches the MIGraphX .mxr for the
-//! matching shape-bucket (minutes) so the first real query does not stall. On
-//! CPU/CUDA/MLX it just warms the session. Backs CALL tabfm_gpu_precompile(...).
+//! Deprecated: loads/caches the model's session without predicting. Backs CALL tabfm_gpu_precompile(...).
 TabFMPrecompileResult TabFMGpuPrecompile(const PredictContext &ctx, TabFMTask task, int64_t rows, int64_t features);
 
 } // namespace anofox

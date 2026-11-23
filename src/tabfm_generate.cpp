@@ -1057,28 +1057,8 @@ void CaptureContext(ClientContext &context, GenerateBindData &bind) {
 	if (context.TryGetCurrentSetting("anofox_tabfm_default_model", setting) && !setting.IsNull()) {
 		bind.context.default_model = setting.ToString();
 	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_cache_dir", setting) && !setting.IsNull()) {
-		bind.context.cache_dir = ExpandHomeDirectory(setting.ToString());
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_device", setting) && !setting.IsNull()) {
-		bind.context.device = setting.ToString();
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_gpu_precision", setting) && !setting.IsNull()) {
-		bind.context.gpu_precision = StringUtil::Lower(setting.ToString());
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_cpu_prepack", setting) && !setting.IsNull()) {
-		bind.context.cpu_prepack = BooleanValue::Get(setting);
-	}
-	if (context.TryGetCurrentSetting("anofox_tabfm_mxr_source", setting) && !setting.IsNull()) {
-		bind.context.mxr_source = setting.ToString();
-	}
-	// ep_path defaults to where tabfm_download_runtime puts the plugin, so a
-	// download is usable without a second SET naming the same directory.
-	string ep_setting;
-	if (context.TryGetCurrentSetting("anofox_tabfm_ep_path", setting) && !setting.IsNull()) {
-		ep_setting = setting.ToString();
-	}
-	bind.context.ep_path = ResolveEpPath(ep_setting, bind.context.cache_dir);
+	// cache_dir, device, gpu_precision and ep_path (which defaults to where tabfm_download_runtime puts the plugin)
+	CaptureGpuDispatchSettings(context, bind.context);
 	if (context.TryGetCurrentSetting("anofox_tabfm_max_sessions", setting) && !setting.IsNull()) {
 		bind.context.max_sessions = BigIntValue::Get(setting.DefaultCastAs(LogicalType::BIGINT));
 	}

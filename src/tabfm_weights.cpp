@@ -1,5 +1,4 @@
 #include "tabfm_registration.hpp"
-#include "tabfm_soname_patch.hpp"
 #include "anofox_function_alias.hpp"
 #include "tabfm_predict.hpp"
 #include "tabfm_registry.hpp"
@@ -8,7 +7,7 @@
 #include "tabfm_plugin_artifacts.hpp"
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_bundled_resources.hpp"
-#include "tabfm_ort_engine.hpp"
+#include "tabfm_session.hpp"
 #include "tabfm_ckpt.hpp"
 #include "tabfm_model_spec.hpp"
 #include "tabfm_mlx_ops.hpp"
@@ -27,7 +26,6 @@
 #include "duckdb_compat.hpp"
 
 #include "yyjson.hpp"
-#include "miniz.hpp"
 
 #include <algorithm>
 #include <cstdlib>
@@ -459,7 +457,7 @@ idx_t FetchFile(ClientContext &context, const DownloadItem &item) {
 	return total;
 }
 
-// The GPU file of a checkpoint-shipped model. The bundled ext/migraphx graphs of Nori and Kumo read
+// The GPU file of a checkpoint-shipped model. The bundled ext graphs of Nori and Kumo read
 // their weights as ONNX external data at offsets baked against one file -- the model.safetensors that
 // tools/export_*/convert_*_weights writes beside the .ckpt (ExpectedWeightsHeaderShaFor pins its
 // header). That used to be a manual Python step; the engine reads checkpoints natively, so it writes the
@@ -566,64 +564,13 @@ void DownloadExecute(ClientContext &context, TableFunctionInput &data, DataChunk
 }
 
 //===--------------------------------------------------------------------===//
-// tabfm_download_runtime(backend) — docs/DYNAMIC_BACKENDS.md phase 3
+// tabfm_download_runtime(backend)
 //
-// Fetches an ONNX Runtime execution-provider plugin library so a device can
-// be driven without a compile-time flavor build (SET anofox_tabfm_ep_path
-// names the directory this populates; tabfm_ort_engine.cpp's
-// RegisterCudaProvider reads from it at predict time).
-//
-// The provider .so is not published standalone anywhere; it ships inside an
-// onnxruntime-gpu wheel (a ZIP) alongside the small providers_shared.so it
-// links against. A GitHub release tarball also carries it, but as a .tar.gz —
-// this vendors miniz (already linked into duckdb core) for ZIP reading and
-// would otherwise need a TAR reader too, so the wheel is the lighter path.
-// Extraction is local-disk random-access (mz_zip_reader_init_file + locate +
-// extract_to_file): only the two needed entries are decompressed, not the
-// whole wheel.
-//
-// NOT the plain PyPI `onnxruntime-gpu` package: as of 1.28+ that targets
-// CUDA 13 (needs libcublasLt.so.13 and friends) with no CUDA-12 variant on
-// PyPI proper — discovered by actually running this on a RunPod CUDA-12.4
-// image, where the plain-PyPI wheel's provider failed to dlopen. Microsoft
-// publishes a CUDA-12-targeted build on a separate Azure Artifacts feed
-// (linked from https://onnxruntime.ai/docs/install/, "onnxruntime-cuda-12"),
-// which is what CUDA_12_WHEEL_URL below points at — matches the CUDA major
-// this codebase otherwise defaults to (cmake/ort.cmake's TABFM_ORT_CUDA_MAJOR).
-// That feed's download links are pip-index redirects to a time-limited SAS
-// URL, not the final blob itself; FetchFile follows the redirect like any
-// other HTTP client.
+// Fetches a GPU backend plugin into anofox_tabfm_ep_path: the ggml GPU plugin for cuda and rocm (self-contained: CUDA is linked statically, HIP comes
+// from the ROCm install), the MLX plugin on Apple Silicon. Each file is verified against the release's sha256 sidecar before anything loads it.
 //===--------------------------------------------------------------------===//
 
-namespace {
-
-//! One backend -> the wheel that carries its provider .so(s),
-//! and which entries inside it to extract. Deliberately narrow: only what has
-//! been verified to exist in the wheel (see docs/DYNAMIC_BACKENDS.md phase 3
-//! measurements) is offered — an unlisted backend errors naming what is.
-//! One file to lift out of the wheel. `dest_name` exists because the ORT core
-//! must land under the exact name the plugin's DT_NEEDED asks for.
-//! `patch_soname` renames the core in flight (upstream SONAME →
-//! libanofoxort_gpu.so, equal length, docs/GPU_HARDENING_PLAN.md S2): a core
-//! keeping upstream's SONAME gets shadowed by any host-loaded ORT, so the
-//! shipped runtime carries a private name and the plugin links against it.
-struct RuntimeEntry {
-	string zip_path;
-	string dest_name;
-	bool patch_soname = false;
-};
-
-struct RuntimeArtifact {
-	string wheel_url;
-	int64_t wheel_bytes = 0;
-	vector<RuntimeEntry> zip_entries;
-	//! The backend plugin itself, fetched from this repo's GitHub release
-	//! assets (built by .github/workflows/gpu_plugins.yml — neither plugin
-	//! needs a GPU to build). Empty url = no plugin-carrying release is pinned
-	//! in this build yet.
-	string plugin_name;
-	string plugin_url;
-};
+} // namespace (the module's outer anonymous namespace: ResolveRuntimeArtifact is declared in tabfm_weights.hpp)
 
 //! The release tag and url shape now live in tabfm_plugin_artifacts.hpp, so
 //! dispatch and download cannot disagree about which release a plugin is
@@ -632,59 +579,23 @@ string PluginReleaseUrl(const string &asset) {
 	return PluginReleaseAssetUrl(asset, TABFM_PLUGIN_RELEASE_TAG);
 }
 
-//! Currently the only published, verified source: onnxruntime-gpu 1.29.0's
-//! manylinux CUDA-12 wheel from Microsoft's onnxruntime-cuda-12 Azure
-//! Artifacts feed (cp312 tag — the C++ .so payload is identical across cp3xx
-//! tags; the tag only affects the Python bindings we discard). CUDA 13 /
-//! other ORT versions are not offered yet (no reason they couldn't be, just
-//! not measured — extend this map when they are).
 bool ResolveRuntimeArtifact(const string &backend, RuntimeArtifact &out, string &error) {
-	// Refuse before downloading anything. Windows discovers NVIDIA cards
-	// through NVML like any other platform, so asking for 'cuda' there is
-	// reasonable -- but the wheel below is manylinux and no Windows plugin is
-	// built, so without this the request walked a 475 MB download and ended at
-	// a missing library. Same for rocm off Linux and mlx off Apple Silicon.
+	// Refuse before downloading anything. Windows discovers NVIDIA cards through NVML like any other platform, so asking for 'cuda' there is
+	// reasonable -- but no Windows plugin is built, so without this the request would end at a missing release asset. Same for rocm off Linux,
+	// mlx off Apple Silicon, and a backend that does not exist.
 	error = UnsupportedPluginPlatform(backend, HostPluginOs(), HostPluginArch());
 	if (!error.empty()) {
 		return false;
 	}
-	if (backend == "cuda") {
-		out.wheel_url = "https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/"
-		                "_packaging/9387c3aa-d9ad-4513-968c-383f6f7f53b8/pypi/download/onnxruntime-gpu/1.29/"
-		                "onnxruntime_gpu-1.29.0-cp312-cp312-manylinux_2_28_x86_64.whl";
-		out.wheel_bytes = 475434900;
-		// The ORT *core* comes along too, not just the providers: the CUDA
-		// backend is a standalone plugin with its own shared runtime, because a
-		// statically-linked ORT cannot host these provider libraries at all (see
-		// src/tabfm_cuda_plugin.cpp). Core and providers must come from one
-		// distribution — pairing a CPU-flavor core with a GPU provider crashes.
-		out.zip_entries = {{"onnxruntime/capi/libonnxruntime.so.1.29.0", ORT_RENAMED_SONAME, /*patch_soname=*/true},
-		                   {"onnxruntime/capi/libonnxruntime_providers_cuda.so", "libonnxruntime_providers_cuda.so"},
-		                   {"onnxruntime/capi/libonnxruntime_providers_shared.so",
-		                    "libonnxruntime_providers_shared.so"}};
-		out.plugin_name = PluginFileName("cuda");
-		out.plugin_url = PluginReleaseUrl(out.plugin_name);
-		return true;
-	}
-	if (backend == "rocm") {
-		out.plugin_name = PluginFileName("rocm");
-		out.plugin_url = PluginReleaseUrl(out.plugin_name);
-		return true;
-	}
-	if (backend == "mlx") {
-		// Unlike cuda, no runtime comes with it: the MLX plugin links Apple's
-		// own libmlx/libmlxc, which are installed on the machine rather than
-		// shipped by us (brew install mlx mlx-c), and it needs no ORT at all --
-		// it executes the ONNX graph itself. So this fetches the plugin alone.
-		out.plugin_name = PluginFileName("mlx");
-		out.plugin_url = PluginReleaseUrl(out.plugin_name);
-		return true;
-	}
-	// Unreachable: UnsupportedPluginPlatform above rejects an unknown backend
-	// by name before any of the per-backend branches are considered.
-	error = UnsupportedPluginPlatform(backend, HostPluginOs(), HostPluginArch());
-	return false;
+	// Every plugin is self-contained, so it is the only file: the ggml GPU plugin links CUDA statically or uses the machine's ROCm install, and
+	// the MLX plugin links Apple's libmlx/libmlxc (brew install mlx mlx-c).
+	out.plugin_name = PluginFileName(backend);
+	out.plugin_url = PluginReleaseUrl(out.plugin_name);
+	return true;
 }
+
+namespace {
+namespace {
 
 struct DownloadRuntimeBindData : public TableFunctionData {
 	string backend;
@@ -713,7 +624,7 @@ unique_ptr<FunctionData> DownloadRuntimeBind(ClientContext &context, TableFuncti
 		    "tabfm_download_runtime: backend cannot be NULL — expected 'cuda', 'rocm' or 'mlx'");
 	}
 	auto result = make_uniq<DownloadRuntimeBindData>();
-	result->backend = StringUtil::Lower(StringValue::Get(input.inputs[0]));
+	result->backend = NormalizeRuntimeBackend(StringValue::Get(input.inputs[0]));
 
 	string error;
 	if (!ResolveRuntimeArtifact(result->backend, result->artifact, error)) {
@@ -806,169 +717,33 @@ void VerifyPluginDigest(ClientContext &context, FileSystem &fs, const string &ba
 	}
 }
 
-//! Fetch a backend's plugin (and, for CUDA, the ORT GPU runtime beside it)
-//! into ep_path. Extracted from the table function so tabfm_accelerate() runs
+//! Fetch a backend's plugin into ep_path. Extracted from the table function so tabfm_accelerate() runs
 //! the identical code rather than a second copy that could drift about where
 //! files land or when a partial run is resumed.
 vector<RuntimeFileResult> PerformRuntimeDownload(ClientContext &context, const DownloadRuntimeBindData &bind) {
-	vector<RuntimeFileResult> results;
 	auto &fs = FileSystem::GetFileSystem(context);
 	fs.CreateDirectoriesRecursive(bind.ep_path);
-
-	// Which artifacts are already present — fetching is per-file idempotent, so
-	// a partial prior run only re-fetches what it must. The plugin (when a
-	// release carries one) is one more target alongside the wheel entries.
-	vector<string> targets;
-	bool all_present = true;
-	for (auto &entry : bind.artifact.zip_entries) {
-		string target = bind.ep_path + "/" + entry.dest_name;
-		targets.push_back(target);
-		if (!fs.FileExists(target)) {
-			all_present = false;
-		}
-	}
-	const string plugin_target =
-	    bind.artifact.plugin_url.empty() ? "" : bind.ep_path + "/" + bind.artifact.plugin_name;
-	if (!plugin_target.empty()) {
-		targets.push_back(plugin_target);
-		if (!fs.FileExists(plugin_target)) {
-			all_present = false;
-		}
-	}
-
-	if (all_present) {
-		// Verify here too, not only after a fresh download. The "already
-		// present" decision above is existence-only, so without this a single
-		// corrupted or replaced plugin would be trusted for as long as it sat
-		// in the directory -- and this is the path every re-run takes.
-		if (!plugin_target.empty()) {
-			VerifyPluginDigest(context, fs, bind.backend, plugin_target);
-		}
-		for (auto &target : targets) {
-			auto handle = fs.OpenFile(target, FileFlags::FILE_FLAGS_READ);
-			results.push_back({target, NumericCast<int64_t>(fs.GetFileSize(*handle)), "cached"});
-		}
-		return results;
-	}
-
-	// Whole-wheel download (FetchFile — same atomic .part-then-rename fetch
-	// tabfm_download uses), then in-memory ZIP extraction of just the needed
-	// entries: the vendored miniz is built with MINIZ_NO_STDIO (no file-based
-	// zip reader), so the archive is read into a heap buffer and extracted via
-	// mz_zip_reader_init_mem / extract_to_heap rather than the file-path API.
-	// The wheel itself is not kept — it is scratch, not a cache entry
-	// (re-downloaded on the next miss, same as a truncated .part would be).
-	// Skipped entirely for a backend with no wheel (rocm ships only a plugin).
-	if (!bind.artifact.wheel_url.empty()) {
-		const string wheel_path = bind.ep_path + "/.onnxruntime_gpu-1.29.0-cp312.whl";
-		DownloadItem wheel_item;
-		wheel_item.cache_path = wheel_path;
-		wheel_item.url = bind.artifact.wheel_url;
-		wheel_item.bytes = bind.artifact.wheel_bytes;
-		FetchFile(context, wheel_item);
-
-		auto wheel_handle = fs.OpenFile(wheel_path, FileFlags::FILE_FLAGS_READ);
-		const idx_t wheel_size = fs.GetFileSize(*wheel_handle);
-		auto wheel_bytes = make_unsafe_uniq_array<char>(wheel_size);
-		// Read may return short on some filesystems (the codebase's own
-		// ReadWholeFile comment records the hazard); a zero-tailed buffer
-		// would fail later in miniz with a message blaming the download.
-		idx_t wheel_read = 0;
-		while (wheel_read < wheel_size) {
-			auto got = wheel_handle->Read(wheel_bytes.get() + wheel_read, wheel_size - wheel_read);
-			if (got <= 0) {
-				throw IOException("anofox_tabfm: short read of the runtime wheel (%llu of %llu bytes)",
-				                  (unsigned long long)wheel_read, (unsigned long long)wheel_size);
-			}
-			wheel_read += NumericCast<idx_t>(got);
-		}
-		wheel_handle.reset();
-
-		duckdb_miniz::mz_zip_archive zip {};
-		if (!duckdb_miniz::mz_zip_reader_init_mem(&zip, wheel_bytes.get(), wheel_size, 0)) {
-			fs.TryRemoveFile(wheel_path);
-			throw IOException("tabfm_download_runtime: '%s' downloaded but is not a readable zip archive — the source "
-			                  "may have changed shape; please report this.",
-			                  SanitizeUrl(bind.artifact.wheel_url));
-		}
-		for (size_t i = 0; i < bind.artifact.zip_entries.size(); i++) {
-			const string &entry = bind.artifact.zip_entries[i].zip_path;
-			int file_index = duckdb_miniz::mz_zip_reader_locate_file(&zip, entry.c_str(), nullptr, 0);
-			if (file_index < 0) {
-				duckdb_miniz::mz_zip_reader_end(&zip);
-				fs.TryRemoveFile(wheel_path);
-				throw IOException("tabfm_download_runtime: expected entry '%s' not found in the downloaded wheel — the "
-				                  "source may have changed shape; please report this.",
-				                  entry);
-			}
-			size_t extracted_size = 0;
-			void *extracted =
-			    duckdb_miniz::mz_zip_reader_extract_to_heap(&zip, static_cast<duckdb_miniz::mz_uint>(file_index),
-			                                                &extracted_size, 0);
-			if (!extracted) {
-				duckdb_miniz::mz_zip_reader_end(&zip);
-				fs.TryRemoveFile(wheel_path);
-				throw IOException("tabfm_download_runtime: failed to extract '%s' from the downloaded wheel.", entry);
-			}
-			if (bind.artifact.zip_entries[i].patch_soname) {
-				// Exactly one occurrence or refuse: zero means the wheel changed
-				// shape, several means the only-the-.dynstr-entry assumption broke.
-				// Either way a half-renamed core must fail HERE, at download time,
-				// not later as a plugin that quietly binds to the host's ORT.
-				auto replaced = PatchOrtSonameInPlace(static_cast<char *>(extracted), extracted_size);
-				if (replaced != 1) {
-					duckdb_miniz::mz_free(extracted);
-					duckdb_miniz::mz_zip_reader_end(&zip);
-					fs.TryRemoveFile(wheel_path);
-					throw IOException("tabfm_download_runtime: expected exactly one SONAME string in '%s' but found %llu "
-					                  "— the wheel changed shape; please report this.",
-					                  entry, static_cast<unsigned long long>(replaced));
-				}
-			}
-			const string tmp = targets[i] + ".part";
-			auto dst = fs.OpenFile(tmp, FileFlags::FILE_FLAGS_WRITE | FileFlags::FILE_FLAGS_FILE_CREATE_NEW);
-			dst->Write(extracted, NumericCast<int64_t>(extracted_size));
-			dst->Sync();
-			dst.reset();
-			duckdb_miniz::mz_free(extracted);
-			fs.MoveFile(tmp, targets[i]); // atomic publish, same discipline as FetchFile
-		}
-		duckdb_miniz::mz_zip_reader_end(&zip);
-		wheel_bytes.reset();
-		fs.TryRemoveFile(wheel_path);
-	}
-
-	// The backend plugin, from this repo's release assets (built by the
-	// gpu_plugins workflow): same atomic FetchFile, idempotent via the
-	// existence check above, reported as one more output row below.
-	if (!plugin_target.empty() && !fs.FileExists(plugin_target)) {
+	// The plugin is the only file. Fetching is idempotent: a plugin already present is not fetched again.
+	const string plugin_target = bind.ep_path + "/" + bind.artifact.plugin_name;
+	const bool present = fs.FileExists(plugin_target);
+	if (!present) {
+		// From this repo's release assets (built by the gpu_plugins workflow), through the same atomic FetchFile as the weights.
 		DownloadItem plugin_item;
 		plugin_item.cache_path = plugin_target;
 		plugin_item.url = bind.artifact.plugin_url;
 		plugin_item.bytes = -1; // pinned by digest below, not by size
 		FetchFile(context, plugin_item);
 	}
-	// Verify the published digest BEFORE anything dlopens these bytes.
+	// Verify the published digest BEFORE anything dlopens these bytes, on a cached hit too.
 	//
-	// This is native code that the extension loads into its own process, and
-	// tabfm_accelerate() makes fetching it the default onboarding step, so
-	// "downloaded over HTTPS from a URL we built" is not sufficient on its own:
-	// it authenticates the host, not the artifact, and says nothing about a
-	// truncated transfer or a cache that was poisoned afterwards. The ABI check
-	// in the loader is version gating, not authenticity.
-	//
-	// Checked on cached hits too, not only fresh downloads, because the
-	// "already present" decision above is existence-only — without this a
-	// single corrupt file would be trusted for as long as it sat there.
-	if (!plugin_target.empty()) {
-		VerifyPluginDigest(context, fs, bind.backend, plugin_target);
-	}
-
-	for (auto &target : targets) {
-		auto handle = fs.OpenFile(target, FileFlags::FILE_FLAGS_READ);
-		results.push_back({target, NumericCast<int64_t>(fs.GetFileSize(*handle)), "downloaded"});
-	}
-	return results;
+	// This is native code that the extension loads into its own process, and tabfm_accelerate() makes fetching it the default onboarding
+	// step, so "downloaded over HTTPS from a URL we built" is not sufficient on its own: it authenticates the host, not the artifact, and says
+	// nothing about a truncated transfer or a cache that was poisoned afterwards. The ABI check in the loader is version gating, not
+	// authenticity. The "already present" decision is existence-only, so without the check on a cached hit a single corrupt file would be
+	// trusted for as long as it sat there.
+	VerifyPluginDigest(context, fs, bind.backend, plugin_target);
+	auto handle = fs.OpenFile(plugin_target, FileFlags::FILE_FLAGS_READ);
+	return {{plugin_target, NumericCast<int64_t>(fs.GetFileSize(*handle)), present ? "cached" : "downloaded"}};
 }
 
 void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, DataChunk &output) {
@@ -1004,10 +779,8 @@ void DownloadRuntimeExecute(ClientContext &context, TableFunctionInput &data, Da
 // has not read the docs, and the first two cannot be guessed at all.
 //
 // Verification stops at loading the plugin and checking its ABI. It
-// deliberately does NOT run an inference: MIGraphX compiles per shape bucket
-// and the first compile is ~25 minutes, so an onboarding command that proved
-// itself by predicting would appear to hang and be killed as broken. The
-// cheap proof answers the question this command is responsible for -- is the
+// deliberately does NOT run an inference: that needs a model's weights, which
+// may be gigabytes the user has not downloaded yet. The cheap proof answers the question this command is responsible for -- is the
 // lane installed and speakable -- and per-model servability is then a query
 // away in tabfm_backends().
 //===--------------------------------------------------------------------===//
@@ -1087,11 +860,9 @@ unique_ptr<FunctionData> AccelerateBind(ClientContext &context, TableFunctionBin
 	result->ep_path = ResolveEpPath(ep_setting, result->cache_dir);
 
 	// Pick from what is actually here, in the order a machine can have them.
-	// coreml is skipped on purpose: it is an in-process ORT provider needing a
-	// flavor build, not a plugin this can fetch.
 	for (auto &device : DiscoverDevices()) {
 		const auto backend = BackendOfDeviceId(device.device_id);
-		if (backend != "cuda" && backend != "rocm" && backend != "mlx") {
+		if (backend == "cpu") {
 			continue;
 		}
 		if (!device.usable) {
@@ -1133,7 +904,7 @@ void AccelerateExecute(ClientContext &context, TableFunctionInput &data, DataChu
 			    bind.unsupported.empty()
 			        ? "no supported accelerator was discovered — predictions run on the CPU, which every model "
 			          "supports. SELECT * FROM tabfm_devices() shows what was probed."
-			        : bind.unsupported);
+			        : bind.unsupported + " Predictions run on the CPU, which every model supports.");
 			add("device", "cpu", "SET anofox_tabfm_device stays 'auto', which resolves to the CPU here.");
 		} else {
 			add("hardware", "found", bind.device_name + " → '" + bind.backend + "' backend");
@@ -1183,19 +954,18 @@ void AccelerateExecute(ClientContext &context, TableFunctionInput &data, DataChu
 				// is not installed. Only the loader knows which.
 				string detail = "the plugin at " + plugin_path + " cannot be used: " +
 				                (load_error.empty() ? string("it is missing or unreadable") : load_error) + ".";
-				if (load_error.find("libmigraphx") != string::npos) {
-					detail += " MIGraphX is not installed — install the ROCm MIGraphX runtime, then re-run.";
-				} else if (load_error.find("libcud") != string::npos || load_error.find("libonnxruntime") != string::npos) {
-					detail += " Its runtime libraries are missing from that directory.";
+				if (load_error.find("libamdhip64") != string::npos || load_error.find("libhipblas") != string::npos ||
+				    load_error.find("librocblas") != string::npos) {
+					detail += " The ROCm runtime (HIP, hipBLAS, rocBLAS) is not installed or not on the library path — install ROCm, then re-run.";
+				} else if (load_error.find("libcuda.so") != string::npos) {
+					detail += " The NVIDIA driver (libcuda) is not installed.";
 				}
 				detail += " Predictions continue on the CPU.";
 				add("verify", "failed", detail);
 			}
 
 			if (bind.backend == "rocm") {
-				add("note", "first-run cost",
-				    "MIGraphX compiles once per (rows, features) shape bucket, which takes minutes on first use. "
-				    "CALL tabfm_gpu_precompile(...) does it off the query path.");
+				add("note", "prerequisite", "the ggml ROCm plugin uses the ROCm install's HIP, hipBLAS and rocBLAS libraries (ROCm 6.4 or newer).");
 			} else if (bind.backend == "mlx") {
 				add("note", "prerequisite",
 				    "the MLX plugin links Apple's own libmlx/libmlxc — install them with: brew install mlx mlx-c");
@@ -1654,28 +1424,15 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 					state->rows.push_back(std::move(row));
 					continue;
 				}
-				if (row.backend == "coreml") {
-					// CoreML runs the ordinary in-process graph through ONNX
-					// Runtime's own provider -- it needs no bundled GPU graph,
-					// so the ext-graph predicate below says nothing useful
-					// about it. It is also dropped
-					// (docs/DYNAMIC_BACKENDS.md), so say that rather than
-					// implying a model problem.
-					row.reason = "coreml is not shipped — on Apple Silicon use 'mlx', which serves every model: "
-					             "CALL tabfm_accelerate()";
-					state->rows.push_back(std::move(row));
-					continue;
-				}
 				if (!device.usable) {
 					row.reason = "the device was discovered but is not usable on this machine — see SELECT * FROM "
 					             "tabfm_devices() for its driver state";
 					state->rows.push_back(std::move(row));
 					continue;
 				}
-				const bool is_rocm = row.backend == "rocm";
-				const string kind = is_rocm ? "migraphx" : "ext";
-				const string &model_graph = is_rocm ? artifacts.migraphx_graph : artifacts.ext_graph;
-				auto bundled = GetBundledResource(BundledGpuGraphId(spec.id, kind, task_name));
+				// cuda, rocm and mlx all read the plain external-data ("ext") graph
+				const string &model_graph = artifacts.ext_graph;
+				auto bundled = GetBundledResource(BundledGpuGraphId(spec.id, task_name));
 
 				GpuServabilityInputs in;
 				in.backend = row.backend;
@@ -1723,13 +1480,9 @@ unique_ptr<GlobalTableFunctionState> BackendsInit(ClientContext &context, TableF
 				auto verdict = EvaluateGpuServability(in);
 				row.supported = verdict.supported;
 				row.reason = verdict.reason;
-				// Served, but only up to a shape-bucket ceiling: say so, because a larger table is refused.
-				if (row.supported && row.backend == "rocm") {
-					row.reason = RocmBucketCeilingNote(spec.id);
-				}
 				// Plugin presence is checked AFTER servability, and only when
 				// the model would otherwise run. Both can be true at once --
-				// tabdpt on ROCm has no MIGraphX graph AND no plugin installed
+				// a model with no ext graph AND no plugin installed
 				// -- and reporting the plugin there would invite the user to
 				// install one and then be disappointed, because the structural
 				// reason is the permanent one. So: say what cannot change
@@ -1830,7 +1583,7 @@ unique_ptr<FunctionData> LoadBind(ClientContext &context, TableFunctionBindInput
 	auto result = make_uniq<LifecycleBindData>();
 	result->task = task;
 	// tabfm_load verifies the weights are present and ready (the §5 contract).
-	// The heavy ORT session is warmed lazily on the first predict and shows up in
+	// The session is built lazily on the first predict and shows up in
 	// tabfm_models().loaded / is released by tabfm_unload from that point on.
 	result->status = "loaded";
 	SetLifecycleColumns(return_types, names);
@@ -1965,11 +1718,9 @@ void RemoveExecute(ClientContext &, TableFunctionInput &data, DataChunk &output)
 }
 
 //===--------------------------------------------------------------------===//
-// tabfm_gpu_precompile(task [, rows, features]) — warm the shape-bucket OFF the
-// query path. On ROCm this runs (and caches to .mxr) the MIGraphX compile that
-// otherwise stalls the first predict for minutes; on CPU/CUDA/MLX it just warms
-// the session and reports 'not needed'. rows/features default to the smallest
-// bucket.
+// tabfm_gpu_precompile(task [, rows, features]) — deprecated: loads and warms the model's session off
+// the query path. No backend compiles ahead of time, so it always reports 'not needed' with NULL
+// bucket columns; kept so existing scripts keep working.
 //===--------------------------------------------------------------------===//
 
 struct PrecompileBindData : public TableFunctionData {
@@ -1994,10 +1745,6 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	// anofox_tabfm_default_model -- were discarded, and the failure was the
 	// generic "11 models are registered and none is selected", which names the
 	// two remedies that had just been ignored.
-	//
-	// Harmless while the registry held one model; broken for every install
-	// since the catalog grew, which is to say all of them. Found by trying to
-	// warm a shape bucket from tabfm_accelerate()'s own advice.
 	auto manifest = FindManifest(context, "tabfm_gpu_precompile", ModelArg(input), task);
 	auto result = make_uniq<PrecompileBindData>();
 	result->task = task;
@@ -2018,7 +1765,7 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	if (context.TryGetCurrentSetting("anofox_tabfm_threads", v) && !v.IsNull()) {
 		ctx.threads = v.GetValue<int64_t>();
 	}
-	// device / gpu_precision / ep_path / mxr_source, read the same way as every
+	// device / gpu_precision / ep_path, read the same way as every
 	// other GPU-capable bind. This function used to read them by hand and that
 	// is exactly how it ended up without an ep_path.
 	CaptureGpuDispatchSettings(context, ctx);
@@ -2028,9 +1775,8 @@ unique_ptr<FunctionData> PrecompileBind(ClientContext &context, TableFunctionBin
 	if (context.TryGetCurrentSetting("anofox_tabfm_context_cache", v) && !v.IsNull()) {
 		ctx.context_cache = BooleanValue::Get(v);
 	}
-	// The first five columns are the original contract; the rest say what the
-	// call actually did, so a user can tell a cold compile from a cache hit and
-	// see which padded bucket a (rows, features) shape lands in.
+	// The first five columns are the original contract; model and seconds say what the call did. bucket_rows,
+	// bucket_features and reason are always NULL (kept for compatibility).
 	names = {"task",  "rows",          "features",        "device",  "status",
 	         "model", "bucket_rows", "bucket_features", "seconds", "reason"};
 	return_types = {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT, LogicalType::VARCHAR,
@@ -2047,20 +1793,18 @@ void PrecompileExecute(ClientContext &, TableFunctionInput &data, DataChunk &out
 	}
 	state.done = true;
 	auto &bind = data.bind_data->Cast<PrecompileBindData>();
-	// The (slow) compile happens here.
 	auto result = TabFMGpuPrecompile(bind.ctx, bind.task_enum, bind.rows, bind.features);
 	output.SetValue(0, 0, Value(bind.task));
 	output.SetValue(1, 0, Value::BIGINT(bind.rows));
 	output.SetValue(2, 0, Value::BIGINT(bind.features));
-	// The device that serves the model, not the setting: 'auto' says nothing
-	// about whether a compile happened.
+	// The device that serves the model, not the setting.
 	output.SetValue(3, 0, Value(result.device));
 	output.SetValue(4, 0, Value(result.status));
 	output.SetValue(5, 0, Value(result.model));
-	output.SetValue(6, 0, result.bucketed ? Value::BIGINT(result.bucket_rows) : Value(LogicalType::BIGINT));
-	output.SetValue(7, 0, result.bucketed ? Value::BIGINT(result.bucket_features) : Value(LogicalType::BIGINT));
+	output.SetValue(6, 0, Value(LogicalType::BIGINT));
+	output.SetValue(7, 0, Value(LogicalType::BIGINT));
 	output.SetValue(8, 0, Value::DOUBLE(result.seconds));
-	output.SetValue(9, 0, result.reason.empty() ? Value(LogicalType::VARCHAR) : Value(result.reason));
+	output.SetValue(9, 0, Value(LogicalType::VARCHAR));
 	duckdb_compat::SetChildCardinality(output, 1);
 }
 
@@ -2098,13 +1842,10 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	}
 	auto clf_graph = NamedStr(input, "classification_graph");
 	auto reg_graph = NamedStr(input, "regression_graph");
-	// Model-provided GPU graphs (docs/GPU_HARDENING_PLAN.md P3): ext for the
-	// CUDA plugin, migraphx for the ROCm plugin; no cross-fallback (see
-	// ModelTaskArtifacts). External-data files must sit beside each graph.
+	// Model-provided GPU graphs (docs/archive/GPU_HARDENING_PLAN.md P3): ext is what every GPU plugin reads; its external-data files must
+	// sit beside it. classification_/regression_migraphx_graph are accepted and ignored (MIGraphX was removed).
 	auto clf_ext = NamedStr(input, "classification_ext_graph");
 	auto reg_ext = NamedStr(input, "regression_ext_graph");
-	auto clf_mgx = NamedStr(input, "classification_migraphx_graph");
-	auto reg_mgx = NamedStr(input, "regression_migraphx_graph");
 
 	ModelSpec spec;
 	spec.schema_version = 2;
@@ -2172,7 +1913,7 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	// Register a task if it has a graph OR weights: a graph-less task is
 	// download-only (predict errors clearly, but download/list work).
 	auto add_task = [&](TabFMTask task, const string &graph, vector<ManifestFile> files, const string &tmap,
-	                    const string &ext_graph, const string &migraphx_graph) {
+	                    const string &ext_graph) {
 		if (graph.empty() && files.empty()) {
 			return;
 		}
@@ -2184,7 +1925,6 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 		ModelTaskArtifacts art;
 		art.graph = graph;
 		art.ext_graph = ext_graph;
-		art.migraphx_graph = migraphx_graph;
 		art.preprocessing_profile = spec.preprocessing_profile;
 		art.repo = weights_repo;
 		art.revision = weights_revision;
@@ -2199,12 +1939,12 @@ unique_ptr<FunctionData> RegisterModelBind(ClientContext &context, TableFunction
 	         build_files("classification_files", "classification_file_urls", "classification_file_bytes",
 	                     NamedStr(input, "classification_weights"), NamedStr(input, "classification_weights_url"),
 	                     NamedInt(input, "classification_weights_bytes", -1)),
-	         NamedStr(input, "classification_tensor_map", shared_tmap), clf_ext, clf_mgx);
+	         NamedStr(input, "classification_tensor_map", shared_tmap), clf_ext);
 	add_task(TabFMTask::REGRESSION, reg_graph,
 	         build_files("regression_files", "regression_file_urls", "regression_file_bytes",
 	                     NamedStr(input, "regression_weights"), NamedStr(input, "regression_weights_url"),
 	                     NamedInt(input, "regression_weights_bytes", -1)),
-	         NamedStr(input, "regression_tensor_map", shared_tmap), reg_ext, reg_mgx);
+	         NamedStr(input, "regression_tensor_map", shared_tmap), reg_ext);
 	if (spec.tasks.empty()) {
 		throw InvalidInputException("tabfm_register_model: provide a graph and/or weights for at least one task "
 		                            "(classification_graph / regression_graph / classification_weights / ...).");
@@ -2338,9 +2078,8 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, DownloadRuntimeBind), DownloadRuntimeInit,
 	            DATAZOO_GUARD(ANOFOX_TABFM_BANNER, DownloadRuntimeExecute),
 	            "Download a backend plugin library ('cuda', 'rocm' or 'mlx') into the directory named by SET "
-	            "anofox_tabfm_ep_path (default: the cache dir's 'runtime' subdirectory), so that device can be "
-	            "driven without a matching compile-time flavor build. Returns one row per extracted file (file, "
-	            "bytes, status).",
+	            "anofox_tabfm_ep_path (default: the cache dir's 'runtime' subdirectory), verified against the "
+	            "release's sha256. Returns one row per file (file, bytes, status).",
 	            "CALL tabfm_download_runtime('cuda');");
 	// SELECT * FROM tabfm_models();
 	RegisterSet(loader, "anofox_tabfm_models", "tabfm_models", {{}}, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ModelsBind), ModelsInit, DATAZOO_GUARD(ANOFOX_TABFM_BANNER, ModelsExecute),
@@ -2394,11 +2133,10 @@ void RegisterWeightsFunctions(ExtensionLoader &loader) {
 	RegisterSet(loader, "anofox_tabfm_gpu_precompile", "tabfm_gpu_precompile",
 	            {{LogicalType::VARCHAR}, {LogicalType::VARCHAR, LogicalType::BIGINT, LogicalType::BIGINT}},
 	            PrecompileBind, LifecycleInit, PrecompileExecute,
-	            "Warm the GPU path for a task by compiling the model for a shape bucket ahead of the first predict "
-	            "(on ROCm this builds and caches the .mxr program; nothing to compile on CPU, CUDA or MLX). Returns "
-	            "task, rows, features, device (the one serving the model), status ('compiled', 'cached' or 'not "
-	            "needed'), model, bucket_rows and bucket_features (the padded ROCm bucket, NULL elsewhere) and "
-	            "seconds.",
+	            "Load and warm the model's session for a task ahead of the first predict. No backend compiles ahead "
+	            "of time, so status is always 'not needed'. Returns task, rows, features, device (the one serving "
+	            "the model), status, model, bucket_rows and bucket_features (always NULL; kept for compatibility) "
+	            "and seconds.",
 	            "CALL tabfm_gpu_precompile('classification', 1000, 50);", true);
 
 	// CALL tabfm_register_model(id := '...', classification_graph := '...', ...);

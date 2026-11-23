@@ -1,4 +1,4 @@
-"""TabPFN-3.5's in-context ECDF feature, in a form ONNX (and MIGraphX) can run.
+"""TabPFN-3.5's in-context ECDF feature, in a form ONNX can run.
 
 3.5 gives every cell a third channel next to its scaled value and its NaN
 indicator: the cell's midrank ECDF against the TRAIN rows of its column. Upstream
@@ -8,8 +8,7 @@ ONNX operator at all, which is the one thing that blocks a plain export.
 
 This module computes the same numbers with a binary search of a FIXED number of
 steps (`_SEARCH_STEPS`), each a Gather and a compare -- no data-dependent loop,
-no integer division (MIGraphX's GPU target miscomputes integer floor-division,
-docs/ROCM_TABPFN_PLAN.md), no Python branch on a value.
+no integer division, no Python branch on a value.
 
 It follows upstream's algorithm step for step, both rulers included:
 
@@ -21,9 +20,8 @@ It follows upstream's algorithm step for step, both rulers included:
   the graph agrees with upstream at every table size, not only below 8192 rows.
 
 The train rows are the FIRST `n_train` rows of the row axis; anything after them
-(test rows, or the masked contract's padding) is ranked but never ranked against.
-That one convention serves both graph contracts: the positional one passes
-`n_train = len(y)`, the masked one passes its `train_size` input.
+(the test rows) is ranked but never ranked against; the graph passes
+`n_train = len(y)`.
 """
 
 from __future__ import annotations
@@ -85,7 +83,7 @@ def ecdf_ranks(x_BRiC: torch.Tensor, n_train: torch.Tensor, num_buckets: int) ->
 
     # K = min(num_buckets, n) edges. Allocated at min(num_buckets, Ri) -- a slice
     # of a constant bound, so no symbolic min -- and the tail past K (only ever
-    # present in the masked contract, where Ri > n) is excluded by `k` below.
+    # present when Ri > n) is excluded by `k` below.
     k = torch.clamp(n, max=num_buckets)
     steps = torch.arange(Ri, device=dev, dtype=torch.float32)[:num_buckets]           # [K]
     # Upstream divides by (k - 1) only when k > 1 and uses all-zero targets

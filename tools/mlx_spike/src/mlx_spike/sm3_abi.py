@@ -188,8 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         got_by_case[name] = got
 
         c = compare(reference[:, train_size:, :], got[:, train_size:, :])
-        # Tier the bar by precision, as tools/gpu_test/equivalence.py's header
-        # states: fp32 is the strict lane where a device switch must not change
+        # Tier the bar by precision (the rule the GPU equivalence checks used): fp32 is the strict lane where a device switch must not change
         # the answer, while bf16/fp16 are judged on CLASS AGREEMENT because
         # losing mantissa bits is the entire point of asking for them. Holding
         # bf16 to the fp32 tolerance would mark a correctly-working mode failed.
@@ -207,7 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     api.destroy(handle)
     _mark("DESTROY_OK", True)
 
-    # P2 guard (docs/GPU_HARDENING_PLAN.md): the CUDA plugin once accepted this
+    # P2 guard (docs/archive/GPU_HARDENING_PLAN.md): the CUDA plugin once accepted this
     # setting and always ran fp32. Reduced precision MUST move the logits; if
     # bf16 reproduced fp32 bit-for-bit the mode would be a no-op wearing its
     # name. Compared against the fp32 run's own logits, not the ORT golden.

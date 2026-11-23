@@ -1,7 +1,7 @@
 # name: test/sql/tabfm_fresh_download_convert.test
 # description: The TabPFN checkpoints that still need tools/export_tabpfn/convert_weights.py download from the
 #              pinned revision at the declared size, and then refuse with the actionable error, not an
-#              opaque ORT one. TabPFN v2, 2.5 and RealTabPFN-2.5 publish the legacy layout
+#              opaque engine one. TabPFN v2, 2.5 and RealTabPFN-2.5 publish the legacy layout
 #              (transformer_encoder.layers.N.*): renames, which "ckpt_aliases" could express, but also each
 #              attention block's `_w_qkv` [3, H, D, E] split into q/k/v [H*D, E] and its `_w_out` [H, D, E]
 #              reshaped to [H*D, E] and TRANSPOSED into out_projection.weight. A transpose reorders values,

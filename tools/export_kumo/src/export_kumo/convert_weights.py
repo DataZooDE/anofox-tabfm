@@ -3,8 +3,7 @@
 The CPU path does NOT need this: the published `.pt` is a plain `torch.save` state_dict of float32
 tensors, which the engine's native checkpoint reader (`src/tabfm_ckpt.cpp`) injects directly
 against the committed tensor map. What the conversion buys is the GPU and low-memory paths: the
-bundled `graph_ext_kumo_*` (CUDA, CPU low-memory) and `graph_migraphx_kumo_*` (ROCm) graphs
-reference the weights as ONNX external data at fixed offsets in a safetensors file, and the
+bundled `graph_ext_kumo_*` graphs (the GPU plugins, CPU low-memory) reference the weights as ONNX external data at fixed offsets in a safetensors file, and the
 engine only uses them when that file's JSON header hashes to the value pinned in
 `ExpectedWeightsHeaderShaFor` (src/include/tabfm_model_spec.hpp). This writes exactly that file:
 every state_dict key, sorted, as contiguous float32, no metadata -- byte-deterministic, so the

@@ -1,0 +1,4 @@
+# op Gather
+in d f32 6,2 3faa9fd4 bec37d10 7149f2ca 0da24260 f149f2ca bfefa8c4 80000000 ff800000 7f800000 7fc00000 3f95d5d2 00000000
+in u f32 1 401b8231
+out y f32 1,2 f149f2ca bfefa8c4

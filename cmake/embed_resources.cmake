@@ -29,68 +29,30 @@ set(_tabfm_inputs
     "graph_regression.onnx"
     "graph_ext_classification.onnx"
     "graph_ext_regression.onnx"
-    "graph_migraphx_classification.onnx"
-    "graph_migraphx_regression.onnx"
     "tensor_map_classification.json"
     "tensor_map_regression.json"
     # Built-in catalog models (Mitra, TabPFN v2, TabICL v2) — bundled so they are
     # usable by name with no manifest file (pure-SQL surface).
     "graph_mitra_classification.onnx"
     "graph_mitra_regression.onnx"
-    # Mitra GPU variants (tools/make_external_graph.py / make_migraphx_graph.py
+    # Mitra GPU variants (tools/make_external_graph.py
     # against the HF weights; gated by ExpectedWeightsHeaderShaFor at load).
     "graph_ext_mitra_classification.onnx"
     "graph_ext_mitra_regression.onnx"
-    "graph_migraphx_mitra_classification.onnx"
-    "graph_migraphx_mitra_regression.onnx"
-    # TabDPT MIGraphX graphs. The only single_eval_pos model with them: its
-    # train/test split was converted from a positional slice to a train_size
-    # mask (tools/export_tabdpt, docs/ROCM_TABDPT_SPIKE.md), which makes every
-    # shape a function of the (T, H) bucket and so compilable by MIGraphX.
-    # Larger than mitra's (5.9 MB vs 0.6 MB): the masked form has more nodes,
-    # and the exporter's optimize=True would halve it but renames initializers
-    # out of the tensor map, which make_migraphx_graph.py refuses outright.
-    "graph_migraphx_tabdpt_classification.onnx"
-    "graph_migraphx_tabdpt_regression.onnx"
-    # TabDPT v1.3 (`tabdpt-v1-3`): the same masked conversion, re-exported for v1.3's per-task
-    # y-encoders (tools/export_tabdpt --config real13 --contract mask).
-    "graph_migraphx_tabdpt13_classification.onnx"
-    "graph_migraphx_tabdpt13_regression.onnx"
     # Mitra-v2 (`mitra-v2`): the 1000-bin regressor only -- the v2 classifier reuses mitra's graphs
     # (byte-identical safetensors header). bin_edges/bin_centres stay inline (code-generated).
     "graph_mitra2_regression.onnx"
     "graph_ext_mitra2_regression.onnx"
-    "graph_migraphx_mitra2_regression.onnx"
     "tensor_map_mitra2_regression.json"
+    # TabDPT v1.3 (`tabdpt-v1-3`): its own graphs for v1.3's per-task y-encoders (tools/export_tabdpt --config real13).
     "graph_tabdpt13_classification.onnx"
     "graph_tabdpt13_regression.onnx"
     "graph_ext_tabdpt13_classification.onnx"
     "graph_ext_tabdpt13_regression.onnx"
     "tensor_map_tabdpt13_classification.json"
     "tensor_map_tabdpt13_regression.json"
-    # TabPFN v2 / v2.5 / v2.6 MIGraphX graphs, both tasks (tools/export_tabpfn
-    # --contract mask; docs/ROCM_TABPFN_PLAN.md). Unlike tabdpt's they take a
-    # FIFTH input, `n_rows`, the real row count before bucket padding: TabPFN's
-    # constant-feature detection and feature-group normalisation compare every
-    # row against row 0, so a padded row changes the answer. The MIGraphX plugin
-    # binds it only when the graph declares it, so the older graphs are untouched
-    # -- and an OLDER PLUGIN refuses these ("Parameter not found: n_rows"), which
-    # the engine turns into an instruction to update it.
+    # Catalog ext graphs (the ggml GPU plugin, CUDA and ROCm, + the CPU low-memory path), gated by ExpectedWeightsHeaderShaFor.
     # tabpfn-v2-5-real reuses the 2.5 graphs (see BundledGpuGraphId).
-    # TabPFN-3 too, with two differences: it carries NO inline initializer at all
-    # (RoPE, so there is no positional table to keep inline), and its cold
-    # compile is the longest of the family, ~16 min per shape bucket on gfx1201.
-    "graph_migraphx_tabpfn_classification.onnx"
-    "graph_migraphx_tabpfn_regression.onnx"
-    "graph_migraphx_tabpfn25_classification.onnx"
-    "graph_migraphx_tabpfn25_regression.onnx"
-    "graph_migraphx_tabpfn26_classification.onnx"
-    "graph_migraphx_tabpfn26_regression.onnx"
-    "graph_migraphx_tabpfn3_classification.onnx"
-    "graph_migraphx_tabpfn3_regression.onnx"
-    # Catalog ext graphs (CUDA + CPU low-memory). Models with no migraphx
-    # variant are refused on ROCm by name — see ExpectedWeightsHeaderShaFor's
-    # comment, docs/ROCM_SINGLE_EVAL_POS.md and tabfm_backends().
     "graph_ext_tabpfn_classification.onnx"
     "graph_ext_tabpfn_regression.onnx"
     "graph_ext_tabpfn25_classification.onnx"
@@ -109,11 +71,6 @@ set(_tabfm_inputs
     "graph_tabpfn_regression.onnx"
     "graph_tabicl_classification.onnx"
     "graph_tabicl_regression.onnx"
-    # TabICL v2's ROCm graphs: the MASKED contract (x, y_full, train_size, d, n_rows; tools/export_tabicl
-    # --contract mask), so MIGraphX can bucket them. Same weights and tensor-map keys as the positional pair
-    # (ExpectedWeightsHeaderShaFor pins the header).
-    "graph_migraphx_tabicl_classification.onnx"
-    "graph_migraphx_tabicl_regression.onnx"
     # TabICL v2's context-cache pair (tools/export_tabicl --split-context, kv.py): prepare encodes the
     # labelled context once (column-ISAB state + per-ICL-layer support K/V + the context rows' own
     # outputs), query scores the query rows only. Found by name next to graph_tabicl_<task>
@@ -133,32 +90,24 @@ set(_tabfm_inputs
     "tensor_map_tabicl_classification.json"
     "tensor_map_tabicl_regression.json"
     # Causilo (Nums AI, non-commercial weights) -- (x, y)-only like TabICL on the CPU: one plain graph
-    # and one tensor map per task. The migraphx graphs are the MASKED contract (x, y_full, train_size,
-    # n_rows, d; tools/export_causilo --contract mask), so ROCm can bucket them; they bake offsets into the
-    # released safetensors, checked by the header sha in ExpectedWeightsHeaderShaFor.
+    # and one tensor map per task.
     "graph_causilo_classification.onnx"
     "graph_causilo_regression.onnx"
-    "graph_migraphx_causilo_classification.onnx"
-    "graph_migraphx_causilo_regression.onnx"
-    # The external-data variants: on CUDA, and on the CPU default path, ORT reads weights off the
-    # cached safetensors by offset instead of copying them in (src/tabfm_engine.cpp
-    # TryExternalDataSession). Valid only for the revision the registry pins; the header hash in
+    # The external-data variants: the GPU plugins read weights off the cached safetensors by offset (src/tabfm_engine.cpp
+    # TryGgmlGpuBackend, TryMlxBackend). Valid only for the revision the registry pins; the header hash in
     # ExpectedWeightsHeaderShaFor decides at load time whether to use them.
     "graph_ext_causilo_classification.onnx"
     "graph_ext_causilo_regression.onnx"
     "tensor_map_causilo_classification.json"
     "tensor_map_causilo_regression.json"
     # LimiX-2M (StableAI; commercial under the Stable AI Technology Co., Ltd. License v1.0) -- (x, y)-only,
-    # one plain graph and one tensor map per task, plus the CUDA/CPU external-data variants. The migraphx
-    # graphs are the MASKED contract (tools/export_limix --contract mask) and read the model.safetensors that
-    # tabfm_download (or convert_limix_weights) writes beside the checkpoint. The stem is "limix2m" so
+    # one plain graph and one tensor map per task, plus the external-data variants, which read the
+    # model.safetensors that tabfm_download (or convert_limix_weights) writes beside the checkpoint. The stem is "limix2m" so
     # LimiX-2 (400M) can never be mistaken for it.
     "graph_limix2m_classification.onnx"
     "graph_limix2m_regression.onnx"
     "graph_ext_limix2m_classification.onnx"
     "graph_ext_limix2m_regression.onnx"
-    "graph_migraphx_limix2m_classification.onnx"
-    "graph_migraphx_limix2m_regression.onnx"
     "tensor_map_limix2m_classification.json"
     "tensor_map_limix2m_regression.json"
     # Google TabFM 1.1.0 (tabfm-v1-1; non-commercial like v1). New graphs only: the dims are baked in
@@ -167,27 +116,30 @@ set(_tabfm_inputs
     "graph_tabfm_v1_1_regression.onnx"
     # Its GPU variants (+ the CPU low-memory path): the checkpoint is BF16, so each initializer is
     # retyped to BF16 and Cast to FLOAT in-graph; valid only for the pinned header (see
-    # ExpectedWeightsHeaderShaFor). The MIGraphX graph serves ROCm with the same shape buckets as v1.
+    # ExpectedWeightsHeaderShaFor).
     "graph_ext_tabfm_v1_1_classification.onnx"
     "graph_ext_tabfm_v1_1_regression.onnx"
-    "graph_migraphx_tabfm_v1_1_classification.onnx"
-    "graph_migraphx_tabfm_v1_1_regression.onnx"
     # Nori-30M (Synthefy, Apache-2.0) -- regression ONLY, (x, y)-only on the CPU like its LimiX ancestor: one
     # plain graph and one tensor map. The engine reads nori.pt natively ({model_config, ema_state_dict}). The
-    # migraphx graph is the MASKED contract (tools/export_nori --contract mask) and reads the safetensors that
-    # tabfm_download writes beside the checkpoint (header sha in ExpectedWeightsHeaderShaFor).
+    # ext graph reads the safetensors that tabfm_download writes beside the checkpoint (header sha in ExpectedWeightsHeaderShaFor).
     "graph_nori30m_regression.onnx"
-    "graph_migraphx_nori30m_regression.onnx"
+    "graph_ext_nori30m_regression.onnx"
     "tensor_map_nori30m_regression.json"
+    # Nori 1.5 (Synthefy, Model v3, two-phase encoder; Apache-2.0) -- regression ONLY, (x, y)-only like 30M but a
+    # different architecture, hence its own stem. The engine reads nori.pt natively ({model_config,
+    # model_state_dict, inference_config}). The ext graph (the GPU plugins) reads the safetensors tabfm_download
+    # writes beside the checkpoint (tools/make_external_graph.py; header sha in ExpectedWeightsHeaderShaFor).
+    "graph_nori15_regression.onnx"
+    "graph_ext_nori15_regression.onnx"
+    "tensor_map_nori15_regression.json"
     # EXAONE Tabular v1 (LG AI Research; non-commercial EXAONE NC 1.2 weights) -- (x, y)-only on the CPU, one
     # plain graph and one tensor map per task. The released files are safetensors keyed by the module
-    # namespace, so there is no converter. The migraphx graphs are the MASKED contract (x, y_full, train_size,
-    # d, n_rows; tools/export_exaone --contract mask), so ROCm can bucket them; they bake offsets into LG's
+    # namespace, so there is no converter. The ext graphs bake offsets into LG's
     # released files, checked by the header sha in ExpectedWeightsHeaderShaFor.
     "graph_exaone_tabular_classification.onnx"
     "graph_exaone_tabular_regression.onnx"
-    "graph_migraphx_exaone_tabular_classification.onnx"
-    "graph_migraphx_exaone_tabular_regression.onnx"
+    "graph_ext_exaone_tabular_classification.onnx"
+    "graph_ext_exaone_tabular_regression.onnx"
     "tensor_map_exaone_tabular_classification.json"
     "tensor_map_exaone_tabular_regression.json"
     # TabPFN-2.5 (Prior Labs, non-commercial) — per-task graphs AND maps.
@@ -201,16 +153,11 @@ set(_tabfm_inputs
     "tensor_map_tabpfn26_regression.json"
     "tensor_map_tabpfn25_classification.json"
     "tensor_map_tabpfn25_regression.json"
-    # Orion-BiX (MIT) — classification only, no regression graph upstream. The CPU graph is (x, y)-only (split =
-    # len(y)); the migraphx graph is the MASKED contract (x, y_full, train_size, d; tools/export_orion_bix
-    # --contract mask) so ROCm can bucket it. It reads the same model.safetensors as the ext graph.
+    # Orion-BiX (MIT) — classification only, no regression graph upstream. The CPU graph is (x, y)-only (split = len(y)).
     "graph_orion_bix_classification.onnx"
-    "graph_migraphx_orion_bix_classification.onnx"
     "tensor_map_orion_bix_classification.json"
-    # Orion-MSP (MIT) — classification only, like its Orion-BiX sibling, and like it with a second, MASKED
-    # migraphx graph for ROCm (tools/export_orion_msp --contract mask; the frozen random-link table stays inline).
+    # Orion-MSP (MIT) — classification only, like its Orion-BiX sibling (the frozen random-link table stays inline).
     "graph_orion_msp_classification.onnx"
-    "graph_migraphx_orion_msp_classification.onnx"
     "tensor_map_orion_msp_classification.json"
     # TabDPT (Layer 6 AI, Apache-2.0) — both tasks off one checkpoint.
     "graph_tabdpt_classification.onnx"
@@ -224,51 +171,41 @@ set(_tabfm_inputs
     "tensor_map_tabpfn3_classification.json"
     "tensor_map_tabpfn3_regression.json"
     # TabPFN-3.5 and 3.5-Fast (Prior Labs, non-commercial; tools/export_tabpfn35). Same depth-only
-    # difference between the two (24 vs 8 ICL layers), so separate stems. Every kind is bundled: the
-    # plain CPU graph, the external-data graph (CUDA + CPU low-memory) and the masked MIGraphX graph.
+    # difference between the two (24 vs 8 ICL layers), so separate stems. Both kinds are bundled: the
+    # plain CPU graph and the external-data graph (GPU plugins + CPU low-memory).
     "graph_tabpfn35_classification.onnx"
     "graph_tabpfn35_regression.onnx"
     "tensor_map_tabpfn35_classification.json"
     "tensor_map_tabpfn35_regression.json"
     "graph_ext_tabpfn35_classification.onnx"
     "graph_ext_tabpfn35_regression.onnx"
-    "graph_migraphx_tabpfn35_classification.onnx"
-    "graph_migraphx_tabpfn35_regression.onnx"
     "graph_tabpfn35fast_classification.onnx"
     "graph_tabpfn35fast_regression.onnx"
     "tensor_map_tabpfn35fast_classification.json"
     "tensor_map_tabpfn35fast_regression.json"
     "graph_ext_tabpfn35fast_classification.onnx"
     "graph_ext_tabpfn35fast_regression.onnx"
-    "graph_migraphx_tabpfn35fast_classification.onnx"
-    "graph_migraphx_tabpfn35fast_regression.onnx"
     # Kumo-Tabular (NVIDIA; code Apache-2.0, weights OpenMDW-1.1), one stem per SIZE (the three are
     # different module trees). The graph takes the tabfm-v1 five-input contract (the split and the
-    # real width are VALUES), so the plain, ext and migraphx graphs are one family: plain for the CPU
-    # injection path (the published .pt is read natively), ext + migraphx for the converted
+    # real width are VALUES), so the plain and ext graphs are one family: plain for the CPU
+    # injection path (the published .pt is read natively), ext for the converted
     # model.safetensors tabfm_download writes beside the .pt, gated by ExpectedWeightsHeaderShaFor.
     "graph_kumo_small_classification.onnx"
     "graph_kumo_small_regression.onnx"
     "graph_ext_kumo_small_classification.onnx"
     "graph_ext_kumo_small_regression.onnx"
-    "graph_migraphx_kumo_small_classification.onnx"
-    "graph_migraphx_kumo_small_regression.onnx"
     "tensor_map_kumo_small_classification.json"
     "tensor_map_kumo_small_regression.json"
     "graph_kumo_medium_classification.onnx"
     "graph_kumo_medium_regression.onnx"
     "graph_ext_kumo_medium_classification.onnx"
     "graph_ext_kumo_medium_regression.onnx"
-    "graph_migraphx_kumo_medium_classification.onnx"
-    "graph_migraphx_kumo_medium_regression.onnx"
     "tensor_map_kumo_medium_classification.json"
     "tensor_map_kumo_medium_regression.json"
     "graph_kumo_large_classification.onnx"
     "graph_kumo_large_regression.onnx"
     "graph_ext_kumo_large_classification.onnx"
     "graph_ext_kumo_large_regression.onnx"
-    "graph_migraphx_kumo_large_classification.onnx"
-    "graph_migraphx_kumo_large_regression.onnx"
     "tensor_map_kumo_large_classification.json"
     "tensor_map_kumo_large_regression.json"
     # OpenMDW-1.1, verbatim from nvidia/Kumo-Tabular@b2f5a9d6 (LICENSE): the agreement whoever distributes

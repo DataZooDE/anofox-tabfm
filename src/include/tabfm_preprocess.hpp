@@ -197,7 +197,7 @@ struct PreprocessStages {
 	vector<double> outlier_upper;
 };
 
-//! Fully preprocessed batch ready for the ORT engine (up to the float32 cast,
+//! Fully preprocessed batch ready for the engine (up to the float32 cast,
 //! which happens at the model feed — tensors here are float64 pipeline outputs).
 struct PreprocessedBatch {
 	PreprocessTask task = PreprocessTask::CLASSIFICATION;

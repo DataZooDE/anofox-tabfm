@@ -125,8 +125,8 @@ def fixture3() -> ExportConfig:
 # the distribution embedder and the aggregator (so the non-last-block loops run),
 # and the many-class decoder with softmax scaling and a class width that needs
 # padding to a multiple of the head dim (3 heads-dims for 4 classes -> 2 chunks).
-# Without this the masked forward could pass its gate while never running the
-# multi-query path -- which is exactly how a gate goes blind.
+# Without this a parity check could pass while never running the multi-query
+# path -- which is exactly how a gate goes blind.
 _FIXTURE3R_KWARGS = dict(
     embed_dim=32, nlayers=3, num_buckets=16,
     dist_embed_num_blocks=2, dist_embed_num_heads=2, dist_embed_num_inducing_points=6,

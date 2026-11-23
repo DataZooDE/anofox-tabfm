@@ -50,24 +50,19 @@ one shared direction, and scales the label encoder for regression. Even so no se
 predict all three classes, so the builder requires two (context rows included) and a top-1/top-2 margin above
 0.05 on every row.
 
-## The ROCm graphs (masked contract)
+## The GPU graph
 
-`exaone_mask.py` computes the same function with the split as a VALUE, so MIGraphX can compile it per (T, H)
-shape bucket: `x[1,T,H]`, `y[1,T]` (full length, -100 off the context), `train_size`, `d`, `n_rows`. Every
-statistic and attention key over the context is masked, padded columns are masked out of the feature attention,
-and the SSMax lengths come from the values (`3 + d + 1`, `32 + S`). `mask_parity.gate` compares it, padded to a
-larger bucket, against the positional CPU forward on the unpadded table, and only passes when each of four
-negative controls (one mask broken each) is caught.
+The GPU plugins (ggml-cuda, ggml-rocm, MLX) run the same positional graph as the CPU, rewritten so each initializer points at the cached `model.safetensors` as ONNX external data (`graph_ext_*`). `tools/make_external_graph.py` writes it and prints the safetensors header sha the engine pins in `ExpectedWeightsHeaderShaFor`:
 
 ```bash
-uv run export_exaone --task classification --config real --contract mask --out ./mask
-W=~/.cache/anofox-tabfm/LG-AI-Research__EXAONE-Tabular@093ad1c2613e1e95d26df8610451d2e02ed53cbe/classification/model.safetensors
-uv run python ../make_migraphx_graph.py classification --weights $W \
-    --graph ./mask/graph_mask_exaone_classification.onnx \
-    --tensor-map ../../resources/tensor_map_exaone_tabular_classification.json \
-    --dynamic --out ../../resources/graph_migraphx_exaone_tabular_classification.onnx
-uv run python ../check_migraphx_int_div.py ../../resources/graph_migraphx_exaone_tabular_classification.onnx
+W=~/.cache/anofox-tabfm/LG-AI-Research__EXAONE-Tabular@093ad1c2613e1e95d26df8610451d2e02ed53cbe
+python ../make_external_graph.py classification --weights $W/classification/model.safetensors \
+    --graph ../../resources/graph_exaone_tabular_classification.onnx --tensor-map ../../resources/tensor_map_exaone_tabular_classification.json \
+    --out ../../resources/graph_ext_exaone_tabular_classification.onnx
+python ../make_external_graph.py regression --weights $W/regression/model.safetensors \
+    --graph ../../resources/graph_exaone_tabular_regression.onnx --tensor-map ../../resources/tensor_map_exaone_tabular_regression.json \
+    --out ../../resources/graph_ext_exaone_tabular_regression.onnx
 ```
 
-(and the same for `regression`). The graphs reference LG's released files at fixed offsets; the engine checks
-the safetensors header against `ExpectedWeightsHeaderShaFor("exaone-tabular", task)` before using them.
+The graphs reference LG's released files at fixed offsets; the engine checks the safetensors header against `ExpectedWeightsHeaderShaFor("exaone-tabular", task)` before using them.
+

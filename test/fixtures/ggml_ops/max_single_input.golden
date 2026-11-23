@@ -1,0 +1,3 @@
+# op Max
+in a f32 4 7f800000 7fc00000 be857b76 3fd264da
+out y f32 4 7f800000 7fc00000 be857b76 3fd264da

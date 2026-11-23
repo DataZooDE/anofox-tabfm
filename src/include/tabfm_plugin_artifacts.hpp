@@ -3,6 +3,8 @@
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/string_util.hpp"
 
+#include <cctype>
+
 namespace duckdb {
 namespace anofox {
 
@@ -35,7 +37,7 @@ namespace anofox {
 //! refuses a mismatch (tabfm_plugin_backend.cpp), so an older plugin cannot
 //! silently misbehave. It is NOT derived from the extension version, which
 //! would 404 on every dev or dirty build.
-static constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "v2026.11.01";
+static constexpr const char *TABFM_PLUGIN_RELEASE_TAG = "v2026.11.23";
 
 //! Shared-library suffix for plugins on the platform being asked about.
 inline string PluginLibrarySuffix(const string &os) {
@@ -48,13 +50,36 @@ inline string PluginLibrarySuffix(const string &os) {
 	return ".so";
 }
 
-//! The plugin's own name for a device. 'rocm' is driven by MIGraphX and the
-//! artifact has always been named for the library, not the device.
+//! The plugin's own name for a device. CUDA and ROCm are both served by the ggml GPU plugin (src/tabfm_ggml_plugin.cpp), one build per vendor:
+//! `ggml-cuda` and `ggml-rocm`. MLX keeps its own plugin.
 inline string PluginBaseName(const string &backend) {
-	if (backend == "rocm" || backend == "migraphx") {
-		return "migraphx";
+	if (backend == "cuda" || backend == "ggml-cuda") {
+		return "ggml-cuda";
+	}
+	if (backend == "rocm" || backend == "ggml-rocm") {
+		return "ggml-rocm";
 	}
 	return backend;
+}
+
+//! tabfm_download_runtime's backend argument, normalized once at that entry point: lowercased, and the deprecated name 'migraphx' (the
+//! removed MIGraphX plugin) is the ROCm plugin. Everything past the entry point sees only 'cuda', 'rocm', 'mlx' or an unknown name.
+inline string NormalizeRuntimeBackend(const string &requested) {
+	string backend = requested;
+	for (auto &c : backend) {
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	return backend == "migraphx" ? "rocm" : backend;
+}
+
+//! The error for an explicit cuda/rocm request when the ggml GPU plugin is not in anofox_tabfm_ep_path. It is the only GPU lane for those devices, so the
+//! message names the file, where it looked and the two ways out.
+inline string GgmlGpuPluginMissingMessage(const string &vendor, const string &ep_path, const string &plugin_file) {
+	const string where = ep_path.empty() ? string("anofox_tabfm_ep_path is not set")
+	                                     : "it is not in anofox_tabfm_ep_path '" + ep_path + "'";
+	return "anofox_tabfm: device '" + vendor + "' needs the ggml GPU backend plugin " + plugin_file + ", but " + where + ". CALL tabfm_download_runtime('" +
+	       vendor + "') to fetch it (it is saved to anofox_tabfm_ep_path), or SET anofox_tabfm_ep_path to the directory that holds it, or SET "
+	       "anofox_tabfm_device='cpu' to run on the CPU.";
 }
 
 //! Plugin filename for a backend on a given platform. Windows drops the 'lib'
@@ -103,17 +128,17 @@ inline string UnsupportedPluginPlatform(const string &backend, const string &os,
 		if (os == "linux" && arch == "amd64") {
 			return "";
 		}
-		return "tabfm_download_runtime: no CUDA plugin or runtime is published for " + where +
-		       " — the CUDA backend is built and verified for linux/amd64 only. " +
+		return "tabfm_download_runtime: no CUDA plugin is published for " + where +
+		       " — the ggml CUDA backend is built and verified for linux/amd64 only. " +
 		       (os == "osx" ? "On Apple Silicon use the MLX backend instead: CALL tabfm_download_runtime('mlx')."
 		                    : "SET anofox_tabfm_device='cpu' to run on the CPU.");
 	}
-	if (backend == "rocm" || backend == "migraphx") {
+	if (backend == "rocm") {
 		if (os == "linux" && arch == "amd64") {
 			return "";
 		}
 		return "tabfm_download_runtime: no ROCm plugin is published for " + where +
-		       " — MIGraphX runs on linux/amd64 only, and the AMD compute stack has no build for " + os +
+		       " — the ggml HIP backend is built and verified for linux/amd64 only, and the AMD compute stack has no build for " + os +
 		       ". SET anofox_tabfm_device='cpu' to run on the CPU.";
 	}
 	if (backend == "mlx") {
@@ -135,9 +160,9 @@ inline string PluginSha256AssetName(const string &backend) {
 	return PluginBaseName(backend) + "_plugin.sha256";
 }
 
-//! Pull one file's digest out of a `sha256sum` sidecar. The CUDA sidecar covers
-//! two files (the plugin and its private ORT core), so the line must be matched
-//! by filename rather than assumed to be the first.
+//! Pull one file's digest out of a `sha256sum` sidecar. A sidecar may list
+//! several files, so the line must be matched by filename rather than assumed
+//! to be the first.
 //!
 //! Returns "" when the file is not listed — which callers must treat as a
 //! failure, not as "nothing to check": a sidecar that does not mention the file

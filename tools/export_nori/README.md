@@ -45,37 +45,17 @@ the mean over random quantile rows averages out), so `fixture.sensitive` scales 
 SwiGLU-down projections and gives the quantile head one shared direction. The golden inputs avoid standardised
 values at or near zero, which Nori's decimal tokenizer (LimiX's) treats as a separate token.
 
-## The ROCm graph (masked contract) and the one-time converter
+## The GPU graph and the one-time converter
 
-`nori_mask.py` computes the same function with the split as a VALUE, so MIGraphX can compile it per (T, H)
-shape bucket: `x[1,T,H]`, `y[1,T]` (full length, -100 off the context), `train_size`, `d`, `n_rows`. The
-preprocessing statistics, the label imputation and the target-aware embedding read the context only, padded
-feature GROUPS are masked out of the feature attention (`2 * g < d`, division-free), the sample attention masks
-non-context keys, and QASSMax reads `log(S)` from the value. The tokenizer is re-expressed without the integer
-floor-division / modulo and the `torch.split` MIGraphX cannot take (`rbf_tokenizer`, equal to upstream bit for
-bit), and the attention projections are GEMMs instead of einsums. `mask_parity.gate` passes only when each of
-four negative controls is caught.
-
-MIGraphX reads the weights itself, as external data in a file named `model.safetensors`, so ROCm needs the
-checkpoint converted once. `CALL tabfm_download('regression', model := 'nori-30m')` does that natively; the
-converter below writes the same bytes and stays as the reference for building the graph (the CPU path keeps
-reading `nori.pt`; its answers are identical either way):
+The GPU plugins read the weights as external data in a file named `model.safetensors` beside the checkpoint, so the GPU path needs the checkpoint converted once. `CALL tabfm_download('regression', model := 'nori-30m')` does that natively; the converter below writes the same bytes and stays as the reference for building the graph (the CPU path keeps reading `nori.pt`; its answers are identical either way):
 
 ```bash
 C=~/.cache/anofox-tabfm/Synthefy__Nori-30M@63c9f7facf9fb32c37ce3fc2fba331d524696318
 uv run convert_nori_weights $C/model.ckpt $C/model.safetensors        # header sha 49797138...; tabfm_download writes the same file
-uv run export_nori --config real --contract mask --out ./mask
-uv run python ../make_migraphx_graph.py regression --weights $C/model.safetensors \
-    --graph ./mask/graph_mask_nori_regression.onnx --tensor-map ./mask/tensor_map_mask_nori_regression.json \
-    --dynamic --inline-ok m.encoder_x.0.numeric_mlp.centers \
-    --out ../../resources/graph_migraphx_nori30m_regression.onnx
-uv run python ../check_migraphx_int_div.py ../../resources/graph_migraphx_nori30m_regression.onnx
+python ../make_external_graph.py regression --weights $C/model.safetensors \
+    --graph ../../resources/graph_nori30m_regression.onnx --tensor-map ../../resources/tensor_map_nori30m_regression.json \
+    --out ../../resources/graph_ext_nori30m_regression.onnx
 ```
 
-`--inline-ok` names the tokenizer's RBF centres: a `linspace` built from the config, not a checkpoint weight.
+Nori 1.5 is the same with its own checkpoint and the `nori15` stem.
 
-What MIGraphX (2.15, gfx1201) could not compile, each found by compiling small extracted graphs on the GPU and
-each rewritten to the same function: the ONNX `LayerNormalization` op (its scale/bias `broadcast[axis]` broke
-`simplify_reshapes`: "BROADCAST : axis 2 is out of range"), the regression-target statistics when the boolean
-mask was transposed before masking (same error), and QASSMax's `base_mlp` applied to a `[1, 1]` tensor
-("cannot create std::vector larger than max_size()"). All three are written out in `nori_mask.py`.

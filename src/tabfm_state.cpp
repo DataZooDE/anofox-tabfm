@@ -131,7 +131,7 @@ bool TabFMState::Unload(const string &key) {
 	}
 	// Mark every configuration evicted, then drop our references. In-flight
 	// predicts holding a snapshot keep their session alive until they release
-	// (HLD §6: no torn sessions); each ORT session is destroyed with its last
+	// (HLD §6: no torn sessions); each session is destroyed with its last
 	// shared_ptr. All-or-nothing so one name reaches everything.
 	for (auto &session : entry->second) {
 		session.second->evicted = true;

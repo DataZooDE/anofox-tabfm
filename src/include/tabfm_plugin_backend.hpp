@@ -3,14 +3,14 @@
 //
 // tabfm_plugin_backend.hpp — load a TabFMBackend from a shared library.
 //
-// Phase 1 of docs/DYNAMIC_BACKENDS.md. See tabfm_plugin_abi.h for the C
+// Phase 1 of docs/archive/DYNAMIC_BACKENDS.md. See tabfm_plugin_abi.h for the C
 // contract the library must satisfy, and tabfm_plugin_backend.cpp for the
 // failures this refuses (missing file, not a plugin, ABI mismatch).
 //===----------------------------------------------------------------------===//
 
 #pragma once
 
-#include "tabfm_ort_engine.hpp" // TabFMBackend
+#include "tabfm_session.hpp" // TabFMBackend
 #include "tabfm_plugin_abi.h"
 
 namespace duckdb {
@@ -33,7 +33,7 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 //! never calling create().
 //!
 //! That boundary is the whole point. create() reaches the driver: it can take
-//! minutes (a MIGraphX shape compile), demand a runtime that is not installed,
+//! seconds (uploading the weights), demand a runtime that is not installed,
 //! or fail on a card that is busy. This answers the cheap question 'is the
 //! lane here at all', which is what device selection needs before it commits;
 //! whether THIS model can actually be served is a separate question with a
@@ -42,19 +42,6 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 //! Never throws: a missing or unreadable file is a false, not an error --
 //! callers use it to decide, not to report.
 bool PluginLoadable(const string &library_path, string *error = nullptr);
-
-//! Extra advice to append to a backend failure, or "" when there is none.
-//!
-//! The bundled TabPFN MIGraphX graphs take a fifth input, `n_rows`, which the
-//! plugin binds only when the graph declares it. A plugin built before that
-//! binding existed accepts the graph and then dies on the first predict with
-//! MIGraphX's own "Parameter not found: n_rows" -- correct, and meaningless to
-//! anyone who has not read the plugin source. Recognising it turns "the extension
-//! and the plugin disagree about a graph" into an instruction.
-//!
-//! Deliberately narrow: only the migraphx backend and only this failure, so an
-//! unrelated MIGraphX error is never blamed on the plugin version.
-string PluginFailureHint(const string &backend, const string &error);
 
 } // namespace anofox
 } // namespace duckdb

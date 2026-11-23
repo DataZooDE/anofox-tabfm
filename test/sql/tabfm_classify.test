@@ -2,7 +2,7 @@
 # description: tabfm_classify end-to-end through the real TabFM engine, driven by
 #              the committed CI fixture model (weight-free graph + random-init
 #              safetensors). Predictions are meaningless (random weights) but the
-#              full pipeline runs: preprocess -> initializer injection -> ORT
+#              full pipeline runs: preprocess -> initializer injection -> ggml
 #              forward -> softmax decode. We assert the plumbing and the
 #              probabilistic contract, not specific labels (the fixture's classes
 #              sit near 1/3 each, so the argmax is not platform-stable).

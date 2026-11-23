@@ -11,8 +11,8 @@ CALL tabfm_accelerate();   -- finds the card, fetches its plugin, verifies it lo
 ```
 
 It reports what it did as `(step, status, detail)` rows, including what is
-still ahead of you (MIGraphX's first-shape compile, MLX's `brew install mlx
-mlx-c`). Re-running it re-verifies without re-downloading.
+still ahead of you (the ROCm runtime libraries the AMD plugin uses, MLX's `brew
+install mlx mlx-c`). Re-running it re-verifies without re-downloading.
 
 That is all: `anofox_tabfm_device` defaults to `auto`, which routes each model to the best device whose
 plugin is present and which can serve that model, else the CPU.
@@ -41,7 +41,7 @@ produces the same answers, only slower, so agreement alone will not tell you.
 ## 3. Or place things yourself
 
 ```sql
-CALL tabfm_download_runtime('cuda');    -- plugin + ORT GPU runtime, into the cache dir
+CALL tabfm_download_runtime('cuda');    -- the ggml CUDA plugin, into the cache dir
 SET anofox_tabfm_device  = 'cuda';      -- or 'rocm', or 'mlx' on Apple Silicon
 -- anofox_tabfm_ep_path is only needed to override where the plugin lives
 ```
@@ -49,19 +49,17 @@ SET anofox_tabfm_device  = 'cuda';      -- or 'rocm', or 'mlx' on Apple Silicon
 Naming a device explicitly is a hard request: if it cannot be served it
 errors, rather than quietly running on the CPU.
 
-## ROCm: the first-run compile
+## What each plugin needs
 
-MIGraphX compiles a program per (GPU arch, precision, shape bucket). The first predict in a bucket pays
-that compile, which takes minutes ([per model](../api/04-gpu.md#rocm-compile-time)); every *later* predict
-in that bucket is sub-second. Two tools keep it off the query path:
+- **CUDA** (Linux x64): only the NVIDIA driver. The plugin links the CUDA runtime and cuBLAS statically, so
+  no CUDA toolkit is needed; the card must be compute capability 7.5 (Turing) or newer.
+- **ROCm** (Linux x64): a ROCm 6.4 or newer install, whose HIP, hipBLAS and rocBLAS libraries the plugin
+  loads. A card, iGPUs included, is usable when the published plugin carries kernels for its arch: gfx1030,
+  gfx1100, gfx1101, gfx1102, gfx1150, gfx1151, gfx1200, gfx1201, gfx90a and gfx942. Any other card is listed
+  with `usable = false` and `'auto'` passes over it.
+- **MLX** (macOS arm64): `brew install mlx mlx-c`.
 
-```sql
--- warm a bucket now, on purpose: task, then optionally rows and features
-CALL tabfm_gpu_precompile('classification', 1000, 50, model := 'mitra');
-SET anofox_tabfm_mxr_source = '/shared/mxr';   -- or stage programs compiled elsewhere
-```
-
-Precompile once per shape bucket you will use (the compiled `.mxr` persists in
-the weight cache across sessions); `mxr_source` lets a fleet share one
-machine's compiles. CUDA has no analogous cost (~30 s cold start, no long
-compile).
+A GPU session is ready as soon as its weights are on the device; the first call of a new shape builds its
+graph and is a little slower than later ones. A model too
+large for the card's free memory fails at load, naming `CALL tabfm_unload()`, `anofox_tabfm_max_sessions`
+and `SET anofox_tabfm_device='cpu'` as the ways out ([GPU memory](../api/04-gpu.md#gpu-memory)).

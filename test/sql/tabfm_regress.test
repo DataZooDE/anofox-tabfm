@@ -3,7 +3,7 @@
 #              committed regression CI fixture (weight-free graph, random-init
 #              safetensors, output [1,T,1]). Predictions are meaningless (random
 #              weights) but the full numeric pipeline runs: preprocess ->
-#              injection -> ORT forward -> inverse-transform decode.
+#              injection -> ggml forward -> inverse-transform decode.
 # group: [anofox_tabfm]
 
 require anofox_tabfm

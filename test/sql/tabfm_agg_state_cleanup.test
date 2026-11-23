@@ -1,0 +1,111 @@
+# name: test/sql/tabfm_agg_state_cleanup.test
+# description: A prediction's per-group row buffers are freed even when DuckDB never finishes scanning the aggregate's result. Once a grouped
+#              hash aggregate starts scanning, DuckDB leaves destroying the states to that scan, so groups a consumer never reaches (a LIMIT,
+#              a join that already knows its result) were never destroyed: their buffers leaked in every build, and a debug build aborted
+#              at exit (Allocator allocation_count == 0). The way in found: tabfm_cross_validate runs its folds as a UNION ALL of
+#              predictions; when one fold's prediction fails (a target with more values than the model has classes), the other folds'
+#              states were dropped without their destructor. Timing-dependent, so the failing call is repeated below.
+# group: [anofox_tabfm]
+
+require anofox_tabfm
+
+require notwindows
+
+statement ok
+LOAD anofox_tabfm
+
+statement ok
+CALL tabfm_register_model(id := 'cleanup-fixture', base_dir := 'test/fixtures',
+  classification_graph := 'graph_fixture.onnx', classification_weights := 'model.safetensors',
+  classification_tensor_map := 'tensor_map_fixture.json', license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal',
+  max_classes := 3)
+
+# 64 stores, each with its own little history of labelled and unlabelled days
+statement ok
+CREATE TABLE sales AS SELECT i % 64 AS store, i AS day, (hash(i * 3) % 100) / 25.0 AS footfall, (hash(i * 7) % 100) / 25.0 AS promo,
+  CASE WHEN (i // 64) < 6 THEN CASE WHEN (hash(i * 3) % 100) > 50 THEN 'busy' ELSE 'quiet' END END AS label
+FROM range(640) r(i)
+
+# per-store predictions (the aggregate behind tabfm_classify, grouped), read only up to a LIMIT
+query I
+SELECT count(*) FROM (SELECT store, __anofox_tabfm_predict_agg(struct_pack(footfall, promo, label), 'label',
+  MAP{'model': 'cleanup-fixture', 'task': 'classification'}) AS res FROM sales GROUP BY store LIMIT 3)
+----
+3
+
+# per-store predictions joined to stores nobody asked about: the join knows its result is empty
+query I
+SELECT count(*) FROM (SELECT store, __anofox_tabfm_predict_agg(struct_pack(footfall, promo, label), 'label',
+  MAP{'model': 'cleanup-fixture', 'task': 'classification'}) AS res FROM sales GROUP BY store) p
+JOIN (SELECT store FROM sales WHERE store < 0) s USING (store)
+----
+0
+
+# read in full, every store is scored
+query I
+SELECT count(*) FROM (SELECT store, __anofox_tabfm_predict_agg(struct_pack(footfall, promo, label), 'label',
+  MAP{'model': 'cleanup-fixture', 'task': 'classification'}) AS res FROM sales GROUP BY store)
+----
+64
+
+# 4000 stores; store 1977 has four kinds of day, more than the model's three classes. Its group fails while the others are being finalized,
+# and the error names the limit; the groups that were never finalized are freed anyway (a debug build checks at exit).
+statement ok
+CREATE TABLE chain AS SELECT i % 4000 AS store, (hash(i * 3) % 100) / 25.0 AS footfall, (hash(i * 7) % 100) / 25.0 AS promo,
+  CASE WHEN (i // 4000) < 3 THEN CASE WHEN i % 4000 = 1977 THEN 'k' || (i // 4000) WHEN (hash(i * 3) % 100) > 50 THEN 'busy' ELSE 'quiet' END
+       WHEN (i // 4000) = 3 AND i % 4000 = 1977 THEN 'k3' END AS label
+FROM range(20000) r(i)
+
+statement error
+SELECT store, __anofox_tabfm_predict_agg(struct_pack(footfall, promo, label), 'label',
+  MAP{'model': 'cleanup-fixture', 'task': 'classification'}) AS res FROM chain GROUP BY store
+----
+supports at most 3 classes
+
+# a numeric target cross-validated as a classification: every fold fails with the class ceiling, and the folds that were already
+# aggregated must not leak (repeated: whether a fold gets that far depends on scheduling)
+statement ok
+CREATE TABLE prices AS SELECT i AS id, i * 0.1 AS f1, i * 1.37 AS price FROM range(24) t(i)
+
+statement ok
+SET anofox_tabfm_default_model = 'cleanup-fixture'
+
+statement error
+SELECT * FROM tabfm_cross_validate('prices', 'price', 'id', k := 2)
+----
+supports at most
+
+statement error
+SELECT * FROM tabfm_cross_validate('prices', 'price', 'id', k := 2)
+----
+supports at most
+
+statement error
+SELECT * FROM tabfm_cross_validate('prices', 'price', 'id', k := 2)
+----
+supports at most
+
+statement error
+SELECT * FROM tabfm_cross_validate('prices', 'price', 'id', k := 2)
+----
+supports at most
+
+statement error
+SELECT * FROM tabfm_cross_validate('prices', 'price', 'id', k := 2)
+----
+supports at most
+
+statement error
+SELECT * FROM tabfm_cross_validate('prices', 'price', 'id', k := 2)
+----
+supports at most
+
+statement error
+SELECT * FROM tabfm_cross_validate('prices', 'price', 'id', k := 2)
+----
+supports at most
+
+statement error
+SELECT * FROM tabfm_cross_validate('prices', 'price', 'id', k := 2)
+----
+supports at most

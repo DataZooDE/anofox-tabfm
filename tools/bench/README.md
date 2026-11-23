@@ -49,9 +49,9 @@ what `per_call_ms` means, and `metric` says so in every record.
 
 It is therefore:
 
-- **warm**, excluding the first call — which on MIGraphX pays a shape-bucket
-  compile of minutes. Reporting that as latency would be wrong by three orders
-  of magnitude.
+- **warm**, excluding the first call, which pays for loading the session and
+  building the graph. Reporting that as latency would be wrong by orders of
+  magnitude.
 - **end-to-end through SQL**, including preprocessing and decode, not a bare
   forward pass. That is the number a user experiences.
 - **null when unmeasurable** — if the difference is not positive the inference

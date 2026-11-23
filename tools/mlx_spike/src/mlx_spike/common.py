@@ -180,7 +180,7 @@ def compare(reference: np.ndarray, candidate: np.ndarray) -> Comparison:
 
     Three metrics, because the obvious one is misleading here:
 
-    - `max_rel_strict` is the project's existing metric (equivalence.py):
+    - `max_rel_strict` is the project's former GPU equivalence metric:
       max per-element |a-b|/max(|a|,1e-12). On logits it is close to useless --
       logits cross zero, so a negligible absolute difference next to a
       near-zero logit produces an unbounded relative error. Measured: the torch

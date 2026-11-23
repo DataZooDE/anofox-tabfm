@@ -1,0 +1,4 @@
+# op Equal
+in a f32 3,1 3f29a780 7fc00000 3eeda667
+in b f32 1,4 bea84254 7f800000 c00f02cf 7fc00000
+out y bool 3,4 0 0 0 0 0 0 0 0 0 0 0 0

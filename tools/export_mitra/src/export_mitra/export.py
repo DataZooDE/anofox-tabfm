@@ -83,7 +83,7 @@ class BinnedRegressionWrapper(ExportWrapper):
       2. bin it: ``bucketize(y_norm, bins) - 1`` clamped to [0, n_bins - 1] with
          ``bins = linspace(-0.5, 1.5, n_bins + 1)`` (trainer_finetune: the grid
          the head was trained on). bucketize(right=False) is count(bins < v),
-         written as a compare + sum so it exports (and MIGraphX parses it);
+         written as a compare + sum so it exports;
       3. the network embeds the bin id (Tab2DEmbeddingYClasses) and predicts a
          distribution over the bins;
       4. decode: the softmax-weighted MEAN of the bin centres

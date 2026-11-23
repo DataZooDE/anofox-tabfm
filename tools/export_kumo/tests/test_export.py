@@ -1,8 +1,8 @@
 """Fast exporter checks on random-init models (no checkpoint bytes).
 
-The masked contract is only worth anything if padding is inert, so the core gate here compares the
-wrapper on an unpadded call against the same call padded in BOTH axes (rows past T, columns past d) --
-which is what the MIGraphX plugin does to every call -- and against upstream's own unmasked inference
+The train_size contract is only worth anything if padding is inert, so the core gate here compares the
+wrapper on an unpadded call against the same call padded in BOTH axes (rows past T, columns past d)
+and against upstream's own unmasked inference
 forward. Each comparison has a negative control that must be caught first, so a check that cannot
 fail is not counted as a pass.
 """
@@ -113,8 +113,7 @@ def test_onnx_parity_including_padded_columns(task, tmp_path):
 
 
 def test_gqa_expansion_equals_torch_enable_gqa():
-    """The GQA rewrite (slices + Concat instead of SDPA's enable_gqa broadcast, which MIGraphX
-    miscompiles) is checked against torch's own enable_gqa, not against itself: the patch is global."""
+    """The GQA rewrite (a head expansion instead of SDPA's enable_gqa broadcast) is checked against torch's own enable_gqa, not against itself: the patch is global."""
     from export_kumo.kumo_patches import _GqaFunctional
 
     g = torch.Generator().manual_seed(0)

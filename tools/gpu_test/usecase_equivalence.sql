@@ -1,18 +1,15 @@
 -- Realistic use-case check: the same classification query on CPU and on ROCm,
 -- through the SQL surface, against the REAL TabFM weights.
 --
--- This is the first thing to exercise the actual user path on a GPU:
--- SET anofox_tabfm_device -> TryMIGraphXBackend dispatch -> ep_path -> the
--- plugin -> the aggregate's chunking. Everything before this drove the plugin
--- from a C++ host with five hand-built rows.
---
--- Sized to stay inside the already-compiled T128/H16 shape bucket (<=128 total
--- rows, <=16 features) so it costs no MIGraphX recompile.
--- Run:  ./build/debug/duckdb -c "SET anofox_tabfm_ep_path='<plugin dir>'" -f tools/gpu_test/usecase_equivalence.sql
+-- Exercises the actual user path on a GPU: SET anofox_tabfm_device -> the
+-- ggml GPU plugin dispatch -> ep_path -> the plugin -> the aggregate's chunking.
+-- For CUDA or MLX, replace 'rocm' below; tools/gpu_test/gpu_catalog.sh runs the
+-- whole model catalog the same way.
+-- Run:  ./build/release/duckdb -c "SET anofox_tabfm_ep_path='<plugin dir>'" -f tools/gpu_test/usecase_equivalence.sql
 --       (or prepend the SET, see tools/gpu_test/README.md)
 LOAD anofox_tabfm;
 
-SET anofox_tabfm_gpu_precision = 'bf16';   -- matches the cached .mxr
+SET anofox_tabfm_gpu_precision = 'fp32';
 SET anofox_tabfm_default_model = 'tabfm-v1';  -- the real Google TabFM weights
 
 -- A small but real-shaped problem: 8 numeric features, 3 classes, 70 labelled

@@ -1,11 +1,9 @@
-"""The two export wrappers, and the upstream reference both are checked against.
+"""The export wrapper, and the upstream reference it is checked against.
 
-Positional contract (CPU / CUDA, the shipped `graph_tabpfn35*_<task>.onnx`):
+Positional contract (the shipped `graph_tabpfn35*_<task>.onnx`):
     x[1,T,H] f32, y[1,N] f32 (the TRAIN labels; N = train_size) -> logits[1,T,C]
-Masked contract (MIGraphX, fixed-shape buckets):
-    x[1,T,H], y[1,T], train_size[1], n_rows[1], d[1] (int64) -> logits[1,T,C]
 
-Both are the same model call (`forward35.rows_v35`) and the same output contract
+It is one model call (`forward35.rows_v35`) and the same output contract
 as tools/export_tabpfn's ExportWrapper: EVERY row carries a real value -- rows >=
 train_size are the query predictions, rows below are the in-context fitted
 values. Classification decodes the train rows' own embeddings (the embedding
@@ -54,35 +52,6 @@ class Wrapper35(ExportWrapper):
             yf = torch.cat([yt, torch.zeros(T - N, dtype=yt.dtype, device=yt.device)])
             full = rows_v35(self.m, xt, yf, n, d, task="classification")
         return full.permute(1, 0, 2)                                # [1,T,C]
-
-
-class MaskWrapper35(ExportWrapper):
-    """Masked contract: every input padded to the (T, H) bucket; the split, the
-    real row count and the real feature count arrive as values."""
-
-    def forward(self, x, y, train_size, n_rows, d):
-        xt = x.permute(1, 0, 2)
-        y_R = torch.nan_to_num(y[0], nan=0.0, posinf=0.0, neginf=0.0)
-        T = xt.shape[0]
-        # Indexed, never .reshape(()): MIGraphX reads a Reshape to [] as ZERO
-        # elements and refuses the graph (docs/ROCM_TABPFN_PLAN.md).
-        ts = train_size[0]
-        dd = d[0]
-        del n_rows  # 3.5 has no statistic over all rows; padded rows are only queries
-        if self.task == "regression":
-            train = torch.arange(T, device=xt.device) < ts
-            nf = ts.to(y_R.dtype)
-            zero = torch.zeros_like(y_R)
-            ymean = torch.where(train, y_R, zero).sum() / nf
-            ystd = torch.clamp(torch.sqrt(torch.where(train, (y_R - ymean) ** 2, zero).sum() / nf),
-                               min=1e-20)
-            yz = (y_R - ymean) / ystd
-            logits = rows_v35(self.m, torch.cat([xt, xt], 0), torch.cat([yz, yz], 0), ts, dd,
-                              task="regression")[T:]
-            full = (self._bardist_mean(logits) * ystd + ymean).unsqueeze(-1)
-        else:
-            full = rows_v35(self.m, xt, y_R, ts, dd, task="classification")
-        return full.permute(1, 0, 2)
 
 
 # --------------------------------------------------------------------------- #

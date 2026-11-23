@@ -1,15 +1,12 @@
 //===----------------------------------------------------------------------===//
-// CPU (ORT) vs the Apple MLX backend plugin, against the SAME real weights.
+// The CPU (ggml) vs the Apple MLX backend plugin, against the SAME real weights.
 //
 // docs/MLX_PLAN.md; spike verdicts and the tolerance argument in
-// docs/MLX_SPIKE_RESULTS.md. Sibling of test_tabfm_migraphx_plugin.cpp, with
-// one difference that matters: the MLX plugin carries no ONNX graph. MLX has
-// no ONNX importer (S-M1 established none exists anywhere), so the mitra
-// forward is TRANSCRIBED from mitra_model_patched.py into
-// src/tabfm_mlx_plugin.cpp. That makes this test the thing standing between a
-// hand-written second implementation and silent drift from the graph every
-// other backend runs — it is load-bearing in a way the MIGraphX equivalent,
-// which executes the shipped graph, is not.
+// docs/MLX_SPIKE_RESULTS.md. The MLX plugin runs the model's ONNX graph through
+// its own interpreter, and mitra also through a forward TRANSCRIBED from
+// mitra_model_patched.py into src/tabfm_mlx_plugin.cpp. That makes this test the
+// thing standing between a hand-written second implementation (and a second
+// ONNX interpreter) and silent drift from the graph the CPU runs.
 //
 // Two cases with deliberately different reach:
 //
@@ -23,8 +20,10 @@
 
 #include "catch.hpp"
 
-#include "tabfm_ort_engine.hpp"
+#include "tabfm_session.hpp"
 #include "tabfm_plugin_backend.hpp"
+#include "tabfm_onnx_reader.hpp"
+#include <iterator>
 
 #include <cmath>
 #include <cstdlib>
@@ -72,6 +71,8 @@ vector<double> Softmax(const float *row, int64_t c) {
 	return out;
 }
 
+//! The returned params point INTO `weights_dir`: pass a string that outlives them (a temporary, e.g. a string literal converted at the call,
+//! dangles at the end of the statement; ASAN reported it on macOS).
 TabFMPluginCreateParams MlxParams(const string &weights_dir, const char *arch) {
 	TabFMPluginCreateParams params {};
 	params.graph_path = ""; // deliberately unused: the forward is transcribed
@@ -122,8 +123,8 @@ TEST_CASE("mlx_plugin: refuses a model it has no way to run", "[tabfm][plugin][m
 TEST_CASE("mlx_plugin: CPU and MLX agree on the same real weights", "[tabfm][plugin][mlx]") {
 	const string weights_dir = MitraCacheDir();
 	const string weights = weights_dir + "/model.safetensors";
-	// ORT resolves the ext graph's external data relative to the graph file, so
-	// the graph has to sit beside the weights it indexes.
+	// The ext graph's initializers point into model.safetensors by byte offset; the CPU reference
+	// (the ggml engine) gets those slices injected below, so the graph only has to sit beside the weights.
 	const string cpu_graph = weights_dir + "/graph_ext_mitra_classification.onnx";
 
 	if (!FileExists(weights) || !FileExists(cpu_graph)) {
@@ -142,8 +143,7 @@ TEST_CASE("mlx_plugin: CPU and MLX agree on the same real weights", "[tabfm][plu
 		        "    ln -s \"$PWD/resources/graph_ext_mitra_classification.onnx\" \""
 		     << cpu_graph
 		     << "\"\n"
-		        "  The graph must sit beside the weights: ORT resolves the ext graph's\n"
-		        "  external data relative to the graph file. See docs/MLX_SPIKE_RESULTS.md.");
+		        "  The graph sits beside the weights it indexes by byte offset. See docs/MLX_SPIKE_RESULTS.md.");
 		SUCCEED("skipped -- see the warning above for the one-time setup");
 		return;
 	}
@@ -172,20 +172,41 @@ TEST_CASE("mlx_plugin: CPU and MLX agree on the same real weights", "[tabfm][plu
 	input.d = d;
 
 	TabFMSessionConfig config;
-	config.intra_op_threads = 2;
+	config.threads = 2;
 	config.device_id = "cpu";
 	config.model_tag = "mitra-classification";
-	auto session = CreateSessionFromPath(cpu_graph, {}, config);
+	// Inject every external initializer as the slice of model.safetensors it names (the ggml CPU engine reads
+	// injected weights; it does not open external-data files itself).
+	string weights_bytes;
+	{
+		std::ifstream in(weights, std::ios::binary);
+		weights_bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+	}
+	vector<TabFMTensorRef> initializers;
+	for (auto &init : ::anofox::onnxread::ParseModelFile(cpu_graph).initializers) {
+		if (init.location != ::anofox::onnxread::DataLocation::EXTERNAL) {
+			continue;
+		}
+		REQUIRE(init.data_type == 1); // mitra's weights are float32
+		const auto offset = std::stoull(init.external.at("offset"));
+		const auto length = std::stoull(init.external.at("length"));
+		REQUIRE(offset + length <= weights_bytes.size());
+		TabFMTensorRef ref;
+		ref.name = init.name;
+		ref.dtype = TabFMTensorDtype::F32;
+		ref.shape.assign(init.dims.begin(), init.dims.end());
+		ref.data = weights_bytes.data() + offset;
+		ref.size_bytes = length;
+		initializers.push_back(std::move(ref));
+	}
+	REQUIRE(!initializers.empty());
+	auto session = CreateSessionFromPath(cpu_graph, initializers, config);
 	auto cpu_output = Run(*session, input);
 
 	auto params = MlxParams(weights_dir, "mitra");
 	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
 	REQUIRE(backend != nullptr);
 
-	// precompile is a documented no-op for MLX (S-M4 measured per-shape compile
-	// at 217 ms), but it must still answer successfully so the engine's warm
-	// path stays uniform across backends.
-	REQUIRE_NOTHROW(backend->Precompile(t, h));
 	auto mlx_output = backend->Run(input);
 
 	REQUIRE(mlx_output.shape.size() == 3);
@@ -274,13 +295,15 @@ TEST_CASE("mlx_plugin: a graph whose output is a strided view returns it in inde
 	input.d = h;
 
 	TabFMSessionConfig config;
-	config.intra_op_threads = 1;
+	config.threads = 1;
 	config.device_id = "cpu";
 	config.model_tag = "transpose-slice";
 	auto session = CreateSessionFromPath(graph, {}, config);
 	auto cpu_output = Run(*session, input);
 
-	auto params = MlxParams("test/fixtures/mlx", "tabdpt-classification");
+	const string params_dir = "test/fixtures/mlx"; // must outlive params: MlxParams stores its c_str()
+
+	auto params = MlxParams(params_dir, "tabdpt-classification");
 	params.graph_path = graph.c_str();
 	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
 	auto mlx_output = backend->Run(input);
@@ -314,13 +337,15 @@ TEST_CASE("mlx_plugin: integer Div truncates, as ONNX Runtime's does", "[tabfm][
 	input.d = h;
 
 	TabFMSessionConfig config;
-	config.intra_op_threads = 1;
+	config.threads = 1;
 	config.device_id = "cpu";
 	config.model_tag = "int-div";
 	auto session = CreateSessionFromPath(graph, {}, config);
 	auto cpu_output = Run(*session, input);
 
-	auto params = MlxParams("test/fixtures/mlx", "limix-2m-classification");
+	const string params_dir = "test/fixtures/mlx"; // must outlive params: MlxParams stores its c_str()
+
+	auto params = MlxParams(params_dir, "limix-2m-classification");
 	params.graph_path = graph.c_str();
 	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
 	auto mlx_output = backend->Run(input);
@@ -353,13 +378,15 @@ TEST_CASE("mlx_plugin: float64 initializers and constants are narrowed, not rein
 	input.d = h;
 
 	TabFMSessionConfig config;
-	config.intra_op_threads = 1;
+	config.threads = 1;
 	config.device_id = "cpu";
 	config.model_tag = "double";
 	auto session = CreateSessionFromPath(graph, {}, config);
 	auto cpu_output = Run(*session, input);
 
-	auto params = MlxParams("test/fixtures/mlx", "limix-2m-regression");
+	const string params_dir = "test/fixtures/mlx"; // must outlive params: MlxParams stores its c_str()
+
+	auto params = MlxParams(params_dir, "limix-2m-regression");
 	params.graph_path = graph.c_str();
 	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
 	auto mlx_output = backend->Run(input);

@@ -34,9 +34,9 @@ FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['custome
 - **Two forms**: an explicit train / test pair, or one table whose missing targets are the rows to score
 - **Probabilities**, not just labels: `yhat_score` and a `proba` map per row
 
-### 23 models, plus your own
+### 24 models, plus your own
 - **Built in, selectable by name**: Mitra and Mitra-v2, TabDPT v1.2 and v1.3, TabPFN v2 / 2.5 / 2.5-real / 2.6 /
-  3 / 3.5 / 3.5-Fast, TabICL v2, Causilo, LimiX-2M, Nori-30M, EXAONE Tabular, Kumo-Tabular (small, medium,
+  3 / 3.5 / 3.5-Fast, TabICL v2, Causilo, LimiX-2M, Nori-30M, Nori 1.5, EXAONE Tabular, Kumo-Tabular (small, medium,
   large), Orion-BiX, Orion-MSP and Google TabFM v1 / 1.1
 - **Your own model**, registered entirely in SQL with `tabfm_register_model`
 - **One SQL surface**: swap `model :=` to compare models on your own data
@@ -54,6 +54,7 @@ FROM tabfm_classify('history', 'churned', test := 'prospects', keep := ['custome
 ### Run anywhere
 - **CPU** on Linux, macOS (arm64) and Windows
 - **GPU** with one call, `CALL tabfm_accelerate()`: NVIDIA CUDA, AMD ROCm, Apple MLX
+- **No ONNX Runtime**: the CPU, CUDA and ROCm all run the vendored [ggml](https://github.com/ggml-org/ggml) engine
 
 ### Safe by default
 - **No weights shipped**: you download each model's weights from Hugging Face yourself
@@ -135,6 +136,7 @@ weights: `CALL tabfm_download('regression', model := 'mitra');`. The full walk-t
 | `orion-bix` | Lexsi Labs | classify | `mit` | yes | no |
 | `orion-msp` | Lexsi Labs | classify | `mit` | yes | no |
 | `nori-30m` | Synthefy | regress | `apache-2.0` | yes | no |
+| `nori-1-5` | Synthefy | regress | `apache-2.0` | yes | no |
 | `kumo-tabular-small` | NVIDIA | classify, regress | `openmdw-1.1` (keep the agreement and NVIDIA's notice when you distribute) | yes | no |
 | `kumo-tabular-medium` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no |
 | `kumo-tabular-large` | NVIDIA | classify, regress | `openmdw-1.1` | yes | no |
@@ -157,9 +159,9 @@ step: [Getting Started](docs/guides/01-getting-started.md#licence-acknowledgemen
 Which model to pick, and how they compared: [Choosing a model](docs/guides/02-choosing-a-model.md). Sizes,
 backends and attribution texts: [Models and weights](docs/api/02-models-and-weights.md).
 
-**Memory on the CPU.** `mitra`'s row attention grows with the square of the context: about 3 GB per 1,000
-context rows at 15 features, so 2,000 rows peak near 7 GB and 4,000 exceed 15 GB, well below the default
-`anofox_tabfm_max_rows` (10,000). Sample the context to fit your RAM ([#107](https://github.com/DataZooDE/anofox-tabfm/issues/107)).
+**Memory on the CPU.** `mitra`'s row attention grows faster than the context: on the ggml engine a call with
+1,000 context rows at 15 features peaks at about 1 GB, 2,000 rows at 2 GB and 4,000 rows at 5.5 GB, and the
+default `anofox_tabfm_max_rows` (10,000) allows far more. Sample the context to fit your RAM ([#107](https://github.com/DataZooDE/anofox-tabfm/issues/107)).
 
 ## Claude Code skills
 
@@ -177,10 +179,10 @@ prospects from history with a commercially usable model, then cross-validate it"
 | Skill | Covers |
 |---|---|
 | `anofox-tabfm-predict` | `tabfm_classify` / `tabfm_regress`: both forms, features, `opts`, output columns, segments |
-| `anofox-tabfm-models` | the 23 models, licences, the licence gate, the weight lifecycle, your own model, the context cache |
+| `anofox-tabfm-models` | the 24 models, licences, the licence gate, the weight lifecycle, your own model, the context cache |
 | `anofox-tabfm-evaluate` | metrics, scoring rules, cross-validation, the `_by` plotting macros |
 | `anofox-tabfm-generate` | synthetic rows and imputation |
-| `anofox-tabfm-gpu` | CUDA, ROCm and MLX plugins, devices, precision, the ROCm precompile |
+| `anofox-tabfm-gpu` | the ggml CUDA / ROCm plugin and the MLX plugin, devices, precision, GPU memory |
 
 The skills live in [`plugins/anofox-tabfm/`](plugins/anofox-tabfm/) and are checked against the built
 extension on every pull request: each SQL example runs, and each function, setting and model name must
@@ -196,7 +198,7 @@ directly with `claude --plugin-dir ./plugins/anofox-tabfm`.
 | [Getting Started](docs/guides/01-getting-started.md) | Install, download a model, licence gates, a first prediction on iris |
 | [Choosing a model](docs/guides/02-choosing-a-model.md) | Selecting a model, the default, your own model, how the models compared |
 | [Evaluate and compare](docs/guides/03-evaluate-and-compare.md) | A churn walk-through, cross-validation, plotting the results |
-| [GPU acceleration](docs/guides/04-gpu-acceleration.md) | `tabfm_accelerate()`, checking which device served a query, the ROCm first compile |
+| [GPU acceleration](docs/guides/04-gpu-acceleration.md) | `tabfm_accelerate()`, checking which device served a query, what each plugin needs |
 | [Generate and impute](docs/guides/05-generate-and-impute.md) | Synthetic rows and filling NULL cells |
 | [Claude Code skills](docs/guides/06-claude-code.md) | Installing the plugin, what each skill covers, how they stay in sync |
 
@@ -207,7 +209,7 @@ directly with `claude --plugin-dir ./plugins/anofox-tabfm`.
 | [Functions](docs/api/01-functions.md) | `tabfm_classify`, `tabfm_regress`, missing targets, segments, `opts`, output columns |
 | [Models and weights](docs/api/02-models-and-weights.md) | Every model, download / load / unload / remove, the cache, secrets, `tabfm_register_model` |
 | [Generation](docs/api/03-generation.md) | `tabfm_generate`, `tabfm_impute`, options, outputs, cost |
-| [GPU acceleration](docs/api/04-gpu.md) | CUDA, ROCm and MLX plugins, the support matrix, precision, platform limits |
+| [GPU acceleration](docs/api/04-gpu.md) | The ggml CUDA / ROCm plugin and the MLX plugin, the support matrix, precision, platform limits |
 | [Settings](docs/api/05-settings.md) | Every setting with its default, and the `opts` keys |
 | [Troubleshooting](docs/api/06-troubleshooting.md) | Error messages, what they mean, what to run |
 | [Evaluation](docs/api/07-evaluation.md) | Metrics, cross-validation, scoring rules |
@@ -220,11 +222,12 @@ The full index, including design notes and the history of plans and reviews, is
 
 | Document | What it is |
 |---|---|
-| [docs/REAL_MODELS.md](docs/REAL_MODELS.md) | Reference: each real model, how it was ported and verified, licences, gated repositories |
+| [docs/REAL_MODELS.md](docs/REAL_MODELS.md) | Report: each real model, how it was ported and verified, licences, gated repositories |
 | [docs/GENERATE.md](docs/GENERATE.md) | Reference: how generation and imputation work, and what binning costs |
 | [docs/BUILDING.md](docs/BUILDING.md) | Reference: building and testing from source |
-| [docs/DYNAMIC_BACKENDS.md](docs/DYNAMIC_BACKENDS.md), [docs/KV_CACHE_DESIGN.md](docs/KV_CACHE_DESIGN.md) | Design: GPU backends as runtime plugins; the context cache |
-| [docs/ROCM_SINGLE_EVAL_POS.md](docs/ROCM_SINGLE_EVAL_POS.md), [docs/MLX_SPIKE_RESULTS.md](docs/MLX_SPIKE_RESULTS.md) | Report: how models that read the split from `len(y)` were given masked ROCm graphs; the MLX spike |
+| [docs/GGML_PLAN.md](docs/GGML_PLAN.md), [docs/CONTEXT_CACHE_PLAN.md](docs/CONTEXT_CACHE_PLAN.md) | Design: the ggml engine on the CPU and in the CUDA / ROCm plugin; the context cache |
+| [docs/MLX_SPIKE_RESULTS.md](docs/MLX_SPIKE_RESULTS.md) | Report: the MLX spike |
+| [docs/archive/](docs/archive/README.md) | History: the removed ONNX Runtime, MIGraphX and CoreML backends |
 | [docs/README.md](docs/README.md#history-plans-and-reviews) | History: the plans and reviews behind each feature |
 | [CHANGELOG.md](CHANGELOG.md) | Every release |
 
@@ -238,7 +241,7 @@ The full index, including design notes and the history of plans and reviews, is
 | <a id="multiple-models-the-registry"></a><a id="managing-weights-and-devices"></a>The registry, managing weights | [Choosing a model](docs/guides/02-choosing-a-model.md), [Models and weights](docs/api/02-models-and-weights.md) |
 | <a id="a-full-worked-example"></a><a id="evaluation-cross-validation--scoring"></a><a id="plot-with-anofox-visualization"></a>Worked example, evaluation, plotting | [Evaluate and compare](docs/guides/03-evaluate-and-compare.md), [Evaluation](docs/api/07-evaluation.md), [Plotting](docs/api/08-plotting.md) |
 | <a id="settings"></a>Settings | [Settings](docs/api/05-settings.md) |
-| <a id="flavors-cpu--gpu"></a><a id="status--scope"></a>Flavors (CPU / GPU), Status & scope | [GPU acceleration](docs/guides/04-gpu-acceleration.md), [GPU](docs/api/04-gpu.md) |
+| <a id="flavors-cpu--gpu"></a><a id="status--scope"></a>GPU (formerly Flavors), Status & scope | [GPU acceleration](docs/guides/04-gpu-acceleration.md), [GPU](docs/api/04-gpu.md) |
 | <a id="building"></a>Building | [docs/BUILDING.md](docs/BUILDING.md) |
 
 ## Status
@@ -258,7 +261,7 @@ make test_release           # sqllogictests + C++ unit tests (fixture models, no
 make check-docs             # every documented SQL example and name, docs and Claude Code skills
 ```
 
-Prerequisites, the GPU plugins and source-build flavors: [docs/BUILDING.md](docs/BUILDING.md).
+Prerequisites, the ggml engine and building the GPU plugins: [docs/BUILDING.md](docs/BUILDING.md).
 
 ## License
 
