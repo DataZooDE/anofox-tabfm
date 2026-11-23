@@ -5,6 +5,8 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+## [v2026.11.23] - 2026-11-23
+
 ### Removed (breaking)
 - **ONNX Runtime is gone from every build.** The `TABFM_FLAVOR=cpu|cuda|rocm|coreml` build switch, the `TABFM_ORT_*` make variables,
   `cmake/ort.cmake` and the `TABFM_WITH_ORT` option are removed; there is one build per platform. ONNX Runtime remains only as Python

@@ -9,13 +9,13 @@ description: >
   choosing features or `opts`, keeping a row key with `keep`, reading `yhat` /
   `yhat_score` / `proba`, scoring
   per segment, or bounding memory with `query_batch`.
-version: 2026.11.17
+version: 2026.11.23
 user-invocable: false
 ---
 
 # Anofox TabFM — Predict Cheat Sheet
 
-**Extension:** anofox_tabfm v2026.11.17 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
+**Extension:** anofox_tabfm v2026.11.23 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
 
 A tabular foundation model is an in-context learner: it reads your labelled rows as context and predicts
 the rest in one forward pass. There is no fit step, no training loop and no saved model: each call sees

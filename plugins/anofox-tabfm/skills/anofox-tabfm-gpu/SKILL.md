@@ -10,13 +10,13 @@ description: >
   setting `anofox_tabfm_device`, `anofox_tabfm_gpu_precision` or
   `anofox_tabfm_ep_path`, checking which device actually served a query, or
   troubleshooting a GPU that is not used.
-version: 2026.11.17
+version: 2026.11.23
 user-invocable: false
 ---
 
 # Anofox TabFM — GPU Cheat Sheet
 
-**Extension:** anofox_tabfm v2026.11.17 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
+**Extension:** anofox_tabfm v2026.11.23 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
 
 A GPU is not a separate build. There is one build per platform; the CPU runs on the vendored ggml engine and
 no build contains ONNX Runtime. Each accelerator is a plugin loaded at runtime: `cuda` (NVIDIA, Linux x64) and
