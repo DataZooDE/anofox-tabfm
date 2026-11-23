@@ -1,19 +1,15 @@
 #!/usr/bin/env python3
 """Run a command on a throwaway RunPod GPU pod, then destroy it.
 
-There is no NVIDIA GPU on the dev box, so CUDA-only behaviour (issue #21) can
-otherwise only be reasoned about. This rents a pod by the minute, ships local
+There is no NVIDIA GPU on the dev box, so CUDA-only behaviour (the ggml-cuda
+plugin) can otherwise only be reasoned about. This rents a pod by the minute, ships local
 files to it, runs a command, streams the output back and terminates the pod.
 
 NOT part of CI: it costs money and needs a key CI does not have. Run it by hand
 when a change touches a GPU path.
 
-    # default: the ScatterND check from issue #21, on the reporter's A40
-    tools/gpu_test/runpod_run.py --check-scatternd
-
-    # anything else
-    tools/gpu_test/runpod_run.py --upload resources/graph_tabicl_classification.onnx \\
-        --command 'python /workspace/ort_ep_check.py /workspace/*.onnx --provider cuda'
+    tools/gpu_test/runpod_run.py --upload build/ggml-cuda/libanofox_tabfm_ggml-cuda_plugin.so \\
+        --command 'nvidia-smi && ls -l /workspace'
 
 The API key comes from RUNPOD_API_KEY, or from ~/.bashrc — which exports it but
 returns early for non-interactive shells, so it is read out of the file rather
@@ -262,42 +258,6 @@ def _is_capacity_error(exc) -> bool:
     return any(marker in text for marker in CAPACITY_ERRORS)
 
 
-def ort_preamble(version: str) -> str:
-    """Install onnxruntime-gpu and PROVE the CUDA EP actually instantiates.
-
-    Two traps, both of which silently produce CPU results that look like GPU
-    results — the one way a GPU harness can lie about the thing it exists to
-    test:
-
-    * `nvidia-cudnn-cu12` unpinned drifts ahead of what the ORT build wants
-      (1.2x needs cuDNN 9.x); the provider library then fails to dlopen.
-    * `get_available_providers()` lists what the BUILD supports, not what can
-      be instantiated, so it reports CUDAExecutionProvider even when loading it
-      fails. Only building a session and reading back its providers is proof.
-    """
-    return (
-        "set -e; "
-        f"pip install -q 'onnxruntime-gpu=={version}' onnx numpy 'nvidia-cudnn-cu12<10' || "
-        "{ echo 'PREAMBLE: pip install failed'; exit 90; }; "
-        "export LD_LIBRARY_PATH=$(python -c 'import os,nvidia.cudnn.lib as l; "
-        "print(os.path.dirname(l.__file__))'):$LD_LIBRARY_PATH; "
-        "python - <<'PREAMBLE_EOF' || { echo 'PREAMBLE: CUDA EP did not instantiate'; exit 91; }\n"
-        "import sys, numpy as np, onnx, onnxruntime as ort\n"
-        "from onnx import helper, TensorProto\n"
-        "g = helper.make_graph([helper.make_node('Identity', ['i'], ['o'])], 'probe',\n"
-        "    [helper.make_tensor_value_info('i', TensorProto.FLOAT, [1])],\n"
-        "    [helper.make_tensor_value_info('o', TensorProto.FLOAT, [1])])\n"
-        "m = helper.make_model(g, opset_imports=[helper.make_opsetid('', 18)]); m.ir_version = 10\n"
-        "onnx.save(m, '/tmp/probe.onnx')\n"
-        "so = ort.SessionOptions(); so.log_severity_level = 3\n"
-        "s = ort.InferenceSession('/tmp/probe.onnx', so, providers=['CUDAExecutionProvider'])\n"
-        "print('ORT', ort.__version__, 'session providers:', s.get_providers())\n"
-        "sys.exit(0 if 'CUDAExecutionProvider' in s.get_providers() else 91)\n"
-        "PREAMBLE_EOF\n"
-        "set +e; "
-    )
-
-
 def pod_spec(args, gpu_id, cloud, pub, volume=None):
     """The v2 CreatePodRequest (unevaluatedProperties:false: an unknown key is a 400, not ignored).
 
@@ -335,19 +295,6 @@ def main() -> int:
     ap.add_argument("--image", default=DEFAULT_IMAGE)
     ap.add_argument("--upload", nargs="*", type=Path, default=[], help="files to copy to /workspace")
     ap.add_argument("--command", help="command to run on the pod")
-    ap.add_argument("--with-ort", action="store_true",
-                    help="prepend the onnxruntime-gpu + cuDNN setup to --command "
-                         "(quoting this by hand through ssh is a trap: a lost "
-                         "LD_LIBRARY_PATH silently downgrades the run to CPU)")
-    ap.add_argument("--check-scatternd", action="store_true",
-                    help="preset: issue #21 — the affected graphs on the CUDA EP")
-    # main carries the pins as of #29, so it is no longer a pre-fix baseline:
-    # default to the last release that predates them, or the check compares a
-    # pinned graph against itself and "passes" without testing anything.
-    ap.add_argument("--baseline-ref", default="v2026.08.13",
-                    help="git ref supplying the PRE-pin graph (must predate #23)")
-    ap.add_argument("--ort-version", default="1.23.2",
-                    help="comma-separated onnxruntime-gpu versions to sweep")
     ap.add_argument("--timeout", type=int, default=900, help="seconds to wait for the pod")
     ap.add_argument("--keep", action="store_true", help="do NOT terminate the pod (debugging; costs money)")
     ap.add_argument("--secure", action="store_true",
@@ -395,40 +342,8 @@ def main() -> int:
 
     uploads = list(args.upload)
     command = args.command
-    repo = Path(__file__).resolve().parents[2]
-    if args.check_scatternd:
-        # Ship BOTH sides: the fix is only demonstrated if the pre-fix graph
-        # reproduces the failure on the same pod, in the same run.
-        scratch_graphs = Path(os.environ.get("TMPDIR", "/tmp")) / "anofox-runpod"
-        scratch_graphs.mkdir(parents=True, exist_ok=True)
-        # onnxruntime-gpu needs cuDNN 9 on the loader path; the pytorch images
-        # ship cuDNN inside torch rather than somewhere ORT's dlopen finds it.
-        # Ship BOTH graphs: a fix is only demonstrated if the pre-fix graph
-        # reproduces the failure on the same pod, in the same run.
-        for name, ref in (("BASELINE", args.baseline_ref), ("FIXED", "HEAD")):
-            for task in ("classification", "regression"):
-                dest = scratch_graphs / f"tabicl_{task}_{name}.onnx"
-                dest.write_bytes(subprocess.run(
-                    ["git", "-C", str(repo), "show", f"{ref}:resources/graph_tabicl_{task}.onnx"],
-                    check=True, capture_output=True).stdout)
-                uploads.append(dest)
-        uploads.append(repo / "tools/gpu_test/ort_ep_check.py")
-        command = (
-            ort_preamble(args.ort_version.split(",")[0]) +
-            "cd /workspace && for task in classification regression; do "
-            "echo \"### $task\"; "
-            "python ort_ep_check.py tabicl_${task}_BASELINE.onnx tabicl_${task}_FIXED.onnx "
-            "--provider cuda --shapes 70x3x60,128x8x100,20x5x9 2>/dev/null | grep -E 'ok |FAIL|failures'; "
-            "echo \"### $task CPU-vs-CUDA on the FIXED graph\"; "
-            "python ort_ep_check.py tabicl_${task}_FIXED.onnx --provider cuda --shapes 70x3x60 2>/dev/null | grep -E 'ok |FAIL'; "
-            "python ort_ep_check.py tabicl_${task}_FIXED.onnx --provider cpu --shapes 70x3x60 2>/dev/null | grep -E 'ok |FAIL'; "
-            "done"
-        )
-    if args.with_ort and command:
-        uploads.append(repo / "tools/gpu_test/ort_ep_check.py")
-        command = ort_preamble(args.ort_version.split(",")[0]) + command
     if not command:
-        return ap.error("nothing to do: pass --command or --check-scatternd")
+        return ap.error("nothing to do: pass --command")
 
     scratch = Path(os.environ.get("TMPDIR", "/tmp")) / "anofox-runpod"
     priv, pub = ensure_keypair(scratch)

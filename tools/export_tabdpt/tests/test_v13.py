@@ -16,7 +16,6 @@ import torch
 
 from export_tabdpt import configs, export
 from export_tabdpt.cli import build_model
-from export_tabdpt.tabdpt_mask_patches import build_mask_wrapper
 from export_tabdpt.tabdpt_patches import build_wrapper
 
 REPO = pathlib.Path(__file__).resolve().parents[3]
@@ -55,16 +54,56 @@ def test_v13_fixture_exports_with_parity_and_records_unused(tmp_path, task):
     assert not any(v.startswith(other) for v in tmap["initializers"].values())
 
 
+def _woken_model(cfg, seed: int = 0, wake_residuals: bool = True):
+    """Random-init TabDPTModel — with its residual paths woken up.
+
+    Upstream zero-initialises out_proj.weight, q_gate.weight and ff.down.weight
+    (model.py, TransformerEncoderLayer.reset_parameters). That is a sound
+    training trick, and it makes a random-init model USELESS as a parity
+    fixture: every layer's residual is identically zero, so the entire
+    attention block cannot influence the output whatever it computes.
+
+    So the zeroed projections are filled with small random values before
+    comparing. Both paths see the same weights, so this cannot manufacture
+    agreement — it can only expose disagreement that was previously invisible.
+    """
+    from tabdpt.model import TabDPTModel
+
+    from export_tabdpt.tabdpt_patches import upgrade_to_v13
+
+    torch.manual_seed(seed)
+    model = TabDPTModel(**cfg.model_kwargs)
+    if cfg.arch == "v1.3":
+        upgrade_to_v13(model)
+    model = model.eval()
+    if wake_residuals:
+        torch.manual_seed(seed + 977)
+        woken = 0
+        for module in model.modules():
+            for attr in ("out_proj", "q_gate"):
+                sub = getattr(module, attr, None)
+                if sub is not None and hasattr(sub, "weight") and float(sub.weight.abs().sum()) == 0.0:
+                    torch.nn.init.normal_(sub.weight, std=0.02)
+                    woken += 1
+            ff = getattr(module, "ff", None)
+            down = getattr(ff, "down", None) if ff is not None else None
+            if down is not None and hasattr(down, "weight") and float(down.weight.abs().sum()) == 0.0:
+                torch.nn.init.normal_(down.weight, std=0.02)
+                woken += 1
+        if woken == 0:
+            raise RuntimeError("expected zero-initialised residual projections to wake; found none — "
+                               "upstream init changed and this test may be blind again")
+    return model
+
+
 def test_v13_y_encoder_depends_on_task():
     """The classification embedding must not be what regression uses (and vice versa).
 
-    Built through mask_parity.build_model, which wakes the zero-initialised residual projections:
+    Built through _woken_model, which wakes the zero-initialised residual projections:
     with upstream's init the attention output is identically zero and y could not move anything.
     """
-    from export_tabdpt.mask_parity import build_model as woken
-
-    model = woken(configs.fixture13(), seed=0)
-    base = woken(configs.fixture13(), seed=0)
+    model = _woken_model(configs.fixture13(), seed=0)
+    base = _woken_model(configs.fixture13(), seed=0)
     with torch.no_grad():
         for p in model.cls_y_encoders.parameters():
             p.add_(torch.randn_like(p))  # perturb only the CLASS encoder
@@ -78,20 +117,6 @@ def test_v13_y_encoder_depends_on_task():
         c_base = build_wrapper(base, "classification")(x, y.abs().round().clamp(max=3))
     assert torch.equal(r_pert, r_base)       # regression never reads cls_y_encoders
     assert not torch.allclose(c_pert, c_base)  # classification does
-
-
-@pytest.mark.parametrize("task", ["classification", "regression"])
-def test_v13_masked_matches_positional(task):
-    model = build_model(configs.fixture13(), seed=0)
-    pos, msk = build_wrapper(model, task), build_mask_wrapper(model, task)
-    torch.manual_seed(3)
-    x = torch.randn(1, 30, 6)
-    y = (torch.randint(0, 4, (1, 30)).float() if task == "classification" else torch.randn(1, 30))
-    y[:, 22:] = -999.0  # poison the query labels: the mask must make them irrelevant
-    with torch.no_grad():
-        a = pos(x, y[:, :22])[:, 22:]
-        b = msk(x, y, torch.tensor([22]), torch.tensor([6]))[:, 22:]
-    assert (a - b).abs().max() < 1e-4
 
 
 def test_committed_fixture_matches_pin():

@@ -39,7 +39,7 @@ for name in sorted(expected):
 
 for ort in ("ORT_GPU", "onnxruntime", "libanofoxort_gpu", "migraphx_plugin", "tabfm_cuda_plugin.cpp"):
     if ort in text:
-        errors.append(f"the workflow still references {ort!r} (the ORT-CUDA and MIGraphX plugins are gone)")
+        errors.append(f"the workflow still references {ort!r} (the ORT-CUDA and MIGraphX plugins were removed)")
 
 # The ROCm architectures the plugin is built for must be exactly the ones the extension reports usable (GgmlRocmPluginArchs in
 # src/tabfm_devices.cpp): a target built but not listed is a card refused for nothing, one listed but not built is a card chosen and then failing.

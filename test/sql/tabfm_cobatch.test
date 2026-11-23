@@ -1,6 +1,6 @@
 # name: test/sql/tabfm_cobatch.test
 # description: Query-row independence — the correctness premise behind bulk
-#              scoring (PERFORMANCE_PLAN.md #3). A single predict batches every
+#              scoring (docs/archive/PERFORMANCE_PLAN.md #3). A single predict batches every
 #              query row into one forward (T). That is only valid if query rows
 #              attend to the training context but NOT to each other: a row's
 #              prediction must be identical whether it is scored alone or
@@ -25,7 +25,7 @@ CALL tabfm_register_model(
   license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal')
 
 # Independence is a property of the graph, not the backend — assert it on the
-# CPU path so this stays a fast unit test (no per-bucket GPU compile).
+# CPU path so this stays a fast unit test (no GPU needed).
 statement ok
 SET anofox_tabfm_device = 'cpu'
 

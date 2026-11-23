@@ -110,16 +110,8 @@ def test_the_point_estimate_is_the_mean_not_the_median(model):
     assert np.abs(ours - median).mean() > np.abs(ours - mean).mean()
 
 
-def test_the_masked_rocm_contract_on_the_real_weights(model):
-    """Padded + masked == positional on the real weights, and every negative control is caught."""
-    from export_nori.mask_parity import gate
-
-    res = gate(model)
-    assert res["ok"], res
-
-
-def test_the_converter_is_deterministic_and_matches_the_rocm_graph(tmp_path, ckpt):
-    """convert_nori_weights' header is the one ExpectedWeightsHeaderShaFor pins for the bundled ROCm graph."""
+def test_the_converter_is_deterministic_and_matches_the_ext_graph(tmp_path, ckpt):
+    """convert_nori_weights' header is the one ExpectedWeightsHeaderShaFor pins for the bundled ext graph."""
     import hashlib
     import struct
 

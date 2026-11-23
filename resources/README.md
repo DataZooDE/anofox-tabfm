@@ -4,12 +4,14 @@ These are the **architecture-only** ONNX graphs and tensor-name maps the
 extension embeds and ships. They contain **zero bytes of Google's weights**
 (BRD FR-2.2, HLD §4.4 / §5 license wall): every checkpoint initializer is an
 `EXTERNAL` stub pointing at a `graph_<task>.onnx.data` file that is **never
-generated for shipping and never committed**. At runtime the extension
-injects weights from a user-downloaded `model.safetensors` via
-`AddExternalInitializers` (S02), using the tensor-name map below. Creating an
-ORT session on the bare graph fails cleanly (`ONNXRuntimeError ... External
-data path validation failed for initializer: m.cls_tokens`) — that is the
-"weights not injected" guard, verified here.
+generated for shipping and never committed**. At runtime the ggml engine fills
+the stubs from a user-downloaded `model.safetensors`, using the tensor-name map
+below; a graph whose weights were never supplied is refused with "weights are
+not loaded" rather than run.
+
+The `graph_ext_*` variants are the same graphs with every initializer pointing
+at the cached `model.safetensors` as ONNX external data (absolute offsets),
+which is what the GPU plugins read (`tools/make_external_graph.py`).
 
 ## Files
 
@@ -44,7 +46,8 @@ key}` (the wrapper's `m.` prefix stripped); `transforms` is empty
     icl_num_blocks 24 / icl_nhead 8, ff_factor 4, feature_group_size 3,
     num_freq 32 (≈1.64 B params). The graph is built with **RANDOM** weights
     at these dims — it is weight-free, so no Google bytes are involved.
-- **Parity** (ORT vs PyTorch fp32, random weights, test rows, budget 1e-3):
+- **Parity** at export time (ONNX Runtime as the reference vs PyTorch fp32, random weights, test rows,
+  budget 1e-3):
   classification worst **6.5e-06**, regression worst **1.9e-06**.
 - **Unmapped inline constants** (Apache-2.0 code, not checkpoint — stay
   inline on purpose): classification has one 8-byte

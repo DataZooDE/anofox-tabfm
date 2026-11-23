@@ -1,7 +1,7 @@
 -- prepend: SET anofox_tabfm_ep_path='<dir holding the backend plugin>';
 LOAD anofox_tabfm;
 SET anofox_tabfm_default_model='tabfm-v1';
-SET anofox_tabfm_gpu_precision='bf16';
+SET anofox_tabfm_gpu_precision='fp32';
 SET threads=8;
 CREATE TABLE base AS
 SELECT i AS id, (i*37%100)/100.0 AS f1, (i*53%100)/100.0 AS f2, (i*71%100)/100.0 AS f3,

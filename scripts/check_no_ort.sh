@@ -20,31 +20,37 @@ report() { # <title> <hits>
 }
 allowed='deprecated|removed|no-op|no effect|ignored'
 
-code_paths=(src CMakeLists.txt cmake Makefile extension_config.cmake test/cpp test/sql .github/workflows tools/ggml_plugin tools/gpu_test scripts resources)
-code_grep() { grep -rnE "$1" "${code_paths[@]}" 2>/dev/null | grep -v '^scripts/check_no_ort.sh:'; }
+code_paths=(src CMakeLists.txt cmake Makefile extension_config.cmake test/cpp test/sql test/fixtures .github/workflows tools/ggml_plugin tools/gpu_test tools/bench scripts resources)
+# -I: skip binary files (the committed graphs). Self-excluded: this script names every pattern. The fixture generators under test/fixtures
+# are Python dev tooling that uses onnxruntime as the oracle, like tools/ggml_parity.
+code_grep() { grep -rnIE "$1" "${code_paths[@]}" 2>/dev/null | grep -vE '^scripts/check_no_ort\.sh:|^test/fixtures/[^:]*\.py:'; }
+# Drop hits whose CONTENT (not path) carries an allowed word.
+not_allowed() { awk -v re="$allowed" 'BEGIN { IGNORECASE = 1 } { line = $0; sub(/^[^:]*:[0-9]+:/, "", line); if (tolower(line) !~ re) print }'; }
 
 ort='onnxruntime|Ort::|TABFM_WITH_ORT|TABFM_FLAVOR|TABFM_EP_[A-Z]|libanofoxort_gpu|TABFM_ORT_[A-Z]'
 # Exporter provenance (the onnxruntime version the parity oracle ran) and the release-asset guard naming what must not ship are fine.
-hits=$(code_grep "$ort" | grep -vE '^resources/export_report_[^:]*\.json:|^resources/README\.md:[0-9]+:- \*\*Exporter versions|^scripts/check_plugin_release_assets\.py:[0-9]+:for ort in')
+hits=$(code_grep "$ort" | grep -vE '^(resources|test/fixtures)/[^:]*export_report_[^:]*\.json:|^resources/README\.md:[0-9]+:- \*\*Exporter versions|^scripts/check_plugin_release_assets\.py:[0-9]+:for ort in')
 [ -n "$hits" ] && report "ONNX Runtime is still referenced" "$hits"
 
-legacy='MIGraphX|libanofox_tabfm_cuda_plugin|libanofox_tabfm_migraphx_plugin|ExecutionProvider|\.mxr\b|PadToShapeBucket|ShapeBucket|TryExternalDataSession|OrtBackend|graph_migraphx_|make_migraphx_graph|TABFM_DISABLE_EXTERNAL_DATA|CoreML|cpu flavor'
-hits=$(code_grep "$legacy" | grep -viE "$allowed")
+legacy='MIGraphX|libanofox_tabfm_cuda_plugin|libanofox_tabfm_migraphx_plugin|ExecutionProvider|\.mxr\b|PadToShapeBucket|ShapeBucket|TryExternalDataSession|OrtBackend|graph_migraphx_|make_migraphx_graph|TABFM_DISABLE_EXTERNAL_DATA|CoreML|cpu flavor|pin_cuda_shape|pin_dynamic_slice|contract mask|lsan\.supp'
+hits=$(code_grep "$legacy" | not_allowed)
 [ -n "$hits" ] && report "the removed multi-backend design is still referenced" "$hits"
 
 doc_paths=(README.md CLAUDE.md docs plugins .claude-plugin)
 doc_legacy='libanofox_tabfm_cuda_plugin|libanofox_tabfm_migraphx_plugin|libanofoxort_gpu|ExecutionProvider|TABFM_FLAVOR|TABFM_ORT_|\.mxr\b|onnxruntime-gpu|graph_migraphx_|make_migraphx_graph|TABFM_DISABLE_EXTERNAL_DATA|tabfm_ort_engine'
-hits=$(grep -rnE "$doc_legacy" "${doc_paths[@]}" 2>/dev/null | grep -v '^docs/archive/' | grep -viE "$allowed")
+hits=$(grep -rnIE "$doc_legacy" "${doc_paths[@]}" 2>/dev/null | grep -v '^docs/archive/' | not_allowed)
 [ -n "$hits" ] && report "the docs still describe the removed backends" "$hits"
 
 gone=(cmake/ort.cmake src/tabfm_cuda_plugin.cpp src/tabfm_migraphx_plugin.cpp src/tabfm_ort_engine.cpp src/include/tabfm_soname_patch.hpp
 	src/include/tabfm_mxr_cache_key.hpp src/include/tabfm_shape_bucket.hpp test/cpp/test_tabfm_cuda_plugin.cpp
 	test/cpp/test_tabfm_migraphx_plugin.cpp test/lsan.supp tools/make_migraphx_graph.py tools/check_migraphx_int_div.py
-	tools/gpu_test/ort_ep_check.py tools/gpu_test/equivalence.py tools/experimental/mgx_smoke.cpp .github/workflows/graph_invariants.yml)
+	tools/gpu_test/ort_ep_check.py tools/gpu_test/equivalence.py tools/experimental/mgx_smoke.cpp .github/workflows/graph_invariants.yml
+	tools/pin_cuda_shape_operands.py tools/pin_dynamic_slice_bounds.py tools/gpu_test/cuda_catalog.sh tools/gpu_test/nori15_cuda.sh
+	test/sql/tabfm_rocm_limix_ceiling.test)
 for g in "${gone[@]}"; do
 	[ -e "$g" ] && { echo "FAIL: $g still exists"; fail=1; }
 done
-for glob in 'resources/graph_migraphx_*' 'resources/export_report_mask_*' 'test/fixtures/graph_migraphx_*'; do
+for glob in 'resources/graph_migraphx_*' 'resources/export_report_mask_*' 'test/fixtures/graph_migraphx_*' 'tools/gpu_test/scenarios/*_rocm.sql' 'tools/export_*/src/*/*mask*.py'; do
 	# shellcheck disable=SC2086
 	if compgen -G "$glob" >/dev/null; then echo "FAIL: $glob still exists"; fail=1; fi
 done

@@ -1,6 +1,6 @@
--- The model catalog on CUDA against the CPU, one (model, task) per DuckDB process.
+-- The model catalog on a GPU (cuda, rocm or mlx) against the CPU, one (model, task) per DuckDB process.
 --
--- Driven by tools/gpu_test/cuda_catalog.sh, which runs this file once per database and then
+-- Driven by tools/gpu_test/gpu_catalog.sh (which rewrites the device), which runs this file once per database and then
 -- cuda_catalog_classification.sql / cuda_catalog_regression.sql once per (model, task), each in a
 -- FRESH process: a model that crashes the process then costs its own row, not every later one.
 -- The results accumulate in the persistent database's `report` table.

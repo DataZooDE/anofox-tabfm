@@ -1,7 +1,8 @@
 -- prepend: SET anofox_tabfm_ep_path='<dir holding the backend plugin>';
+-- 20 feature columns, wider than every other scenario, CPU vs ROCm label agreement.
 LOAD anofox_tabfm;
 SET anofox_tabfm_default_model='tabfm-v1';
-SET anofox_tabfm_gpu_precision='bf16';
+SET anofox_tabfm_gpu_precision='fp32';
 CREATE TABLE wide AS SELECT i AS id,
   (i*3%100)/100.0 c1,(i*5%100)/100.0 c2,(i*7%100)/100.0 c3,(i*11%100)/100.0 c4,
   (i*13%100)/100.0 c5,(i*17%100)/100.0 c6,(i*19%100)/100.0 c7,(i*23%100)/100.0 c8,
@@ -16,7 +17,7 @@ SET anofox_tabfm_device='rocm';
 CREATE TABLE w_gpu AS SELECT id, yhat FROM tabfm_classify('wide','label');
 .mode list
 SELECT 'WIDE_SERVED_BY=' || coalesce(max(device),'NONE') FROM tabfm_models() WHERE loaded AND model='tabfm-v1';
-SELECT 'WIDE_FEATURES=20 -> H64 bucket';
+SELECT 'WIDE_FEATURES=20';
 SELECT 'WIDE_DISAGREEMENTS=' || count(*) FROM w_cpu c JOIN w_gpu g USING (id)
  WHERE c.yhat IS DISTINCT FROM g.yhat;
 .mode duckbox

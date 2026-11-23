@@ -214,8 +214,8 @@ def _patched_model_forward(self, x_src, y_src, num_features=None, is_cls=True, *
     They are not fitted values. argmax of a zero pad is a constant, and
     measurably so: over 80 context rows tabdpt returned ONE distinct label
     where tabicl-v2 and mitra returned three. Found while comparing this
-    positional path against the masked ROCm graph, which computes the head over
-    all rows and so produces real ones.
+    positional path against a graph that computes the head over all rows and
+    so produces real ones.
 
     Running the head over every row costs one extra projection on S rows. The
     head is the final linear, not the transformer, so this is small relative to

@@ -188,8 +188,7 @@ def main(argv: list[str] | None = None) -> int:
         got_by_case[name] = got
 
         c = compare(reference[:, train_size:, :], got[:, train_size:, :])
-        # Tier the bar by precision, as tools/gpu_test/equivalence.py's header
-        # states: fp32 is the strict lane where a device switch must not change
+        # Tier the bar by precision (the rule the GPU equivalence checks used): fp32 is the strict lane where a device switch must not change
         # the answer, while bf16/fp16 are judged on CLASS AGREEMENT because
         # losing mantissa bits is the entire point of asking for them. Holding
         # bf16 to the fp32 tolerance would mark a correctly-working mode failed.

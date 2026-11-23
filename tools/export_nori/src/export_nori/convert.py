@@ -1,10 +1,10 @@
-"""nori.pt -> model.safetensors, in the bare key namespace the tensor map points at (ROCm and CUDA).
+"""nori.pt -> model.safetensors, in the bare key namespace the tensor map points at (the GPU plugins).
 
 The CPU path needs no conversion: the engine reads nori.pt (``{model_config, ema_state_dict}`` for Nori-30M,
-``{model_config, model_state_dict, inference_config}`` for Nori 1.5) natively. The ROCm and CUDA graphs are
-different: MIGraphX reads the weights itself, as external data at fixed byte offsets in a file
+``{model_config, model_state_dict, inference_config}`` for Nori 1.5) natively. The GPU graphs are
+different: a GPU plugin reads the weights itself, as external data at fixed byte offsets in a file
 named ``model.safetensors`` beside the checkpoint, and the engine checks that file's header against the sha
-the graph was built for (``ExpectedWeightsHeaderShaFor``). So ROCm users run this once:
+the graph was built for (``ExpectedWeightsHeaderShaFor``). So GPU users run this once (``tabfm_download`` does it):
 
     uv run convert_nori_weights ~/.cache/anofox-tabfm/Synthefy__Nori-30M@63c9f7fa.../model.ckpt \
         ~/.cache/anofox-tabfm/Synthefy__Nori-30M@63c9f7fa.../model.safetensors

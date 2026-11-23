@@ -89,34 +89,19 @@ embedding under any rounding noise. Consequences, all measured and pinned:
 - the real model predicts a row sitting exactly on the training mean badly, and saturates when extrapolating,
   identically in upstream's own forward (`test_a_feature_value_exactly_at_the_training_mean_…`).
 
-## The ROCm graph (masked contract)
+## The GPU graph
 
-`limix_mask.py` computes the same function with the split as a VALUE, so MIGraphX can compile it per (T, H)
-shape bucket: `x[1,T,H]`, `y[1,T]` (full length, -100 off the context), `train_size`, `d`, `n_rows`. It is
-`tools/export_nori/nori_mask.py` (Nori is a LimiX fork) adapted to LimiX-2M: post-norm layers, no QASSMax or
-target-aware embedding, a classification head whose class rank is a presence table over the 10 class ids
-(instead of an S x S comparison), and `ValidFeatureEncoder`'s "every row equals the first" test taken over the
-REAL rows (`n_rows`), since upstream reads the whole `[context ; all rows]` table. The preprocessing statistics
-and the label imputation read the context only, padded feature groups are masked out of the feature attention
-(`2 * g < d`), and the sample attention masks non-context keys. `mask_parity.gate` passes only when each of four
-negative controls is caught; on the real checkpoint the masked forward matches the positional one to 2.5e-4
-(the decimal tokenizer's float32 noise; the positional graph in ORT and in eager PyTorch differ by 9e-4 on
-the same inputs).
-
-MIGraphX reads the weights itself, as external data in `model.safetensors` beside the checkpoint, which
-`CALL tabfm_download` writes (byte-identical to `convert_limix_weights`, header sha `0c6a8684...`):
+The GPU plugins (ggml-cuda, ggml-rocm, MLX) run the same positional graph as the CPU, rewritten so each initializer points at the cached `model.safetensors` as ONNX external data (`graph_ext_*`). `tools/make_external_graph.py` writes it and prints the safetensors header sha the engine pins in `ExpectedWeightsHeaderShaFor`:
 
 ```bash
-C=~/.cache/anofox-tabfm/stable-ai__LimiX-2M@641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e
-uv run export_limix --task classification --config real --contract mask --out ./mask
-uv run python ../make_migraphx_graph.py classification --weights $C/model.safetensors \
-    --graph ./mask/graph_mask_limix_classification.onnx \
-    --tensor-map ./mask/tensor_map_mask_limix_classification.json \
-    --dynamic --inline-ok m.encoder_x.0.numeric_mlp.centers \
-    --out ../../resources/graph_migraphx_limix2m_classification.onnx
-uv run python ../check_migraphx_int_div.py ../../resources/graph_migraphx_limix2m_classification.onnx
-TABFM_REAL_WEIGHTS=1 LIMIX_MASK_DIR=./mask uv run pytest tests/test_real_weights.py   # vs the shipped graph
+W=~/.cache/anofox-tabfm/stable-ai__LimiX-2M@641d8b81e1c8b1b0e51cb4ae47de22c4844d7a1e
+python ../make_external_graph.py classification --weights $W/classification/model.safetensors \
+    --graph ../../resources/graph_limix2m_classification.onnx --tensor-map ../../resources/tensor_map_limix2m_classification.json \
+    --out ../../resources/graph_ext_limix2m_classification.onnx
+python ../make_external_graph.py regression --weights $W/regression/model.safetensors \
+    --graph ../../resources/graph_limix2m_regression.onnx --tensor-map ../../resources/tensor_map_limix2m_regression.json \
+    --out ../../resources/graph_ext_limix2m_regression.onnx
 ```
 
-(and the same with `regression`). `--inline-ok` names the tokenizer's RBF centres: a `linspace` built from the
-config, not a checkpoint weight.
+The `model.safetensors` is what `CALL tabfm_download` writes (byte-identical to `convert_limix_weights`, header sha `0c6a8684...`).
+

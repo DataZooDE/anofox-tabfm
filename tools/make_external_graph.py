@@ -1,33 +1,22 @@
 #!/usr/bin/env python3
-"""Generate a weight-free external-data ONNX graph for a TabFM task.
+"""Generate a weight-free external-data ONNX graph for a TabFM task (the `graph_ext_*` the GPU plugins read).
 
-The shipped weight-free graph (resources/graph_<task>.onnx) has its initializers
-as external-data STUBS that the C++ engine overrides in memory
-(AddExternalInitializers). That in-memory injection makes ORT hold its own copy
-of the ~6.6 GB weights (peak RSS ~18.6 GB). This tool rewrites the graph so each
-initializer references the *cached safetensors file directly* as ONNX
-external-data (location "model.safetensors", absolute offset/length). Loading
-that graph from a path lets ORT read the weights straight off disk — no
-injection, no copy — dropping peak RSS to ~7.3 GB (validated).
+The shipped weight-free graph (resources/graph_<task>.onnx) has its initializers as external-data STUBS that
+the CPU engine fills in memory from the safetensors. A GPU plugin gets a path instead: this tool rewrites the
+graph so each initializer references the *cached safetensors file directly* as ONNX external data (location
+"model.safetensors", absolute offset/length), and the plugin reads the weights straight off disk.
 
-The safetensors data section is raw, contiguous, row-major tensor bytes, so the
-ONNX external offset is simply 8 + header_len + st_data_offset.
+The safetensors data section is raw, contiguous, row-major tensor bytes, so the ONNX external offset is simply
+8 + header_len + st_data_offset.
 
-Also prints the SHA-256 of the safetensors JSON header. The engine bakes this in
-and validates it at load: a byte-identical header guarantees the offsets are
-correct; any mismatch falls back to the (layout-independent) injection path.
+Also prints the SHA-256 of the safetensors JSON header. The engine bakes this in (ExpectedWeightsHeaderShaFor)
+and validates it at load: a byte-identical header guarantees the offsets are correct.
 
 Usage:
-  tools/make_external_graph.py <task> [--weights PATH] [--out resources/graph_ext_<task>.onnx]
-                               [--pin-cuda-shapes]
+  tools/make_external_graph.py <task> [--weights PATH] [--graph G] [--tensor-map M] [--out resources/graph_ext_<task>.onnx]
   task = classification | regression
-
---pin-cuda-shapes names every shape-computation tensor as a graph output
-(tools/pin_cuda_shape_operands.py), the workaround for the ONNX Runtime CUDA
-buffer-reuse bug in docs/archive/UPSTREAM_ORT_ISSUES.md (Draft 3). The TabPFN-3.5 /
-3.5-Fast ext graphs need it to run on CUDA; graph_invariants.yml checks it.
 """
-import argparse, hashlib, json, os, struct, sys
+import argparse, hashlib, json, os, struct
 import onnx
 from onnx import TensorProto, helper
 
@@ -98,8 +87,6 @@ def main():
     ap.add_argument("--graph")
     ap.add_argument("--tensor-map")
     ap.add_argument("--out")
-    ap.add_argument("--pin-cuda-shapes", action="store_true",
-                    help="pin shape tensors as graph outputs (CUDA EP workaround, TabPFN-3.5)")
     a = ap.parse_args()
     task = a.task
     weights = a.weights or os.path.join(DEF_CACHE, task, "model.safetensors")
@@ -136,14 +123,9 @@ def main():
     # BF16 checkpoints (TabFM 1.1.0): retype + Cast.
     st_for = lambda name: onnx2st.get(name) or (name[2:] if name.startswith("m.") else name)
     n_cast = retype_external(m, {k: v for k, v in header.items() if k != "__metadata__"}, st_for)
-    n_pins = 0
-    if a.pin_cuda_shapes:
-        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from pin_cuda_shape_operands import apply as pin_shapes
-        n_pins = pin_shapes(m)
     onnx.save(m, out)
     print(f"task={task}  initializers={len(m.graph.initializer)}  externalized={n}  inline_left={len(missing)}"
-          f"  bf16_upcasts={n_cast}  cuda_shape_pins={n_pins}")
+          f"  bf16_upcasts={n_cast}")
     print(f"header_sha256={header_sha}")
     print(f"wrote {out} ({os.path.getsize(out)} bytes, weight-free)")
 

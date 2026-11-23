@@ -63,7 +63,7 @@ WHERE m.loaded AND m.device NOT IN (SELECT device_id FROM tabfm_devices());
 0
 
 # An explicit request is NOT weakened by any of this: the asymmetry
-# IsExplicitGpuRequest encodes is left intact, and test_tabfm_ort_engine.cpp
+# IsExplicitGpuRequest encodes is left intact, and test_tabfm_session.cpp
 # asserts it directly (an absent device raises, naming tabfm_devices(), rather
 # than quietly becoming CPU). Not repeated here, because the outcome depends on
 # what hardware the runner has.

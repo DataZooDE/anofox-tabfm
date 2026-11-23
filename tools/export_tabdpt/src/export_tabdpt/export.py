@@ -38,36 +38,6 @@ PARITY_TOL = 1e-3  # budget
 # holds dense class labels — there is no continuous-target branch here.
 
 
-def _pin_dynamic_slice_bounds(model_proto) -> None:
-    """Re-apply the ScatterND slice-bound pins before saving (issue #21).
-
-    The CUDA EP reads those bounds from a CPU-side buffer that has already been
-    recycled, so the Slice trims nothing and ScatterND rejects the shapes.
-    Naming the bounds as graph outputs excludes them from buffer reuse. A
-    re-export would otherwise drop the pins, and nothing local would notice:
-    the graph still loads and CPU results are unchanged.
-
-    CI re-checks this (.github/workflows/graph_invariants.yml); applying it
-    here means the check is a backstop rather than a tripwire.
-    """
-    import importlib.util
-
-    root = pathlib.Path(__file__).resolve().parents[4]
-    path = root / "tools" / "pin_dynamic_slice_bounds.py"
-    spec = importlib.util.spec_from_file_location("pin_dynamic_slice_bounds", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    existing = {o.name for o in model_proto.graph.output}
-    pins = [(n, r) for n, r in module.targets(model_proto.graph) if n not in existing]
-    for name, rank in pins:
-        model_proto.graph.output.append(
-            module.helper.make_tensor_value_info(
-                name, module.TensorProto.INT64, [] if rank == 0 else [1]))
-    if pins:
-        print(f"  pinned {len(pins)} ScatterND slice bound(s): {[n for n, _ in pins]}")
-
-
 def example_inputs(t, h, s, max_classes, seed=0):
     torch.manual_seed(seed)
     x = torch.randn(1, t, h)
@@ -249,7 +219,6 @@ def postprocess(graph_path: pathlib.Path, state_dict: dict) -> dict:
         if init.name in mapped:
             onnx.external_data_helper.set_external_data(init, location=data_name)
     data_path.unlink(missing_ok=True)
-    _pin_dynamic_slice_bounds(model_proto)
     onnx.save(model_proto, str(graph_path))
     return tensor_map
 
@@ -316,45 +285,3 @@ def assert_weight_free(graph_path: pathlib.Path, tensor_map: dict) -> None:
             raise RuntimeError(f"mapped initializer {init.name} is INLINE — weight bytes in graph")
 
 
-def export_mask_graph(wrapper, graph_path, *, cfg,
-                      dim_rows=("rows", 4, 1_000_000),
-                      opset: int = OPSET):
-    """Export TabDPT under the train_size contract (x, y, train_size, d).
-
-    The difference from export_graph is the whole point of the conversion:
-    there is no ``train`` dimension. The positional export declares a dynamic
-    ``S`` for ``y``'s length, which is what makes the context size part of the
-    SHAPE and what a fixed-shape MIGraphX compile cannot bucket. Here ``y`` is
-    as long as ``x`` and the split arrives as a value, so the only dynamic axes
-    left are ``rows`` and ``features`` — precisely the two the existing
-    (T, H) bucket table already covers.
-
-    Exported in EVAL mode for the same reason as the positional path: TabDPT's
-    forward branches on self.training to choose the normalisation window, and
-    train mode normalises over context and queries together, which is a
-    test-time leak that would be baked into the graph.
-    """
-    import torch
-
-    T = torch.export.Dim(dim_rows[0], min=dim_rows[1], max=dim_rows[2])
-    H = torch.export.Dim("features", min=2, max=wrapper.num_features)
-    # train_size and d are [1] scalars: static shape, dynamic VALUE.
-    dyn = ({1: T, 2: H}, {1: T}, None, None)
-
-    t, h, s = cfg.example
-    torch.manual_seed(0)
-    x = torch.randn(1, t, h)
-    y = torch.randint(0, cfg.max_classes, (1, t)).float()  # FULL length
-    train_size = torch.tensor([s], dtype=torch.int64)
-    d = torch.tensor([h], dtype=torch.int64)
-    ex = (x, y, train_size, d)
-
-    graph_path.parent.mkdir(parents=True, exist_ok=True)
-    with torch.no_grad():
-        torch.onnx.export(
-            wrapper.eval(), ex, str(graph_path),
-            dynamo=True, dynamic_shapes=dyn, opset_version=opset,
-            input_names=["x", "y", "train_size", "d"], output_names=["logits"],
-            external_data=True, optimize=False,
-        )
-    return wrapper

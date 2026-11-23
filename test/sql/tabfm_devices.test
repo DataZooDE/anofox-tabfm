@@ -7,7 +7,7 @@ require anofox_tabfm
 statement ok
 LOAD anofox_tabfm
 
-# At least one device is always discovered (the cpu row exists in every flavor)
+# At least one device is always discovered (the cpu row always exists)
 query I
 SELECT count(*) >= 1 FROM tabfm_devices();
 ----
@@ -86,9 +86,3 @@ WHERE NOT ((device_id = 'cpu' AND ep = 'ggml') OR (device_id LIKE 'cuda:%' AND e
            OR (device_id LIKE 'mlx:%' AND ep = 'mlx'));
 ----
 0
-
-query I
-SELECT count(*) FROM tabfm_devices() WHERE ep LIKE '%ExecutionProvider%';
-----
-0
-

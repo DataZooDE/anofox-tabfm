@@ -151,28 +151,17 @@ defaults, see `configs._REAL_KWARGS`); a shape mismatch fails injection. The
 tensor map keys are the bare model `state_dict` keys, so they match a checkpoint
 loaded via `TabICL.load_state_dict` when the config agrees.
 
-## The ROCm graph (masked contract)
+## The GPU graph
 
-`tabicl_mask.py` computes the same function with the split as a VALUE, so MIGraphX can compile it per (T, H)
-shape bucket: `x[1,T,H]`, `y[1,T]` (full length, -100 off the context), `train_size`, `d`, `n_rows`. It runs
-upstream's own modules and changes only what read a padded shape: the circular feature grouping is taken
-modulo `d` (division-free, then a gather), the target-aware column embedding and the ICL label embedding go to
-the context rows only, the column ISAB's inducing points and the ICL transformer attend to the context through
-a key mask, QASSMax reads `log(S)` from the value, and the row interactor masks padded groups with its own `d`
-mask. While it traces, the packed q/k/v weight is sliced rather than `split` (no SplitToSequence) and RoPE's
-outer-product einsum is a broadcast. `mask_parity.gate` passes only when each of five negative controls is
-caught; on the real checkpoints the masked forward matches the positional one to 2.6e-5 (both tasks).
+The GPU plugins (ggml-cuda, ggml-rocm, MLX) run the same positional graph as the CPU, rewritten so each initializer points at the cached `model.safetensors` as ONNX external data (`graph_ext_*`). `tools/make_external_graph.py` writes it and prints the safetensors header sha the engine pins in `ExpectedWeightsHeaderShaFor`:
 
 ```bash
-uv run export_tabicl --task classification --config real --contract mask --out ./mask
-uv run python ../make_migraphx_graph.py classification \
-    --weights ~/.cache/anofox-tabfm/jingang__TabICL@4dcd344ece2c00be9e831fdd35bed57b5ad83e19/classification/model.safetensors \
-    --graph ./mask/graph_mask_tabicl_classification.onnx \
-    --tensor-map ./mask/tensor_map_mask_tabicl_classification.json \
-    --dynamic --out ../../resources/graph_migraphx_tabicl_classification.onnx
-uv run python ../check_migraphx_int_div.py ../../resources/graph_migraphx_tabicl_classification.onnx
-TABFM_REAL_WEIGHTS=1 TABICL_MASK_DIR=./mask uv run pytest tests/test_real_weights.py   # vs the shipped graph
+W=~/.cache/anofox-tabfm/jingang__TabICL@4dcd344ece2c00be9e831fdd35bed57b5ad83e19
+python ../make_external_graph.py classification --weights $W/classification/model.safetensors \
+    --graph ../../resources/graph_tabicl_classification.onnx --tensor-map ../../resources/tensor_map_tabicl_classification.json \
+    --out ../../resources/graph_ext_tabicl_classification.onnx
+python ../make_external_graph.py regression --weights $W/regression/model.safetensors \
+    --graph ../../resources/graph_tabicl_regression.onnx --tensor-map ../../resources/tensor_map_tabicl_regression.json \
+    --out ../../resources/graph_ext_tabicl_regression.onnx
 ```
 
-(and the same with `regression`). The masked graph reads the same 391 / 347 initializers as the positional
-pair, so the tensor-map keys and the weights header sha are unchanged.

@@ -40,32 +40,6 @@ OPSET = 18
 PARITY_TOL = 1e-4
 
 
-def _pin_dynamic_slice_bounds(model_proto) -> None:
-    """Re-apply the ScatterND slice-bound pins before saving (issue #21).
-
-    The CUDA EP reads those bounds from a CPU-side buffer that has already been recycled,
-    so the Slice trims nothing and ScatterND rejects the shapes. Naming the bounds as graph
-    outputs excludes them from buffer reuse. CI re-checks this
-    (.github/workflows/graph_invariants.yml); applying it here makes that a backstop.
-    """
-    import importlib.util
-
-    root = pathlib.Path(__file__).resolve().parents[4]
-    path = root / "tools" / "pin_dynamic_slice_bounds.py"
-    spec = importlib.util.spec_from_file_location("pin_dynamic_slice_bounds", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    existing = {o.name for o in model_proto.graph.output}
-    pins = [(n, r) for n, r in module.targets(model_proto.graph) if n not in existing]
-    for name, rank in pins:
-        model_proto.graph.output.append(
-            module.helper.make_tensor_value_info(
-                name, module.TensorProto.INT64, [] if rank == 0 else [1]))
-    if pins:
-        print(f"  pinned {len(pins)} ScatterND slice bound(s): {[n for n, _ in pins]}")
-
-
 def example_inputs(t, h, s, classes, seed=0, d=None, cats=()):
     """(x, y, train_size, cat_mask, d) in the engine's layout: y carries the -100 sentinel past S."""
     torch.manual_seed(seed)
@@ -181,7 +155,6 @@ def postprocess(graph_path: pathlib.Path, state_dict: dict) -> dict:
         if init.name in mapped:
             onnx.external_data_helper.set_external_data(init, location=data_name)
     data_path.unlink(missing_ok=True)
-    _pin_dynamic_slice_bounds(model_proto)
     onnx.save(model_proto, str(graph_path))
     return tensor_map
 

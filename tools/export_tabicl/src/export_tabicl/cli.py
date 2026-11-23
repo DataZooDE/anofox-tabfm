@@ -31,18 +31,12 @@ def main(argv=None) -> int:
                          "graph_query_*.onnx): prepare encodes the labelled context once, down to "
                          "each ICL layer's support keys/values plus the context rows' own outputs; "
                          "query scores query rows only. See kv.py.")
-    ap.add_argument("--contract", choices=["positional", "mask"], default="positional",
-                    help="positional: (x, y) with the split = len(y) (the CPU graph). mask: x, y (full length), "
-                         "train_size, d, n_rows -- the ROCm/MIGraphX contract (tabicl_mask.py).")
     args = ap.parse_args(argv)
-    masked = args.contract == "mask"
-    if masked and args.split_context:
-        ap.error("--split-context is a positional-contract feature")
 
     cfg = configs.get(args.config, task=args.task)
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    stem = f"mask_tabicl_{args.task}" if masked else f"tabicl_{args.task}"
+    stem = f"tabicl_{args.task}"
     graph_path = out / f"graph_{stem}.onnx"
     map_path = out / f"tensor_map_{stem}.json"
 
@@ -54,13 +48,9 @@ def main(argv=None) -> int:
     print(f"[export_tabicl] {n_params:,} params ({time.time()-t0:.1f}s)", flush=True)
 
     t0 = time.time()
-    if masked:
-        wrapper = export.export_mask_graph(model, graph_path, dim_rows=cfg.dim_rows,
-                                           dim_features=cfg.dim_features, example=cfg.example)
-    else:
-        wrapper = export.export_graph(model, graph_path, dim_rows=cfg.dim_rows,
-                                      dim_train=cfg.dim_train, dim_features=cfg.dim_features,
-                                      example=cfg.example)
+    wrapper = export.export_graph(model, graph_path, dim_rows=cfg.dim_rows,
+                                  dim_train=cfg.dim_train, dim_features=cfg.dim_features,
+                                  example=cfg.example)
     print(f"[export_tabicl] dynamo export done ({time.time()-t0:.1f}s)", flush=True)
 
     t0 = time.time()
@@ -72,16 +62,7 @@ def main(argv=None) -> int:
                             safetensors_rel=f"{args.task}/model.safetensors")
 
     parity = None
-    if masked and not args.skip_parity:
-        from export_tabicl.mask_parity import check_onnx
-        t0 = time.time()
-        parity = check_onnx(graph_path, model)
-        print(f"[export_tabicl] masked ORT-vs-positional parity ({time.time()-t0:.1f}s): worst "
-              f"{parity['worst']:.2e} -> {'OK' if parity['ok'] else 'FAIL'}", flush=True)
-        if not parity["ok"]:
-            print("[export_tabicl] PARITY FAILED", file=sys.stderr)
-            return 1
-    elif not args.skip_parity:
+    if not args.skip_parity:
         t0 = time.time()
         parity = export.check_parity(graph_path, wrapper, cfg.parity_shapes)
         print(f"[export_tabicl] parity ({time.time()-t0:.1f}s): worst {parity['worst']:.2e} "
@@ -135,12 +116,6 @@ def main(argv=None) -> int:
         "versions": {"torch": _torch.__version__, "onnx": _onnx.__version__,
                      "onnxruntime": _ort.__version__, "onnxscript": _onnxscript.__version__},
     }
-    if masked:
-        report["input_signature"] = {"x": "[1,T,H] f32 (padded)", "y": "[1,T] f32 FULL length (-100 off-context)",
-                                     "train_size": "[1] i64", "d": "[1] i64 (real feature count)",
-                                     "n_rows": "[1] i64 (declared, unused)"}
-        report["train_size"] = "input (a value: the context is a mask, not a slice)"
-        report["d"] = "input (padded feature groups masked in the row interactor)"
     (out / f"export_report_{stem}.json").write_text(json.dumps(report, indent=2) + "\n")
 
     print(f"[export_tabicl] graph: {graph_path} "

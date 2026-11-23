@@ -93,39 +93,22 @@ SELECT count(*) = (SELECT count(*) FROM anofox_tabfm_backends()) FROM tabfm_back
 ----
 true
 
-# The models that CAN be served on ROCm must never be refused with the
-# structural "positional context split" reason — that reason means "no fixed
-# shape can be bucketed for this architecture", which is false for every one of
-# these: tabfm-v1, tabfm-v1-1, mitra, mitra-v2 and kumo-tabular-* (train_size-scalar family), and tabdpt, tabdpt-v1-3, tabpfn-v2,
-# tabpfn-v2-5, tabpfn-v2-6, tabpfn-v3, tabpfn-v3-5(-fast), exaone-tabular, nori-30m, nori-1-5, tabicl-v2, limix-2m, orion-bix,
-# orion-msp and causilo, whose split was converted to a value (see docs/archive/ROCM_TABDPT_SPIKE.md, docs/archive/ROCM_TABPFN_PLAN.md,
-# tools/export_exaone, tools/export_nori, tools/export_tabicl, tools/export_limix, tools/export_orion_* and
-# tools/export_causilo: *_mask.py). They may still be
-# unsupported for a situational cause (weights not downloaded), so this asserts
-# the REASON rather than the verdict.
+# Every built-in model ships a GPU graph (the ext graph every GPU plugin reads), so no GPU row of a built-in may be
+# refused for a missing graph. A row may still be unsupported for a situational cause (weights not downloaded,
+# plugin not installed), so this asserts the REASON rather than the verdict; the weights-missing reason mentions
+# the graph too, and names tabfm_download.
 #
-# Regression: the first version of this matrix built the weights path by hand
-# as <slug>/model.safetensors and so missed tabfm-v1, whose declared files sit
-# in a per-task subdirectory — reporting a ROCm-servable model as having no
+# Regression: the first version of this matrix built the weights path by hand as <slug>/model.safetensors and so
+# missed tabfm-v1, whose declared files sit in a per-task subdirectory, reporting a servable model as having no
 # graph at all.
 query I
 SELECT count(*) FROM tabfm_backends()
-WHERE backend = 'rocm'
+WHERE backend IN ('cuda', 'rocm', 'mlx')
   AND model IN ('tabfm-v1', 'tabfm-v1-1', 'mitra', 'tabdpt', 'tabpfn-v2', 'tabpfn-v2-5', 'tabpfn-v2-6', 'tabpfn-v3',
                 'mitra-v2', 'tabdpt-v1-3', 'tabpfn-v3-5', 'tabpfn-v3-5-fast', 'exaone-tabular', 'nori-30m', 'nori-1-5',
                 'tabicl-v2', 'limix-2m', 'orion-bix', 'orion-msp', 'causilo',
                 'kumo-tabular-small', 'kumo-tabular-medium', 'kumo-tabular-large')
-  AND reason IS NOT NULL AND reason LIKE '%ROCM_SINGLE_EVAL_POS%';
-----
-0
-
-# ...and since 2026-11-01 no built-in model is left that cannot be bucketed: tabicl-v2, limix-2m, orion-bix,
-# orion-msp and causilo were the last, and each now ships a masked graph. So no rocm row may cite the
-# positional-split reason. A NEW positional model would fail this until it is converted or listed here
-# explicitly as refused (with that reason asserted, as this test did for the TabPFN family before it moved).
-query I
-SELECT count(*) FROM tabfm_backends()
-WHERE backend = 'rocm' AND reason LIKE '%cannot be bucketed%';
+  AND NOT supported AND reason LIKE '%-servable graph%';
 ----
 0
 

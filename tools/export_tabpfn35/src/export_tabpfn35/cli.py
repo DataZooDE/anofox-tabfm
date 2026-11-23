@@ -2,9 +2,6 @@
 
 Writes into --out (stems: tabpfn35 for TabPFN-3.5, tabpfn35fast for 3.5-Fast):
   graph_<stem>_<task>.onnx          positional contract, weight-free
-  graph_mask_<stem>_<task>.onnx     masked contract (--contract mask), weight-free;
-                                    tools/make_migraphx_graph.py turns it into the
-                                    bundled graph_migraphx_<stem>_<task>.onnx
   tensor_map_<stem>_<task>.json     ONNX initializer -> safetensors key
   export_report_<stem>_<task>.json  provenance + parity numbers
 
@@ -26,39 +23,30 @@ import torch
 from export_tabpfn import export as xp
 from export_tabpfn35 import configs
 from export_tabpfn35.model import build_random_model
-from export_tabpfn35.wrappers import MaskWrapper35, Wrapper35, upstream_wrapped
+from export_tabpfn35.wrappers import Wrapper35, upstream_wrapped
 
 OPSET = 18
 
 
-def _example(t, h, n, task, masked):
+def _example(t, h, n, task):
     g = torch.Generator().manual_seed(0)
     x = torch.randn(1, t, h, generator=g)
-    rows = t if masked else n
     if task == "regression":
-        y = torch.randn(1, rows, generator=g)
+        y = torch.randn(1, n, generator=g)
     else:
-        y = torch.arange(rows, dtype=torch.float32).remainder(3)[None]
-    if not masked:
-        return (x, y)
-    i = lambda v: torch.tensor([v], dtype=torch.int64)  # noqa: E731
-    return (x, y, i(n), i(t), i(h))
+        y = torch.arange(n, dtype=torch.float32).remainder(3)[None]
+    return (x, y)
 
 
-def export_graph(model, path, *, task, example, masked):
-    wrapper = (MaskWrapper35 if masked else Wrapper35)(model, task=task).eval()
+def export_graph(model, path, *, task, example):
+    wrapper = Wrapper35(model, task=task).eval()
     A, S = torch.export.Dim.AUTO, torch.export.Dim.STATIC
-    if masked:
-        dyn = ({0: S, 1: A, 2: A}, {0: S, 1: A}, None, None, None)
-        names = ["x", "y", "train_size", "n_rows", "d"]
-    else:
-        dyn = ({0: S, 1: A, 2: A}, {0: S, 1: A})
-        names = ["x", "y"]
+    dyn = ({0: S, 1: A, 2: A}, {0: S, 1: A})
     path.parent.mkdir(parents=True, exist_ok=True)
     with torch.no_grad():
-        torch.onnx.export(wrapper, _example(*example, task, masked), str(path),
+        torch.onnx.export(wrapper, _example(*example, task), str(path),
                           dynamo=True, dynamic_shapes=dyn, opset_version=OPSET,
-                          input_names=names, output_names=["logits"],
+                          input_names=["x", "y"], output_names=["logits"],
                           external_data=True, optimize=False)
     return wrapper
 
@@ -95,7 +83,7 @@ def write_map(path, tensor_map, *, task, safetensors_rel):
     path.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
-def check_parity(path, model, shapes, *, task, masked, tol=1e-3):
+def check_parity(path, model, shapes, *, task, tol=1e-3):
     import onnxruntime as ort
 
     sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
@@ -103,17 +91,7 @@ def check_parity(path, model, shapes, *, task, masked, tol=1e-3):
     out, worst_ort, worst_up = [], 0.0, 0.0
     for t, h, n in shapes:
         x, y = _feed(t, h, n, task)
-        if masked:
-            # pad to a larger bucket, the way the plugin does
-            Tp, Hp = t + 9, h + 3
-            xp_ = np.zeros((1, Tp, Hp), np.float32)
-            xp_[:, :t, :h] = x
-            yp = np.full((1, Tp), -100.0, np.float32)
-            yp[:, :n] = y
-            i = lambda v: np.array([v], np.int64)  # noqa: E731
-            feed = {"x": xp_, "y": yp, "train_size": i(n), "n_rows": i(t), "d": i(h)}
-        else:
-            feed = {"x": x, "y": y}
+        feed = {"x": x, "y": y}
         t0 = time.time()
         (o,) = sess.run(["logits"], feed)
         ms = (time.time() - t0) * 1e3
@@ -138,18 +116,15 @@ def main(argv=None) -> int:
     ap.add_argument("--config", required=True, choices=sorted(configs.CONFIGS))
     ap.add_argument("--out", required=True)
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--contract", choices=["positional", "mask"], default="positional")
     ap.add_argument("--skip-parity", action="store_true")
     ap.add_argument("--safetensors-rel", default=None,
                     help="tensor-map `safetensors` field (default: <task>/model.safetensors)")
     args = ap.parse_args(argv)
-    masked = args.contract == "mask"
     cfg = configs.get(args.config)
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     stem = cfg.slug
-    graph_path = out / (f"graph_mask_{stem}_{args.task}.onnx" if masked
-                        else f"graph_{stem}_{args.task}.onnx")
+    graph_path = out / f"graph_{stem}_{args.task}.onnx"
     map_path = out / f"tensor_map_{stem}_{args.task}.json"
 
     t0 = time.time()
@@ -159,7 +134,7 @@ def main(argv=None) -> int:
           f"({time.time()-t0:.1f}s)", flush=True)
 
     t0 = time.time()
-    export_graph(model, graph_path, task=args.task, example=cfg.example, masked=masked)
+    export_graph(model, graph_path, task=args.task, example=cfg.example)
     print(f"[export_tabpfn35] dynamo export ({time.time()-t0:.1f}s)", flush=True)
 
     sd = dict(model.state_dict())
@@ -173,7 +148,7 @@ def main(argv=None) -> int:
     parity = None
     if not args.skip_parity:
         t0 = time.time()
-        parity = check_parity(graph_path, model, cfg.parity_shapes, task=args.task, masked=masked)
+        parity = check_parity(graph_path, model, cfg.parity_shapes, task=args.task)
         print(f"[export_tabpfn35] parity ({time.time()-t0:.1f}s): ORT-vs-torch "
               f"{parity['worst_ort_vs_torch']:.2e}, torch-vs-upstream "
               f"{parity['worst_torch_vs_upstream']:.2e} -> {'OK' if parity['ok'] else 'FAIL'}",
@@ -190,7 +165,7 @@ def main(argv=None) -> int:
     import tabpfn as _tabpfn
     report = {
         "command": ["export_tabpfn35"] + list(argv or sys.argv[1:]),
-        "task": args.task, "config": cfg.name, "arch": "v3.5", "contract": args.contract,
+        "task": args.task, "config": cfg.name, "arch": "v3.5",
         "model_kwargs": cfg.model_kwargs, "n_params": n_params, "seed": args.seed,
         "opset": OPSET, "example_input_THN": list(cfg.example),
         "graph_bytes": graph_path.stat().st_size,
@@ -201,9 +176,7 @@ def main(argv=None) -> int:
                      "onnxruntime": _ort.__version__,
                      "tabpfn": getattr(_tabpfn, "__version__", "9.2.0")},
     }
-    if not masked:
-        (out / f"export_report_{stem}_{args.task}.json").write_text(
-            json.dumps(report, indent=2) + "\n")
+    (out / f"export_report_{stem}_{args.task}.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"[export_tabpfn35] graph: {graph_path} ({graph_path.stat().st_size/1e6:.2f} MB, "
           "weight-free)")
     return 0

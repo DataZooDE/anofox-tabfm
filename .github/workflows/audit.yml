@@ -7,8 +7,8 @@
 # system DuckDB package puts them (scripts/check_compat_stray_headers.sh,
 # ported from anofox-forecast#312). CI runners have no system DuckDB, so
 # without it a __has_include probe that finds the wrong tree only breaks on
-# developer machines. Separate from MainDistributionPipeline.yml for the same
-# reason as graph_invariants.yml.
+# developer machines. Separate from MainDistributionPipeline.yml so a failure here
+# names the audit rather than a build.
 #
 name: Static audits
 
@@ -43,12 +43,13 @@ jobs:
         run: scripts/check_compat_stray_headers.sh
 
   no-onnx-runtime:
-    name: The extension, its build and its CI contain no ONNX Runtime
+    name: No ONNX Runtime and no removed backend in the extension, its build, CI, tools or docs
     timeout-minutes: 5
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       # ggml is the only engine (docs/GGML_PLAN.md); ONNX Runtime stays only in the Python dev tooling (goldens, parity). A reintroduced
-      # include, link or flavor switch fails here, with the lines that carry it.
+      # include, link, build switch, removed backend (MIGraphX, the ORT-CUDA plugin, CoreML) or old plugin name fails
+      # here, with the lines that carry it.
       - name: No ONNX Runtime outside the dev tooling
         run: scripts/check_no_ort.sh

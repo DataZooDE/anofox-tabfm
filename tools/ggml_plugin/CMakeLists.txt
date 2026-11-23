@@ -1,5 +1,5 @@
-# The ggml GPU plugin (src/tabfm_ggml_plugin.cpp): a standalone shared library the extension dlopens, like the ORT-CUDA and
-# MIGraphX plugins, but running the SAME ggml engine as the CPU build on a ggml GPU device.
+# The ggml GPU plugin (src/tabfm_ggml_plugin.cpp): the only CUDA/ROCm backend, a standalone shared library the extension
+# dlopens, running the SAME ggml engine as the CPU build on a ggml GPU device.
 #
 #   cmake -S tools/ggml_plugin -B build/ggml-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DTABFM_GGML_GPU=cuda -DCMAKE_CUDA_ARCHITECTURES=89
 #   cmake -S tools/ggml_plugin -B build/ggml-rocm -G Ninja -DCMAKE_BUILD_TYPE=Release -DTABFM_GGML_GPU=hip  -DAMDGPU_TARGETS=gfx1201

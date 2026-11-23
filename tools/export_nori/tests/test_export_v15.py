@@ -169,7 +169,7 @@ def test_context_rows_are_the_context_presented_again_as_queries(model):
 
 def test_query_rows_do_not_see_each_other(model):
     """Row attention is context-only, so a query row's answer cannot depend on which other queries come with
-    it (the property the engine's chunking and the ROCm padding both rely on)."""
+    it (the property the engine's query chunking relies on)."""
     torch.manual_seed(2)
     x, y = torch.randn(1, 18, 4), torch.randn(1, 10)
     w = ExportWrapper(model)

@@ -39,36 +39,6 @@ PARITY_TOL = 1e-3  # DoD budget; expect ~1e-6
 POS_BASE_NAME = "_pos_base"
 
 
-def _pin_dynamic_slice_bounds(model_proto) -> None:
-    """Re-apply the ScatterND slice-bound pins before saving (issue #21).
-
-    The CUDA EP reads those bounds from a CPU-side buffer that has already been
-    recycled, so the Slice trims nothing and ScatterND rejects the shapes.
-    Naming the bounds as graph outputs excludes them from buffer reuse. A
-    re-export would otherwise drop the pins, and nothing local would notice:
-    the graph still loads and CPU results are unchanged.
-
-    CI re-checks this (.github/workflows/graph_invariants.yml); applying it
-    here means the check is a backstop rather than a tripwire.
-    """
-    import importlib.util
-
-    root = pathlib.Path(__file__).resolve().parents[4]
-    path = root / "tools" / "pin_dynamic_slice_bounds.py"
-    spec = importlib.util.spec_from_file_location("pin_dynamic_slice_bounds", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    existing = {o.name for o in model_proto.graph.output}
-    pins = [(n, r) for n, r in module.targets(model_proto.graph) if n not in existing]
-    for name, rank in pins:
-        model_proto.graph.output.append(
-            module.helper.make_tensor_value_info(
-                name, module.TensorProto.INT64, [] if rank == 0 else [1]))
-    if pins:
-        print(f"  pinned {len(pins)} ScatterND slice bound(s): {[n for n, _ in pins]}")
-
-
 def example_inputs(t, h, n, max_classes=4, seed=0, task="classification"):
     torch.manual_seed(seed)
     x = torch.randn(1, t, h)
@@ -97,43 +67,6 @@ def export_graph(model, graph_path: pathlib.Path, *, example=(12, 5, 8),
             wrapper, ex, str(graph_path),
             dynamo=True, dynamic_shapes=dyn, opset_version=opset,
             input_names=["x", "y"], output_names=["logits"],
-            external_data=True, optimize=False,
-        )
-    return wrapper
-
-
-def export_mask_graph(model, graph_path: pathlib.Path, *, example=(12, 5, 8),
-                      max_classes=4, opset: int = OPSET, task="classification"):
-    """Export under the MASKED contract: (x, y, train_size, n_rows, d).
-
-    The difference from export_graph is the whole point of the conversion: `y` is
-    as long as `x` and the split, the real row count and the real feature count
-    arrive as VALUES. There is no `train` dimension, so the only dynamic axes are
-    rows and features -- the two the (T, H) bucket table already covers.
-    """
-    from export_tabpfn import tabpfn_mask_forward
-    from export_tabpfn.tabpfn_mask_export import MaskExportWrapper
-
-    tabpfn_mask_forward.apply_mask_patches()
-    wrapper = MaskExportWrapper(model, task=task).eval()
-    A = torch.export.Dim.AUTO
-    S = torch.export.Dim.STATIC
-    dyn = ({0: S, 1: A, 2: A}, {0: S, 1: A}, None, None, None)
-    t, h, n = example
-    torch.manual_seed(0)
-    x = torch.randn(1, t, h)
-    if task == "regression":
-        y = torch.randn(1, t, dtype=torch.float32)
-    else:
-        y = torch.arange(t, dtype=torch.float32).remainder(max_classes)[None, :]
-    ex = (x, y, torch.tensor([n], dtype=torch.int64),
-          torch.tensor([t], dtype=torch.int64), torch.tensor([h], dtype=torch.int64))
-    graph_path.parent.mkdir(parents=True, exist_ok=True)
-    with torch.no_grad():
-        torch.onnx.export(
-            wrapper, ex, str(graph_path),
-            dynamo=True, dynamic_shapes=dyn, opset_version=opset,
-            input_names=["x", "y", "train_size", "n_rows", "d"], output_names=["logits"],
             external_data=True, optimize=False,
         )
     return wrapper
@@ -228,7 +161,6 @@ def postprocess(graph_path: pathlib.Path, state_dict: dict) -> dict:
         if init.name in mapped:
             onnx.external_data_helper.set_external_data(init, location=data_name)
     data_path.unlink(missing_ok=True)
-    _pin_dynamic_slice_bounds(model_proto)
     onnx.save(model_proto, str(graph_path))
     return tensor_map
 

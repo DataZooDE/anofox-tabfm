@@ -2,7 +2,7 @@
 # description: NVIDIA Kumo-Tabular (code Apache-2.0, weights OpenMDW-1.1) onboarded as three built-in
 #              models, kumo-tabular-small / -medium / -large. Its graph takes the tabfm-v1 five-input
 #              contract (x, y[1,T], train_size, cat_mask, d): the context split and the real feature
-#              width are VALUES, so one graph family serves CPU, CUDA and bucket-padded ROCm. The
+#              width are VALUES, so one graph family serves the CPU and every GPU plugin. The
 #              engine standardises the features and the regression target (profile
 #              kumo_tabular_v1_minimal), which is Kumo's own single-estimator recipe step for step.
 #

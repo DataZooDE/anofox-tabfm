@@ -1,6 +1,6 @@
 # name: test/sql/tabfm_gpu_registered_model.test
 # description: A user-registered model on a GPU through the ggml GPU plugin (cuda or rocm). The plugin reads the plain external-data graph
-#              (`*_ext_graph`); a registration that only names a MIGraphX graph (`*_migraphx_graph`, accepted and ignored since MIGraphX was
+#              (`*_ext_graph`); a registration that only names a `*_migraphx_graph` (accepted and ignored: that backend was
 #              removed) is refused by name instead of silently running on the CPU. With an ext graph the model is served by the GPU and gives
 #              the CPU's answer, and tabfm_gpu_precompile is a warm-up that compiles nothing.
 #
@@ -24,11 +24,11 @@ CREATE TABLE readings AS SELECT i AS machine_id, (hash(i * 3) % 100) / 25.0 AS v
   CASE WHEN i < 24 THEN CASE WHEN (hash(i * 3) % 100) + (hash(i * 7) % 100) > 100 THEN 'fault' ELSE 'ok' END END AS label
 FROM range(40) r(i);
 
-# ---- an old registration that names only a MIGraphX graph: no GPU path, and the error says which argument gives it one ----
+# ---- an old registration that names only a *_migraphx_graph (removed backend): no GPU path, and the error says which argument gives it one ----
 statement ok
 CALL tabfm_register_model(id := 'mgx-only', base_dir := 'test/fixtures',
   classification_graph := 'graph_fixture.onnx',
-  classification_migraphx_graph := 'graph_migraphx_fixture.onnx',
+  classification_migraphx_graph := 'graph_ext_fixture.onnx',
   classification_weights := 'model.safetensors',
   classification_tensor_map := 'tensor_map_fixture.json',
   license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal');
@@ -45,7 +45,7 @@ SELECT count(*) FROM tabfm_classify('readings', 'label', features := ['vibration
 statement ok
 CALL tabfm_register_model(id := 'ext-fixture', base_dir := 'test/fixtures',
   classification_graph := 'graph_fixture.onnx',
-  classification_ext_graph := 'graph_migraphx_fixture.onnx',
+  classification_ext_graph := 'graph_ext_fixture.onnx',
   classification_weights := 'model.safetensors',
   classification_tensor_map := 'tensor_map_fixture.json',
   license := 'fixture-mit', preprocessing_profile := 'tabfm_v1_minimal');

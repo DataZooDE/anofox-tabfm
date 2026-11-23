@@ -38,32 +38,6 @@ OPSET = 18
 PARITY_TOL = 1e-4
 
 
-def _pin_dynamic_slice_bounds(model_proto) -> None:
-    """Re-apply the ScatterND slice-bound pins before saving (issue #21).
-
-    The CUDA EP reads those bounds from a CPU-side buffer that has already been recycled,
-    so the Slice trims nothing and ScatterND rejects the shapes. Naming the bounds as graph
-    outputs excludes them from buffer reuse. CI re-checks this
-    (.github/workflows/graph_invariants.yml); applying it here makes that a backstop.
-    """
-    import importlib.util
-
-    root = pathlib.Path(__file__).resolve().parents[4]
-    path = root / "tools" / "pin_dynamic_slice_bounds.py"
-    spec = importlib.util.spec_from_file_location("pin_dynamic_slice_bounds", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    existing = {o.name for o in model_proto.graph.output}
-    pins = [(n, r) for n, r in module.targets(model_proto.graph) if n not in existing]
-    for name, rank in pins:
-        model_proto.graph.output.append(
-            module.helper.make_tensor_value_info(
-                name, module.TensorProto.INT64, [] if rank == 0 else [1]))
-    if pins:
-        print(f"  pinned {len(pins)} ScatterND slice bound(s): {[n for n, _ in pins]}")
-
-
 def example_inputs(t, h, s, classes, seed=0):
     torch.manual_seed(seed)
     x = torch.randn(1, t, h)
@@ -79,8 +53,7 @@ def export_graph(model, graph_path: pathlib.Path, *, example, classes: int,
     # Dim.AUTO, not named Dims with min/max: Causilo groups features in threes, so the group
     # count is ceil(H / 3), and torch.export's derived-dim solver cannot build a root for
     # it from a bounded H ("Cannot create Dim with inconsistent min=0, max=-170").
-    # AUTO lets the solver keep the relation without that bookkeeping (the TabPFN masked
-    # exports do the same). The bounds are enforced by the engine, not the graph.
+    # AUTO lets the solver keep the relation without that bookkeeping. The bounds are enforced by the engine, not the graph.
     A = torch.export.Dim.AUTO
     dyn = ({1: A, 2: A}, {1: A})  # x, y
     t, h, s = example
@@ -94,79 +67,6 @@ def export_graph(model, graph_path: pathlib.Path, *, example, classes: int,
             external_data=True, optimize=False,
         )
     return wrapper
-
-
-def export_mask_graph(model, graph_path: pathlib.Path, *, example, classes: int, opset: int = OPSET):
-    """Export under the MASKED contract: (x, y, train_size, n_rows, d). See causilo_mask_export.
-
-    The difference from export_graph is the point of the conversion: `y` is as long as `x`, and the split, the
-    real row count and the real feature count arrive as VALUES, so no shape depends on the split and the only
-    dynamic axes are rows and features.
-    """
-    from export_causilo.causilo_mask_export import MaskExportWrapper
-
-    wrapper = MaskExportWrapper(model).eval()
-    A = torch.export.Dim.AUTO
-    S = torch.export.Dim.STATIC
-    dyn = ({0: S, 1: A, 2: A}, {0: S, 1: A}, None, None, None)
-    t, h, n_train = example
-    torch.manual_seed(0)
-    x = torch.randn(1, t, h)
-    y = torch.randint(0, max(classes, 1), (1, t)).float() if classes else torch.randn(1, t)
-    ex = (x, y, torch.tensor([n_train], dtype=torch.int64), torch.tensor([t], dtype=torch.int64),
-          torch.tensor([h], dtype=torch.int64))
-    graph_path.parent.mkdir(parents=True, exist_ok=True)
-    with torch.no_grad():
-        torch.onnx.export(
-            wrapper, ex, str(graph_path),
-            dynamo=True, dynamic_shapes=dyn, opset_version=opset,
-            input_names=["x", "y", "train_size", "n_rows", "d"], output_names=["logits"],
-            external_data=True, optimize=False,
-        )
-    return wrapper
-
-
-def padded_feed(x, y, bucket):
-    """The masked graph's inputs for real data x [n, d], y [N], padded to bucket (T, H)."""
-    n, d = x.shape
-    T, H = bucket
-    xp = np.zeros((1, T, H), np.float32)
-    xp[0, :n, :d] = np.asarray(x, np.float32)
-    yp = np.full((1, T), -100.0, np.float32)
-    yp[0, :len(y)] = np.asarray(y, np.float32)
-    return {"x": xp, "y": yp, "train_size": np.array([len(y)], np.int64),
-            "n_rows": np.array([n], np.int64), "d": np.array([d], np.int64)}
-
-
-def check_mask_parity(graph_path: pathlib.Path, reference, cases, classes: int, tol: float = PARITY_TOL) -> dict:
-    """ORT on the masked graph, padded, vs the UNPADDED positional wrapper, over EVERY real row.
-
-    `cases` = ((n, N, d, T, H), ...), all with train size, feature count and bucket different from the
-    export example, so the dynamic axes and the value inputs are genuinely exercised. Context rows (< N) and
-    query rows are reported separately. `reference` is the positional ExportWrapper on the same model.
-    """
-    import onnxruntime as ort
-
-    sess = ort.InferenceSession(str(graph_path), providers=["CPUExecutionProvider"])
-    results, worst = [], 0.0
-    for n, N, d, T, H in cases:
-        rng = np.random.default_rng(n * 1000 + N * 10 + d)
-        x = rng.standard_normal((n, d)).astype(np.float32)
-        y = (rng.integers(0, max(classes, 1), N) if classes else rng.standard_normal(N) * 3 + 1).astype(np.float32)
-        t0 = time.time()
-        (out,) = sess.run(["logits"], padded_feed(x, y, (T, H)))
-        ort_ms = (time.time() - t0) * 1e3
-        with torch.no_grad():
-            want = reference(torch.from_numpy(x)[None], torch.from_numpy(y)[None])[0].numpy()
-        got = out[0, :n]
-        if got.shape != want.shape:
-            raise RuntimeError(f"shape mismatch at (n,N,d,T,H)=({n},{N},{d},{T},{H}): ORT {got.shape} vs {want.shape}")
-        ctx = float(np.abs(got[:N] - want[:N]).max())
-        qry = float(np.abs(got[N:] - want[N:]).max()) if n > N else 0.0
-        worst = max(worst, ctx, qry)
-        results.append({"n": n, "N": N, "d": d, "T": T, "H": H, "max_abs_delta_context_rows": ctx,
-                        "max_abs_delta_query_rows": qry, "ort_ms": ort_ms})
-    return {"ok": worst < tol, "worst": worst, "tol": tol, "shapes": results}
 
 
 def _norm_name(name: str) -> str:
@@ -248,7 +148,6 @@ def postprocess(graph_path: pathlib.Path, state_dict: dict) -> dict:
         if init.name in mapped:
             onnx.external_data_helper.set_external_data(init, location=data_name)
     data_path.unlink(missing_ok=True)
-    _pin_dynamic_slice_bounds(model_proto)
     onnx.save(model_proto, str(graph_path))
     return tensor_map
 

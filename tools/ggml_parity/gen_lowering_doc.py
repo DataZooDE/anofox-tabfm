@@ -19,7 +19,7 @@ tot=sum(nodes.values()); t15=sum(n15.values())
 kinds=collections.defaultdict(list)
 for o,k,h in rows: kinds[k].append(o)
 out=["# ggml lowering matrix (P1)\n",
-"Generated from `src/include/tabfm_ggml_ops.hpp` (`GgmlLoweringTable()`) and the %d bundled CPU graphs (`resources/graph_*.onnx` without the ext and migraphx variants); Regenerate with `uv run tools/ggml_parity/gen_lowering_doc.py`. Reasons were checked against the vendored `vendor/ggml/include/ggml.h`.\n"%len(fs),
+"Generated from `src/include/tabfm_ggml_ops.hpp` (`GgmlLoweringTable()`) and the %d bundled CPU graphs (`resources/graph_*.onnx` without the ext variants); Regenerate with `uv run tools/ggml_parity/gen_lowering_doc.py`. Reasons were checked against the vendored `vendor/ggml/include/ggml.h`.\n"%len(fs),
 "%d distinct ops over %d graphs, %d nodes in total (Nori 1.5: %d nodes).\n"%(len(rows),len(fs),tot,t15),
 "| kind | ops | nodes (all graphs) | nodes (Nori 1.5) | meaning |","|---|---|---|---|---|"]
 meaning={"NATIVE":"one ggml op plus views","COMPOSITE":"a few ggml ops, or a native op with a workaround","CUSTOM":"no ggml op: host kernel inside the graph","HOST":"never reaches ggml: folded by the shape pass"}

@@ -85,16 +85,7 @@ def test_the_graph_on_the_real_weights_matches_upstream(tmp_path, models):
             assert r2 > 0.3, r2
 
 
-@pytest.mark.parametrize("task", ["classification", "regression"])
-def test_the_masked_rocm_contract_on_the_real_weights(models, task):
-    """Padded + masked == positional on the real weights, and every negative control is caught."""
-    from export_exaone.mask_parity import gate
-
-    res = gate(models[task], task)
-    assert res["ok"], res
-
-
-def test_the_released_headers_are_the_ones_the_rocm_graphs_were_built_for():
+def test_the_released_headers_are_the_ones_the_bundled_graphs_were_built_for():
     """ExpectedWeightsHeaderShaFor pins these; a re-uploaded checkpoint would change them."""
     import hashlib
     import struct

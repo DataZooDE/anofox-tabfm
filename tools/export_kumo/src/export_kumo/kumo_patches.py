@@ -1,14 +1,14 @@
 """Kumo-Tabular -> ONNX: the wrapper that pins the graph contract, plus export patches.
 
-Graph contract -- the SAME five inputs tabfm-v1 and mitra take, so CPU, CUDA (ext graph) and
-ROCm (migraphx graph, bucket-padded) all run one graph family:
+Graph contract -- the SAME five inputs tabfm-v1 and mitra take, so the CPU and the GPU plugins (ext
+graph) all run one graph family:
 
     x          [1, T, H] f32   engine-preprocessed features (see "Preprocessing" below)
     y          [1, T]    f32   context labels in rows < train_size; the engine's -100 sentinel in
-                               the query rows (and in any bucket padding), which is masked here
+                               the query rows, which is masked here
     train_size [1]       i64   number of context rows (a VALUE, never a shape)
     cat_mask   [1, H]    bool  categorical columns (Kumo embeds them with their own frequencies)
-    d          [1]       i64   number of real feature columns (<= H; the rest is bucket padding)
+    d          [1]       i64   number of real feature columns (<= H; the rest is padding)
     -> logits  [1, T, C]       classification: C = 10 class logits (the head width)
                                regression:     C = 1, the mean of the 999 quantiles, in the
                                engine-standardised target space (the engine inverts it)
@@ -17,8 +17,7 @@ Why the masked contract, not tabicl-v2's positional (x, y[1,S]) one. Upstream al
 it: `_KumoTabular.forward_train(x, y, categorical_mask, num_columns=, train_size=)` is its own
 padded-context / padded-column path (NVIDIA/structured-data-models #1204, #1297), where every
 split is a mask (`arange < train_size`, `arange < K + num_columns`) and no tensor shape depends
-on the data. That is exactly what a fixed-shape MIGraphX compile needs
-(docs/archive/ROCM_SINGLE_EVAL_POS.md), and on the CPU it is the same function (gated by tests/).
+on the data, and on the CPU it is the same function (gated by tests/).
 
 Fitted values. Context rows go through the ICL stack as queries attending the context, which
 contains themselves with their label -- the in-context consistency value tabfm-v1 and mitra
@@ -37,9 +36,8 @@ The few things this wrapper adds to `forward_train`:
   * y is sanitised in-graph: query/padding rows carry -100, which `Embedding` cannot index.
     Upstream zeroes their embedding anyway (masked_fill on ~context), so feeding class 0 there
     is the identical function.
-  * the group wrap `index % num_columns` (CellEmbedding) is rewritten without integer modulo:
-    MIGraphX's GPU target miscomputes data-dependent integer division (docs/archive/ROCM_TABPFN_PLAN.md),
-    and the shifts are tiny (0, 1, 3), so a few conditional subtractions are exact.
+  * the group wrap `index % num_columns` (CellEmbedding) is rewritten without integer modulo
+    (the shifts are tiny, 0, 1, 3, so a few conditional subtractions are exact).
 """
 
 from __future__ import annotations
@@ -145,13 +143,9 @@ def apply() -> None:
 
     # Test-time GQA: medium and large attend their query rows with 2 of the 8 / 16 K/V heads
     # (`num_icl_key_value_heads_for_query`), which upstream hands to SDPA as `enable_gqa=True`. The
-    # exported broadcast of 2 K/V heads to 8 query heads is MIGRAPHX-MISCOMPILED on gfx1201: with GQA
-    # the GPU answer is off by about half the output spread, without it the same model agrees to
-    # 2e-7 (medium dims, 2 layers, measured; kv_heads=1 -- the fixture -- also agrees).
-    # `migraphx-driver verify -b` (ref vs gpu) puts the first divergence in the first ICL layer's
-    # query path, at a concat of head slices of a TRANSPOSED K/V tensor; replacing the broadcast with
-    # slices + Concat left the error in place. Expanding the heads with a one-hot GEMM over the
-    # reshaped (so materialised) K/V, then SDPA without enable_gqa, is the identical function.
+    # exported graph expands the heads with a one-hot GEMM over the reshaped (so materialised) K/V,
+    # then SDPA without enable_gqa: the identical function, and the form the shipped graphs were built
+    # and verified with (an earlier GPU compiler miscompiled the broadcast form).
     _attention.F = _GqaFunctional()
     _APPLIED = True
 
