@@ -38,7 +38,7 @@ TabFMPluginCreateParams FakeParams(const char *arch = "gfx1201") {
 	params.cache_dir = "cache";
 	params.arch = arch;
 	params.precision = "bf16";
-	params.mxr_source = "";
+	params.mxr_source = ""; // an ABI slot with no effect since MIGraphX was removed
 	params.device_ordinal = 0;
 	return params;
 }
@@ -92,9 +92,6 @@ TEST_CASE("plugin_backend: loads a plugin and round-trips a forward pass", "[tab
 			REQUIRE(output.logits[(size_t)(row * 3 + c)] == Approx(expected));
 		}
 	}
-
-	// Precompile forwards without throwing.
-	backend->Precompile(128, 16);
 }
 
 TEST_CASE("plugin_backend: a backend that refuses to initialise reports why", "[tabfm][plugin]") {
@@ -151,10 +148,8 @@ TEST_CASE("plugin_backend: a library that is not a plugin is refused", "[tabfm][
 }
 
 // A graph declaring an input the plugin does not bind must be refused by the HOST, before the plugin runs
-// anything. A plugin that predates an input skips it, and then the runtime fails inside its own run call:
-// MIGraphX's C API reports "Parameter not found: n_rows" by writing to std::cerr from the DuckDB worker
-// thread, which crashed unittest outright (SIGSEGV in ostream::sentry under migraphx_program_run) when a
-// September plugin left in the runtime cache met the TabPFN graphs that gained n_rows.
+// anything. A plugin that predates an input skips it, and then the runtime fails inside its own run call,
+// where it cannot be reported this clearly (the removed MIGraphX plugin crashed unittest that way).
 TEST_CASE("plugin_backend: a graph input the plugin does not bind is refused before create", "[tabfm][plugin]") {
 	const string path = TABFM_FAKE_PLUGIN_PATH;
 	if (!FileExists(path)) {
@@ -163,10 +158,10 @@ TEST_CASE("plugin_backend: a graph input the plugin does not bind is refused bef
 	}
 	// the fake binds x, y, cat_mask, train_size and d -- every input of the classic contract
 	auto params = FakeParams();
-	params.graph_path = "test/fixtures/graph_migraphx_fixture.onnx";
+	params.graph_path = "test/fixtures/graph_ext_fixture.onnx";
 	REQUIRE(LoadPluginBackend(path, params) != nullptr);
 
-	// a graph that also declares n_rows (as the masked TabPFN graphs did): a minimal ModelProto written by hand, ir_version + a graph whose
+	// a graph that also declares an input the plugin does not know: a minimal ModelProto written by hand, ir_version + a graph whose
 	// inputs are the classic five plus n_rows
 	auto field = [](int number, const string &payload) {
 		string out(1, static_cast<char>((number << 3) | 2));
@@ -237,9 +232,12 @@ TEST_CASE("plugin_artifacts: filenames follow each platform's convention", "[tab
 	// guessing otherwise would look for a file the build never produces.
 	REQUIRE(PluginFileNameFor("cuda", "windows") == "anofox_tabfm_ggml-cuda_plugin.dll");
 
-	// 'rocm' is the device, and 'migraphx' (the old library name) still resolves to it
 	REQUIRE(PluginFileNameFor("rocm", "linux") == "libanofox_tabfm_ggml-rocm_plugin.so");
-	REQUIRE(PluginFileNameFor("migraphx", "linux") == PluginFileNameFor("rocm", "linux"));
+	// tabfm_download_runtime normalizes its argument once: the deprecated 'migraphx' fetches the ROCm plugin
+	REQUIRE(NormalizeRuntimeBackend("migraphx") == "rocm");
+	REQUIRE(NormalizeRuntimeBackend("MIGraphX") == "rocm"); // deprecated spelling
+	REQUIRE(NormalizeRuntimeBackend("CUDA") == "cuda");
+	REQUIRE(NormalizeRuntimeBackend("tpu") == "tpu"); // refused by name later
 	// the artifact names are idempotent: asking for the plugin's own name finds the same file
 	REQUIRE(PluginFileNameFor("ggml-cuda", "linux") == PluginFileNameFor("cuda", "linux"));
 	REQUIRE(PluginFileNameFor("ggml-rocm", "linux") == PluginFileNameFor("rocm", "linux"));
@@ -247,7 +245,7 @@ TEST_CASE("plugin_artifacts: filenames follow each platform's convention", "[tab
 
 TEST_CASE("plugin_artifacts: an explicit cuda or rocm request without the ggml plugin names the file and the way to get it", "[tabfm][plugin_artifacts]") {
 	// With the ggml plugin as the ONLY GPU lane there is no other plugin to fall back to: the error must say which file is missing, where it looked, and
-	// the two ways out (fetch it, or run on the CPU) — never the old MIGraphX / ONNX Runtime wording.
+	// the two ways out (fetch it, or run on the CPU) — never the removed MIGraphX / ONNX Runtime wording.
 	for (const char *vendor : {"cuda", "rocm"}) {
 		INFO("vendor " << vendor);
 		const auto file = PluginFileName(vendor);
@@ -257,7 +255,7 @@ TEST_CASE("plugin_artifacts: an explicit cuda or rocm request without the ggml p
 		REQUIRE(message.find("/opt/tabfm/ep") != string::npos);
 		REQUIRE(message.find("tabfm_download_runtime('" + string(vendor) + "')") != string::npos);
 		REQUIRE(message.find("anofox_tabfm_device='cpu'") != string::npos);
-		REQUIRE(message.find("MIGraphX") == string::npos);
+		REQUIRE(message.find("MIGraphX") == string::npos); // removed
 		REQUIRE(message.find("ONNX Runtime") == string::npos);
 	}
 	// no ep_path configured at all is its own sentence
@@ -278,12 +276,6 @@ TEST_CASE("plugin_artifacts: tabfm_download_runtime('cuda') fetches only the sel
 		REQUIRE(artifact.plugin_name == PluginFileName(backend));
 		REQUIRE(!artifact.plugin_url.empty()); // the plugin alone: no runtime archive comes with it (the struct has no field for one any more)
 	}
-	// 'migraphx' is the documented alias of 'rocm': it fetches the same plugin, never an exception with an empty message
-	RuntimeArtifact alias;
-	string alias_error;
-	REQUIRE(ResolveRuntimeArtifact("migraphx", alias, alias_error));
-	REQUIRE(alias_error.empty());
-	REQUIRE(alias.plugin_name == PluginFileName("rocm"));
 	// and a backend nobody publishes says so by name
 	RuntimeArtifact unknown;
 	string unknown_error;
@@ -373,13 +365,13 @@ TEST_CASE("plugin_artifacts: the sidecar asset is named for the backend's base n
 
 TEST_CASE("plugin_artifacts: a digest is matched by FILENAME, not by position",
           "[tabfm][plugin_artifacts]") {
-	// The real CUDA sidecar covers two files. Taking the first line would
-	// verify the plugin against the ORT core's digest and always fail — or,
-	// worse with the operands swapped, pass on the wrong file.
+	// A sidecar may cover several files. Taking the first line would verify the
+	// plugin against another file's digest and always fail — or, worse with the
+	// operands swapped, pass on the wrong file.
 	const string sidecar =
-	    "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  libanofox_tabfm_cuda_plugin.so\n"
+	    "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  libanofox_tabfm_ggml-cuda_plugin.so\n"
 	    "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222  libanofox_tabfm_other_plugin.so\n";
-	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_cuda_plugin.so") ==
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_ggml-cuda_plugin.so") ==
 	        "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111");
 	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_other_plugin.so") ==
 	        "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222");
@@ -392,8 +384,8 @@ TEST_CASE("plugin_artifacts: a sidecar that does not mention the file vouches fo
 	// some other file and the verification silently passes.
 	const string sidecar =
 	    "cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333  some_other_file.so\n";
-	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_cuda_plugin.so").empty());
-	REQUIRE(Sha256FromSidecar("", "libanofox_tabfm_cuda_plugin.so").empty());
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_ggml-cuda_plugin.so").empty());
+	REQUIRE(Sha256FromSidecar("", "libanofox_tabfm_ggml-cuda_plugin.so").empty());
 	REQUIRE(Sha256FromSidecar("not a sidecar at all\n", "x.so").empty());
 }
 
@@ -409,32 +401,4 @@ TEST_CASE("plugin_artifacts: sidecar parsing tolerates the formats sha256sum emi
 	REQUIRE(Sha256FromSidecar(hash + "  plug.so", "plug.so") == hash);
 	// uppercase digests compare equal to our lowercase hex
 	REQUIRE(Sha256FromSidecar(StringUtil::Upper(hash) + "  plug.so\n", "plug.so") == hash);
-}
-
-// An OLDER plugin refusing a NEWER graph must say what to do about it.
-//
-// The bundled TabPFN MIGraphX graphs take a fifth input, `n_rows`, that the
-// plugin binds only if the graph declares it. A plugin built before that binding
-// existed compiles the graph fine and then dies on the first predict with MIGraphX's
-// own "Parameter not found: n_rows" -- accurate, and useless to someone who has
-// never heard of n_rows. The likely victim is anyone who updates the extension
-// but keeps an old plugin in a custom anofox_tabfm_ep_path.
-TEST_CASE("plugin_backend: an old plugin refusing a newer graph says to update it", "[tabfm][plugin]") {
-	const string migraphx_msg = "MIGraphX inference failed on gfx1201: "
-	                            "/usr/src/debug/migraphx/migraphx/src/program.cpp:491: operator(): "
-	                            "Parameter not found: n_rows";
-
-	auto hint = PluginFailureHint("migraphx", migraphx_msg);
-	REQUIRE_FALSE(hint.empty());
-	// names the fix, both spellings, and the cause
-	REQUIRE(hint.find("tabfm_accelerate") != string::npos);
-	REQUIRE(hint.find("tabfm_download_runtime") != string::npos);
-	REQUIRE(hint.find("n_rows") != string::npos);
-
-	// only the migraphx backend, and only for this failure: an unrelated
-	// migraphx error must not be blamed on the plugin version, and another
-	// backend that happens to mention n_rows is a different problem.
-	REQUIRE(PluginFailureHint("migraphx", "MIGraphX inference failed on gfx1201: out of memory").empty());
-	REQUIRE(PluginFailureHint("cuda", migraphx_msg).empty());
-	REQUIRE(PluginFailureHint("migraphx", "").empty());
 }

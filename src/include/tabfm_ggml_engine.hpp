@@ -12,8 +12,7 @@
 namespace duckdb {
 namespace anofox {
 
-//! Empty when every op in `op_types` is implemented; otherwise the error text: it names the missing ops and
-//! the build option that selects the ONNX Runtime engine instead, because this build has no runtime switch.
+//! Empty when every op in `op_types` is implemented; otherwise the error text naming the missing ops.
 std::string GgmlRefusal(const std::vector<std::string> &op_types);
 
 } // namespace anofox

@@ -68,17 +68,16 @@ TEST_CASE("mlx ops: which bundled ext graphs MLX can run", "[tabfm][mlx_ops]") {
 	REQUIRE(missing_for("graph_ext_orion_msp_classification") == V {});
 	// Nori 1.5's two-phase encoder: exported without Unique/Relu (LimiX's first MLX port failed on both)
 	REQUIRE(missing_for("graph_ext_nori15_regression") == V {});
-	// the ext graphs added when MIGraphX went away (they were MIGraphX-only before): Nori-30M keeps LimiX's Relu
+	// the ext graphs of Nori-30M and EXAONE Tabular: Nori-30M keeps LimiX's Relu
 	REQUIRE(missing_for("graph_ext_nori30m_regression") == V {});
 	REQUIRE(missing_for("graph_ext_exaone_tabular_classification") == V {});
 	REQUIRE(missing_for("graph_ext_exaone_tabular_regression") == V {});
 }
 
-// The TabPFN-3.5 ext graphs run on CUDA only because their shape tensors are pinned as extra graph outputs
-// (tools/pin_cuda_shape_operands.py; docs/archive/UPSTREAM_ORT_ISSUES.md, Draft 3). Both executors read the first
-// output, so 'logits' must stay first; and a re-export that drops the pins would bring the CUDA failure back
-// with nothing local to notice (CI's graph_invariants.yml runs the structural --check too).
-TEST_CASE("mlx ops: TabPFN-3.5 ext graphs keep logits first and their CUDA shape pins", "[tabfm][mlx_ops]") {
+// The TabPFN-3.5 ext graphs carry their shape tensors as extra graph outputs (pinned for the removed ONNX Runtime CUDA
+// plugin; harmless, since the executors compute only the outputs they read). Both executors read the first output,
+// so 'logits' must stay first.
+TEST_CASE("mlx ops: TabPFN-3.5 ext graphs keep logits first", "[tabfm][mlx_ops]") {
 	for (auto *id : {"graph_ext_tabpfn35_classification", "graph_ext_tabpfn35_regression",
 	                 "graph_ext_tabpfn35fast_classification", "graph_ext_tabpfn35fast_regression"}) {
 		auto res = GetBundledResource(id);
@@ -86,7 +85,6 @@ TEST_CASE("mlx ops: TabPFN-3.5 ext graphs keep logits first and their CUDA shape
 		auto graph = ::anofox::onnxread::ParseModelBytes(reinterpret_cast<const uint8_t *>(res.data), res.size, id);
 		REQUIRE(!graph.outputs.empty());
 		REQUIRE(graph.outputs[0] == "logits");
-		REQUIRE(graph.outputs.size() > 1000); // 1122..2123 pinned shape tensors per graph
 	}
 }
 

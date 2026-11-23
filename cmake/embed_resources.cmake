@@ -94,7 +94,7 @@ set(_tabfm_inputs
     "graph_causilo_classification.onnx"
     "graph_causilo_regression.onnx"
     # The external-data variants: the GPU plugins read weights off the cached safetensors by offset (src/tabfm_engine.cpp
-    # TryExternalDataSession). Valid only for the revision the registry pins; the header hash in
+    # TryGgmlGpuBackend, TryMlxBackend). Valid only for the revision the registry pins; the header hash in
     # ExpectedWeightsHeaderShaFor decides at load time whether to use them.
     "graph_ext_causilo_classification.onnx"
     "graph_ext_causilo_regression.onnx"

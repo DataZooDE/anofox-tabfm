@@ -3,10 +3,9 @@
  *
  * tabfm_plugin_abi.h — the C ABI between the extension and a backend plugin.
  *
- * Phase 1 of docs/archive/DYNAMIC_BACKENDS.md. A GPU backend is a shared library the
- * extension dlopens when the user asks for that device, not code compiled into
- * a separate build flavor. The shape is deliberately the one ONNX Runtime uses
- * for its own providers: one exported symbol returning a function table.
+ * A GPU backend (the ggml CUDA/ROCm plugin, MLX) is a shared library the extension
+ * dlopens when the user asks for that device; a GPU is never a build. One exported
+ * symbol returns a function table.
  *
  * Deliberately C, and deliberately narrow:
  *
@@ -36,8 +35,9 @@
 extern "C" {
 #endif
 
-/* 2: graph_inputs. A plugin built for 1 cannot say which graph inputs it binds, and the September
- * MIGraphX plugin silently skipped n_rows -- which crashed the host inside MIGraphX's run call. */
+/* 2: graph_inputs. A plugin built for 1 cannot say which graph inputs it binds (the removed MIGraphX
+ * plugin silently skipped one, which crashed the host inside its run call).
+ * Next version: drop the slots with no effect since MIGraphX was removed (mxr_source, precompile). */
 #define TABFM_PLUGIN_ABI_VERSION 2
 
 /*! The symbol every plugin must export. */
@@ -88,13 +88,13 @@ typedef struct {
  *  Two fields are BACKEND-DEFINED rather than universal, because what a backend
  *  needs to identify its target differs by kind:
  *
- *    - `arch` is a compute architecture for the GPU plugins ("gfx1201",
- *      "sm_89"), which select kernels by it. The MLX backend needs no such
- *      selector — Apple Silicon is one target — but it does need to know WHICH
- *      hand-ported forward to run, since it executes no graph, so it reads
- *      "<model>-<task>" (e.g. "mitra-classification") there instead.
- *    - `graph_path` is empty for a backend that runs no graph. MLX is the only
- *      such backend today; it mmaps `weights_dir`'s safetensors directly.
+ *    - `arch` is a compute architecture for the ggml GPU plugin ("gfx1201",
+ *      "sm_89"). The MLX backend needs no such selector — Apple Silicon is one
+ *      target — so it reads "<model>-<task>" (e.g. "mitra-classification")
+ *      there instead, which picks a hand-ported forward where one exists
+ *      (mitra) and otherwise names the model in its messages.
+ *    - `graph_path` is the external-data ("ext") graph; its weights sit in
+ *      `weights_dir`.
  *
  *  A backend must reject an `arch` it does not understand rather than guess:
  *  running one model's math over another's weights returns confident nonsense,
@@ -105,7 +105,7 @@ typedef struct {
 	const char *cache_dir;
 	const char *arch;
 	const char *precision;
-	const char *mxr_source;
+	const char *mxr_source; /* no effect since MIGraphX was removed: the host passes "" */
 	int device_ordinal;
 } TabFMPluginCreateParams;
 
@@ -114,7 +114,7 @@ typedef struct {
 typedef struct {
 	int abi_version;
 
-	/*! Human-readable backend name for diagnostics ("migraphx"). */
+	/*! Human-readable backend name for diagnostics ("ggml", "mlx"). */
 	const char *(*name)(void);
 
 	/*! Construct a backend. Returns NULL on failure with *err populated. */
@@ -127,7 +127,7 @@ typedef struct {
 	TabFMPluginStatus (*run)(void *handle, const TabFMPluginRunInput *input, TabFMPluginRunOutput *output, char *err,
 	                         size_t err_len);
 
-	/*! Warm a shape bucket without predicting (MIGraphX compiles per bucket). */
+	/*! No effect since MIGraphX was removed: the host never calls it; plugins return OK. */
 	TabFMPluginStatus (*precompile)(void *handle, int64_t rows, int64_t features, char *err, size_t err_len);
 
 	/*! Release a run output. Safe on a zeroed struct. */

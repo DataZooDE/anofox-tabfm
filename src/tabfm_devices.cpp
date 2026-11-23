@@ -45,7 +45,7 @@
 #else
 #include <dlfcn.h>
 // KFD topology lives under /sys and there is no Windows equivalent, so the rocm
-// probe is POSIX-only rather than flavor-only.
+// probe is POSIX-only.
 #include <dirent.h>
 #include <sys/stat.h>
 #endif
@@ -218,11 +218,8 @@ void ProbeCudaDevices(vector<TabFMDeviceInfo> &devices) {
 				device.vram_free = static_cast<int64_t>(memory.free);
 			}
 			device.driver = driver_version;
-			// usable == the card can actually be driven, which since phase 3 no
-			// longer means "the CUDA EP is compiled into this binary's ORT".
-			// CUDA inference runs in a dlopen'd plugin carrying its OWN shared
-			// ORT-GPU runtime (a statically-linked ORT cannot host ORT's provider
-			// libraries at all), so a discovered card is usable whenever the
+			// usable == the card can actually be driven: CUDA inference runs in the
+			// dlopen'd ggml CUDA plugin, so a discovered card is usable whenever the
 			// plugin ships kernels for it (compute capability 7.5+). If the
 			// plugin turns out not to be installed, TryGgmlGpuBackend throws a
 			// message naming the fix rather than quietly running on CPU.
@@ -457,10 +454,7 @@ vector<TabFMDeviceInfo> DiscoverDevices() {
 }
 
 TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDeviceInfo> &devices) {
-	auto setting = StringUtil::Lower(setting_value);
-	if (setting == "migraphx") { // validator normalizes, but stay forgiving
-		setting = "rocm";
-	}
+	auto setting = NormalizeDeviceSetting(setting_value);
 	auto cpu_device = [&]() {
 		for (auto &device : devices) {
 			if (device.device_id == "cpu") {
@@ -475,7 +469,7 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 		return cpu_device();
 	}
 	if (setting == "coreml") {
-		// CoreML was an ONNX Runtime execution provider compiled into the extension; ONNX Runtime is gone, and MLX (a plugin) serves Apple GPUs.
+		// CoreML (deprecated) was an ONNX Runtime execution provider compiled into the extension; ONNX Runtime was removed, and MLX (a plugin) serves Apple GPUs.
 		throw InvalidInputException("anofox_tabfm: device 'coreml' is no longer available: it was an ONNX Runtime provider, and this build contains no "
 		                            "ONNX Runtime. On Apple Silicon use 'mlx': CALL tabfm_download_runtime('mlx'); SET anofox_tabfm_device='mlx'. "
 		                            "Otherwise SET anofox_tabfm_device='cpu'.");

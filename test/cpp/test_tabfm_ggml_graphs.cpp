@@ -87,8 +87,7 @@ TEST_CASE("ggml_graphs: every bundled CPU graph lowers and runs on ggml", "[tabf
 	std::vector<std::string> files;
 	for (const auto &entry : fs::directory_iterator("resources")) {
 		const std::string name = entry.path().filename().string();
-		if (name.rfind("graph_", 0) == 0 && entry.path().extension() == ".onnx" && name.find("_ext") == std::string::npos &&
-		    name.find("migraphx") == std::string::npos) {
+		if (name.rfind("graph_", 0) == 0 && entry.path().extension() == ".onnx" && name.find("_ext") == std::string::npos) {
 			files.push_back(entry.path().string());
 		}
 	}

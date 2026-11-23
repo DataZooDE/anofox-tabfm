@@ -1,6 +1,6 @@
 //===----------------------------------------------------------------------===//
 // ggml CPU engine, phase P1 (docs/GGML_PLAN.md): the coverage matrix. Every ONNX op that appears in any bundled
-// CPU graph (resources/graph_*.onnx, the weight-free graphs the CPU engine runs, not the ext/migraphx variants)
+// CPU graph (resources/graph_*.onnx, the weight-free graphs the CPU engine runs, not the ext variants)
 // has a classification, saying whether it is a native ggml op, a composite, a custom host kernel inside the graph,
 // or evaluated on the host in the shape pass. Written red first: the table was empty.
 //===----------------------------------------------------------------------===//
@@ -24,14 +24,14 @@ namespace fs = std::filesystem;
 
 namespace {
 
-//! op -> number of bundled CPU graphs using it, over resources/graph_*.onnx minus the ext and migraphx variants.
+//! op -> number of bundled CPU graphs using it, over resources/graph_*.onnx minus the ext variants.
 std::map<std::string, int> BundledCpuGraphOps(int *n_graphs) {
 	std::map<std::string, int> uses;
 	int graphs = 0;
 	for (const auto &entry : fs::directory_iterator("resources")) {
 		const std::string name = entry.path().filename().string();
 		if (name.rfind("graph_", 0) != 0 || entry.path().extension() != ".onnx" ||
-		    name.rfind("graph_ext_", 0) == 0 || name.rfind("graph_migraphx_", 0) == 0) {
+		    name.rfind("graph_ext_", 0) == 0) {
 			continue;
 		}
 		auto graph = ::anofox::onnxread::ParseModelFile(entry.path().string());

@@ -16,42 +16,27 @@
 #include "duckdb/common/vector.hpp"
 #include "duckdb/common/string.hpp"
 
+#include <cctype>
 #include <cstdint>
 
 namespace duckdb {
 namespace anofox {
 
 //===----------------------------------------------------------------------===//
-// Dtypes & cast hooks
+// Dtypes
 //===----------------------------------------------------------------------===//
 
-enum class TabFMTensorDtype : uint8_t {
-	F32,  // CPU lane (default)
-	F16,  // GPU lane, RDNA3+ (HLD §9 dtype-per-arch)
-	BF16, // GPU lane, CDNA / CUDA (upstream-reference dtype)
-	I64,
-	BOOL
-};
-
-//! Byte width of one element of the given dtype.
-idx_t TabFMDtypeSize(TabFMTensorDtype dtype);
-
-//! Cast hooks for the GPU dtype profiles (HLD §9): the injection point owns
-//! the cast. f32 -> fp16 / bf16 use round-to-nearest-even; bf16 -> f32 is the
-//! exact upcast S02 exercised. The returned buffer is a fresh copy — free the
-//! source right after CreateSession like any other injection arena.
-vector<uint16_t> CastF32ToF16(const float *src, idx_t count);
-vector<uint16_t> CastF32ToBF16(const float *src, idx_t count);
-vector<float> CastBF16ToF32(const uint16_t *src, idx_t count);
+//! The dtype of an injected tensor. bf16 checkpoints are upcast to f32 before injection (tabfm_safetensors.hpp, MaterializeF32Arena).
+enum class TabFMTensorDtype : uint8_t { F32, I64, BOOL };
 
 //===----------------------------------------------------------------------===//
 // Device discovery + resolution (tabfm_devices(), SET anofox_tabfm_device)
 //===----------------------------------------------------------------------===//
 
 struct TabFMDeviceInfo {
-	//! Stable id: "cpu", "cuda:<n>", "rocm:<n>"
+	//! Stable id: "cpu", "cuda:<n>", "rocm:<n>", "mlx:0"
 	string device_id;
-	//! ORT execution provider that serves this device
+	//! The engine that serves this device: "ggml" (cpu), "ggml-cuda", "ggml-rocm" (the ggml GPU plugin) or "mlx"
 	string ep;
 	//! Human-readable device name
 	string name;
@@ -62,9 +47,9 @@ struct TabFMDeviceInfo {
 	int64_t vram_free = -1;
 	//! Driver / runtime version string ("" if unknown)
 	string driver;
-	//! Whether the flavor's EP can actually run on this device
+	//! Whether the published plugin carries code for this device (CUDA compute capability, ROCm gfx arch)
 	bool usable = false;
-	//! Ordinal within the vendor runtime (cudaSetDevice / MIGraphX device_id)
+	//! Ordinal within the vendor runtime (the ggml CUDA / HIP device index)
 	int device_ordinal = 0;
 };
 
@@ -85,6 +70,16 @@ bool CudaComputeCapabilityUsable(int major, int minor);
 const vector<string> &GgmlRocmPluginArchs();
 bool RocmArchUsable(const string &arch);
 
+//! The anofox_tabfm_device value as dispatch uses it: lowercased, and the deprecated alias 'migraphx' is 'rocm'. The SET validator does the
+//! same, but DuckDB can store an extension option without calling it, so CaptureGpuDispatchSettings normalizes again where dispatch reads it.
+inline string NormalizeDeviceSetting(const string &value) {
+	string out = value;
+	for (auto &c : out) {
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	return out == "migraphx" ? "rocm" : out;
+}
+
 //! Resolve `SET anofox_tabfm_device` ('auto'|'cpu'|'cuda'|'rocm'|'mlx', already normalized by the setting validator) against the discovered devices.
 //! 'auto' answers the CPU here (a GPU is chosen per model by the engine); a GPU setting returns its first usable device or throws naming
 //! tabfm_devices(); 'coreml' throws pointing at 'mlx'.
@@ -95,7 +90,7 @@ TabFMDeviceInfo ResolveDevice(const string &setting_value, const vector<TabFMDev
 // Session creation & inference
 //===----------------------------------------------------------------------===//
 
-//! Non-owning view of one initializer to inject via AddExternalInitializers.
+//! Non-owning view of one initializer to inject into the session.
 //! `name` is the ONNX initializer name (graph namespace — the tensor map owns
 //! the safetensors-key -> graph-name translation). `data` must stay valid
 //! until CreateSession returns; see the lifetime contract above.
@@ -108,26 +103,18 @@ struct TabFMTensorRef {
 };
 
 struct TabFMSessionConfig {
-	//! ORT intra-op threads (from anofox_tabfm_threads); inter-op is fixed to 1
-	//! because inference runs inside a single DuckDB task (HLD §4.4).
-	int64_t intra_op_threads = 1;
-	//! Resolved execution device (ResolveDevice output).
+	//! ggml threads for one forward pass (anofox_tabfm_threads).
+	int64_t threads = 1;
+	//! The device: an in-process session exists for "cpu" only (GPUs are served by their plugins).
 	string device_id = "cpu";
-	int device_ordinal = 0;
 	//! Human-readable model tag for error messages ("classification", ...).
 	string model_tag;
-	//! ORT weight prepacking (anofox_tabfm_cpu_prepack): faster matmuls at ~+16%
-	//! RSS. Disabling it was the old default when RSS was ~18 GB.
-	bool prepack = true;
 	//! Manifest-declared tensor contract (P4). When non-empty, the graph's actual
 	//! input / output names are validated against these at session creation, so a
 	//! manifest that lies about its graph fails fast with an actionable error.
 	//! Empty = no declared contract (skip — the built-in x/y/... contract).
 	vector<string> contract_inputs;
 	vector<string> contract_outputs;
-	//! SET anofox_tabfm_ep_path — directory holding the backend plugins (the ggml GPU plugin, MLX); the plugin lanes read it, the CPU
-	//! session does not.
-	string ep_path;
 };
 
 //! Opaque engine session (pimpl over the ggml session state; keeps the engine headers out of every consumer TU).
@@ -147,17 +134,6 @@ TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
 //! satisfy every external-data reference (the .data file need not exist).
 TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<TabFMTensorRef> &initializers,
                                          const TabFMSessionConfig &config);
-
-//! True when an ORT session-creation failure means "the graph's external-data
-//! references were never satisfied" — i.e. the weights were not injected.
-//!
-//! Exposed so the phrasings can be pinned by a unit test on ANY platform: the
-//! text is platform-specific (Windows reports the failed stat through
-//! FormatMessage, POSIX through strerror), so a Linux-only check cannot tell
-//! that the Windows shape stopped matching. It silently did, and every Windows
-//! user who forgot tabfm_load got the generic fallthrough instead of the
-//! tabfm_load remediation.
-bool IsMissingWeightsMessage(const string &message, int ort_error_code);
 
 //! One TabFM forward pass. Buffers are non-owning and read-only:
 //!   x [1,T,H] f32, y [1,T] f32, train_size [1] i64, cat_mask [1,H] bool,
@@ -196,7 +172,7 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input);
 //! Tensors are held by NAME, never by position. The prepare graph's outputs and
 //! the query graph's inputs are named from one contract by the exporter
 //! (tools/export_tabicl/src/export_tabicl/split.py), and both graphs also carry
-//! extra outputs from the ScatterND slice-bound pinning (`val_*`,
+//! extra outputs from the ScatterND slice-bound pinning of their export (`val_*`,
 //! `sym_size_int_*`) that are NOT part of it — so the runtime asks the query
 //! graph what it needs and requests exactly that, rather than shovelling every
 //! prepare output across.
@@ -235,9 +211,8 @@ bool SessionHasOutput(const TabFMSession &session, const string &name);
 
 //! A compiled, ready-to-run inference backend for one loaded (model, device).
 //! The engine holds one per LoadedModel and calls Run() per forward pass.
-//! Implementations: OrtBackend (CPU + CUDA execution provider, via ORT) and
-//! MIGraphXBackend (direct AMD MIGraphX — ORT's MIGraphX EP cannot handle >2 GB
-//! models, so ROCm bypasses ORT entirely).
+//! Implementations: CpuBackend and SplitContextBackend (the ggml CPU engine, tabfm_engine.cpp) and PluginBackend (the ggml CUDA/ROCm
+//! plugin and MLX, tabfm_plugin_backend.cpp).
 class TabFMBackend {
 public:
 	virtual ~TabFMBackend() = default;
@@ -250,11 +225,6 @@ public:
 	//! Shrink any retained per-backend state (the context cache) to `budget` bytes. Called before the
 	//! anofox_tabfm_max_memory check, so lowering the budget can free memory even when inference is refused.
 	virtual void TrimContextCache(idx_t budget) {
-	}
-	//! Warm the backend for a (rows, features) shape without predicting — used by
-	//! tabfm_gpu_precompile to move MIGraphX's per-bucket compile (minutes) off
-	//! the first query. Default: no-op (ORT has no per-shape compile).
-	virtual void Precompile(int64_t rows, int64_t features) {
 	}
 };
 

@@ -298,9 +298,8 @@ static const char *const BUILTIN_TABPFN26 = R"json({
   "size_regime": {"max_rows": 50000, "max_features": 2000, "max_classes": 10}
 })json";
 
-// TabICL v2's CPU/CUDA graphs are (x, y)-only: the split is the length of y. For ROCm a second, MASKED graph per
-// task (x, y_full, train_size, d, n_rows; tools/export_tabicl --contract mask) is bundled, keyed to the same
-// safetensors by header sha (docs/archive/ROCM_SINGLE_EVAL_POS.md).
+// TabICL v2's graphs are (x, y)-only: the split is the length of y. The GPUs read its ext graph, keyed to the same
+// safetensors by header sha.
 static const char *const BUILTIN_TABICL = R"json({
   "schema_version": 2, "id": "tabicl-v2", "display_name": "TabICL v2 (soda-inria)",
   "family": "icl-transformer",
@@ -448,9 +447,8 @@ static const char *const BUILTIN_ORION_BIX = R"json({
 // attribution. The HF repo itself is ungated; no token is needed.
 //
 // Its graph is (x, y)-only like TabICL's: the split is the length of y, so the engine needs no
-// model-specific code (tools/export_causilo). For ROCm a second, MASKED graph per task (x, y_full,
-// train_size, n_rows, d; tools/export_causilo --contract mask, docs/archive/ROCM_CAUSILO_PLAN.md) is bundled,
-// keyed to the pinned safetensors by header sha. The graph normalises its own features, hence a
+// model-specific code (tools/export_causilo). Its ext graph (the GPUs) is keyed to the pinned safetensors by
+// header sha. The graph normalises its own features, hence a
 // *_raw profile. Weights are already safetensors with the keys the tensor map names, so there is
 // no converter, and they are pinned to the commit the graph was exported from: HF main has moved
 // past it, and a moving ref would pair a newer checkpoint with this graph.
@@ -498,9 +496,8 @@ static const char *const BUILTIN_CAUSILO = R"json({
 // "distributing the Work" under Section 10 has NOT been confirmed with StableAI; docs/REAL_MODELS.md says so.
 //
 // Its graph is (x, y)-only like TabICL's and Causilo's: the split is the length of y, so the engine needs
-// no model-specific code (tools/export_limix). For ROCm a second, MASKED graph per task (x, y_full,
-// train_size, d, n_rows; tools/export_limix --contract mask) is bundled; it reads the model.safetensors that
-// tabfm_download writes beside the checkpoint (docs/archive/ROCM_SINGLE_EVAL_POS.md).
+// no model-specific code (tools/export_limix). Its ext graph (the GPUs) reads the model.safetensors that
+// tabfm_download writes beside the checkpoint.
 // The model standardises its own features and the export wrapper standardises the regression target
 // in-graph, hence a *_raw profile. ONE checkpoint serves both tasks, so both name the same file.
 //
@@ -672,9 +669,8 @@ static const char *const BUILTIN_TABDPT13 = R"json({
 // (which names the models that do classify).
 //
 // Its graph is (x, y)-only like LimiX-2M's: the split is the length of y, so the engine needs no
-// model-specific code (tools/export_nori). For ROCm a second, MASKED graph (x, y_full, train_size, d, n_rows;
-// tools/export_nori --contract mask) is bundled; it reads the safetensors tabfm_download writes beside
-// nori.pt, and without that file ROCm reports the bundled graph as not matching the weights. The
+// model-specific code (tools/export_nori). Its ext graph (the GPUs) reads the safetensors tabfm_download writes
+// beside nori.pt, and without that file the GPUs report the bundled graph as not matching the weights. The
 // model standardises its own features and the export wrapper standardises the target in-graph and inverts
 // it, hence a *_raw profile. The 999-quantile pinball head is reduced IN-GRAPH to the mean of the implied
 // quantile function, upstream's default point estimate (NoriRegressor quantile_collapse="mean"); on the
@@ -755,8 +751,7 @@ static const char *const BUILTIN_NORI15 = R"json({
 // Hugging Face repo, which is ungated). docs/REAL_MODELS.md quotes the clauses and the reasoning.
 //
 // Its graph is (x, y)-only like TabICL's: the split is the length of y, so the engine needs no model-specific
-// code (tools/export_exaone). For ROCm a second, MASKED graph per task (x, y_full, train_size, d, n_rows;
-// tools/export_exaone --contract mask) is bundled, keyed to LG's released files by header sha. The model standardises
+// code (tools/export_exaone). Its ext graph (the GPUs) is keyed to LG's released files by header sha. The model standardises
 // its own features and the wrapper standardises the regression target in-graph, hence a *_raw profile. The
 // 999-quantile regression head is reduced in-graph to the MEAN of the bank, the released regressor's own
 // point_estimate="mean". Upstream pins part of the attention to FlashAttention on CUDA (fp16/bf16 only);
@@ -811,13 +806,13 @@ static const char *const BUILTIN_EXAONE_TABULAR = R"json({
 //
 // Graph contract: the tabfm-v1 five inputs (x, y[1,T], train_size, cat_mask, d) -- upstream's own
 // padded-context / padded-column path (_KumoTabular.forward_train), so the split and the real width
-// are VALUES and one graph family serves CPU, CUDA (ext) and bucket-padded ROCm (migraphx). The engine
+// are VALUES and one graph family serves the CPU and, as the ext graph, every GPU. The engine
 // standardises features and target: Kumo's single-estimator recipe is the engine's profile step for
 // step (tools/export_kumo/src/export_kumo/engine_ref.py), hence *_minimal, not *_raw.
 //
 // Weights are the published .pt (a plain float32 state_dict), declared as model.ckpt so the engine's
 // native reader injects it on the CPU with no conversion; tabfm_download writes the sibling
-// model.safetensors the ext/migraphx graphs need (ExpectedWeightsHeaderShaFor pins its header). The
+// model.safetensors the ext graphs need (ExpectedWeightsHeaderShaFor pins its header). The
 // classifier .pt stores both y_emb.weight tensors as transposed views, which the reader gathers in order.
 // Pinned to tag v1.0.1, the revision upstream's loader requests; the LFS hashes are identical on main.
 //
@@ -831,7 +826,7 @@ static const char *const BUILTIN_EXAONE_TABULAR = R"json({
 // size_regime is an engine cap from MEASUREMENT (upstream states none; 500 features is its own
 // SelectColumns(500)). CPU, 8 threads, 80% context (rows x features -> wall, peak RSS): small 2000x20
 // 5.4 s / 1.8 GB, 5000x20 19 s / 5.0 GB, 10000x50 73 s / 30 GB; large 2000x20 26 s / 4.5 GB, 5000x20
-// 123 s / 14.7 GB. The masked graph attends over all T rows, so memory grows faster than linearly in
+// 123 s / 14.7 GB (measured on ONNX Runtime). The graph attends over all T rows, so memory grows faster than linearly in
 // rows; 10000 rows would already need ~30 GB on the SMALL model, hence 5000 for all three.
 
 static const char *const BUILTIN_KUMO_SMALL = R"json({

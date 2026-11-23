@@ -3,11 +3,11 @@
 //===----------------------------------------------------------------------===//
 // tabfm_ggml_session.hpp — the ggml CPU engine behind TabFMSession (docs/GGML_PLAN.md, P5).
 //
-// The engine's backends (OrtBackend, SplitOrtBackend with its context cache) only ever talk to a TabFMSession through CreateSession / Run /
+// The engine's backends (CpuBackend, SplitContextBackend with its context cache) only ever talk to a TabFMSession through CreateSession / Run /
 // RunPrepare / RunQuery / SplitContextInputs / SessionHasOutput; a TabFMSession answers those through its GgmlSessionState with GgmlRunGraph.
 //
 // Lifetime: the session keeps REFERENCES to the weight buffers behind TabFMTensorRef (the safetensors mapping
-// or the bf16 upcast arena); the owner keeps them alive for the life of the session (OrtBackend's member order already guarantees it).
+// or the bf16 upcast arena); the owner keeps them alive for the life of the session (CpuBackend's member order already guarantees it).
 //===----------------------------------------------------------------------===//
 
 #include "tabfm_ggml_lower.hpp"

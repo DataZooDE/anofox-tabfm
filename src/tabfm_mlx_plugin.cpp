@@ -3,25 +3,19 @@
  *
  * tabfm_mlx_plugin.cpp — the Apple MLX backend, behind tabfm_plugin_abi.h.
  *
- * docs/MLX_PLAN.md phase M1, with the spike verdicts in
- * docs/MLX_SPIKE_RESULTS.md. Like the MIGraphX plugin and unlike the CUDA one,
- * this drives a runtime directly rather than going through ONNX Runtime: MLX
- * has no ONNX importer, and S-M1 established that none exists anywhere, so the
- * forward is hand-ported instead of interpreted from the graph.
+ * docs/MLX_PLAN.md, with the spike verdicts in docs/MLX_SPIKE_RESULTS.md. MLX
+ * has no ONNX importer, so the plugin runs the model's ONNX ("ext") graph through
+ * its own interpreter (tabfm_mlx_graph.cpp, every op checked against the CPU),
+ * which serves every model. A graph needing an op the interpreter lacks is
+ * refused at create time, naming the ops.
  *
- * That has a consequence worth stating plainly at the top: THIS FILE IS A
- * SECOND IMPLEMENTATION OF A MODEL WE ALREADY SHIP. The authority on what
- * mitra computes is
+ * mitra also has a hand-ported forward, kept as its fast path and as an
+ * independent oracle for the interpreter. That port is a SECOND IMPLEMENTATION
+ * of a model we already ship: the authority on what mitra computes is
  * `tools/export_mitra/src/export_mitra/mitra_model_patched.py` — the ONNX graph
- * every other backend runs was exported from it. This is a transcription of
- * that file (via the MLX Python port in `tools/mlx_spike`, which is where the
- * math was proven against the real weights), and it must be kept in step with
- * it. The `graph_path` parameter is therefore NOT loaded; it is used only to
- * locate the weights and to reject a model this plugin does not implement.
- *
- * Consequently the plugin is model-specific: it serves mitra. Asking it for
- * anything else fails loudly at create time rather than quietly computing the
- * wrong thing with the wrong architecture's weights.
+ * was exported from it. The port is a transcription of that file (via the MLX
+ * Python port in `tools/mlx_spike`, where the math was proven against the real
+ * weights), and it must be kept in step with it.
  *
  * THREAD SAFETY (tabfm_plugin_abi.h now requires it): run() may be called
  * concurrently on one handle, so it must not rely on the host's per-device
@@ -364,7 +358,7 @@ private:
 //! fp32, because the first is a parameter-free rank statistic whose sort and
 //! division are the one place a half-precision rounding error changes a rank
 //! rather than a digit, and the last two bracket the logits the caller reads.
-//! This mirrors quantizing the MIGraphX program while leaving the surrounding
+//! This quantizes the model's compute while leaving the surrounding
 //! graph alone.
 enum class Precision { FP32, BF16, FP16 };
 
@@ -873,12 +867,8 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 	}
 	try {
 		// `arch` carries "<model>-<task>" for this backend (see the field's note
-		// in tabfm_plugin_abi.h). The forward is hand-ported, so an arch this
-		// plugin does not implement must fail HERE: running mitra's math over
-		// another model's weights would return confident nonsense, which is
-		// strictly worse than an error. Keep the accepted set in step with
-		// MlxSupportsModel() in tabfm_model_spec.hpp -- the engine refuses first
-		// and this is the backstop for anyone loading the plugin directly.
+		// in tabfm_plugin_abi.h): mitra's arch selects the hand-ported forward,
+		// every other model runs its graph through the interpreter.
 		const std::string arch = params->arch ? params->arch : "";
 		const std::string graph_path = params->graph_path ? params->graph_path : "";
 		const Precision precision = ParsePrecision(params->precision ? params->precision : "");
@@ -930,7 +920,7 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		if (graph_path.empty()) {
 			throw MlxError("no graph was supplied for '" + arch +
 			               "'. The mlx backend runs the model's ONNX graph; if this model ships none, SET "
-			               "anofox_tabfm_device='cpu' to run it through ONNX Runtime.");
+			               "anofox_tabfm_device='cpu' to run it on the CPU.");
 		}
 		if (precision != Precision::FP32) {
 			// Better an error than a mode that silently does nothing: the
@@ -949,7 +939,7 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 				list += (list.empty() ? "" : ", ") + op;
 			}
 			throw MlxError("this graph needs ONNX ops the mlx backend does not implement (" + list +
-			               "). SET anofox_tabfm_device='cpu' to run it through ONNX Runtime, and please report "
+			               "). SET anofox_tabfm_device='cpu' to run it on the CPU, and please report "
 			               "these op names.");
 		}
 		return new MlxHandle(std::move(graph));
@@ -1063,10 +1053,8 @@ TabFMPluginStatus PluginRun(void *handle, const TabFMPluginRunInput *input, TabF
 }
 
 TabFMPluginStatus PluginPrecompile(void *handle, int64_t rows, int64_t features, char *err, size_t err_len) {
-	// Deliberately a no-op that succeeds. MIGraphX compiles per shape bucket and
-	// needs warming; MLX's per-shape cost was measured at 217 ms (S-M4, 8% of a
-	// single call), so there is nothing here worth precompiling. Reporting
-	// success rather than "unsupported" keeps the engine's warm path uniform.
+	// A no-op that succeeds: the ABI slot has no effect since MIGraphX was removed (the host no longer calls it).
+	// MLX's per-shape cost was measured at 217 ms (S-M4, 8% of a single call), so there is nothing to precompile.
 	(void)handle;
 	(void)rows;
 	(void)features;

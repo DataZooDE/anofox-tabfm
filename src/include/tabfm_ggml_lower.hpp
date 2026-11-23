@@ -64,7 +64,7 @@ HostTensors GgmlRunGraph(const ::anofox::onnxread::Graph &graph, const HostTenso
 //! A reusable executor for ONE graph. It compiles (shape pass, lowering, ggml graph, activation arena) once per input-shape signature and keeps the
 //! last few compiled graphs, so repeated calls with the same shapes (the context cache's query batches, a SQL scan) skip all of that; it owns the
 //! CPU thread pool and reads the caller's weight buffers in place. Calls are serialised. `graph` must outlive the executor, and so must the
-//! buffers behind `weights` (the same lifetime contract as an ORT session's injected initializers).
+//! buffers behind `weights` (the same lifetime contract as a session's injected initializers).
 struct GgmlExecutorConfig {
 	int threads = 1;
 	WeightLookup weights;

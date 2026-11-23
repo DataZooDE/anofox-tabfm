@@ -3,6 +3,8 @@
 #include "duckdb/common/string.hpp"
 #include "duckdb/common/string_util.hpp"
 
+#include <cctype>
+
 namespace duckdb {
 namespace anofox {
 
@@ -49,15 +51,25 @@ inline string PluginLibrarySuffix(const string &os) {
 }
 
 //! The plugin's own name for a device. CUDA and ROCm are both served by the ggml GPU plugin (src/tabfm_ggml_plugin.cpp), one build per vendor:
-//! `ggml-cuda` and `ggml-rocm`. The old library name 'migraphx' still resolves to the ROCm plugin. MLX keeps its own plugin.
+//! `ggml-cuda` and `ggml-rocm`. MLX keeps its own plugin.
 inline string PluginBaseName(const string &backend) {
 	if (backend == "cuda" || backend == "ggml-cuda") {
 		return "ggml-cuda";
 	}
-	if (backend == "rocm" || backend == "migraphx" || backend == "ggml-rocm") {
+	if (backend == "rocm" || backend == "ggml-rocm") {
 		return "ggml-rocm";
 	}
 	return backend;
+}
+
+//! tabfm_download_runtime's backend argument, normalized once at that entry point: lowercased, and the deprecated name 'migraphx' (the
+//! removed MIGraphX plugin) is the ROCm plugin. Everything past the entry point sees only 'cuda', 'rocm', 'mlx' or an unknown name.
+inline string NormalizeRuntimeBackend(const string &requested) {
+	string backend = requested;
+	for (auto &c : backend) {
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	}
+	return backend == "migraphx" ? "rocm" : backend;
 }
 
 //! The error for an explicit cuda/rocm request when the ggml GPU plugin is not in anofox_tabfm_ep_path. It is the only GPU lane for those devices, so the
@@ -121,7 +133,7 @@ inline string UnsupportedPluginPlatform(const string &backend, const string &os,
 		       (os == "osx" ? "On Apple Silicon use the MLX backend instead: CALL tabfm_download_runtime('mlx')."
 		                    : "SET anofox_tabfm_device='cpu' to run on the CPU.");
 	}
-	if (backend == "rocm" || backend == "migraphx") {
+	if (backend == "rocm") {
 		if (os == "linux" && arch == "amd64") {
 			return "";
 		}

@@ -15,7 +15,7 @@
 //     free happens when the last snapshot holder releases (no torn sessions);
 //   - finalize-time forward passes are serialized per device via
 //     DeviceMutex() (parallel groups accumulate concurrently, the expensive
-//     ORT Run is one-at-a-time per device).
+//     forward pass is one-at-a-time per device).
 //===----------------------------------------------------------------------===//
 
 #include "duckdb/common/atomic.hpp"
@@ -35,7 +35,7 @@ namespace anofox {
 
 //! The context cache's counters for one loaded split backend (docs/CONTEXT_CACHE_PLAN.md). The backend
 //! updates them under the per-device lock; tabfm_models() reads them from another thread without it, so
-//! they are atomics. Shared rather than owned by either side, so the state layer stays free of ORT types.
+//! they are atomics. Shared rather than owned by either side, so the state layer stays free of engine types.
 struct ContextCacheStats {
 	//! Resident bytes of every cached context: state tensors, the context rows' outputs, and the verbatim
 	//! key (support rows and labels).
@@ -53,9 +53,9 @@ struct ContextCacheStats {
 
 //! One loaded model. `session` is deliberately an opaque shared_ptr<void>
 //! (holds a SessionHolder with the TabFMSessionHandle) so the state layer never
-//! depends on ORT headers; the safetensors arena behind it is kept alive by
-//! that holder for the whole session lifetime — ORT reads the injected weight
-//! buffers lazily during inference, so they must outlive the session.
+//! depends on engine headers; the safetensors arena behind it is kept alive by
+//! that holder for the whole session lifetime — the engine reads the injected
+//! weight buffers during inference, so they must outlive the session.
 struct LoadedModel {
 	//! Model key, e.g. "classification" or "classification@main"
 	string model_key;
@@ -67,8 +67,6 @@ struct LoadedModel {
 	//! "bf16"/"fp16"), and "" for CPU sessions — anofox_tabfm_gpu_precision
 	//! does not shape those, so flipping it must not rebuild them.
 	string precision;
-	//! Weight dtype loaded into the session ("f32", "f16", "bf16")
-	string dtype;
 	//! Resident weight bytes (for tabfm_models() reporting)
 	idx_t bytes = 0;
 	//! Loaded as a split (prepare/query) pair with a cached labelled context,
@@ -122,7 +120,7 @@ inline bool CanReuseSession(const LoadedModel &cached, bool want_split, const st
 //!   - `pair_exact`: the model ships a pair whose prepare graph emits `context_logits`, so every output
 //!     row (the context rows' fitted values included) is the combined graph's. A first-generation pair
 //!     without it (#38/#40) scored the context rows without their own labels; it is not served.
-//!   - `device` is the CPU. The GPU plugins (CUDA, MIGraphX, MLX) run bundled single-graph forwards and
+//!   - `device` is the CPU. The GPU plugins (ggml CUDA/ROCm, MLX) run bundled single-graph forwards and
 //!     have no split form yet (Phase 5 of the plan), so a GPU session bypasses the cache and runs exactly
 //!     as it did before the cache existed -- it neither errors nor falls back to the CPU.
 //!
@@ -203,8 +201,8 @@ public:
 	//! under `resolved.cache_key`, so keying this on the setting hands them different
 	//! mutexes and they stop excluding each other. `ResolvedDeviceCached()` in
 	//! tabfm_engine.cpp is what callers should pass; it is there rather than here
-	//! because resolving needs the ORT device probes and this layer deliberately does
-	//! not depend on ORT headers.
+	//! because resolving needs the device probes and this layer deliberately does
+	//! not depend on them.
 	mutex &DeviceMutex(const string &device_id);
 
 	//! Models registered in SQL (CALL tabfm_register_model). They are merged into

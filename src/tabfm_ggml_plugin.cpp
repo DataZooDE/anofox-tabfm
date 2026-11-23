@@ -5,10 +5,10 @@
  *
  * The same engine the CPU build runs (src/tabfm_ggml_lower.cpp: ONNX graph -> ggml graph), pointed at a ggml GPU
  * device (CUDA or HIP, chosen when this library is built; see tools/ggml_plugin/CMakeLists.txt). It speaks
- * tabfm_plugin_abi.h, so the extension loads it exactly like the ORT-CUDA and MIGraphX plugins: nothing GPU-specific
- * is linked into the extension.
+ * tabfm_plugin_abi.h, so the extension dlopens it like the MLX plugin: nothing GPU-specific is linked into the extension.
+ * It is the only plugin for CUDA and ROCm.
  *
- * What is different from the ORT plugins:
+ * How it works:
  *   - one engine for every device, so a device switch changes where the same graph runs, not which interpreter runs it;
  *   - the weights are read straight out of the memory-mapped safetensors file by the byte offsets the staged graph
  *     carries for its external initializers, then uploaded once into device memory;

@@ -47,14 +47,14 @@ WeightLookup MakeLookup(const GgmlSessionState &state) {
 	};
 }
 
-//! A failure inside the ggml engine, in the engine's voice: the SQL-visible message names the engine and the build option that returns to ORT.
+//! A failure inside the ggml engine, in the engine's voice: the SQL-visible message names the engine.
 [[noreturn]] void ThrowInference(const std::exception &error, const char *what) {
 	throw InvalidInputException(string("anofox_tabfm: ") + what + " failed in the ggml CPU engine: " + error.what());
 }
 
 GgmlRunOptions BaseOptions(const GgmlSessionState &state) {
 	GgmlRunOptions options;
-	options.threads = static_cast<int>(std::max<int64_t>(1, state.config.intra_op_threads));
+	options.threads = static_cast<int>(std::max<int64_t>(1, state.config.threads));
 	options.weights = MakeLookup(state);
 	return options;
 }
@@ -130,7 +130,7 @@ std::unique_ptr<GgmlSessionState> CreateGgmlSessionState(::anofox::onnxread::Gra
 	state->config = config;
 	const string task = Task(config);
 
-	// The engine either runs every op of the graph or says which it cannot (and how to run the model through ONNX Runtime instead).
+	// The engine either runs every op of the graph or says which it cannot.
 	std::vector<std::string> ops;
 	for (const auto &n : graph.nodes) {
 		ops.push_back(n.op_type);
@@ -173,14 +173,14 @@ std::unique_ptr<GgmlSessionState> CreateGgmlSessionState(::anofox::onnxread::Gra
 	state->output_names.assign(graph.outputs.begin(), graph.outputs.end());
 	state->graph = std::move(graph);
 	GgmlExecutorConfig executor_config;
-	executor_config.threads = static_cast<int>(std::max<int64_t>(1, config.intra_op_threads));
+	executor_config.threads = static_cast<int>(std::max<int64_t>(1, config.threads));
 	executor_config.weights = MakeLookup(*state);
 	state->executor = std::make_unique<GgmlExecutor>(state->graph, std::move(executor_config));
 	return state;
 }
 
 TabFMRunOutput GgmlRun(const GgmlSessionState &state, const TabFMRunInput &input) {
-	// Same contract as the ORT path: a graph without a train_size input derives the split from the length of y, so it gets the training prefix.
+	// The graph contract: a graph without a train_size input derives the split from the length of y, so it gets the training prefix.
 	const bool graph_has_train_size = HasInput(state, "train_size");
 	const int64_t y_len = graph_has_train_size ? input.t : input.train_size;
 	HostTensors in;

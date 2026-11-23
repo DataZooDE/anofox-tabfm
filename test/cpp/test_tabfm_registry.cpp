@@ -548,7 +548,7 @@ TEST_CASE("registry: Kumo-Tabular ships built in at three sizes, commercial and 
 		REQUIRE(m.preprocessing_profile == "kumo_tabular_v1_minimal");
 		REQUIRE(m.size_regime.max_classes == 10);
 		REQUIRE(m.size_regime.max_features == 500);
-		// measured cap: the masked graph attends over all rows; 10000 rows needed ~30 GB on the SMALL model
+		// measured cap: the graph attends over all rows; 10000 rows needed ~30 GB on the SMALL model
 		REQUIRE(m.size_regime.max_rows == 5000);
 
 		for (auto task : {TabFMTask::CLASSIFICATION, TabFMTask::REGRESSION}) {

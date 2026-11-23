@@ -23,141 +23,6 @@ namespace duckdb {
 namespace anofox {
 
 //===----------------------------------------------------------------------===//
-// Dtype helpers & cast hooks
-//===----------------------------------------------------------------------===//
-
-idx_t TabFMDtypeSize(TabFMTensorDtype dtype) {
-	switch (dtype) {
-	case TabFMTensorDtype::F32:
-		return 4;
-	case TabFMTensorDtype::F16:
-	case TabFMTensorDtype::BF16:
-		return 2;
-	case TabFMTensorDtype::I64:
-		return 8;
-	case TabFMTensorDtype::BOOL:
-		return 1;
-	default:
-		throw InternalException("anofox_tabfm: unknown tensor dtype");
-	}
-}
-
-namespace {
-
-uint16_t F32ToF16Bits(float value) {
-	uint32_t bits;
-	std::memcpy(&bits, &value, sizeof(bits));
-	const uint32_t sign = (bits >> 16) & 0x8000u;
-	const uint32_t exp = (bits >> 23) & 0xffu;
-	uint32_t mant = bits & 0x7fffffu;
-	if (exp == 0xffu) { // inf / nan
-		uint32_t payload = mant ? (0x200u | (mant >> 13)) : 0u;
-		return static_cast<uint16_t>(sign | 0x7c00u | payload);
-	}
-	int32_t e = static_cast<int32_t>(exp) - 127 + 15;
-	if (e >= 31) { // overflow -> inf
-		return static_cast<uint16_t>(sign | 0x7c00u);
-	}
-	if (e <= 0) { // subnormal or zero
-		if (e < -10) {
-			return static_cast<uint16_t>(sign);
-		}
-		mant |= 0x800000u;
-		const uint32_t shift = static_cast<uint32_t>(14 - e);
-		uint32_t half = mant >> shift;
-		const uint32_t rem = mant & ((1u << shift) - 1u);
-		const uint32_t halfway = 1u << (shift - 1u);
-		if (rem > halfway || (rem == halfway && (half & 1u))) {
-			half++;
-		}
-		return static_cast<uint16_t>(sign | half);
-	}
-	uint32_t half = sign | (static_cast<uint32_t>(e) << 10) | (mant >> 13);
-	const uint32_t rem = mant & 0x1fffu;
-	if (rem > 0x1000u || (rem == 0x1000u && (half & 1u))) {
-		half++; // rounding carry propagates into the exponent correctly
-	}
-	return static_cast<uint16_t>(half);
-}
-
-uint16_t F32ToBF16Bits(float value) {
-	uint32_t bits;
-	std::memcpy(&bits, &value, sizeof(bits));
-	if ((bits & 0x7f800000u) == 0x7f800000u && (bits & 0x7fffffu)) {
-		return static_cast<uint16_t>((bits >> 16) | 0x0040u); // quiet the NaN
-	}
-	// round-to-nearest-even on the truncated 16 bits
-	const uint32_t lsb = (bits >> 16) & 1u;
-	bits += 0x7fffu + lsb;
-	return static_cast<uint16_t>(bits >> 16);
-}
-
-} // anonymous namespace
-
-vector<uint16_t> CastF32ToF16(const float *src, idx_t count) {
-	vector<uint16_t> result(count);
-	for (idx_t i = 0; i < count; i++) {
-		result[i] = F32ToF16Bits(src[i]);
-	}
-	return result;
-}
-
-vector<uint16_t> CastF32ToBF16(const float *src, idx_t count) {
-	vector<uint16_t> result(count);
-	for (idx_t i = 0; i < count; i++) {
-		result[i] = F32ToBF16Bits(src[i]);
-	}
-	return result;
-}
-
-vector<float> CastBF16ToF32(const uint16_t *src, idx_t count) {
-	vector<float> result(count);
-	for (idx_t i = 0; i < count; i++) {
-		const uint32_t bits = static_cast<uint32_t>(src[i]) << 16;
-		std::memcpy(&result[i], &bits, sizeof(float));
-	}
-	return result;
-}
-
-
-
-
-//! ORT's OrtErrorCode ORT_NO_SUCHFILE (the value is part of ORT's ABI), so the message mapping can be tested without ORT.
-static constexpr int kOrtNoSuchFile = 3;
-
-bool IsMissingWeightsMessage(const string &message, int ort_error_code) {
-	// Missing injection: the weight-free graph's external-data stubs cannot be
-	// resolved because no initializers were injected. The signature depends on
-	// how the session is created:
-	//   * from a file (S02): ORT_NO_SUCHFILE + "cannot get file size";
-	//   * from a byte array (how this extension loads the embedded graph):
-	//     ORT_RUNTIME_EXCEPTION (code 6) + "model_path must not be empty"
-	//     (initializer.cc cannot locate the external file with no model path).
-	// Also match the export-time "External data path ... does not exist"
-	// phrasing (S01). Match message shapes as well as codes to stay robust
-	// across ORT versions and load paths.
-	//
-	// The phrasing is PLATFORM-specific: ORT's Windows env reports the failed
-	// stat as `file_size: The system cannot find the file specified.:
-	// "graph_classification.onnx.data"` (the strerror equivalent comes from
-	// FormatMessage, not errno), where POSIX says "cannot get file size" /
-	// "No such file". Missing the Windows shape sent every Windows user who
-	// forgot tabfm_load to ThrowMappedCreateError's generic fallthrough
-	// instead of the remediation.
-	return ort_error_code == kOrtNoSuchFile ||                              //
-	       message.find("No such file") != string::npos ||                   //
-	       message.find("cannot get file size") != string::npos ||           // POSIX, from a path
-	       message.find("file_size") != string::npos ||                      // Windows env stat
-	       message.find("The system cannot find the file") != string::npos || // Windows FormatMessage
-	       message.find("filesystem error") != string::npos ||               //
-	       message.find("model_path must not be empty") != string::npos ||   // from bytes
-	       message.find("External data") != string::npos ||                  //
-	       message.find("external data") != string::npos ||                  //
-	       message.find("external file") != string::npos;
-}
-
-
-//===----------------------------------------------------------------------===//
 // TabFMSession
 //===----------------------------------------------------------------------===//
 
@@ -169,7 +34,7 @@ public:
 	TabFMSessionConfig config;
 	vector<string> input_names;
 	vector<string> output_names;
-	//! The ggml CPU engine's state for this session (docs/GGML_PLAN.md).
+	//! The ggml CPU engine's state for this session (docs/GGML_PLAN.md); never null.
 	std::unique_ptr<GgmlSessionState> ggml;
 
 	//! A session served by the ggml engine.
@@ -237,11 +102,6 @@ namespace {
 	                            "holding it, CALL tabfm_download_runtime('cuda'|'rocm'|'mlx') to fetch it), or SET anofox_tabfm_device='cpu'.");
 }
 
-//! The ggml engine serves the CPU device; every other device keeps its own path.
-bool UseGgmlEngine(const TabFMSessionConfig &config) {
-	return config.device_id == "cpu";
-}
-
 TabFMSessionHandle MakeGgmlSession(::anofox::onnxread::Graph graph, const vector<TabFMTensorRef> &initializers, const TabFMSessionConfig &config) {
 	auto state = CreateGgmlSessionState(std::move(graph), initializers, config);
 	auto inputs = state->input_names;
@@ -258,19 +118,19 @@ TabFMSessionHandle CreateSession(const void *graph_bytes, idx_t graph_size,
 	if (!graph_bytes || graph_size == 0) {
 		throw InvalidInputException("anofox_tabfm: cannot create a session from empty model graph bytes");
 	}
-	if (UseGgmlEngine(config)) {
-		return MakeGgmlSession(::anofox::onnxread::ParseModelBytes(static_cast<const uint8_t *>(graph_bytes), graph_size, "model graph"),
-		                       initializers, config);
+	if (config.device_id != "cpu") {
+		ThrowNoInProcessSession(config);
 	}
-	ThrowNoInProcessSession(config);
+	return MakeGgmlSession(::anofox::onnxread::ParseModelBytes(static_cast<const uint8_t *>(graph_bytes), graph_size, "model graph"), initializers,
+	                       config);
 }
 
 TabFMSessionHandle CreateSessionFromPath(const string &graph_path, const vector<TabFMTensorRef> &initializers,
                                          const TabFMSessionConfig &config) {
-	if (UseGgmlEngine(config)) {
-		return MakeGgmlSession(::anofox::onnxread::ParseModelFile(graph_path), initializers, config);
+	if (config.device_id != "cpu") {
+		ThrowNoInProcessSession(config);
 	}
-	ThrowNoInProcessSession(config);
+	return MakeGgmlSession(::anofox::onnxread::ParseModelFile(graph_path), initializers, config);
 }
 
 //===----------------------------------------------------------------------===//
@@ -286,10 +146,7 @@ TabFMRunOutput Run(TabFMSession &session, const TabFMRunInput &input) {
 		                            std::to_string(input.t) + " H=" + std::to_string(input.h));
 	}
 
-	if (session.ggml) {
-		return GgmlRun(*session.ggml, input);
-	}
-	ThrowNoInProcessSession(session.config);
+	return GgmlRun(*session.ggml, input);
 }
 
 //===----------------------------------------------------------------------===//
@@ -330,10 +187,7 @@ TabFMPreparedContext RunPrepare(TabFMSession &session, const float *x, const flo
 		    "anofox_tabfm: the query graph takes no context tensors, so it is not the query half of a split pair.");
 	}
 
-	if (session.ggml) {
-		return GgmlRunPrepare(*session.ggml, x, y, s, h, wanted);
-	}
-	ThrowNoInProcessSession(session.config);
+	return GgmlRunPrepare(*session.ggml, x, y, s, h, wanted);
 }
 
 TabFMRunOutput RunQuery(TabFMSession &session, const float *x, int64_t q, int64_t h, const float *y, int64_t s,
@@ -346,10 +200,7 @@ TabFMRunOutput RunQuery(TabFMSession &session, const float *x, int64_t q, int64_
 		                            " H=" + std::to_string(h) + " S=" + std::to_string(s));
 	}
 
-	if (session.ggml) {
-		return GgmlRunQuery(*session.ggml, x, q, h, y, s, context);
-	}
-	ThrowNoInProcessSession(session.config);
+	return GgmlRunQuery(*session.ggml, x, q, h, y, s, context);
 }
 
 TabFMRunOutput TabFMBackend::RunBatched(const TabFMRunInput &input, int64_t query_batch) {

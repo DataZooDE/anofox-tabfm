@@ -155,7 +155,7 @@ struct KvFixture {
 		return result;
 	}
 	//! The full answer for table k, in id order, as text: the label and the score to 1e-6. Not every digit:
-	//! a query batch of a different size can take a different ORT kernel (a one-row batch differs from the
+	//! a query batch of a different size can take a different kernel (a one-row batch differs from the
 	//! unbatched pass at ~1e-9), so batching is exact to float rounding, not bit for bit.
 	static string Answer(Connection &con, int k, const string &query_batch) {
 		const string opts = query_batch.empty() ? "" : ", opts := MAP{'query_batch': '" + query_batch + "'}";

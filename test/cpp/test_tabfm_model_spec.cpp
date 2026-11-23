@@ -192,11 +192,8 @@ TEST_CASE("model_spec: v2 ext_graph is optional and carried per task", "[tabfm][
 	auto spec = ParseModelSpec(kV2ExtGraph, "mitra_ext.json");
 	REQUIRE(spec.tasks.at(TabFMTask::CLASSIFICATION).ext_graph == "resources/mitra/mitra_clf_ext.onnx");
 	REQUIRE(spec.tasks.at(TabFMTask::REGRESSION).ext_graph.empty());
-	// migraphx_graph is its own field, not a fallback of ext_graph: U1 measured
-	// that MIGraphX cannot run a plain external-data ONNX, so conflating them
-	// would trade a clear "no GPU graph" for a runtime MIGraphX error.
-	REQUIRE(spec.tasks.at(TabFMTask::CLASSIFICATION).migraphx_graph == "resources/mitra/mitra_clf_migraphx.onnx");
-	REQUIRE(spec.tasks.at(TabFMTask::REGRESSION).migraphx_graph.empty());
+	// The manifest also names a migraphx_graph: that key is ignored (MIGraphX was removed), so the model still parses and its ext graph is
+	// what the GPUs read.
 
 	auto plain = ParseModelSpec(kV2, "mitra.json");
 	REQUIRE(plain.tasks.at(TabFMTask::CLASSIFICATION).ext_graph.empty());
@@ -229,7 +226,7 @@ TEST_CASE("model_spec: NoGpuGraphMessage names the model and the real fix, not e
 	// errored with "SET anofox_tabfm_ep_path" — the one thing that was already
 	// configured. The message must name the model, the missing artifact, and
 	// the two real fixes (register a graph, or use cpu).
-	auto msg = duckdb::anofox::NoGpuGraphMessage("cuda", "mitra", "classification", "ext_graph");
+	auto msg = duckdb::anofox::NoGpuGraphMessage("cuda", "mitra", "classification");
 	REQUIRE(msg.find("mitra") != std::string::npos);
 	REQUIRE(msg.find("ext_graph") != std::string::npos);
 	REQUIRE(msg.find("classification") != std::string::npos);
@@ -238,12 +235,12 @@ TEST_CASE("model_spec: NoGpuGraphMessage names the model and the real fix, not e
 	// The one anti-requirement: it must NOT send the user to ep_path.
 	REQUIRE(msg.find("ep_path") == std::string::npos);
 
-	auto rocm = duckdb::anofox::NoGpuGraphMessage("rocm", "my-model", "regression", "migraphx_graph");
-	REQUIRE(rocm.find("migraphx_graph") != std::string::npos);
-	REQUIRE(rocm.find("regression_migraphx_graph") != std::string::npos);
+	// every GPU plugin reads the ext graph, so ROCm names the same registration argument
+	auto rocm = duckdb::anofox::NoGpuGraphMessage("rocm", "my-model", "regression");
+	REQUIRE(rocm.find("regression_ext_graph") != std::string::npos);
 }
 
-TEST_CASE("model_spec: IsExplicitGpuRequest — only the named device (or its alias) throws", "[tabfm][model_spec]") {
+TEST_CASE("model_spec: IsExplicitGpuRequest — only the named device throws", "[tabfm][model_spec]") {
 	using duckdb::anofox::IsExplicitGpuRequest;
 	// Explicit requests hard-error on a missing graph; 'auto' must stay a
 	// graceful CPU fallback — that asymmetry is the whole point.
@@ -251,7 +248,6 @@ TEST_CASE("model_spec: IsExplicitGpuRequest — only the named device (or its al
 	REQUIRE_FALSE(IsExplicitGpuRequest("auto", "cuda"));
 	REQUIRE_FALSE(IsExplicitGpuRequest("cpu", "cuda"));
 	REQUIRE(IsExplicitGpuRequest("rocm", "rocm"));
-	REQUIRE(IsExplicitGpuRequest("migraphx", "rocm")); // documented alias
 	REQUIRE_FALSE(IsExplicitGpuRequest("auto", "rocm"));
 	REQUIRE_FALSE(IsExplicitGpuRequest("cuda", "rocm"));
 }
@@ -260,11 +256,11 @@ TEST_CASE("model_spec: bundled GPU graph ids are model-qualified, tabfm-v1 keeps
 	using duckdb::anofox::BundledGpuGraphId;
 	// tabfm-v1's graphs predate multi-model bundling and keep their unqualified
 	// resource ids — renaming them would orphan the embedded resources.
-	REQUIRE(BundledGpuGraphId("tabfm-v1", "ext", "classification") == "graph_ext_classification");
-	REQUIRE(BundledGpuGraphId("tabfm-v1", "migraphx", "regression") == "graph_migraphx_regression");
+	REQUIRE(BundledGpuGraphId("tabfm-v1", "classification") == "graph_ext_classification");
+	REQUIRE(BundledGpuGraphId("tabfm-v1", "regression") == "graph_ext_regression");
 	// Every other model gets a model-qualified id.
-	REQUIRE(BundledGpuGraphId("mitra", "ext", "classification") == "graph_ext_mitra_classification");
-	REQUIRE(BundledGpuGraphId("mitra", "migraphx", "regression") == "graph_migraphx_mitra_regression");
+	REQUIRE(BundledGpuGraphId("mitra", "classification") == "graph_ext_mitra_classification");
+	REQUIRE(BundledGpuGraphId("mitra", "regression") == "graph_ext_mitra_regression");
 }
 
 TEST_CASE("model_spec: weights-header table is (model, task)-keyed", "[tabfm][model_spec]") {
@@ -289,11 +285,7 @@ TEST_CASE("model_spec: weights-header table is (model, task)-keyed", "[tabfm][mo
 TEST_CASE("model_spec: the whole catalog has (model, task) header hashes for ext graphs", "[tabfm][model_spec]") {
 	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
 	// tools/make_external_graph.py output against each model's HF-downloaded
-	// safetensors. These gate the CUDA + CPU-low-memory ext path; the
-	// single_eval_pos family (x, y only — no train_size input) deliberately
-	// bundles NO migraphx variant: MIGraphX compiles per fixed shape, and for
-	// those models y's LENGTH is the train/test split, so bucketing would need
-	// a compile per distinct train_size.
+	// safetensors. These gate the GPU plugins' ext path.
 	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2", "classification") ==
 	        "e97043c10b4572d6011cb1e389db2c7d57425213c761288f935188e25e953362");
 	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2", "regression") ==
@@ -344,11 +336,11 @@ TEST_CASE("model_spec: RealTabPFN-2.5 shares 2.5's bundled graphs and header sha
 	// These REQUIREs are the tripwire for that reuse: if a future 2.5-real
 	// checkpoint ever diverges, the ext graph's baked offsets would index the
 	// wrong tensors, and this is what must fail first.
-	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "ext", "classification") ==
-	        BundledGpuGraphId("tabpfn-v2-5", "ext", "classification"));
-	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "ext", "regression") ==
-	        BundledGpuGraphId("tabpfn-v2-5", "ext", "regression"));
-	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "ext", "classification") == "graph_ext_tabpfn25_classification");
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "classification") ==
+	        BundledGpuGraphId("tabpfn-v2-5", "classification"));
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "regression") ==
+	        BundledGpuGraphId("tabpfn-v2-5", "regression"));
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5-real", "classification") == "graph_ext_tabpfn25_classification");
 
 	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v2-5-real", "classification") ==
 	        ExpectedWeightsHeaderShaFor("tabpfn-v2-5", "classification"));
@@ -367,8 +359,8 @@ TEST_CASE("model_spec: TabDPT's two tasks share a header sha and the plain stem"
 	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
 	// The registry id IS the resource stem here, so no mapping entry is needed --
 	// asserted so a future rename does not silently fall back to the id.
-	REQUIRE(BundledGpuGraphId("tabdpt", "ext", "classification") == "graph_ext_tabdpt_classification");
-	REQUIRE(BundledGpuGraphId("tabdpt", "ext", "regression") == "graph_ext_tabdpt_regression");
+	REQUIRE(BundledGpuGraphId("tabdpt", "classification") == "graph_ext_tabdpt_classification");
+	REQUIRE(BundledGpuGraphId("tabdpt", "regression") == "graph_ext_tabdpt_regression");
 
 	// Both tasks index the SAME downloaded safetensors (one checkpoint, one
 	// head), so the header sha is necessarily identical -- not a copy-paste.
@@ -384,23 +376,23 @@ TEST_CASE("model_spec: catalog bundled ids use the resource stems, not the regis
 	// Registry ids (tabpfn-v2, tabicl-v2, ...) differ from the resource file
 	// stems (tabpfn, tabicl, ...) — the id function owns that mapping so the
 	// engine never string-mangles.
-	REQUIRE(BundledGpuGraphId("tabpfn-v2", "ext", "classification") == "graph_ext_tabpfn_classification");
-	REQUIRE(BundledGpuGraphId("tabpfn-v2-5", "ext", "regression") == "graph_ext_tabpfn25_regression");
-	REQUIRE(BundledGpuGraphId("tabpfn-v3", "ext", "classification") == "graph_ext_tabpfn3_classification");
-	REQUIRE(BundledGpuGraphId("tabicl-v2", "ext", "regression") == "graph_ext_tabicl_regression");
+	REQUIRE(BundledGpuGraphId("tabpfn-v2", "classification") == "graph_ext_tabpfn_classification");
+	REQUIRE(BundledGpuGraphId("tabpfn-v2-5", "regression") == "graph_ext_tabpfn25_regression");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3", "classification") == "graph_ext_tabpfn3_classification");
+	REQUIRE(BundledGpuGraphId("tabicl-v2", "regression") == "graph_ext_tabicl_regression");
 	// causilo's id IS its stem, so it needs no mapping (a wrong one would silently find no graph)
-	REQUIRE(BundledGpuGraphId("causilo", "ext", "classification") == "graph_ext_causilo_classification");
-	REQUIRE(BundledGpuGraphId("causilo", "ext", "regression") == "graph_ext_causilo_regression");
+	REQUIRE(BundledGpuGraphId("causilo", "classification") == "graph_ext_causilo_classification");
+	REQUIRE(BundledGpuGraphId("causilo", "regression") == "graph_ext_causilo_regression");
 	// limix-2m maps to the stem "limix2m" on purpose: LimiX-2 (400M) is a different model, and a bare
 	// "limix" stem would silently hand its graphs to the wrong one
-	REQUIRE(BundledGpuGraphId("limix-2m", "ext", "classification") == "graph_ext_limix2m_classification");
-	REQUIRE(BundledGpuGraphId("limix-2m", "ext", "regression") == "graph_ext_limix2m_regression");
-	REQUIRE(BundledGpuGraphId("orion-bix", "ext", "classification") == "graph_ext_orion_bix_classification");
+	REQUIRE(BundledGpuGraphId("limix-2m", "classification") == "graph_ext_limix2m_classification");
+	REQUIRE(BundledGpuGraphId("limix-2m", "regression") == "graph_ext_limix2m_regression");
+	REQUIRE(BundledGpuGraphId("orion-bix", "classification") == "graph_ext_orion_bix_classification");
 	// orion-msp is a separate stem, NOT a fallback onto orion-bix's graphs: the
 	// two are different architectures that happen to share a vendor and licence.
-	REQUIRE(BundledGpuGraphId("orion-msp", "ext", "classification") == "graph_ext_orion_msp_classification");
-	REQUIRE(BundledGpuGraphId("orion-msp", "ext", "classification") !=
-	        BundledGpuGraphId("orion-bix", "ext", "classification"));
+	REQUIRE(BundledGpuGraphId("orion-msp", "classification") == "graph_ext_orion_msp_classification");
+	REQUIRE(BundledGpuGraphId("orion-msp", "classification") !=
+	        BundledGpuGraphId("orion-bix", "classification"));
 	REQUIRE(ExpectedWeightsHeaderShaFor("orion-msp", "classification") ==
 	        "bf066b3de2beea6875035790027ed9ada6cc6b43a33709cde42312f28be89fe7");
 	REQUIRE(ExpectedWeightsHeaderShaFor("orion-msp", "regression") == "");
@@ -431,10 +423,8 @@ TEST_CASE("model_spec: session precision key follows the device, not the code pa
 	// an unfindable entry, rebuilt on every predict. One rule, both sides.
 	REQUIRE(SessionPrecisionFor("rocm:0", "fp32") == "fp32");
 	REQUIRE(SessionPrecisionFor("cuda:1", "bf16") == "bf16");
-	REQUIRE(SessionPrecisionFor("migraphx:0", "fp16") == "fp16");
 	REQUIRE(SessionPrecisionFor("cpu", "fp32") == "");
 	REQUIRE(SessionPrecisionFor("", "fp32") == "");
-	REQUIRE(SessionPrecisionFor("coreml:0", "fp32") == "");
 }
 
 //===----------------------------------------------------------------------===//
@@ -486,7 +476,7 @@ TEST_CASE("servability: a bundled graph needs its header to match the weights",
 TEST_CASE("servability: stale converted weights name the fix, not a graph registration",
           "[tabfm][model_spec][servability][stale_weights]") {
 	// The 2026-11-12 ROCm probe: tabpfn-v2's cached model.safetensors was an older conversion. The refusal
-	// said the model "declares no migraphx_graph", which sends the user to register a graph; the cached
+	// said the model declared no GPU graph, which sends the user to register a graph; the cached
 	// file is the problem, and deleting/reconverting it is the fix.
 	const string path = "/cache/Prior-Labs__TabPFN-v2-clf@275f19d/classification/model.safetensors";
 	auto in = ServableBase("rocm");
@@ -543,20 +533,14 @@ TEST_CASE("servability: a read-only weights directory is its own reason, not 'no
 	REQUIRE(out.reason.find("no ") == string::npos); // not the missing-graph text
 }
 
-TEST_CASE("servability: the nine ROCm-blocked models say WHY, not just no",
+TEST_CASE("servability: a model without a usable GPU graph says which graph to register",
           "[tabfm][model_spec][servability]") {
-	// tabdpt and friends read the train/test split from y's length, so a
-	// fixed-shape MIGraphX compile cannot bucket them. The user cannot fix
-	// this by registering a graph, so the reason must point at the analysis.
 	auto in = ServableBase("rocm");
 	in.model = "tabdpt";
 	in.bundled_graph_exists = false;
 	auto out = EvaluateGpuServability(in);
 	REQUIRE(!out.supported);
 	REQUIRE(out.reason.find("tabdpt") != string::npos);
-	// the ggml plugin reads the plain ext graph and has no shape buckets: the reason points at ext_graph, never at the MIGraphX bucketing analysis
-	REQUIRE(out.reason.find("ROCM_SINGLE_EVAL_POS") == string::npos);
-	REQUIRE(out.reason.find("cannot be bucketed") == string::npos);
 	REQUIRE(out.reason.find("ext_graph") != string::npos);
 }
 
@@ -571,7 +555,7 @@ TEST_CASE("servability: a precision the backend cannot run makes it unservable t
 	REQUIRE(!out.supported);
 	REQUIRE(out.reason.find("bf16") != string::npos);
 	REQUIRE(out.reason.find("cuda") != string::npos);
-	// rocm is served by the same plugin: bf16 and fp16 are refused there too, with a reason that no longer blames MIGraphX
+	// rocm is served by the same plugin: bf16 and fp16 are refused there too, with a reason that names the ggml GPU backend
 	for (const char *half : {"bf16", "fp16"}) {
 		auto rocm = ServableBase("rocm");
 		rocm.model_provides_graph = true;
@@ -580,10 +564,10 @@ TEST_CASE("servability: a precision the backend cannot run makes it unservable t
 		REQUIRE(!out.supported);
 		REQUIRE(out.reason.find(half) != string::npos);
 		REQUIRE(out.reason.find("rocm") != string::npos);
-		REQUIRE(out.reason.find("MIGraphX") == string::npos);
+		REQUIRE(out.reason.find("ggml GPU backend") != string::npos);
 	}
 
-	// tf32 is CUDA's own mode and has no Metal/MIGraphX equivalent
+	// tf32 is CUDA's own mode and has no Metal equivalent
 	auto mlx = ServableBase("mlx");
 	mlx.model_provides_graph = true;
 	mlx.precision = "tf32";
@@ -597,7 +581,7 @@ TEST_CASE("servability: each backend's real precision set", "[tabfm][model_spec]
 		REQUIRE(BackendSupportsPrecision(backend, ""));
 	}
 	// the ggml GPU plugin serves cuda AND rocm: float32 (tf32 keeps the hardware's matmul mode), no bf16/fp16 quantized programs
-	for (const char *backend : {"cuda", "rocm", "migraphx"}) {
+	for (const char *backend : {"cuda", "rocm"}) {
 		REQUIRE(BackendSupportsPrecision(backend, "tf32"));
 		REQUIRE(!BackendSupportsPrecision(backend, "bf16"));
 		REQUIRE(!BackendSupportsPrecision(backend, "fp16"));
@@ -607,15 +591,6 @@ TEST_CASE("servability: each backend's real precision set", "[tabfm][model_spec]
 	REQUIRE(BackendSupportsPrecision("mlx", "bf16"));
 	REQUIRE(BackendSupportsPrecision("mlx", "fp16"));
 	REQUIRE(!BackendSupportsPrecision("mlx", "tf32"));
-}
-
-TEST_CASE("servability: the graph kind matches what tabfm_register_model accepts",
-          "[tabfm][model_spec][servability]") {
-	REQUIRE(GpuGraphKindFor("cuda") == "ext_graph");
-	REQUIRE(GpuGraphKindFor("mlx") == "ext_graph");
-	// rocm is read by the same ggml plugin as cuda: the plain ext graph, not a fixed-shape MIGraphX graph
-	REQUIRE(GpuGraphKindFor("rocm") == "ext_graph");
-	REQUIRE(GpuGraphKindFor("migraphx") == "ext_graph");
 }
 
 //===----------------------------------------------------------------------===//
@@ -631,12 +606,11 @@ TEST_CASE("servability: a vanished device the user ASKED for must raise, never b
           "[tabfm][model_spec][servability]") {
 	// The regression this encodes: the first version of DeviceInfoFor
 	// synthesized a cpu row on a miss. Every Try*Backend gate is a StartsWith
-	// on the device id, so all three then declined and the ORT CPU path picked
+	// on the device id, so all three then declined and the CPU path picked
 	// the work up silently — an explicit 'cuda' served on the CPU with nothing
 	// printed, which is exactly what IsExplicitGpuRequest exists to forbid.
 	REQUIRE(VanishedDeviceMustThrow("cuda:0", "cuda"));
 	REQUIRE(VanishedDeviceMustThrow("rocm:0", "rocm"));
-	REQUIRE(VanishedDeviceMustThrow("rocm:0", "migraphx")); // documented alias
 	REQUIRE(VanishedDeviceMustThrow("mlx:0", "mlx"));
 }
 
@@ -697,14 +671,12 @@ TEST_CASE("model_spec: Mitra-v2 shares v1's classification GPU graphs, not its r
 	using duckdb::anofox::BundledGpuGraphId;
 	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
 	// The classifier-2 safetensors header is byte-identical to classifier-1's (verified against both
-	// HF files: sha below), so the baked ext/migraphx offsets index v2 weights correctly.
-	REQUIRE(BundledGpuGraphId("mitra-v2", "ext", "classification") == "graph_ext_mitra_classification");
-	REQUIRE(BundledGpuGraphId("mitra-v2", "migraphx", "classification") == "graph_migraphx_mitra_classification");
+	// HF files: sha below), so the baked ext offsets index v2 weights correctly.
+	REQUIRE(BundledGpuGraphId("mitra-v2", "classification") == "graph_ext_mitra_classification");
 	REQUIRE(ExpectedWeightsHeaderShaFor("mitra-v2", "classification") ==
 	        ExpectedWeightsHeaderShaFor("mitra", "classification"));
 	// The regressor-2 header differs (1000-bin head), so it has its own graphs and its own sha.
-	REQUIRE(BundledGpuGraphId("mitra-v2", "ext", "regression") == "graph_ext_mitra2_regression");
-	REQUIRE(BundledGpuGraphId("mitra-v2", "migraphx", "regression") == "graph_migraphx_mitra2_regression");
+	REQUIRE(BundledGpuGraphId("mitra-v2", "regression") == "graph_ext_mitra2_regression");
 	REQUIRE(ExpectedWeightsHeaderShaFor("mitra-v2", "regression") ==
 	        "ff7288fd5eda3910b21863813683614eaddcceb60ef9e60be4eb79bf9c69c7cb");
 }
@@ -712,8 +684,8 @@ TEST_CASE("model_spec: Mitra-v2 shares v1's classification GPU graphs, not its r
 TEST_CASE("model_spec: TabDPT v1.3 has its own stem and one header sha for both tasks", "[tabfm][model_spec]") {
 	using duckdb::anofox::BundledGpuGraphId;
 	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
-	REQUIRE(BundledGpuGraphId("tabdpt-v1-3", "ext", "classification") == "graph_ext_tabdpt13_classification");
-	REQUIRE(BundledGpuGraphId("tabdpt-v1-3", "migraphx", "regression") == "graph_migraphx_tabdpt13_regression");
+	REQUIRE(BundledGpuGraphId("tabdpt-v1-3", "classification") == "graph_ext_tabdpt13_classification");
+	REQUIRE(BundledGpuGraphId("tabdpt-v1-3", "regression") == "graph_ext_tabdpt13_regression");
 	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt-v1-3", "classification") ==
 	        "8ab85c0bf4ce2fc87a81f040b4170ae7c10b50d75bad937d2f8009558767b5a3");
 	REQUIRE(ExpectedWeightsHeaderShaFor("tabdpt-v1-3", "regression") ==
@@ -729,15 +701,13 @@ TEST_CASE("model_spec: TabPFN-3.5 and 3.5-Fast map to their own stems and header
 	// shared stem would hand 3.5-Fast the 24-layer graph. Neither may fall back
 	// onto tabpfn-v3's graphs: 3.5 is a different architecture (ECDF cell
 	// channel, Fourier cell embedding, q/k RMSNorm, multi-task heads).
-	REQUIRE(BundledGpuGraphId("tabpfn-v3-5", "migraphx", "classification") ==
-	        "graph_migraphx_tabpfn35_classification");
-	REQUIRE(BundledGpuGraphId("tabpfn-v3-5", "ext", "regression") == "graph_ext_tabpfn35_regression");
-	REQUIRE(BundledGpuGraphId("tabpfn-v3-5-fast", "migraphx", "regression") ==
-	        "graph_migraphx_tabpfn35fast_regression");
-	REQUIRE(BundledGpuGraphId("tabpfn-v3-5-fast", "ext", "classification") ==
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5", "classification") == "graph_ext_tabpfn35_classification");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5", "regression") == "graph_ext_tabpfn35_regression");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5-fast", "regression") == "graph_ext_tabpfn35fast_regression");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3-5-fast", "classification") ==
 	        "graph_ext_tabpfn35fast_classification");
 	// Unchanged by the addition.
-	REQUIRE(BundledGpuGraphId("tabpfn-v3", "migraphx", "classification") == "graph_migraphx_tabpfn3_classification");
+	REQUIRE(BundledGpuGraphId("tabpfn-v3", "classification") == "graph_ext_tabpfn3_classification");
 
 	// ONE published safetensors per variant serves both tasks (both heads live
 	// in it), so both tasks pin the same header -- the one Prior Labs publish,
@@ -750,24 +720,22 @@ TEST_CASE("model_spec: TabPFN-3.5 and 3.5-Fast map to their own stems and header
 	REQUIRE(ExpectedWeightsHeaderShaFor("tabpfn-v3-5-fast", "regression") == sha35fast);
 }
 
-TEST_CASE("model_spec: EXAONE Tabular and Nori-30M bundle masked ROCm graphs, keyed to the weights they were built against",
+TEST_CASE("model_spec: EXAONE Tabular and Nori-30M bundle ext graphs, keyed to the weights they were built against",
           "[tabfm][model_spec]") {
 	using duckdb::anofox::BundledGpuGraphId;
 	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
 	// the id has a dash and the resource stem an underscore; the id function owns that mapping
-	REQUIRE(BundledGpuGraphId("exaone-tabular", "migraphx", "classification") ==
-	        "graph_migraphx_exaone_tabular_classification");
-	REQUIRE(BundledGpuGraphId("exaone-tabular", "migraphx", "regression") ==
-	        "graph_migraphx_exaone_tabular_regression");
-	// the masked graphs bake offsets into LG's own files at the pinned revision (093ad1c2); the classifier and
+	REQUIRE(BundledGpuGraphId("exaone-tabular", "classification") == "graph_ext_exaone_tabular_classification");
+	REQUIRE(BundledGpuGraphId("exaone-tabular", "regression") == "graph_ext_exaone_tabular_regression");
+	// the ext graphs bake offsets into LG's own files at the pinned revision (093ad1c2); the classifier and
 	// the regressor are different checkpoints, so their headers differ
 	REQUIRE(ExpectedWeightsHeaderShaFor("exaone-tabular", "classification") ==
 	        "d211d3dc9c8a8af8b2cfc74e58435640424725a802af5995d5cbd3e719246285");
 	REQUIRE(ExpectedWeightsHeaderShaFor("exaone-tabular", "regression") ==
 	        "8888839dd2aef01b1f9e01603edfdb77ab2b99eb789b110613074d3cac9da1e1");
-	// Nori-30M's masked ROCm graph reads the safetensors tools/export_nori's convert_nori_weights writes from
+	// Nori-30M's ext graph reads the safetensors tools/export_nori's convert_nori_weights writes from
 	// nori.pt (773 tensors, sorted, float32: byte-deterministic). The CPU path still reads the .ckpt natively.
-	REQUIRE(BundledGpuGraphId("nori-30m", "migraphx", "regression") == "graph_migraphx_nori30m_regression");
+	REQUIRE(BundledGpuGraphId("nori-30m", "regression") == "graph_ext_nori30m_regression");
 	REQUIRE(ExpectedWeightsHeaderShaFor("nori-30m", "regression") ==
 	        "49797138da9ce6d7bb76895cb00514bc6967732051811c217548f32c75a02363");
 	REQUIRE(ExpectedWeightsHeaderShaFor("nori-30m", "classification") == "");
@@ -777,11 +745,10 @@ TEST_CASE("model_spec: Nori 1.5 has its own stem, so it is never handed Nori-30M
           "[tabfm][model_spec]") {
 	using duckdb::anofox::BundledGpuGraphId;
 	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
-	// ext (CUDA and MLX) and migraphx (ROCm) graphs bake byte offsets into the safetensors convert_nori_weights
+	// its ext graph (every GPU) bakes byte offsets into the safetensors convert_nori_weights
 	// writes from nori.pt (381 tensors, sorted, float32: byte-deterministic). The stems differ from nori30m's.
-	REQUIRE(BundledGpuGraphId("nori-1-5", "ext", "regression") == "graph_ext_nori15_regression");
-	REQUIRE(BundledGpuGraphId("nori-1-5", "migraphx", "regression") == "graph_migraphx_nori15_regression");
-	REQUIRE(BundledGpuGraphId("nori-1-5", "ext", "regression") != BundledGpuGraphId("nori-30m", "ext", "regression"));
+	REQUIRE(BundledGpuGraphId("nori-1-5", "regression") == "graph_ext_nori15_regression");
+	REQUIRE(BundledGpuGraphId("nori-1-5", "regression") != BundledGpuGraphId("nori-30m", "regression"));
 	REQUIRE(ExpectedWeightsHeaderShaFor("nori-1-5", "regression") ==
 	        "6da735b26d65fd2281525b127938f45c48d9eeef7bc20156ba6a87caaeed6029");
 	REQUIRE(ExpectedWeightsHeaderShaFor("nori-1-5", "classification") == "");
@@ -796,14 +763,12 @@ TEST_CASE("model_spec: Kumo-Tabular sizes map to their own stems and pin their c
 	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
 	// One stem per SIZE: the three are different module trees (layer counts, widths, heads), so a
 	// shared graph would mis-index every one but the size it was exported from.
-	REQUIRE(BundledGpuGraphId("kumo-tabular-small", "ext", "classification") == "graph_ext_kumo_small_classification");
-	REQUIRE(BundledGpuGraphId("kumo-tabular-small", "migraphx", "regression") ==
-	        "graph_migraphx_kumo_small_regression");
-	REQUIRE(BundledGpuGraphId("kumo-tabular-medium", "ext", "regression") == "graph_ext_kumo_medium_regression");
-	REQUIRE(BundledGpuGraphId("kumo-tabular-large", "migraphx", "classification") ==
-	        "graph_migraphx_kumo_large_classification");
+	REQUIRE(BundledGpuGraphId("kumo-tabular-small", "classification") == "graph_ext_kumo_small_classification");
+	REQUIRE(BundledGpuGraphId("kumo-tabular-small", "regression") == "graph_ext_kumo_small_regression");
+	REQUIRE(BundledGpuGraphId("kumo-tabular-medium", "regression") == "graph_ext_kumo_medium_regression");
+	REQUIRE(BundledGpuGraphId("kumo-tabular-large", "classification") == "graph_ext_kumo_large_classification");
 	// The header of the model.safetensors that tools/export_kumo's convert_kumo_weights writes from the
-	// published .pt (every key, sorted, float32, no metadata: deterministic). The ext/migraphx graphs bake
+	// published .pt (every key, sorted, float32, no metadata: deterministic). The ext graphs bake
 	// offsets into THAT file; without it the engine injects the .pt natively on the CPU.
 	REQUIRE(ExpectedWeightsHeaderShaFor("kumo-tabular-small", "classification") ==
 	        "b65ef653ebec907449922c7df6059c929fef788d7cbb871271180b94ff665ec0");
@@ -853,45 +818,27 @@ TEST_CASE("servability: a graph the backend runs wrongly is refused with the rea
 	REQUIRE_THAT(out.reason, Contains("'mlx'"));
 }
 
-TEST_CASE("model_spec: Causilo bundles masked ROCm graphs, keyed to the pinned checkpoint", "[tabfm][model_spec]") {
+TEST_CASE("model_spec: Causilo bundles ext graphs, keyed to the pinned checkpoint", "[tabfm][model_spec]") {
 	using duckdb::anofox::BundledGpuGraphId;
 	using duckdb::anofox::ExpectedWeightsHeaderShaFor;
-	REQUIRE(BundledGpuGraphId("causilo", "migraphx", "classification") == "graph_migraphx_causilo_classification");
-	REQUIRE(BundledGpuGraphId("causilo", "migraphx", "regression") == "graph_migraphx_causilo_regression");
-	// the masked graphs (tools/export_causilo --contract mask) reuse the shipped tensor map byte for byte, so they
-	// bake offsets into the same released files (revision 94f2bd91) as the ext graphs
+	REQUIRE(BundledGpuGraphId("causilo", "classification") == "graph_ext_causilo_classification");
+	REQUIRE(BundledGpuGraphId("causilo", "regression") == "graph_ext_causilo_regression");
+	// the ext graphs bake offsets into the released files at revision 94f2bd91
 	REQUIRE(ExpectedWeightsHeaderShaFor("causilo", "classification") ==
 	        "85fb120c90878b69b0d34ff32fcfbdcf457ffd4d2ed7af2a102fe7c2d417d742");
 	REQUIRE(ExpectedWeightsHeaderShaFor("causilo", "regression") ==
 	        "0bbfd6114cbae8d2facfcbf11cb01796c88aa57e0bb57d4589d552ca8accc192");
 }
 
-// Measured on an RTX 4090 (tools/gpu_test/cuda_catalog.sh, released v2026.10.31 artefacts, 100-row tables):
-// every bundled ext graph served on cuda:0 agreed with the CPU except TabPFN-3.5 and 3.5-Fast, which failed
-// inside ONNX Runtime 1.29's CUDA EP and were refused here by name. Their ext graphs now carry the shape-tensor
-// pins of tools/pin_cuda_shape_operands.py (docs/archive/UPSTREAM_ORT_ISSUES.md, Draft 3), so nothing is refused on
-// cuda; the refusal path itself stays covered by the known_wrong servability test above.
-TEST_CASE("servability: no bundled graph is refused on CUDA by name", "[tabfm][model_spec][servability]") {
-	for (auto *model : {"tabpfn-v3", "tabfm-v1-1", "kumo-tabular-large", "limix-2m", "causilo", "mitra-v2",
-	                    "tabdpt-v1-3", "orion-msp"}) {
-		REQUIRE(CudaKnownWrong(model, "classification").empty());
-	}
-	// the two models that used to be listed: same inputs as the old refusal test, now servable
-	for (auto *model : {"tabpfn-v3-5", "tabpfn-v3-5-fast"}) {
-		for (auto *task : {"classification", "regression"}) {
-			REQUIRE(CudaKnownWrong(model, task).empty());
-			REQUIRE(GpuKnownWrong("cuda", model, task).empty());
-			auto in = ServableBase("cuda");
-			in.model = model;
-			in.task_name = task;
-			in.bundled_graph_exists = true;
-			in.bundled_header_matches = true;
-			in.known_wrong = GpuKnownWrong("cuda", model, task);
-			REQUIRE(EvaluateGpuServability(in).supported);
+// Every bundled ext graph agreed with the CPU on the ggml CUDA plugin (RTX 4090) and the ROCm plugin (gfx1201) in the catalog runs
+// (docs/GGML_PLAN.md P9), so only MLX keeps a known-wrong list; the refusal path stays covered by the known_wrong servability test above.
+TEST_CASE("servability: no bundled graph is refused on CUDA or ROCm by name", "[tabfm][model_spec][servability]") {
+	for (auto *backend : {"cuda", "rocm"}) {
+		for (auto *model : {"tabpfn-v3", "tabfm-v1-1", "kumo-tabular-large", "limix-2m", "causilo", "mitra-v2", "tabdpt-v1-3",
+		                    "orion-msp", "tabpfn-v3-5", "tabpfn-v3-5-fast"}) {
+			REQUIRE(GpuKnownWrong(backend, model, "classification").empty());
+			REQUIRE(GpuKnownWrong(backend, model, "regression").empty());
 		}
 	}
-	// the lists stay per backend
-	REQUIRE(GpuKnownWrong("rocm", "tabpfn-v3-5", "classification").empty());
 	REQUIRE(GpuKnownWrong("mlx", "tabpfn-v3-5", "classification").empty()); // MlxKnownWrong lists none today
 }
-

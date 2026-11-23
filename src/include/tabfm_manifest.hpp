@@ -65,7 +65,8 @@ struct ManifestFile {
 };
 
 struct EngineProfile {
-	//! Compute dtype for this execution provider: "f32" | "bf16" | "fp16".
+	//! Declared compute dtype for a device: "f32" | "bf16" | "fp16". Parsed and validated so manifests stay checked, but no engine reads
+	//! it: the CPU and the ggml GPU plugin compute float32, and MLX takes its precision from anofox_tabfm_gpu_precision.
 	string dtype;
 };
 
@@ -78,7 +79,6 @@ struct ModelManifest {
 	string graph;
 	//! Model-provided GPU graphs (empty = none). See ModelTaskArtifacts.
 	string ext_graph;
-	string migraphx_graph;
 	//! Exactly one of the two tensor-map forms is populated (or neither).
 	string tensor_map_path;
 	unordered_map<string, string> tensor_map;

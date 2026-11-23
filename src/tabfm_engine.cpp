@@ -130,7 +130,7 @@ struct ResolvedModel {
 	string weights_path;
 	unordered_map<string, string> tensor_map; // onnx initializer name -> st key
 	//! Checkpoint keys this task's graph does not read (the tensor map's optional "unused_by_graph"
-	//! list). Skipped at injection: ORT rejects an injected initializer its graph lacks. Empty for
+	//! list). Skipped at injection: only the graph's own initializers are injected. Empty for
 	//! every model whose graphs use the whole file.
 	unordered_set<string> unused_weights;
 	//! The map declared `"complete": true`: it names EVERY initializer its graph declares, so a
@@ -187,8 +187,8 @@ unordered_map<string, string> ParseTensorMapJson(const string &json, const strin
 // The optional "unused_by_graph" array of a tensor-map document: checkpoint keys present in the weights
 // file that this task's graph does not use. Needed when ONE file serves several tasks whose graphs read
 // different subsets of it (tabdpt-v1-3: cls_y_encoders.* for classification, reg_y_encoders.* for
-// regression). The whole file is otherwise injected, and ORT refuses an initializer the graph does not
-// declare -- so the list is explicit and opt-in; a map without it behaves exactly as before.
+// regression). The whole file is otherwise injected, and the graph does not read those tensors
+// -- so the list is explicit and opt-in; a map without it behaves exactly as before.
 unordered_set<string> ParseUnusedByGraph(const string &json) {
 	unordered_set<string> result;
 	using namespace duckdb_yyjson; // NOLINT
@@ -215,8 +215,7 @@ unordered_set<string> ParseUnusedByGraph(const string &json) {
 // One weights file can hold MORE tensors than one task's graph declares: TabPFN-3.5
 // publishes a single checkpoint per variant with BOTH heads, and each task's graph
 // uses only its own. Every tensor in the file is injected, unmapped ones under the
-// "m." wrapper fallback, and ORT rejects an injected name the graph lacks ("Failed
-// to find existing initializer"). A map cannot be assumed complete in general --
+// "m." wrapper fallback, although the graph does not read the other head. A map cannot be assumed complete in general --
 // TabICL's fixture map omits 23 initializers and relies on that fallback -- so the
 // map has to say so. Only then are unmapped file tensors skipped.
 bool TensorMapDeclaresComplete(const string &json) {
@@ -369,7 +368,6 @@ ModelManifest SpecTaskToManifest(const ModelSpec &spec, TabFMTask task) {
 	m.files = art.files;
 	m.graph = art.graph;
 	m.ext_graph = art.ext_graph;
-	m.migraphx_graph = art.migraphx_graph;
 	m.tensor_map_path = art.tensor_map_path;
 	m.tensor_map = art.tensor_map;
 	m.preprocessing_profile = art.preprocessing_profile;
@@ -466,8 +464,7 @@ void ResolveModelArtifacts(FileSystem &fs, const PredictContext &ctx, TabFMTask 
 		return candidate;
 	};
 	resolved.ext_graph_path = resolve_gpu_graph(resolved.manifest.ext_graph, "ext_graph");
-	// manifest.migraphx_graph is accepted and deliberately not resolved: nothing reads it since MIGraphX was removed, so a file that is gone must not
-	// break a model that still names it.
+	// A manifest's migraphx_graph key is accepted and ignored (MIGraphX was removed), so a file that is gone does not break a model that names it.
 	resolved.tensor_map =
 	    LoadTensorMap(fs, resolved.manifest, resolved.manifest_dir, is_builtin, &resolved.unused_weights,
 	                  &resolved.tensor_map_complete, &resolved.ckpt_aliases);
@@ -490,7 +487,7 @@ TabFMTensorDtype ToEngineDtype(SafetensorsDtype dtype) {
 
 // A read-only memory-mapping of the safetensors cache file. Preferred over a
 // full read: the multi-GB weights are never copied into an anonymous heap
-// buffer — ORT reads the injected initializers straight from the mapped, file-
+// buffer — the engine reads the injected initializers straight from the mapped, file-
 // backed pages (which the OS can reclaim/share), and the up-front 6.6 GB read
 // (and its short-read hazard) disappears. Local files only; POSIX only for now.
 struct MappedFile {
@@ -580,21 +577,15 @@ MappedFile TryMapFile(const string &path) {
 	return m;
 }
 
-// ORT-backed inference backend (CPU EP, or CUDA EP on the cuda flavor): the ORT
-// session PLUS the source buffers it injected. AddExternalInitializers keeps
-// references to the user buffers (and reads them lazily during inference), so
-// the safetensors bytes and the bf16-upcast arena must outlive the session. The
-// bytes come from either the mmap (preferred) or a full read (`weights`), or
-// neither (the ONNX Runtime external-data path, where ORT reads weights from disk; not used for the CPU device). Declaration order
-// is the destruction contract: `session` is LAST so it is destroyed FIRST,
-// before the buffers it references.
-struct OrtBackend : public TabFMBackend {
+// The CPU backend: the ggml session PLUS the source buffers it was given. The session keeps references to them and reads them on every run,
+// so the safetensors bytes and the bf16-upcast arena must outlive it. The bytes come from the mmap (preferred) or a full read (`weights`).
+// Declaration order is the destruction contract: `session` is LAST so it is destroyed FIRST, before the buffers it references.
+struct CpuBackend : public TabFMBackend {
 	string weights;             // fallback: full read (f32 tensors point in here)
 	MappedFile mapping;         // preferred: mmap of the cache file
 	F32Arena arena;             // owns bf16->f32 upcast copies (empty for f32 models)
 	//! A torch checkpoint's state_dict: a strided (transposed) view is gathered into a copy it owns, and the injected initializers point
-	//! into it, so it lives as long as the session does. (ORT copies small weights at creation and hid this; the ggml engine reads the
-	//! buffers on every run.)
+	//! into it, so it lives as long as the session does (the ggml engine reads the buffers on every run).
 	unordered_map<string, CkptTensor> ckpt;
 	TabFMSessionHandle session; // last: destroyed first, before the buffers
 
@@ -646,7 +637,7 @@ struct SplitGraphs {
 };
 
 // Does this pair follow the exact context-cache contract (ContextCachePairProblem)? Read from the graphs
-// themselves, without building an ORT session: the answer decides whether a session is built at all, and
+// themselves, without building a session: the answer decides whether a session is built at all, and
 // a pair that does not qualify is simply not used -- the combined graph serves, rather than every call
 // failing. Memoized because the lookup runs on every call with the cache on. A bundled graph is immutable
 // for the life of the process; a file is keyed by path, size AND mtime, so a re-export in place that keeps
@@ -774,13 +765,13 @@ string ShapeString(const vector<int64_t> &shape) {
 // Only EXACT pairs are served (UseContextCache): the prepare graph emits `context_logits`, the context
 // rows' outputs as the combined graph computes them, so no output row depends on whether the cache ran.
 //
-// Declaration order is the destruction contract, exactly as OrtBackend: the sessions are LAST so they are
-// destroyed FIRST, before the weight buffers ORT reads lazily during inference.
-struct SplitOrtBackend : public TabFMBackend {
+// Declaration order is the destruction contract, exactly as CpuBackend: the sessions are LAST so they are
+// destroyed FIRST, before the weight buffers the engine reads during inference.
+struct SplitContextBackend : public TabFMBackend {
 	string weights;
 	MappedFile mapping;
 	F32Arena arena;
-	unordered_map<string, CkptTensor> ckpt; // see OrtBackend::ckpt
+	unordered_map<string, CkptTensor> ckpt; // see CpuBackend::ckpt
 	//! The query graph's non-x inputs -- what prepare has to supply.
 	vector<string> context_inputs;
 	//! Counters shared with the LoadedModel, so tabfm_models() can report them.
@@ -794,7 +785,7 @@ struct SplitOrtBackend : public TabFMBackend {
 	//
 	// The key is the support rows and labels themselves, in order. The 64-bit hash only FINDS a candidate; a
 	// hit is accepted after a full compare of the stored rows. A hash match alone would not fail on a
-	// collision, it would answer a query against someone else's training data (KV_CACHE_DESIGN.md). The
+	// collision, it would answer a query against someone else's training data (archive/KV_CACHE_DESIGN.md). The
 	// compare costs O(S*H) floats, nothing next to the forward pass it saves.
 	//
 	// Row order is part of the key on purpose. TabICL has no positional term, but its float reductions are
@@ -987,7 +978,6 @@ shared_ptr<LoadedModel> RegisterBackend(TabFMState &state, const string &cache_k
 	model->session = shared_ptr<void>(std::move(backend));
 	model->device_id = device_id;
 	model->precision = precision;
-	model->dtype = "f32";
 	model->bytes = bytes;
 	model->split_context = split_context;
 	model->context_stats = std::move(context_stats);
@@ -1017,12 +1007,12 @@ bool ReadWeightsHeaderBytes(FileSystem &fs, const string &path, string &header) 
 }
 
 // True iff the downloaded safetensors' JSON header is byte-identical to the
-// checkpoint the bundled external-data / migraphx graphs were baked against — so
+// checkpoint the bundled external-data graphs were baked against — so
 // the graphs' baked external offsets are correct. Also requires the weights to be
 // a local file named model.safetensors (the graphs' external-data location).
 // The (model, task)-keyed hash table lives in tabfm_model_spec.hpp
 // (ExpectedWeightsHeaderShaFor) beside the bundled-id naming, since GPU graph
-// selection is a model-spec concern shared by three backends.
+// selection is a model-spec concern shared by every GPU backend.
 // WeightsHeaderMatches is defined just past this anonymous namespace: it is
 // declared in tabfm_predict.hpp so tabfm_backends() asks dispatch's exact
 // question rather than a lookalike, and an anonymous-namespace copy here would
@@ -1081,12 +1071,6 @@ bool StageBundledGraph(FileSystem &fs, const BundledResource &graph, const strin
 	return static_cast<bool>(out);
 }
 
-// Low-memory load path: the graph references the weights as ONNX external-data on
-// disk, so ORT reads them itself (no in-memory injection, no copy). Peak RSS
-// drops ~2.6x on the real model. Only engages when a bundled external-data graph
-// exists for the task AND the downloaded safetensors header matches exactly
-// (else the baked offsets could be wrong -> fall back to injection). Returns
-// nullptr to signal "fall back".
 // Defined further down, where the per-model 'auto' logic lives; declared here
 // because every dispatch branch below must agree with it. Re-resolving with
 // ResolveDevice(ctx.device, ...) instead would answer a DIFFERENT question --
@@ -1126,49 +1110,6 @@ TabFMDeviceInfo DeviceInfoFor(FileSystem &fs, const ResolvedModel &resolved, con
 	cpu.ep = "ggml";
 	cpu.usable = true;
 	return cpu;
-}
-
-shared_ptr<LoadedModel> TryExternalDataSession(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
-                                               const PredictContext &ctx) {
-	if (std::getenv("TABFM_DISABLE_EXTERNAL_DATA")) {
-		return nullptr;
-	}
-	// This path hands the session a graph file and NO injected weights: ONNX Runtime resolves the graph's external-data references itself. The ggml
-	// engine that serves the CPU device needs the weights injected by name, so the CPU takes the mmap-and-inject path below (the real checkpoints of
-	// tabdpt and mitra, whose bundled ext graph matches, failed here with "weights are not loaded" until this guard).
-	if (ResolvedDeviceCached(fs, resolved, ctx) == "cpu") {
-		return nullptr;
-	}
-	const string task_name = TabFMTaskName(resolved.manifest.task);
-	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
-	if (!graph.data || !WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task)) {
-		return nullptr;
-	}
-	// Place the external-data graph next to the weights (idempotent) so ORT can
-	// resolve the relative "model.safetensors" reference.
-	const auto dir = DirName(resolved.weights_path);
-	const auto graph_path = fs.JoinPath(dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
-	if (!StageBundledGraph(fs, graph, graph_path)) {
-		return nullptr;
-	}
-
-	TabFMSessionConfig config;
-	config.intra_op_threads = MaxValue<int64_t>(1, ctx.threads);
-	config.prepack = ctx.cpu_prepack;
-	auto devices = DiscoverDevices();
-	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
-	config.device_id = device.device_id;
-	config.device_ordinal = device.device_ordinal;
-	config.model_tag = task_name;
-	config.ep_path = ctx.ep_path;
-	// No injected initializers: ORT loads them from the safetensors via the
-	// graph's external-data references.
-	auto session = CreateSessionFromPath(graph_path, {}, config);
-	auto backend = make_shared_ptr<OrtBackend>();
-	backend->session = std::move(session);
-	return RegisterBackend(state, resolved.cache_key, std::move(backend), config.device_id, 0, false,
-	                       SessionPrecisionFor(config.device_id, ctx.gpu_precision),
-	                       NumericCast<idx_t>(ctx.max_sessions));
 }
 
 //! The fix to name when a bundled graph does not match the weights converted from this model's checkpoint
@@ -1273,7 +1214,7 @@ shared_ptr<LoadedModel> TryGgmlGpuBackend(FileSystem &fs, TabFMState &state, con
 	}
 	const string vendor = is_cuda ? "cuda" : "rocm";
 	const string task_name = TabFMTaskName(resolved.manifest.task);
-	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, task_name));
 	const bool bundled_matches =
 	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
 	auto servability = GpuServabilityFor(fs, resolved, vendor, task_name, !resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches,
@@ -1295,7 +1236,7 @@ shared_ptr<LoadedModel> TryGgmlGpuBackend(FileSystem &fs, TabFMState &state, con
 		weights_dir = DirName(graph_path); // external data sits beside the graph
 	} else {
 		weights_dir = DirName(resolved.weights_path);
-		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
+		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, task_name) + ".onnx");
 		if (!StageBundledGraph(fs, graph, graph_path)) {
 			throw IOException(GpuPostCommitFailure(device.device_id, ctx.device, resolved.manifest.model,
 			                                       "the bundled GPU graph could not be staged beside the weights at '" + graph_path +
@@ -1309,30 +1250,20 @@ shared_ptr<LoadedModel> TryGgmlGpuBackend(FileSystem &fs, TabFMState &state, con
 	params.cache_dir = ctx.cache_dir.c_str();
 	params.arch = device.arch.c_str();
 	params.precision = ctx.gpu_precision.c_str();
-	params.mxr_source = "";
+	params.mxr_source = ""; // an ABI slot with no effect since MIGraphX was removed
 	params.device_ordinal = device.device_ordinal;
 	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0, false, ctx.gpu_precision,
 	                       NumericCast<idx_t>(ctx.max_sessions));
 }
 
-// Apple MLX backend (docs/MLX_PLAN.md; spike verdicts in
-// docs/MLX_SPIKE_RESULTS.md). A plugin like the two above, but the resemblance
-// stops at the loader: MLX has no ONNX importer and none exists, so the plugin
-// runs a forward TRANSCRIBED from the model's reference implementation rather
-// than any graph we ship. Two consequences shape this function:
+// Apple MLX backend (docs/MLX_PLAN.md; spike verdicts in docs/MLX_SPIKE_RESULTS.md). The plugin runs the same "ext" graph the
+// ggml GPU plugin reads through its own ONNX interpreter (tabfm_mlx_graph.cpp); mitra also has a hand-ported forward, kept as its fast path.
+// A model whose graph uses an op the interpreter lacks, or that has no GPU graph at all, is refused with the reason rather than falling
+// through to the CPU (the "requested device quietly becomes CPU" failure).
 //
-//   * there is no graph to select. SelectGpuGraph / StageBundledGraph /
-//     WeightsHeaderMatches have nothing to do here — the plugin mmaps the same
-//     cached safetensors every backend reads, addressed by tensor name.
-//   * it serves the models somebody has hand-ported, not every model with a
-//     graph. Asking for one it does not implement has to be an error naming
-//     what IS implemented, because the alternative — falling through to the
-//     CPU path — is the tier-4 "requested device quietly becomes CPU" failure.
-//
-// Reaching here means the device resolved to mlx (by name, or 'auto' after
-// ResolveDeviceForModel found the plugin installed and the model servable), so
-// every failure below throws rather than returning nullptr.
+// Reaching here means the device resolved to mlx (by name, or 'auto' after ResolveDeviceForModel found the plugin installed and the model
+// servable), so every failure below throws rather than returning nullptr.
 shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved,
                                       const PredictContext &ctx) {
 	auto devices = DiscoverDevices();
@@ -1359,7 +1290,7 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 	// to match the downloaded weights") is a property of the graphs, not of the
 	// accelerator. mitra is the one exception: it also has a hand-ported
 	// forward, which the plugin uses when no graph is supplied.
-	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
+	auto graph = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, task_name));
 	const bool bundled_matches =
 	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
 	string graph_path;
@@ -1370,7 +1301,7 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		weights_dir = DirName(graph_path); // external data sits beside the graph
 		break;
 	case GpuGraphSource::BUNDLED:
-		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, "ext", task_name) + ".onnx");
+		graph_path = fs.JoinPath(weights_dir, BundledGpuGraphId(resolved.manifest.model, task_name) + ".onnx");
 		if (!StageBundledGraph(fs, graph, graph_path)) {
 			graph_path.clear();
 		}
@@ -1380,7 +1311,7 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 		// A registered model that declares no ext graph and has no bundled one: nothing was staged or mismatched, the model simply has no GPU
 		// graph. Say that, naming the model and the registration argument that gives it one (the ggml GPU lane says the same).
 		if (!graph.data && resolved.manifest.model != "mitra") {
-			throw InvalidInputException(NoGpuGraphMessage(device.device_id, resolved.manifest.model, task_name, "ext_graph"));
+			throw InvalidInputException(NoGpuGraphMessage(device.device_id, resolved.manifest.model, task_name));
 		}
 		break;
 	}
@@ -1436,12 +1367,12 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 	const string arch = resolved.manifest.model + "-" + task_name;
 
 	TabFMPluginCreateParams params {};
-	params.graph_path = graph_path.c_str(); // no graph: the forward is transcribed, not loaded
+	params.graph_path = graph_path.c_str();
 	params.weights_dir = weights_dir.c_str();
 	params.cache_dir = ctx.cache_dir.c_str();
 	params.arch = arch.c_str();
 	params.precision = ctx.gpu_precision.c_str();
-	params.mxr_source = "";
+	params.mxr_source = ""; // an ABI slot with no effect since MIGraphX was removed
 	params.device_ordinal = device.device_ordinal;
 	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
 
@@ -1465,47 +1396,13 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 	                       NumericCast<idx_t>(ctx.max_sessions));
 }
 
-// The device a setting resolves to, memoized per distinct setting string.
-//
-// `DeviceMutex` must be keyed on this rather than on the setting, or two
-// connections whose settings differ textually while resolving to the same
-// physical device -- 'auto' and 'cpu' being the everyday pair -- take DIFFERENT
-// mutexes while sharing one backend under `resolved.cache_key`, and stop
-// excluding each other. That was harmless when the only shared mutable state was
-// the forward-cost number; SplitOrtBackend added a labelled-context cache that is
-// cleared and rebuilt in place on a miss, so two racing connections with
-// different context tables could observe a half-rebuilt one -- UB on the vectors,
-// not merely a wrong answer.
-//
-// Memoized because the fix has to work on the hot path: `DiscoverDevices()`
-// dlopens NVML and calls nvmlInit on every invocation, which is fine once per
-// session load and not fine once per forward pass.
-//
-// Process-wide rather than per-database-instance on purpose: the device topology
-// belongs to the machine, not to a DuckDB instance, and two instances in one
-// process should agree about it. It is deliberately NOT used by `tabfm_devices()`,
-// so that diagnostic keeps probing live hardware.
-//! Is the plugin for `backend` present at `ep_path` and of an ABI we speak?
-//! Memoized per (ep_path, backend): the answer is a property of the
-//! filesystem, and the probe dlopens a library that is deliberately never
-//! unloaded, so asking once per predict would map it repeatedly.
-//!
-//! A consequence worth stating plainly: fetching a plugin mid-session does not
-//! change what 'auto' does until the next connection. That is the deliberate
-//! trade -- the alternative is invalidating a process-wide memo that
-//! DeviceMutex also keys on, which is the area issue #42 was about.
-//! tabfm_accelerate() says so in its output.
-
 //! Resolve the device for THIS model, not merely for this session.
 //!
 //! An explicit request is unchanged: ResolveDevice decides, and every
 //! downstream refusal stays a hard error via IsExplicitGpuRequest.
 //!
-//! 'auto' is where this differs, and the difference is the point. The old
-//! 'auto' could only ever pick a lane the compiled FLAVOR carried, so on the
-//! released cpu-flavor builds it was always cpu -- a user with a card and a
-//! plugin installed still got the CPU, on every platform. Making it pick a GPU
-//! session-wide would have been worse than useless: the codebase's
+//! 'auto' is where this differs, and the difference is the point. Making it
+//! pick a GPU session-wide would have been worse than useless: the codebase's
 //! anti-silent-fallback contract is enforced by IsExplicitGpuRequest, a string
 //! compare on the raw setting, whose asymmetry is deliberate -- an explicit
 //! request hard-errors where 'auto' declines quietly. So the moment 'auto'
@@ -1527,12 +1424,7 @@ string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, cons
 		if (device.device_id == "cpu" || !device.usable) {
 			continue;
 		}
-		const string backend = BackendOfDeviceId(device.device_id);
-		// coreml is an in-process ORT provider, not a plugin, and is unverified
-		// (docs/archive/DYNAMIC_BACKENDS.md). 'auto' does not reach for it.
-		if (backend != "cuda" && backend != "rocm" && backend != "mlx") {
-			continue;
-		}
+		const string backend = BackendOfDeviceId(device.device_id); // cuda, rocm or mlx: discovery yields nothing else
 		// Is the lane even here? Cheap, local, and never create(): a plugin
 		// that is absent simply means this lane is not a candidate, which
 		// cannot turn a working CPU install into a failing one.
@@ -1541,7 +1433,7 @@ string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, cons
 		}
 		// cuda, rocm and mlx all read the plain external-data ("ext") graph
 		const string &model_graph = resolved.ext_graph_path;
-		auto bundled = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, "ext", task_name));
+		auto bundled = GetBundledResource(BundledGpuGraphId(resolved.manifest.model, task_name));
 		const bool header_matches = bundled.data && WeightsHeaderMatches(fs, resolved.weights_path,
 		                                                                 resolved.manifest.model,
 		                                                                 resolved.manifest.task);
@@ -1564,9 +1456,26 @@ string ResolveDeviceForModel(FileSystem &fs, const ResolvedModel &resolved, cons
 	return "cpu";
 }
 
+// The device a setting resolves to, memoized per distinct setting string.
+//
+// `DeviceMutex` must be keyed on this rather than on the setting, or two
+// connections whose settings differ textually while resolving to the same
+// physical device -- 'auto' and 'cpu' being the everyday pair -- take DIFFERENT
+// mutexes while sharing one backend under `resolved.cache_key`, and stop
+// excluding each other. That was harmless when the only shared mutable state was
+// the forward-cost number; SplitContextBackend added a labelled-context cache that is
+// cleared and rebuilt in place on a miss, so two racing connections with
+// different context tables could observe a half-rebuilt one -- UB on the vectors,
+// not merely a wrong answer.
+//
 // Memoized because the fix has to work on the hot path: `DiscoverDevices()`
 // dlopens NVML and calls nvmlInit on every invocation, which is fine once per
 // session load and not fine once per forward pass.
+//
+// Process-wide rather than per-database-instance on purpose: the device topology
+// belongs to the machine, not to a DuckDB instance, and two instances in one
+// process should agree about it. It is deliberately NOT used by `tabfm_devices()`,
+// so that diagnostic keeps probing live hardware.
 //
 // The key carries everything the answer depends on. It used to be the setting
 // alone, which was correct only while resolution was a pure function of the
@@ -1655,21 +1564,13 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		return gpu;
 	}
 
-	// The alternative backends below are driven by graphs compiled into the binary, and none of them has a
-	// split form. want_split is only ever true on the CPU, so they are reached exactly as before; the
-	// guard keeps a CPU split session from being shadowed by the low-memory external-data path.
-	if (!want_split) {
-		// NVIDIA and AMD GPUs: the ggml GPU plugin (the only plugin for those devices).
-		if (auto gpu = TryGgmlGpuBackend(fs, state, resolved, ctx)) {
-			return gpu;
-		}
-		// Low-memory path (external-data graph; ONNX Runtime reads weights from disk). Never taken for the CPU device, which runs on ggml.
-		if (auto external = TryExternalDataSession(fs, state, resolved, ctx)) {
-			return external;
-		}
+	// NVIDIA and AMD GPUs: the ggml GPU plugin, the only plugin for those devices. It serves or throws once the device is cuda or rocm,
+	// so everything below runs on the CPU (want_split is only ever true there).
+	if (auto gpu = TryGgmlGpuBackend(fs, state, resolved, ctx)) {
+		return gpu;
 	}
 
-	// Prefer an mmap of the (local) cache file: the engine (ggml, or ORT) reads the injected
+	// Prefer an mmap of the (local) cache file: the ggml engine reads the injected
 	// initializers straight from file-backed pages, so the multi-GB weights are
 	// never copied into an anonymous heap buffer. Fall back to a full read for a
 	// non-local/virtual path or any OS that cannot map it (a short read there
@@ -1710,14 +1611,14 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		// Does this checkpoint's namespace actually match the committed tensor
 		// map? For some models it does not: the map is keyed to the names the
 		// weights carry only after a `convert_weights.py` pass, and injecting the
-		// raw ckpt would fail later with an opaque ORT "initializer not found".
+		// raw ckpt would fail later with an opaque "weights are not loaded".
 		// Say so here, where we can name the fix.
 		//
 		// Count from the MAP's side, not the checkpoint's: st_to_onnx's keys are
 		// exactly the tensors the graph needs. Even one missing means injection
 		// cannot succeed, so a "did anything match?" test is too weak — TabPFN-2.5
 		// shares enough names with its raw checkpoint to pass that and still die
-		// on an opaque ORT shape error further down.
+		// on an opaque shape error further down.
 		if (!st_to_onnx.empty()) {
 			idx_t missing = 0;
 			string first_missing;
@@ -1797,17 +1698,13 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		}
 	}
 
+	// The GPU lanes above served the request or threw, so this is the CPU.
 	TabFMSessionConfig config;
-	config.intra_op_threads = MaxValue<int64_t>(1, ctx.threads);
-	config.prepack = ctx.cpu_prepack;
-	auto devices = DiscoverDevices();
-	auto device = DeviceInfoFor(fs, resolved, ctx, devices);
-	config.device_id = device.device_id;
-	config.device_ordinal = device.device_ordinal;
+	config.threads = MaxValue<int64_t>(1, ctx.threads);
+	config.device_id = "cpu";
 	config.model_tag = TabFMTaskName(resolved.manifest.task);
 	config.contract_inputs = resolved.contract_inputs;
 	config.contract_outputs = resolved.contract_outputs;
-	config.ep_path = ctx.ep_path;
 
 	const idx_t weight_bytes = nbytes;
 
@@ -1815,9 +1712,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 		// One half's injection set: the initializers ITS graph declares, named as
 		// its own tensor map names them. Not a filter on the combined set — the
 		// prepare graph is a proper subset of the checkpoint (no predictor head),
-		// and ORT rejects an injected initializer the graph does not have
-		// ("Failed to find existing initializer"), so each half is built from its
-		// own map or not at all.
+		// so each half is built from its own map or not at all.
 		unordered_map<string, idx_t> by_key;
 		for (idx_t i = 0; i < initializer_keys.size(); i++) {
 			by_key[initializer_keys[i]] = i;
@@ -1865,7 +1760,7 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 			                      : CreateSessionFromPath(side.graph_path, inits, config);
 		};
 
-		auto backend = make_shared_ptr<SplitOrtBackend>();
+		auto backend = make_shared_ptr<SplitContextBackend>();
 		const string task_name = TabFMTaskName(resolved.manifest.task);
 		config.model_tag = task_name + " (prepare)";
 		backend->prepare = session_for(split.prepare, "prepare");
@@ -1892,10 +1787,9 @@ shared_ptr<LoadedModel> LoadOrGetSession(FileSystem &fs, TabFMState &state, cons
 	auto session = resolved.graph_bundle.data
 	                   ? CreateSession(resolved.graph_bundle.data, resolved.graph_bundle.size, initializers, config)
 	                   : CreateSessionFromPath(resolved.graph_path, initializers, config);
-	// The session (ggml, or ORT) keeps references to the injected user buffers (the mmap or read buffer +
-	// arena) and to the OrtValues (inside the session) — all must OUTLIVE the
-	// session, so keep the buffers in the holder alongside it.
-	auto backend = make_shared_ptr<OrtBackend>();
+	// The session keeps references to the injected buffers (the mmap or read buffer + arena), which must
+	// OUTLIVE it, so keep the buffers in the holder alongside it.
+	auto backend = make_shared_ptr<CpuBackend>();
 	backend->weights = std::move(weights);
 	backend->mapping = std::move(mapping);
 	backend->arena = std::move(arena);
@@ -2364,6 +2258,17 @@ string Sha256Hex(const_data_ptr_t data, idx_t len) {
 	return out;
 }
 
+//! Is the plugin for `backend` present at `ep_path` and of an ABI we speak?
+//! Memoized per (ep_path, backend): the answer is a property of the
+//! filesystem, and the probe dlopens a library that is deliberately never
+//! unloaded, so asking once per predict would map it repeatedly.
+//!
+//! A consequence worth stating plainly: fetching a plugin mid-session does not
+//! change what 'auto' does until the next connection. That is the deliberate
+//! trade -- the alternative is invalidating a process-wide memo that
+//! DeviceMutex also keys on, which is the area issue #42 was about.
+//! tabfm_accelerate() says so in its output.
+//!
 // Defined with external linkage (declared in tabfm_predict.hpp) so
 // tabfm_backends() consults the SAME memo dispatch does -- a capability
 // relation that disagrees with dispatch about whether a lane exists is worse
@@ -2466,15 +2371,12 @@ TabFMPrecompileResult TabFMGpuPrecompile(const PredictContext &bound_ctx, TabFMT
 	auto state = TabFMState::Get(*ctx.db);
 	TabFMPrecompileResult result;
 	result.model = resolved.manifest.model;
-	// Loads (or reuses) the model's session on its device and leaves it warm. No backend compiles per shape bucket any more (MIGraphX did): the ggml
-	// engines build their graph for a shape on its first use, so there is nothing to compile ahead and the call reports "not needed".
+	// Deprecated: loads (or reuses) the model's session on its device and leaves it warm. The engines build their graph for a shape on its
+	// first use, so there is nothing to compile ahead and the call reports "not needed".
 	const string &device = ResolvedDeviceCached(*fs, resolved, ctx);
 	result.device = device;
 	lock_guard<mutex> device_guard(state->DeviceMutex(device));
-	auto model = LoadOrGetSession(*fs, *state, resolved, ctx);
-	auto *backend = reinterpret_cast<TabFMBackend *>(model->session.get());
-	backend->Precompile(rows, features);
-	result.bucketed = false;
+	LoadOrGetSession(*fs, *state, resolved, ctx);
 	result.status = "not needed";
 	result.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
 	return result;

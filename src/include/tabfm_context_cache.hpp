@@ -2,8 +2,8 @@
 
 //===----------------------------------------------------------------------===//
 // tabfm_context_cache.hpp — the context cache's admission window (docs/CONTEXT_CACHE_PLAN.md, "Phase 1b").
-// SplitOrtBackend in tabfm_engine.cpp uses it; it is declared here so the Catch2 tests can pin it without
-// an ORT session.
+// SplitContextBackend in tabfm_engine.cpp uses it; it is declared here so the Catch2 tests can pin it without
+// a session.
 //===----------------------------------------------------------------------===//
 
 #include "duckdb/common/common.hpp"

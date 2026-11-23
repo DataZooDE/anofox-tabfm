@@ -19,7 +19,7 @@ namespace anofox {
 //!
 //! `std::thread::hardware_concurrency()` reports what the kernel can see, which inside a
 //! container is the host. On a 64-core allocation inside a 256-core host it returns 256, so a
-//! default of `hardware_concurrency() / 2` becomes 128 intra-op threads per session -- and the
+//! default of `hardware_concurrency() / 2` becomes 128 threads per session -- and the
 //! host runs several sessions concurrently, one per DuckDB task. Measured on such a pod: 132
 //! threads in one duckdb process and a load average of 143 against 64 usable cores, for a query
 //! configured with `SET threads = 4`.

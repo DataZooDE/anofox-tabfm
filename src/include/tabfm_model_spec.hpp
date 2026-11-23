@@ -61,9 +61,6 @@ struct ModelTaskArtifacts {
 	//! ext_graph: the external-data ONNX every GPU plugin reads (the ggml plugin for cuda and rocm, MLX); its data file(s) sit beside it,
 	//! and its offsets match the model's own weights by construction, so no header check applies.
 	string ext_graph;
-	//! migraphx_graph: the masked MIGraphX variant. Still parsed from manifests and tabfm_register_model so old registrations load, but
-	//! nothing reads it since MIGraphX was removed; a model without an ext_graph has no GPU path.
-	string migraphx_graph;
 	//! Exactly one of the two tensor-map forms is populated (or neither).
 	string tensor_map_path;
 	unordered_map<string, string> tensor_map;
@@ -179,54 +176,24 @@ inline string SessionPrecisionFor(const string &resolved_device_id, const string
 	// Leaving it out would register MLX sessions under "" while the lookup
 	// asked for the precision -- the silent rebuild-every-predict loop this
 	// helper exists to prevent, just on a different device.
-	if (starts("rocm") || starts("cuda") || starts("migraphx") || starts("mlx")) {
+	if (starts("rocm") || starts("cuda") || starts("mlx")) {
 		return gpu_precision;
 	}
 	return "";
 }
 
-//! True when the raw anofox_tabfm_device setting explicitly names this GPU
-//! backend ('migraphx' is the documented alias for 'rocm'). 'auto' is never
-//! explicit: on a missing GPU graph an explicit request must hard-error while
-//! 'auto' quietly falls back to CPU — that asymmetry is the contract.
+//! True when the anofox_tabfm_device setting (normalized by NormalizeDeviceSetting: 'migraphx' arrives as 'rocm') explicitly names this GPU backend.
+//! 'auto' is never explicit: on a missing GPU graph an explicit request must hard-error while 'auto' quietly falls back to CPU — that
+//! asymmetry is the contract.
 inline bool IsExplicitGpuRequest(const string &device_setting, const string &backend) {
-	if (device_setting == backend) {
-		return true;
-	}
-	return backend == "rocm" && device_setting == "migraphx";
-}
-
-//! Models the Apple MLX backend implements (docs/MLX_PLAN.md).
-//!
-//! This list exists because MLX is the one backend whose coverage is not
-//! implied by what we ship: CUDA and ROCm execute a bundled ONNX graph, so
-//! "is there a graph for this model" answers the question. MLX has no ONNX
-//! importer — none exists — so its forward is hand-transcribed from each
-//! model's reference implementation, and coverage grows one model FAMILY at a
-//! time. Keep this in step with the `arch` dispatch in tabfm_mlx_plugin.cpp:
-//! the engine's check and the plugin's refusal must agree, or one of them
-//! produces a message the other contradicts.
-//! Every model reaches MLX now: the backend executes the shipped ONNX graph
-//! (docs/MLX_PLAN.md route 3) rather than a hand-transcribed forward, so
-//! coverage is a property of the op table, not of a per-model list. What can
-//! still fail is a graph needing an op the interpreter lacks, and the plugin
-//! reports THAT by name at create time -- which is a better error than a
-//! registry check here could produce, because it names the ops.
-inline bool MlxSupportsModel(const string &model) {
-	(void)model;
-	return true;
-}
-
-inline string MlxSupportedModels() {
-	return "every registered model (the backend runs the model's ONNX graph)";
+	return device_setting == backend;
 }
 
 //! The error for "you asked for this GPU but the model ships no graph it can
 //! run". Found on hardware (examples on a pod): the previous path surfaced
-//! "SET anofox_tabfm_ep_path" — the one thing already configured. graph_kind
-//! is "ext_graph" for every GPU backend.
-inline string NoGpuGraphMessage(const string &device, const string &model, const string &task_name,
-                                const string &graph_kind) {
+//! "SET anofox_tabfm_ep_path" — the one thing already configured.
+inline string NoGpuGraphMessage(const string &device, const string &model, const string &task_name) {
+	const string graph_kind = "ext_graph"; // what every GPU plugin reads
 	return "anofox_tabfm: device '" + device + "' was requested, but model '" + model +
 	       "' has no " + device + "-servable graph for task '" + task_name +
 	       "': it declares no " + graph_kind +
@@ -237,9 +204,7 @@ inline string NoGpuGraphMessage(const string &device, const string &model, const
 //===----------------------------------------------------------------------===//
 // GPU servability — can THIS model run on THIS device, and if not, why?
 //
-// The answer used to be an inline conjunction inside TryMIGraphXBackend and
-// again inside TryCudaBackend: does the model provide a graph, is one bundled,
-// does its header match, is the weights directory writable. Three consumers
+// Does the model provide a graph, is one bundled, does its header match? Three consumers
 // need that answer and only one of them is dispatch — the refusal messages
 // need the REASON, tabfm_backends() needs the whole matrix, and a per-model
 // 'auto' needs it before committing to a device. Written beside dispatch, each
@@ -258,7 +223,7 @@ inline bool BackendSupportsPrecision(const string &backend, const string &precis
 	if (precision.empty() || precision == "fp32") {
 		return true; // every backend's reference mode
 	}
-	if (backend == "cuda" || backend == "rocm" || backend == "migraphx") {
+	if (backend == "cuda" || backend == "rocm") {
 		// The ggml GPU plugin computes float32. "tf32" keeps the hardware's TF32 tensor-core matmuls (CUDA, Ampere and newer); there is no bf16/fp16 mode.
 		return precision == "tf32";
 	}
@@ -355,7 +320,7 @@ inline string BackendOfDeviceId(const string &device_id) {
 //! the CPU instead is precisely the silent fallback IsExplicitGpuRequest
 //! exists to forbid, and it would be invisible: every Try*Backend gate is a
 //! StartsWith on the device id, so a fabricated cpu row makes all three decline
-//! and the ORT CPU path pick the work up without a word.
+//! and the CPU path pick the work up without a word.
 inline bool VanishedDeviceMustThrow(const string &resolved_id, const string &device_setting) {
 	if (resolved_id == "cpu") {
 		return false; // the CPU row is always present; nothing vanished
@@ -363,33 +328,11 @@ inline bool VanishedDeviceMustThrow(const string &resolved_id, const string &dev
 	return IsExplicitGpuRequest(device_setting, BackendOfDeviceId(resolved_id));
 }
 
-//! The graph-kind name a model registers for a backend, as it appears in
-//! CALL tabfm_register_model (…_ext_graph / …_migraphx_graph).
-inline string GpuGraphKindFor(const string &backend) {
-	return "ext_graph"; // cuda, rocm and mlx all read the plain external-data graph
-}
-
-//! Why a bundled ext graph is refused on CUDA although the plugin loads it. Empty today: every bundled ext
-//! graph agreed with the CPU on an RTX 4090 (tools/gpu_test/cuda_catalog.sh). TabPFN-3.5 and 3.5-Fast were
-//! listed here until their ext graphs gained the shape-tensor pins of tools/pin_cuda_shape_operands.py: ONNX
-//! Runtime 1.29's CUDA session reused the CPU buffer of a live shape tensor, so an Expand received a wrong
-//! shape (docs/archive/UPSTREAM_ORT_ISSUES.md, Draft 3). Add an entry only with a cuda_catalog.sh run that shows the
-//! model disagreeing with (or failing where) the CPU does not; remove one only with a run that shows it agreeing.
-inline string CudaKnownWrong(const string &model, const string &task) {
-	(void)model;
-	(void)task;
-	return string();
-}
-
-//! The per-backend known-wrong list: non-empty refuses the model on that backend even though a graph exists.
+//! The per-backend known-wrong list: non-empty refuses the model on that backend even though a graph exists. Only MLX has one; for the ggml
+//! GPU plugin every bundled ext graph agreed with the CPU on the catalog runs (docs/GGML_PLAN.md P9). Add an entry only with a catalog run
+//! (tools/gpu_test/gpu_catalog.sh) that shows the model disagreeing with, or failing where, the CPU does not.
 inline string GpuKnownWrong(const string &backend, const string &model, const string &task) {
-	if (backend == "mlx") {
-		return MlxKnownWrong(model, task);
-	}
-	if (backend == "cuda") {
-		return CudaKnownWrong(model, task);
-	}
-	return string();
+	return backend == "mlx" ? MlxKnownWrong(model, task) : string();
 }
 
 inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &in) {
@@ -421,7 +364,7 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 		if (!in.weights_dir_stageable) {
 			out.reason = "the bundled GPU graph must be staged beside the weights, but that directory is missing "
 			             "or not writable — create it and make it writable, or register the model with " +
-			             in.task_name + "_" + GpuGraphKindFor(in.backend) + " := '<graph.onnx>'";
+			             in.task_name + "_" + "ext_graph" + " := '<graph.onnx>'";
 			return out;
 		}
 		out.supported = true;
@@ -434,26 +377,21 @@ inline GpuServabilityResult EvaluateGpuServability(const GpuServabilityInputs &i
 			             in.task_name + "': " + in.weights_remedy;
 			return out;
 		}
-		// The case worth being precise about: a model whose context split is
-		// positional (it reads the split from y's length), which a fixed-shape
-		// compile cannot bucket (docs/archive/ROCM_SINGLE_EVAL_POS.md). tabdpt and the
-		// whole TabPFN family (v2, v2.5, v2.6, v3), tabicl-v2 and limix-2m have had
-		// that split converted to a value and so no longer land here; the orion
-		// models and causilo still do, and tabfm_backends() is the source of truth.
+		// No usable ext graph: the model declares none and the bundled one is missing or does not match its weights.
 		out.reason = "model '" + in.model + "' has no " + in.backend + "-servable graph for task '" + in.task_name +
-		             "': it declares no " + GpuGraphKindFor(in.backend) +
+		             "': it declares no " + "ext_graph" +
 		             (in.bundled_graph_exists ? " and the bundled GPU graph does not match its weights"
 		                                      : " and none is bundled for it");
 		return out;
 	}
 }
 
-//! Embedded-resource id of a bundled GPU graph (kind = "ext" | "migraphx").
+//! Embedded-resource id of a model's bundled GPU graph, the external-data ("ext") graph every GPU plugin reads.
 //! tabfm-v1 keeps its unqualified pre-multi-model ids; every other model is
 //! model-qualified so the same task can bundle one graph per model.
-inline string BundledGpuGraphId(const string &model, const string &kind, const string &task_name) {
+inline string BundledGpuGraphId(const string &model, const string &task_name) {
 	if (model == "tabfm-v1") {
-		return "graph_" + kind + "_" + task_name;
+		return "graph_ext_" + task_name;
 	}
 	// Registry ids and resource-file stems differ for the catalog models; this
 	// function owns the mapping so the engine never string-mangles.
@@ -504,12 +442,11 @@ inline string BundledGpuGraphId(const string &model, const string &kind, const s
 		// a different architecture (two-phase encoder) at a different size: never nori30m's graphs
 		stem = "nori15";
 	}
-	return "graph_" + kind + "_" + stem + "_" + task_name;
+	return "graph_ext_" + stem + "_" + task_name;
 }
 
-//! SHA-256 (hex) of the safetensors JSON header each bundled external-data /
-//! migraphx graph pair was generated against (tools/make_external_graph.py and
-//! tools/make_migraphx_graph.py print it). A byte-identical header guarantees
+//! SHA-256 (hex) of the safetensors JSON header each bundled external-data
+//! graph was generated against (tools/make_external_graph.py prints it). A byte-identical header guarantees
 //! the graphs' baked offsets index the downloaded weights correctly; empty
 //! means "this model bundles no GPU graphs" and the caller falls back.
 inline string ExpectedWeightsHeaderShaFor(const string &model, const string &task_name) {
@@ -521,8 +458,8 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 			return "35c346e4e29f61b493a9e601e66bf0ae241d0fb76623a3336c61408cfc3e88d0";
 		}
 	}
-	// Google TabFM 1.1.0, pinned revision d7cfd3b8. Its tensors are BF16, so the ext/migraphx graphs
-	// retype each initializer to BF16 and Cast it to FLOAT (tools/make_migraphx_graph.py
+	// Google TabFM 1.1.0, pinned revision d7cfd3b8. Its tensors are BF16, so the ext graphs
+	// retype each initializer to BF16 and Cast it to FLOAT (tools/make_external_graph.py
 	// retype_external); the offsets are still only valid for exactly this header.
 	if (model == "tabfm-v1-1") {
 		if (task_name == "classification") {
@@ -556,18 +493,6 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 			return "8ab85c0bf4ce2fc87a81f040b4170ae7c10b50d75bad937d2f8009558767b5a3";
 		}
 	}
-	// The single_eval_pos family (x, y inputs only): ext graphs bundle for the
-	// CUDA + CPU-low-memory paths. No migraphx variants for MOST of them —
-	// MIGraphX compiles per fixed shape, and these models read the train/test
-	// split from y's length, so bucketed compiles would need one per distinct
-	// train_size.
-	//
-	// tabdpt is the exception: its split was converted to a train_size mask so
-	// every shape depends on the (T, H) bucket alone, and it now bundles
-	// migraphx graphs too (docs/archive/ROCM_TABDPT_SPIKE.md). The sha below is
-	// unchanged by that — it hashes the WEIGHTS header, and the conversion
-	// touched only the graph, leaving all 647 initializers and the tensor map
-	// exactly as they were.
 	if (model == "tabpfn-v2") {
 		if (task_name == "classification") {
 			return "e97043c10b4572d6011cb1e389db2c7d57425213c761288f935188e25e953362";
@@ -576,8 +501,6 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 			return "ca4435a405cbd17afc8cf08346954705d7cc01fc6d08bdcf9c06363faed867a9";
 		}
 	}
-	// TabICL v2: also pins the masked ROCm graphs (tools/export_tabicl --contract mask), which reuse every
-	// initializer and the tensor-map keys of the positional pair, so the header is unchanged.
 	if (model == "tabicl-v2") {
 		if (task_name == "classification") {
 			return "085731de6a7b33e6fcbda7e1b3cba725d798d30f93ec3cdc91c3ac2c2c762d3f";
@@ -620,8 +543,7 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	}
 	// Causilo (Nums AI). The graphs bake absolute offsets into the checkpoint at the revision the
 	// registry pins (94f2bd91...); HF main has moved past it, which is exactly the situation this
-	// hash exists to catch: a mismatch falls back to the layout-independent injection path. The masked
-	// ROCm graphs (tools/export_causilo --contract mask) reuse the same tensor map, so the same header.
+	// hash exists to catch: a mismatch falls back to the layout-independent injection path.
 	if (model == "causilo") {
 		if (task_name == "classification") {
 			return "85fb120c90878b69b0d34ff32fcfbdcf457ffd4d2ed7af2a102fe7c2d417d742";
@@ -632,9 +554,9 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	}
 	// LimiX-2M: ONE checkpoint serves both tasks, so both share a header sha. It pins the header of the
 	// safetensors that tools/export_limix's convert_limix_weights writes from LimiX-2M.ckpt (137 tensors,
-	// byte-deterministic). The ext graphs and the masked ROCm graphs (tools/export_limix --contract mask) bake
-	// offsets into THAT file; without it, the CPU loader falls back to the layout-independent injection path,
-	// which reads the checkpoint natively, and ROCm reports the bundled graph as not matching.
+	// byte-deterministic). The ext graphs bake offsets into THAT file; without it, the CPU loader falls back to
+	// the layout-independent injection path, which reads the checkpoint natively, and the GPUs report the bundled
+	// graph as not matching.
 	if (model == "limix-2m") {
 		if (task_name == "classification" || task_name == "regression") {
 			return "0c6a868493ea16aaa88bd604b7f769b34018e82941eae90abd9d16072cf283eb";
@@ -649,20 +571,19 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	if (model == "tabpfn-v3-5-fast" && (task_name == "classification" || task_name == "regression")) {
 		return "733da85d68f73d3a18eabbc01ded64b19da6cabeecf0549f1980a3773d11508f";
 	}
-	// Nori-30M: the masked ROCm graph (tools/export_nori --contract mask) bakes offsets into the safetensors
-	// tabfm_download writes from nori.pt (773 tensors, sorted keys, float32: byte-deterministic; the same bytes as
-	// tools/export_nori's convert_nori_weights). Without it the bundled graph does not match and ROCm says so; the
-	// CPU path reads the .ckpt natively either way.
+	// Nori-30M: the ext graph bakes offsets into the safetensors tabfm_download writes from nori.pt (773 tensors,
+	// sorted keys, float32: byte-deterministic; the same bytes as tools/export_nori's convert_nori_weights). Without
+	// it the bundled graph does not match and the GPUs say so; the CPU path reads the .ckpt natively either way.
 	if (model == "nori-30m" && task_name == "regression") {
 		return "49797138da9ce6d7bb76895cb00514bc6967732051811c217548f32c75a02363";
 	}
-	// Nori 1.5: the ext graph (CUDA and MLX; tools/make_external_graph.py) bakes offsets into the safetensors
+	// Nori 1.5: the ext graph (tools/make_external_graph.py) bakes offsets into the safetensors
 	// tabfm_download writes from nori.pt (381 tensors, sorted keys, float32: byte-deterministic; the same bytes
 	// as tools/export_nori's convert_nori_weights). The CPU path reads the .ckpt natively either way.
 	if (model == "nori-1-5" && task_name == "regression") {
 		return "6da735b26d65fd2281525b127938f45c48d9eeef7bc20156ba6a87caaeed6029";
 	}
-	// EXAONE Tabular: the masked ROCm graphs (tools/export_exaone, --contract mask) bake offsets into LG's
+	// EXAONE Tabular: the ext graphs bake offsets into LG's
 	// released safetensors at the revision the registry pins (093ad1c2). The classifier and the regressor are
 	// different checkpoints, hence two headers.
 	if (model == "exaone-tabular") {
@@ -675,7 +596,7 @@ inline string ExpectedWeightsHeaderShaFor(const string &model, const string &tas
 	}
 	// Kumo-Tabular: the header of the model.safetensors that tabfm_download (and tools/export_kumo's
 	// convert_kumo_weights, byte for byte) writes from the published .pt at the pinned revision (every key sorted, float32, no metadata, so it
-	// is deterministic). The ext and migraphx graphs bake offsets into THAT file; without it the engine
+	// is deterministic). The ext graphs bake offsets into THAT file; without it the engine
 	// injects the .pt natively on the CPU and ROCm/CUDA report the weights as not matching.
 	if (model == "kumo-tabular-small") {
 		if (task_name == "classification") {

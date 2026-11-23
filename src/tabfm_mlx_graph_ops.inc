@@ -946,7 +946,7 @@ Tensor Graph::Run(const std::vector<std::pair<std::string, Tensor>> &feeds) cons
 			mlx_stream_free(gpu);
 			Fail("op '" + node.op_type + "' (node '" + node.name +
 			     "') is not implemented by the mlx backend. SET anofox_tabfm_device='cpu' to run this model "
-			     "through ONNX Runtime, and please report the op.");
+			     "on the CPU, and please report the op.");
 		}
 		Args args;
 		for (const auto &in : node.inputs) {

@@ -237,7 +237,7 @@ SafetensorsView ParseSafetensors(const_data_ptr_t buffer, idx_t buffer_size, con
 		// Overflow-checked shape product: a crafted header could otherwise declare
 		// dimensions whose product wraps idx_t to a small value that matches a tiny
 		// data_offsets range, smuggling a huge shape past validation and over a
-		// too-small backing buffer (OOB reads downstream in ORT).
+		// too-small backing buffer (OOB reads downstream in the engine).
 		idx_t element_count = 1;
 		for (auto dim : info.shape) {
 			auto d = static_cast<idx_t>(dim); // dim already validated non-negative

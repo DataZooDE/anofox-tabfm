@@ -3,9 +3,9 @@
 //
 // tabfm_plugin_backend.cpp — load a backend from a shared library.
 //
-// Phase 1 of docs/archive/DYNAMIC_BACKENDS.md: a GPU backend becomes a library the
-// extension dlopens on demand rather than a build flavor. This is the loader
-// side of tabfm_plugin_abi.h — it adapts the C function table back onto the
+// Every GPU backend (the ggml CUDA/ROCm plugin, MLX) is a library the extension
+// dlopens on demand; a GPU is never a build. This is the loader side of
+// tabfm_plugin_abi.h — it adapts the C function table back onto the
 // TabFMBackend interface the engine already speaks.
 //
 // The loader is the trust boundary, so every failure it can meet has a message
@@ -54,15 +54,18 @@ namespace {
 #ifndef _WIN32
 using LibraryHandle = void *;
 LibraryHandle OpenLibrary(const string &path) {
-	// RTLD_DEEPBIND: the plugin prefers its OWN dependencies over symbols the
-	// host process already exports. Measured necessity (GPU_HARDENING_PLAN S2,
-	// all four quadrants of a SONAME x DEEPBIND matrix): when the host has a
-	// shared ORT loaded, a plugin whose ORT core merely has a different SONAME
-	// still BINDS to the host's — dedup and interposition are independent
-	// failure layers, and isolating the plugin's runtime takes both the rename
-	// (ships with the runtime, P7) and this flag. Safe for this ABI: no
-	// allocation crosses the boundary (outputs are plugin-malloc'd and
-	// plugin-freed via free_output), which is the classic DEEPBIND hazard.
+	// RTLD_DEEPBIND: the plugin prefers its OWN symbols and dependencies over
+	// those the host process already exports. The host and the ggml GPU plugin
+	// both carry a copy of ggml (and of the engine sources built on it), with
+	// the same symbol names but different builds: the plugin's has the CUDA or
+	// HIP backend compiled in, the host's does not. Wherever the host's copy is
+	// globally visible (the unittest binary links the extension statically; a
+	// host may load the extension RTLD_GLOBAL), the plugin's own calls would
+	// otherwise bind to it (ELF interposition: the first definition loaded wins).
+	// (GPU_HARDENING_PLAN S2 measured the same failure for the earlier ORT
+	// plugins.) Safe for this ABI: no allocation crosses the boundary (outputs
+	// are plugin-malloc'd and plugin-freed via free_output), which is the
+	// classic DEEPBIND hazard.
 	// glibc-only: macOS has no RTLD_DEEPBIND (and needs none — Mach-O
 	// two-level namespaces bind each image to the library it linked against).
 	//
@@ -72,9 +75,9 @@ LibraryHandle OpenLibrary(const string &path) {
 	// test_debug` C++ stage at the first plugin test, taking every later case
 	// with it — so a debug build could not run the plugin tests at all, which
 	// is exactly where plugin changes need testing. Dropping the flag under a
-	// sanitizer costs nothing real: DEEPBIND isolates a plugin's own ORT/HIP
-	// runtime from the host's, and the sanitizer build loads the weight-free
-	// fixture plugin, which has no such runtime to isolate.
+	// sanitizer costs nothing real: DEEPBIND isolates a plugin's own ggml and
+	// GPU runtime from the host's, and the sanitizer build loads the weight-free
+	// fixture plugin, which has neither.
 	int flags = RTLD_NOW | RTLD_LOCAL;
 #if defined(RTLD_DEEPBIND) && !defined(TABFM_SANITIZER_BUILD)
 	flags |= RTLD_DEEPBIND;
@@ -110,18 +113,17 @@ string LibraryError() {
 //! Adapts the C plugin table onto the engine's C++ backend interface.
 class PluginBackend : public TabFMBackend {
 public:
-	PluginBackend(LibraryHandle library, const TabFMPluginApi *api, void *handle, string path)
-	    : library(library), api(api), handle(handle), path(std::move(path)) {
+	PluginBackend(const TabFMPluginApi *api, void *handle) : api(api), handle(handle) {
 	}
 
 	~PluginBackend() override {
 		if (api && handle) {
 			api->destroy(handle);
 		}
-		// The library is intentionally NOT closed: ORT's env, MIGraphX's HIP
-		// context and any thread-locals the plugin registered outlive this
-		// object, and unloading underneath them is how a clean shutdown turns
-		// into a segfault in someone else's destructor.
+		// The library is intentionally NOT closed: the CUDA/HIP/Metal context
+		// and any thread-locals the plugin registered outlive this object, and
+		// unloading underneath them is how a clean shutdown turns into a
+		// segfault in someone else's destructor.
 	}
 
 	TabFMRunOutput Run(const TabFMRunInput &input) override {
@@ -142,8 +144,7 @@ public:
 		char err[512] = {0};
 		if (api->run(handle, &in, &out, err, sizeof(err)) != TABFM_PLUGIN_OK) {
 			api->free_output(&out);
-			throw InvalidInputException("anofox_tabfm: the '%s' backend failed: %s%s", api->name(), err,
-			                            PluginFailureHint(api->name(), err));
+			throw InvalidInputException("anofox_tabfm: the '%s' backend failed: %s", api->name(), err);
 		}
 
 		TabFMRunOutput result;
@@ -153,33 +154,12 @@ public:
 		return result;
 	}
 
-	void Precompile(int64_t rows, int64_t features) override {
-		char err[512] = {0};
-		if (api->precompile(handle, rows, features, err, sizeof(err)) != TABFM_PLUGIN_OK) {
-			throw InvalidInputException("anofox_tabfm: the '%s' backend could not precompile: %s%s", api->name(), err,
-			                            PluginFailureHint(api->name(), err));
-		}
-	}
-
 private:
-	LibraryHandle library;
 	const TabFMPluginApi *api;
 	void *handle;
-	string path;
 };
 
 } // namespace
-
-// External linkage (declared in tabfm_plugin_backend.hpp), so it must live OUTSIDE
-// the anonymous namespace above -- inside it the test would fail to link.
-string PluginFailureHint(const string &backend, const string &error) {
-	if (backend != "migraphx" || error.find("Parameter not found: n_rows") == string::npos) {
-		return "";
-	}
-	return " -- the installed MIGraphX plugin predates this model's graph: the graph takes a row-count input "
-	       "(n_rows) that the plugin cannot bind. Update the plugin with CALL tabfm_accelerate() or "
-	       "CALL tabfm_download_runtime(...), or point anofox_tabfm_ep_path at a newer build.";
-}
 
 bool PluginLoadable(const string &library_path, string *error) {
 	auto set_error = [&](string message) {
@@ -191,7 +171,7 @@ bool PluginLoadable(const string &library_path, string *error) {
 	if (!library) {
 		// The loader's own text is the useful part and is usually specific:
 		// a plugin present but unloadable almost always names the dependency
-		// that is missing (libmigraphx_c.so, a CUDA runtime), which is a
+		// that is missing (libcuda.so.1, the ROCm libraries, libmlx), which is a
 		// different problem from the file not being there and has a different
 		// fix. Reporting only "not loadable" would hide it.
 		set_error(LibraryError());
@@ -289,8 +269,8 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 	}
 
 	// Before create, which is the first call that does real work: a graph input the plugin would leave
-	// unbound fails inside the runtime's own run call, and MIGraphX reports that by writing to std::cerr
-	// from the worker thread -- which crashed the host rather than raising anything it could catch.
+	// unbound fails inside the runtime's own run call, where it cannot be reported this clearly (the
+	// removed MIGraphX plugin crashed the host that way).
 	if (params.graph_path && *params.graph_path) {
 		auto unbound = UnboundGraphInputs(params.graph_path, api->graph_inputs ? api->graph_inputs() : nullptr);
 		if (!unbound.empty()) {
@@ -318,7 +298,7 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 		// destructor does, for the same reason.
 		throw InvalidInputException("anofox_tabfm: the '%s' backend could not be initialised: %s", backend_name, err);
 	}
-	return make_uniq<PluginBackend>(library, api, handle, library_path);
+	return make_uniq<PluginBackend>(api, handle);
 }
 
 } // namespace anofox
