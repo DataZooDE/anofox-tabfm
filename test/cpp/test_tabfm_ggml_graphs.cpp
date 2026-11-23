@@ -9,7 +9,7 @@
 
 #include "catch.hpp"
 
-#include "tabfm_ggml_lower.hpp"
+#include "tabfm_ggml.hpp"
 
 #include <algorithm>
 #include <chrono>

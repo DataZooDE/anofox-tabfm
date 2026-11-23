@@ -1,3 +1,0 @@
-# op Squeeze
-in x f32 2,3,1 bfae9e55 7fc00000 7f800000 bff6139d bf4a02f5 ff800000
-out y f32 2,3 bfae9e55 7fc00000 7f800000 bff6139d bf4a02f5 ff800000

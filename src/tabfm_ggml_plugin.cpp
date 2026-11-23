@@ -27,9 +27,7 @@
  * Independent of duckdb. Every exception is caught at the API boundary and reported through the err buffer.
  *===----------------------------------------------------------------------===*/
 
-#include "tabfm_ggml_engine.hpp"
-#include "tabfm_ggml_lower.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 #include "tabfm_plugin_abi.h"
 
 #include <algorithm>
@@ -265,6 +263,8 @@ void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_
 		config.threads = static_cast<int>(std::max(1u, std::min(8u, std::thread::hardware_concurrency())));
 		config.device = "gpu:" + std::to_string(params->device_ordinal);
 		config.strict_fp32 = precision == "fp32"; // see GgmlExecutorConfig::strict_fp32: ggml's small-batch CUDA kernel ignores the TF32 switch
+		config.out_of_memory_remedy = "Free the device (CALL tabfm_unload() for a model you no longer use, or SET anofox_tabfm_max_sessions = 1 "
+		                              "so fewer models stay loaded), use a smaller model, or SET anofox_tabfm_device='cpu'.";
 		auto *self = backend.get();
 		config.weights = [self](const std::string &name, const std::vector<int64_t> &dims) -> ExternalWeight {
 			const auto it = self->weights.find(name);

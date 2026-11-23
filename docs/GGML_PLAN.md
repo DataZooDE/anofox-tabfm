@@ -1,5 +1,10 @@
 # Plan: move the CPU engine from ONNX Runtime to ggml (correctness first, ORT as oracle, then optimise to ORT parity)
 
+> **Status (2026-11-23): the engine moved to its own repo.** The sources named below as `src/tabfm_ggml_lower.cpp`, `tabfm_shape_eval.cpp`,
+> `tabfm_onnx_reader.cpp`, `tabfm_ggml_engine.cpp`, `tabfm_ggml_ops.hpp`, `tabfm_rank_reduce.hpp`, the per-op goldens and
+> `tools/ggml_parity/gen_op_goldens.py` / `ggml_driver.cpp` now live in **anofox-ggml-adapter** (`vendor/anofox-ggml-adapter`, shared with
+> anofox-decide) as `src/ggml_lower.cpp`, `src/shape_eval.cpp` and so on; `vendor/ggml` is its submodule. This page keeps the history.
+>
 > **Status (2026-11-21): done and superseded in places.** The CPU device is always ggml and the ORT CPU engine, the `TABFM_CPU_ENGINE` option and the vcpkg ORT port are removed
 > (see "P6 follow-up" and "P8 result" below). Mentions of `TABFM_CPU_ENGINE`, `TabFMSessionConfig::cpu_engine` and an ORT oracle build in the sections written before that describe the migration path, not the current build.
 

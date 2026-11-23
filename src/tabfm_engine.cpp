@@ -31,7 +31,7 @@
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_plugin_artifacts.hpp"
 #include "tabfm_mlx_ops.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 #include "tabfm_state.hpp"
 #include "tabfm_context_cache.hpp"
 

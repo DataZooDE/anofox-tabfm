@@ -9,7 +9,7 @@ Clone with submodules (`git clone --recurse-submodules`; they include DuckDB, th
 git clone https://github.com/microsoft/vcpkg && ./vcpkg/bootstrap-vcpkg.sh -disableMetrics
 export VCPKG_TOOLCHAIN_PATH=$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake
 
-GEN=ninja make release                     # the ggml engine (vendor/ggml submodule): no ONNX Runtime anywhere
+GEN=ninja make release                     # the ggml engine (vendor/anofox-ggml-adapter): no ONNX Runtime anywhere
 GEN=ninja make debug                       # debug build
 make test_release                          # sqllogictests + C++ unit tests (telemetry disabled)
 ./build/release/test/unittest test/sql/tabfm_classify.test   # a single file
@@ -36,7 +36,8 @@ Requires CMake ≥ 3.10 (≥ 3.19 to also build the bundled C++ unit tests), a C
 
 ## Engine
 
-The CPU device runs on **ggml** (`vendor/ggml`, a pinned git submodule compiled into the extension, CPU backend only, no OpenMP,
+The CPU device runs on **ggml** through the engine shared with anofox-decide (`vendor/anofox-ggml-adapter`, a git submodule that
+carries ggml as its own pinned submodule; compiled into the extension, CPU backend only, no OpenMP,
 AVX2/FMA baseline on x86-64). No build links **ONNX Runtime**: there is no download, no vcpkg ORT port and no build flavor; the
 `TABFM_FLAVOR` switch, the `TABFM_ORT_*` make variables, `TABFM_WITH_ORT` and `cmake/ort.cmake` are removed. The bundled ONNX graphs are
 lowered op by op to ggml graphs (`docs/GGML_PLAN.md`, `docs/GGML_LOWERING.md`); every op is checked against ONNX Runtime's output
@@ -44,10 +45,10 @@ lowered op by op to ggml graphs (`docs/GGML_PLAN.md`, `docs/GGML_LOWERING.md`); 
 
 | CMake option | Default | Meaning |
 |---|---|---|
-| `TABFM_GGML_NATIVE` | `OFF` (`ON` on MSVC arm64, which ggml requires) | compile ggml for this machine's CPU (AVX-512 etc.): faster here, may crash on older CPUs |
+| `ANOFOX_GGML_NATIVE` (was `TABFM_GGML_NATIVE`, still accepted) | `OFF` (`ON` on MSVC arm64, which ggml requires) | compile ggml for this machine's CPU (AVX-512 etc.): faster here, may crash on older CPUs |
 
-ggml is not optional: a checkout without `vendor/ggml` (`git submodule update --init vendor/ggml`) does not configure.
-Debugging aids: `TABFM_GGML_PROFILE=1|2` prints phase timings (2 adds per-op-kind compute times).
+ggml is not optional: a checkout without the submodules (`git submodule update --init --recursive`) does not configure.
+Debugging aids: `ANOFOX_GGML_PROFILE=1|2` (or the old `TABFM_GGML_PROFILE`) prints phase timings (2 adds per-op-kind compute times).
 
 The test suite runs against random-init fixture models and needs no real weights and no network. A
 locally built extension is unsigned: start DuckDB with `duckdb -unsigned` and `LOAD` the file, or use the
@@ -61,7 +62,7 @@ GPUs are served by plugins, not by builds of the extension ([GPU](api/04-gpu.md)
 published as release assets (`.github/workflows/gpu_plugins.yml`), so you rarely need to build one.
 
 **The ggml GPU plugin** (CUDA and ROCm) is `src/tabfm_ggml_plugin.cpp` plus the engine sources, built by its
-own CMake project in `tools/ggml_plugin`. It needs `vendor/ggml` and the vendor's toolkit (the CUDA toolkit,
+own CMake project in `tools/ggml_plugin`. It needs `vendor/anofox-ggml-adapter` and the vendor's toolkit (the CUDA toolkit,
 or ROCm's HIP SDK), not ONNX Runtime:
 
 ```bash

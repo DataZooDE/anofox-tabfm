@@ -2,12 +2,12 @@
 # requires-python = ">=3.10"
 # dependencies = ["onnx"]
 # ///
-"""Regenerate docs/GGML_LOWERING.md from the lowering table in src/include/tabfm_ggml_ops.hpp and the bundled CPU graphs.
+"""Regenerate docs/GGML_LOWERING.md from the lowering table in vendor/anofox-ggml-adapter/include/anofox_ggml_adapter/ggml_ops.hpp and the bundled CPU graphs.
 
 Run from the repo root:  uv run tools/ggml_parity/gen_lowering_doc.py
 """
 import glob,collections,re,onnx
-hdr=open("src/include/tabfm_ggml_ops.hpp").read()
+hdr=open("vendor/anofox-ggml-adapter/include/anofox_ggml_adapter/ggml_ops.hpp").read()
 rows=re.findall(r'\{"(\w+)", \{GgmlLowerKind::(\w+), "((?:[^"\\]|\\.)*)"\}\}',hdr)
 nodes=collections.Counter(); graphs=collections.Counter(); n15=collections.Counter()
 fs=[f for f in sorted(glob.glob("resources/graph_*.onnx")) if "graph_ext_" not in f and "graph_migraphx_" not in f]
@@ -19,7 +19,7 @@ tot=sum(nodes.values()); t15=sum(n15.values())
 kinds=collections.defaultdict(list)
 for o,k,h in rows: kinds[k].append(o)
 out=["# ggml lowering matrix (P1)\n",
-"Generated from `src/include/tabfm_ggml_ops.hpp` (`GgmlLoweringTable()`) and the %d bundled CPU graphs (`resources/graph_*.onnx` without the ext variants); Regenerate with `uv run tools/ggml_parity/gen_lowering_doc.py`. Reasons were checked against the vendored `vendor/ggml/include/ggml.h`.\n"%len(fs),
+"Generated from `vendor/anofox-ggml-adapter/include/anofox_ggml_adapter/ggml_ops.hpp` (`GgmlLoweringTable()`) and the %d bundled CPU graphs (`resources/graph_*.onnx` without the ext variants); Regenerate with `uv run tools/ggml_parity/gen_lowering_doc.py`. Reasons were checked against the vendored `vendor/anofox-ggml-adapter/vendor/ggml/include/ggml.h`.\n"%len(fs),
 "%d distinct ops over %d graphs, %d nodes in total (Nori 1.5: %d nodes).\n"%(len(rows),len(fs),tot,t15),
 "| kind | ops | nodes (all graphs) | nodes (Nori 1.5) | meaning |","|---|---|---|---|---|"]
 meaning={"NATIVE":"one ggml op plus views","COMPOSITE":"a few ggml ops, or a native op with a workaround","CUSTOM":"no ggml op: host kernel inside the graph","HOST":"never reaches ggml: folded by the shape pass"}

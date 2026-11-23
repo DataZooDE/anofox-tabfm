@@ -1,3 +1,0 @@
-# op Cast
-in x f32 8 3fd9999a bfd9999a 3e4ccccd be4ccccd 40400000 c0400000 42c9fae1 c2c9fae1
-out y i64 8 1 -1 0 0 3 -3 100 -100

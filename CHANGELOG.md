@@ -5,6 +5,13 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **The ggml engine is a shared component now**, `vendor/anofox-ggml-adapter` (github.com/DataZooDE/anofox-ggml-adapter), which
+  anofox-decide uses too. Nothing changes for users: the same engine, the same answers. For builds: the submodules are fetched with
+  `git submodule update --init --recursive` (ggml is the adapter's submodule), the CMake option is `ANOFOX_GGML_NATIVE` (the old
+  `TABFM_GGML_NATIVE` still works) and the profiling switches are `ANOFOX_GGML_PROFILE*` / `ANOFOX_GGML_NO_POOL` (the `TABFM_GGML_*`
+  names still work). New ONNX ops are added in the adapter.
+
 ## [v2026.11.23] - 2026-11-23
 
 ### Removed (breaking)

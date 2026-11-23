@@ -1,6 +1,6 @@
 # ggml lowering matrix (P1)
 
-Generated from `src/include/tabfm_ggml_ops.hpp` (`GgmlLoweringTable()`) and the 45 bundled CPU graphs (`resources/graph_*.onnx` without the ext variants); Regenerate with `uv run tools/ggml_parity/gen_lowering_doc.py`. Reasons were checked against the vendored `vendor/ggml/include/ggml.h`.
+Generated from `vendor/anofox-ggml-adapter/include/anofox_ggml_adapter/ggml_ops.hpp` (`GgmlLoweringTable()`) and the 45 bundled CPU graphs (`resources/graph_*.onnx` without the ext variants); Regenerate with `uv run tools/ggml_parity/gen_lowering_doc.py`. Reasons were checked against the vendored `vendor/anofox-ggml-adapter/vendor/ggml/include/ggml.h`.
 
 72 distinct ops over 45 graphs, 402814 nodes in total (Nori 1.5: 12592 nodes).
 

@@ -10,9 +10,8 @@
 // or the bf16 upcast arena); the owner keeps them alive for the life of the session (CpuBackend's member order already guarantees it).
 //===----------------------------------------------------------------------===//
 
-#include "tabfm_ggml_lower.hpp"
+#include "tabfm_ggml.hpp"
 #include "tabfm_session.hpp"
-#include "tabfm_onnx_reader.hpp"
 
 #include <memory>
 #include <unordered_map>

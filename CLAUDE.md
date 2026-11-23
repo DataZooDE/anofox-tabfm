@@ -2,7 +2,7 @@
 
 DuckDB C++ extension embedding Google's TabFM tabular foundation model
 (TabPFN-style in-context learner). The CPU device runs the bundled ONNX graphs on a vendored **ggml** engine
-(`vendor/ggml`; no build links ONNX Runtime, see `docs/BUILDING.md` "Engine" and `docs/GGML_PLAN.md`).
+(`vendor/anofox-ggml-adapter`, shared with anofox-decide; no build links ONNX Runtime, see `docs/BUILDING.md` "Engine" and `docs/GGML_PLAN.md`).
 ONNX Runtime survives only as Python dev tooling (the oracle in `tools/ggml_parity`). Zero-shot
 classification and regression as SQL. Spec (normative):
 `/home/jr/Projects/tmp/research/2026-07-04-anofox-tabfm-spec/` — BRD, HLD,
@@ -12,7 +12,7 @@ backing your module before writing code).
 ## Build & test
 
 ```bash
-make debug            # the ggml engine (vendor/ggml); no ONNX Runtime is built or downloaded
+make debug            # the ggml engine (vendor/anofox-ggml-adapter); no ONNX Runtime is built or downloaded
 make release
 make test_debug       # sqllogictests + C++ tests via build/debug/test/unittest
 ./build/debug/test/unittest test/sql/settings.test          # single file
@@ -29,8 +29,9 @@ cmake -S tools/ggml_plugin -B build/ggml-rocm -G Ninja -DTABFM_GGML_GPU=hip -DAM
 
 1. **Red-green TDD.** Write the failing sqllogictest/Catch2 test first, then
    implement. Error-path tests are first-class (SQL-API §5 catalog).
-2. **A new ONNX op or attribute form** needs, first, a golden in `tools/ggml_parity/gen_op_goldens.py` (ORT is the oracle; regenerate with
-   `uv run tools/ggml_parity/gen_op_goldens.py`), then the lowering in `src/tabfm_ggml_lower.cpp` and the row in `tabfm_ggml_ops.hpp`.
+2. **A new ONNX op or attribute form** goes into the shared engine, `vendor/anofox-ggml-adapter` (its own repo, PR there first, then bump
+   the submodule): a golden in its `tools/ggml_parity/gen_op_goldens.py` (ORT is the oracle), then the lowering in `src/ggml_lower.cpp`
+   and the row in `include/anofox_ggml_adapter/ggml_ops.hpp`.
    `GgmlRefusal` names any op the engine lacks. Never compare a golden with a loose tolerance to make it pass: exact ops are bit-exact.
 3. **File ownership.** One module = one `src/tabfm_*.cpp` (+ its headers under
    `src/include/`, tests under `test/`). Do not edit shared files
@@ -62,10 +63,10 @@ cmake -S tools/ggml_plugin -B build/ggml-rocm -G Ninja -DTABFM_GGML_GPU=hip -DAM
 - `src/tabfm_safetensors.cpp`, `tabfm_manifest.cpp` — WS-B (readers)
 - `src/tabfm_session.cpp`, `tabfm_devices.cpp`, `tabfm_state.cpp` — WS-C (sessions; the in-process `TabFMSession` is always ggml on the CPU; GPU devices are served by plugins)
 - `src/tabfm_engine.cpp` (dispatch: `TryGgmlGpuBackend`, `TryMlxBackend`), `tabfm_plugin_backend.cpp` (the plugin loader), `src/include/tabfm_plugin_artifacts.hpp` (plugin file names, release tag, sha256 sidecars)
-- `src/tabfm_ggml_lower.cpp` (ONNX graph -> ggml graph, `GgmlExecutor`), `tabfm_shape_eval.cpp` (host shape/constant pass, float64 interpreter),
-  `tabfm_ggml_session.cpp` (the ggml-backed `TabFMSession`), `tabfm_ggml_engine.cpp`, `tabfm_ggml_ops.hpp` (the op table), `tabfm_rank_reduce.hpp` — the ggml engine
-  (CPU, and the same sources in the GPU plugin).
-  Every op is checked against ONNX Runtime: `tools/ggml_parity/` (per-op goldens in `test/fixtures/ggml_ops`, whole-graph `graphs_parity.py`)
+- `vendor/anofox-ggml-adapter` — the ggml engine, shared with anofox-decide (ONNX reader, host shape pass, lowering and `GgmlExecutor`,
+  the op table, per-op goldens against ONNX Runtime; ggml itself is its submodule). `src/include/tabfm_ggml.hpp` brings its names into
+  `duckdb::anofox`; `src/tabfm_ggml_session.cpp` is the ggml-backed `TabFMSession` (the TabFM contract). The GPU plugin builds the same
+  sources. Whole-graph parity for tabfm's graphs: `tools/ggml_parity/graphs_parity.py`.
 - `src/tabfm_weights.cpp` — WS-D (download/lifecycle/license gate)
 - `src/tabfm_predict_agg.cpp`, `tabfm_macros.cpp` — WS-E (predict surface)
 - `src/tabfm_preprocess.cpp`, `tabfm_ensemble.cpp` — WS-F
@@ -89,7 +90,7 @@ There are no build flavors: `TABFM_FLAVOR`, `TABFM_ORT_*`, `TABFM_WITH_ORT` and 
   the system's HIP, hipBLAS, rocBLAS). Reads the plain `ext` graph; `.github/workflows/gpu_plugins.yml` builds
   and publishes both with sha256 sidecars.
 - `src/tabfm_mlx_plugin.cpp` — Apple MLX; runs the shipped ONNX graph itself
-  via `src/tabfm_mlx_graph.cpp` (+ `tabfm_onnx_reader.cpp`, a minimal
+  via `src/tabfm_mlx_graph.cpp` (+ the adapter's `onnx_reader.cpp`, a minimal
   wire-format parser so the plugin needs no libonnx/libprotobuf). mitra also
   has a hand-ported forward, kept as the fast path and as an independent
   oracle for the interpreter. macOS/arm64 only; see `docs/MLX_PLAN.md`.

@@ -22,66 +22,16 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # --- Dependencies ---
 
-# --- ggml CPU engine (docs/GGML_PLAN.md) ---
+# --- ggml engine (docs/GGML_PLAN.md) ---
 #
-# The CPU device always runs on the vendored ggml (vendor/ggml, a git submodule): there is no other engine and no option to pick one, and a checkout
-# without the submodule does not configure. GPUs are served by plugins (tools/ggml_plugin for CUDA and ROCm, the MLX plugin below for Apple); nothing
-# links ONNX Runtime.
-
-# ggml's CPU backend refuses to configure on MSVC arm64 without GGML_NATIVE (ggml-cpu/CMakeLists.txt); everywhere else the baseline build is the default.
-set(_tabfm_ggml_native_default OFF)
-if(MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "ARM64|arm64|aarch64")
-    set(_tabfm_ggml_native_default ON)
+# The CPU device runs on the ggml engine shared with anofox-decide: vendor/anofox-ggml-adapter (a git submodule with ggml as its own
+# submodule; a checkout without them does not configure). The adapter's module builds ggml as static archives with hidden visibility
+# and gives the engine sources and the anofox_ggml link target. GPUs are served by plugins (tools/ggml_plugin for CUDA and ROCm, the
+# MLX plugin below for Apple); nothing links ONNX Runtime. ANOFOX_GGML_NATIVE compiles ggml for this machine's CPU (default OFF).
+if(DEFINED TABFM_GGML_NATIVE)
+    set(ANOFOX_GGML_NATIVE ${TABFM_GGML_NATIVE} CACHE BOOL "" FORCE) # the option's name before the adapter
 endif()
-option(TABFM_GGML_NATIVE "Compile ggml for this machine's CPU (fast, but the binary may crash on older CPUs)" ${_tabfm_ggml_native_default})
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml/CMakeLists.txt")
-    message(FATAL_ERROR "vendor/ggml is empty. Run: git submodule update --init vendor/ggml")
-endif()
-# Static, CPU backend only. No OpenMP: libgomp's spin-waiting starves ggml's own thread pool (measured 24 s
-# vs 4 s on Nori 1.5), and the engine's threads come from anofox_tabfm_threads, not OMP_NUM_THREADS.
-set(_tabfm_saved_shared ${BUILD_SHARED_LIBS})
-set(_tabfm_saved_pic ${CMAKE_POSITION_INDEPENDENT_CODE})
-set(BUILD_SHARED_LIBS OFF)
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
-set(GGML_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(GGML_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-# CPU backend only. ggml defaults Metal, Accelerate and BLAS to ON on Apple, which would add backends this
-# wrapper does not link (undefined ggml_backend_metal_reg, no frameworks, a Metal shader library nobody asked
-# for). The GPU backends are a separate plan (P8).
-set(GGML_METAL OFF CACHE BOOL "" FORCE)
-set(GGML_BLAS OFF CACHE BOOL "" FORCE)
-set(GGML_ACCELERATE OFF CACHE BOOL "" FORCE)
-set(GGML_CPU_KLEIDIAI OFF CACHE BOOL "" FORCE)
-# Static ggml gets default visibility in the loadable extension; hide it so an interposing ggml elsewhere in the
-# process (a llama.cpp host, a preloaded library) cannot capture our calls through --allow-multiple-definition.
-set(_tabfm_saved_cvis ${CMAKE_C_VISIBILITY_PRESET})
-set(_tabfm_saved_cxxvis ${CMAKE_CXX_VISIBILITY_PRESET})
-set(CMAKE_C_VISIBILITY_PRESET hidden)
-set(CMAKE_CXX_VISIBILITY_PRESET hidden)
-set(GGML_NATIVE ${TABFM_GGML_NATIVE} CACHE BOOL "" FORCE)
-# tinyBLAS: ggml's tuned float SGEMM for the CPU backend (off by default in a standalone ggml build). The matmuls are most of the compute.
-set(GGML_LLAMAFILE ON CACHE BOOL "" FORCE)
-add_subdirectory(vendor/ggml EXCLUDE_FROM_ALL)
-# ggml's CPU kernels carry plain assert()s such as !isnan(x) in softmax. They are live in a Debug build, and NaN is valid data
-# here (the graphs mask attention with NaN and the goldens feed NaN rows on purpose): a Debug build would abort() the whole
-# process where a Release build returns NaN. GGML_ASSERT (shape/type contracts) is a separate macro and stays on.
-foreach(_tgt ggml ggml-base ggml-cpu)
-    if(TARGET ${_tgt})
-        target_compile_definitions(${_tgt} PRIVATE NDEBUG)
-    endif()
-endforeach()
-# DuckDB export()s the extension targets and rejects non-imported build-tree dependencies (install(EXPORT) fails
-# with 'requires target ggml that is not in any export set'), so it is an IMPORTED
-# INTERFACE target. Wrap the static archives the same way; consumers add_dependencies() on `ggml` for build order.
-add_library(tabfm_ggml INTERFACE IMPORTED GLOBAL)
-set_target_properties(tabfm_ggml PROPERTIES
-    INTERFACE_INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/vendor/ggml/include"
-    INTERFACE_LINK_LIBRARIES "$<TARGET_FILE:ggml>;$<TARGET_FILE:ggml-cpu>;$<TARGET_FILE:ggml-base>;Threads::Threads;${CMAKE_DL_LIBS}")
-set(BUILD_SHARED_LIBS ${_tabfm_saved_shared})
-set(CMAKE_POSITION_INDEPENDENT_CODE ${_tabfm_saved_pic})
-set(CMAKE_C_VISIBILITY_PRESET ${_tabfm_saved_cvis})
-set(CMAKE_CXX_VISIBILITY_PRESET ${_tabfm_saved_cxxvis})
+include(vendor/anofox-ggml-adapter/cmake/anofox_ggml_adapter.cmake)
 
 # Embed the weight-free graphs + tensor maps from resources/ into the binary
 # (built-in model flow needs no companion files) — sets
@@ -134,10 +84,9 @@ set(EXTENSION_SOURCES
         src/tabfm_metrics_regression.cpp
         src/tabfm_crossval.cpp
         src/tabfm_scoring.cpp
-        src/tabfm_onnx_reader.cpp
         ${TABFM_BUNDLED_RESOURCES_SRC}
 )
-list(APPEND EXTENSION_SOURCES src/tabfm_ggml_engine.cpp src/tabfm_ggml_lower.cpp src/tabfm_ggml_session.cpp src/tabfm_shape_eval.cpp)
+list(APPEND EXTENSION_SOURCES src/tabfm_ggml_session.cpp ${ANOFOX_GGML_ADAPTER_SOURCES})
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
@@ -148,7 +97,7 @@ foreach(_tgt ${EXTENSION_NAME} ${LOADABLE_EXTENSION_NAME})
     target_include_directories(${_tgt} PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/posthog-telemetry/include)
     add_dependencies(${_tgt} ggml)
-    target_link_libraries(${_tgt} tabfm_ggml)
+    target_link_libraries(${_tgt} anofox_ggml)
     target_link_libraries(${_tgt}
         datazoo_banner
         OpenSSL::SSL
@@ -179,7 +128,7 @@ endif()
 # --- Apple MLX backend plugin (docs/MLX_PLAN.md, spikes in docs/MLX_SPIKE_RESULTS.md) ---
 #
 # A plugin the extension dlopens, like the ggml GPU plugin (tools/ggml_plugin). MLX has no ONNX importer, so the
-# plugin runs the model's ONNX graph through its own interpreter (src/tabfm_mlx_graph.cpp + src/tabfm_onnx_reader.cpp);
+# plugin runs the model's ONNX graph through its own interpreter (src/tabfm_mlx_graph.cpp + the adapter's ONNX reader);
 # mitra also has a forward transcribed from mitra_model_patched.py, kept as its fast path.
 #
 # Optional and silent when absent, like the others: Linux and Intel-Mac CI
@@ -194,13 +143,14 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
         # The plugin carries its own minimal ONNX reader rather than linking
         # libonnx + libprotobuf: it is separately distributed, and coupling a
         # small .dylib to protobuf's ABI (and to whatever abseil the extension
-        # built against) buys nothing it needs. See tabfm_onnx_reader.hpp.
+        # built against) buys nothing it needs. See the adapter's onnx_reader.hpp.
         add_library(anofox_tabfm_mlx_plugin SHARED
             src/tabfm_mlx_plugin.cpp
             src/tabfm_mlx_graph.cpp
-            src/tabfm_onnx_reader.cpp)
+            vendor/anofox-ggml-adapter/src/onnx_reader.cpp)
         target_include_directories(anofox_tabfm_mlx_plugin PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+            "${ANOFOX_GGML_ADAPTER_INCLUDE_DIR}"
             "${TABFM_MLX_DIR}/include")
         target_link_libraries(anofox_tabfm_mlx_plugin PRIVATE "${TABFM_MLX_C_LIB}" "${TABFM_MLX_LIB}")
         target_compile_features(anofox_tabfm_mlx_plugin PRIVATE cxx_std_17)
@@ -260,7 +210,7 @@ set(TABFM_CPP_TEST_SOURCES
     test/cpp/test_tabfm_scoring.cpp
     test/cpp/test_tabfm_context_cache.cpp
 )
-list(APPEND TABFM_CPP_TEST_SOURCES test/cpp/test_tabfm_ggml_engine.cpp test/cpp/test_tabfm_ggml_lowering.cpp test/cpp/test_tabfm_ggml_ops.cpp test/cpp/test_tabfm_ggml_nori.cpp test/cpp/test_tabfm_ggml_graphs.cpp test/cpp/test_tabfm_rank_reduce.cpp test/cpp/test_tabfm_shape_eval.cpp)
+list(APPEND TABFM_CPP_TEST_SOURCES test/cpp/test_tabfm_ggml_lowering.cpp test/cpp/test_tabfm_ggml_nori.cpp test/cpp/test_tabfm_ggml_graphs.cpp test/cpp/test_tabfm_shape_eval.cpp)
 if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.19")
     # Backend-plugin fixtures. The real GPU
     # backend needs hardware CI does not have, which would leave the LOADER —
@@ -303,7 +253,7 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     )
     target_link_libraries(anofox_tabfm_unittest_tests PRIVATE duckdb_static)
     add_dependencies(anofox_tabfm_unittest_tests ggml)
-    target_link_libraries(anofox_tabfm_unittest_tests PRIVATE tabfm_ggml)
+    target_link_libraries(anofox_tabfm_unittest_tests PRIVATE anofox_ggml)
 
     function(anofox_tabfm_register_cpp_tests)
         if(TARGET unittest)

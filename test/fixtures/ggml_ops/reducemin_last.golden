@@ -1,3 +1,0 @@
-# op ReduceMin
-in x f32 3,5 3ee554e9 3edcd530 bfcd5973 bf7e3765 bf3022fb bf9a2af8 3f8ea5f8 bf52f77f bf508dbb 3d3d4519 be7be03e bf4a5170 bd0ce276 bd2619a1 c009aac8
-out y f32 3,1 bfcd5973 bf9a2af8 c009aac8

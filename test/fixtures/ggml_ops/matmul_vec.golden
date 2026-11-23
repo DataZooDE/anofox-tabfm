@@ -1,4 +1,0 @@
-# op MatMul
-in a f32 4 bf3e754f bfcbd896 bfc02cc9 bf156481
-in b f32 4,5 3f021f8d be0f0808 be94495c 3f17a48a 3eff401b bfa6622c bec49a57 3e88e223 c0243e07 c0193a68 3f15ca18 3f8f1dee bfba74da 3ddaeb54 bcbae812 bf880e4c be5fc640 3a83f3a6 3ed1ddd4 3e467094
-out y f32 5 3fb785aa bf55f149 3ffcf24d 404fc764 40573d7a

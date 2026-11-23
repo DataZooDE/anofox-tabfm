@@ -1,3 +1,0 @@
-# op ReduceSum
-in x f32 2,3,4 3d2285ad bf060822 bea134ac 3f98242a be9b6f88 3f209806 befbdbd2 bdfeb997 bfce6dc0 3dfc18ad bef0159e 40120b18 bf61dfba 3eeaed36 3f6d1d1f bf354a45 bfeaf4fa bf67f251 400c532a bf3a4cc7 3a8c6aa1 bf3a08f1 be86ab9c 3fbb6935
-out y f32 1,1,1 bf160644

@@ -22,7 +22,7 @@
 
 #include "tabfm_session.hpp"
 #include "tabfm_plugin_backend.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 #include <iterator>
 
 #include <cmath>

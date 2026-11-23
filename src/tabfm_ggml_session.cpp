@@ -1,7 +1,6 @@
 #include "tabfm_ggml_session.hpp"
 
-#include "tabfm_ggml_engine.hpp"
-#include "tabfm_ggml_lower.hpp"
+#include "tabfm_ggml.hpp"
 
 #include "duckdb/common/exception.hpp"
 
@@ -10,9 +9,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <set>
-#if defined(_MSC_VER) && (defined(_M_X64))
-#include <intrin.h>
-#endif
 
 namespace duckdb {
 namespace anofox {
@@ -92,33 +88,6 @@ TabFMRunOutput ToRunOutput(HostTensors &outputs, const string &name) {
 
 } // namespace
 
-//! The ggml CPU backend is compiled for AVX2 + FMA + F16C + BMI2 on x86 (no runtime dispatch in a static build): on an older CPU its first matmul would
-//! kill the whole DuckDB process with SIGILL. Refuse instead, naming the way out. Empty when the CPU is fine (always on other architectures).
-static string UnsupportedCpuReason() {
-#if defined(__x86_64__) || defined(_M_X64)
-#if defined(_MSC_VER)
-	int regs[4];
-	__cpuid(regs, 0);
-	if (regs[0] < 7) {
-		return "its CPU predates the AVX2 instruction set";
-	}
-	__cpuidex(regs, 7, 0);
-	const bool avx2 = (regs[1] & (1 << 5)) != 0, bmi2 = (regs[1] & (1 << 8)) != 0;
-	__cpuid(regs, 1);
-	const bool fma = (regs[2] & (1 << 12)) != 0, f16c = (regs[2] & (1 << 29)) != 0;
-	if (!(avx2 && bmi2 && fma && f16c)) {
-		return "its CPU lacks AVX2, FMA, F16C or BMI2";
-	}
-#else
-	__builtin_cpu_init();
-	if (!(__builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c") && __builtin_cpu_supports("bmi2"))) {
-		return "its CPU lacks AVX2, FMA, F16C or BMI2";
-	}
-#endif
-#endif
-	return string();
-}
-
 std::unique_ptr<GgmlSessionState> CreateGgmlSessionState(::anofox::onnxread::Graph graph, const vector<TabFMTensorRef> &initializers,
                                                          const TabFMSessionConfig &config) {
 	const string cpu_reason = UnsupportedCpuReason();
@@ -135,7 +104,7 @@ std::unique_ptr<GgmlSessionState> CreateGgmlSessionState(::anofox::onnxread::Gra
 	for (const auto &n : graph.nodes) {
 		ops.push_back(n.op_type);
 	}
-	const string refusal = GgmlRefusal(ops);
+	const string refusal = GgmlRefusal(ops, "Please report these op names; a GPU backend plugin (SET anofox_tabfm_ep_path, SET anofox_tabfm_device) may still run the graph.");
 	if (!refusal.empty()) {
 		throw InvalidInputException("anofox_tabfm: the ggml CPU engine cannot run the graph of '" + task + "': " + refusal);
 	}

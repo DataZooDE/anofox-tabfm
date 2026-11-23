@@ -1,4 +1,0 @@
-# op ScatterND
-in d f32 4 3f5a9b64 7f800000 7fc00000 be97da58
-in u f32 3 3f881676 3f8500f9 7fc00000
-out y f32 4 3f5a9b64 3f8500f9 7fc00000 be97da58

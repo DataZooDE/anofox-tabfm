@@ -7,8 +7,7 @@
 
 #include "catch.hpp"
 
-#include "tabfm_ggml_ops.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 
 #include <algorithm>
 #include <filesystem>

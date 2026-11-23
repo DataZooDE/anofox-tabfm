@@ -9,7 +9,7 @@
 
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_mlx_ops.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 
 #include <fstream>
 #include <regex>

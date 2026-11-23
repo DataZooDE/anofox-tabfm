@@ -1,4 +1,0 @@
-# op LessOrEqual
-in a f32 3,1 c0011447 7fc00000 3fa93d35
-in b f32 1,4 3f894bfb 7f800000 3e6b27fd 7fc00000
-out y bool 3,4 1 1 1 0 0 0 0 0 0 1 0 0

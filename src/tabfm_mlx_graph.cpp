@@ -30,7 +30,7 @@
 #include <unistd.h>
 #include <unordered_map>
 
-#include "tabfm_onnx_reader.hpp"
+#include "anofox_ggml_adapter/onnx_reader.hpp"
 
 #include "mlx/c/array.h"
 #include "mlx/c/fast.h"

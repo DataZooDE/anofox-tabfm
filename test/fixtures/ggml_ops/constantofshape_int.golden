@@ -1,3 +1,0 @@
-# op ConstantOfShape
-in x f32 2 bf413cff bcfd598a
-out y i64 3 7 7 7

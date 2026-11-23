@@ -15,7 +15,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "tabfm_plugin_backend.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"

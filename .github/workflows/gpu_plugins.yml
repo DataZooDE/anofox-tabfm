@@ -155,7 +155,7 @@ jobs:
 
       - name: Build the plugin
         # Three sources, and no libonnx/libprotobuf: the plugin parses the ONNX
-        # wire format itself (src/tabfm_onnx_reader.cpp) so a separately
+        # wire format itself (the adapter's src/onnx_reader.cpp) so a separately
         # distributed .dylib is not coupled to protobuf's ABI.
         # mlx-c 0.7 changed two calls the plugin makes and has no version macro, so probe for the new
         # API exactly as CMakeLists.txt does and pass the same TABFM_MLX_C_07 switch (Homebrew moved to
@@ -178,8 +178,8 @@ jobs:
           echo "mlx-c $(brew list --versions mlx-c): ${MLXC_FLAGS:-pre-0.7 API}"
           clang++ -O2 -std=c++17 -shared -fPIC -fvisibility=hidden $MLXC_FLAGS \
             -o libanofox_tabfm_mlx_plugin.dylib \
-            src/tabfm_mlx_plugin.cpp src/tabfm_mlx_graph.cpp src/tabfm_onnx_reader.cpp \
-            -Isrc/include -I"$(brew --prefix)/include" \
+            src/tabfm_mlx_plugin.cpp src/tabfm_mlx_graph.cpp vendor/anofox-ggml-adapter/src/onnx_reader.cpp \
+            -Isrc/include -Ivendor/anofox-ggml-adapter/include -I"$(brew --prefix)/include" \
             -L"$(brew --prefix)/lib" -lmlxc -lmlx
 
       - name: Sanity - one exported symbol, and only the expected dependencies
