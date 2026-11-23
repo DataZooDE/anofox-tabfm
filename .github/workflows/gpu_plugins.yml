@@ -147,6 +147,8 @@ jobs:
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+      - name: The ONNX reader comes from the shared engine (ggml itself is not needed here)
+        run: git submodule update --init vendor/anofox-ggml-adapter
 
       - name: Install MLX
         # The plugin links Apple's runtime, which is installed on the machine

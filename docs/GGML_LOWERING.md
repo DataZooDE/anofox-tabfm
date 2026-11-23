@@ -2,12 +2,12 @@
 
 Generated from `vendor/anofox-ggml-adapter/include/anofox_ggml_adapter/ggml_ops.hpp` (`GgmlLoweringTable()`) and the 45 bundled CPU graphs (`resources/graph_*.onnx` without the ext variants); Regenerate with `uv run tools/ggml_parity/gen_lowering_doc.py`. Reasons were checked against the vendored `vendor/anofox-ggml-adapter/vendor/ggml/include/ggml.h`.
 
-72 distinct ops over 45 graphs, 402814 nodes in total (Nori 1.5: 12592 nodes).
+74 distinct ops over 45 graphs, 402814 nodes in total (Nori 1.5: 12592 nodes).
 
 | kind | ops | nodes (all graphs) | nodes (Nori 1.5) | meaning |
 |---|---|---|---|---|
-| NATIVE | 23 | 170304 (42.3%) | 5534 (43.9%) | one ggml op plus views |
-| COMPOSITE | 16 | 87513 (21.7%) | 2483 (19.7%) | a few ggml ops, or a native op with a workaround |
+| NATIVE | 24 | 170304 (42.3%) | 5534 (43.9%) | one ggml op plus views |
+| COMPOSITE | 17 | 87513 (21.7%) | 2483 (19.7%) | a few ggml ops, or a native op with a workaround |
 | CUSTOM | 25 | 15028 (3.7%) | 398 (3.2%) | no ggml op: host kernel inside the graph |
 | HOST | 8 | 129969 (32.3%) | 4177 (33.2%) | never reaches ggml: folded by the shape pass |
 
@@ -43,6 +43,7 @@ Generated from `vendor/anofox-ggml-adapter/include/anofox_ggml_adapter/ggml_ops.
 | Ceil | NATIVE | 7/45 | 8 | 1 | GGML_UNARY_OP_CEIL |
 | Floor | NATIVE | 7/45 | 8 | 2 | GGML_UNARY_OP_FLOOR |
 | Relu | NATIVE | 1/45 | 1 | 0 | GGML_UNARY_OP_RELU |
+| Flatten | NATIVE | 0/45 | 0 | 0 | a reshape view to [prod(dims before axis), prod(dims from axis)] |
 | Cast | COMPOSITE | 45/45 | 24803 | 442 | ggml_cast between F32/F16/I32; int64 and bool values live on the host or as I32 masks |
 | Slice | COMPOSITE | 45/45 | 14711 | 407 | ggml_view_4d with strides, then ggml_cont; negative steps need a copy through a custom kernel |
 | MatMul | COMPOSITE | 45/45 | 14174 | 411 | ggml_mul_mat on a transposed right operand; batch broadcast only where src0's batch divides src1's |
@@ -59,6 +60,7 @@ Generated from `vendor/anofox-ggml-adapter/include/anofox_ggml_adapter/ggml_ops.
 | Einsum | COMPOSITE | 11/45 | 476 | 0 | permutes + ggml_mul_mat for the equations the bundled graphs use (verified in P3) |
 | Pad | COMPOSITE | 24/45 | 36 | 0 | ggml_pad_ext zero-fills only: a non-zero constant_value needs an added mask, and reflect/edge modes have no ggml op (modes in use checked in P3) |
 | TopK | COMPOSITE | 9/45 | 9 | 1 | ggml_argsort_top_k plus ggml_get_rows for the values: ggml_top_k itself returns indices in no particular order (its CPU kernel swaps the first two) where ONNX TopK is sorted; tie order checked in P3 |
+| Split | COMPOSITE | 0/45 | 0 | 0 | one strided view per output along the axis (the same cut as Slice), made contiguous |
 | Pow | CUSTOM | 35/45 | 4361 | 217 | no ggml pow: constant exponents 2, 0.5 and 3 lower to sqr/sqrt/sqr*x (nearly all nodes), only the dynamic-exponent nodes need the kernel |
 | Where | CUSTOM | 45/45 | 2413 | 23 | no ggml select; arithmetic emulation is wrong because masked values are NaN (NaN*0 = NaN) |
 | Erf | CUSTOM | 41/45 | 2039 | 3 | only GGML_UNARY_OP_GELU_ERF exists (x*0.5*(1+erf(x/sqrt2)), singular to invert at 0) |

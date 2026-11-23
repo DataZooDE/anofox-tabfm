@@ -34,7 +34,7 @@ jobs:
       duckdb_version: v1.5.6
       ci_tools_version: v1.5-variegata
       extension_name: anofox_tabfm
-      # Inference runs on the vendored ggml engine (vendor/ggml, a git submodule: checked out with the others, no
+      # Inference runs on the shared ggml engine (vendor/anofox-ggml-adapter, a git submodule with ggml inside: checked out with the others, no
       # third-party download at build time; see docs/GGML_PLAN.md). GPUs are served by the plugins built in gpu_plugins.yml.
       # Exclude WASM/musl (NFR-C1: explicitly out - multi-GB inference) and MinGW (vcpkg OpenSSL build issues, house
       # pattern). osx_amd64 is excluded: the ggml engine has not been built or verified on Intel macOS.

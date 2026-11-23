@@ -28,9 +28,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # submodule; a checkout without them does not configure). The adapter's module builds ggml as static archives with hidden visibility
 # and gives the engine sources and the anofox_ggml link target. GPUs are served by plugins (tools/ggml_plugin for CUDA and ROCm, the
 # MLX plugin below for Apple); nothing links ONNX Runtime. ANOFOX_GGML_NATIVE compiles ggml for this machine's CPU (default OFF).
-if(DEFINED TABFM_GGML_NATIVE)
-    set(ANOFOX_GGML_NATIVE ${TABFM_GGML_NATIVE} CACHE BOOL "" FORCE) # the option's name before the adapter
+# The option's name before the adapter, honoured only when the new one is not set, and dropped so a cached value cannot override it.
+if(DEFINED TABFM_GGML_NATIVE AND NOT DEFINED CACHE{ANOFOX_GGML_NATIVE})
+    set(ANOFOX_GGML_NATIVE ${TABFM_GGML_NATIVE} CACHE BOOL "Compile ggml for this machine's CPU")
 endif()
+unset(TABFM_GGML_NATIVE CACHE)
 include(vendor/anofox-ggml-adapter/cmake/anofox_ggml_adapter.cmake)
 
 # Embed the weight-free graphs + tensor maps from resources/ into the binary
