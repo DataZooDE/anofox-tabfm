@@ -22,10 +22,22 @@ run() { # name, command...: runs it, keeps the tail of its output, records PASS/
 	shift
 	echo "=== $name"
 	if "$@" > "$W/$name.log" 2>&1; then RESULT[$name]=PASS; else RESULT[$name]="FAIL (exit $?)"; fi
+	# the first errors, then the tail (a failed build's cause is far above its last lines)
+	grep -nE "error:|Error [0-9]|FAILED:|Killed|internal compiler error" "$W/$name.log" | head -15
 	tail -25 "$W/$name.log"
 }
 
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
+# a full DuckDB + extension build at one job per core runs a pod out of memory (the compiler is killed): about 3 GB per job
+MEM_GB=$(awk '/MemAvailable/ {print int($2 / 1048576)}' /proc/meminfo)
+# a container sees the host's /proc/meminfo: its own limit is the cgroup's
+CG=$(cat /sys/fs/cgroup/memory.max 2> /dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2> /dev/null || echo max)
+if [[ $CG =~ ^[0-9]+$ ]] && [ $((CG / 1073741824)) -lt "$MEM_GB" ]; then MEM_GB=$((CG / 1073741824)); fi
+JOBS=$((MEM_GB / 3))
+[ "$JOBS" -lt 1 ] && JOBS=1
+[ "$JOBS" -gt "$(nproc)" ] && JOBS=$(nproc)
+export CMAKE_BUILD_PARALLEL_LEVEL=$JOBS
+echo "cores $(nproc), memory ${MEM_GB} GB, build jobs $JOBS"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq && apt-get install -y -qq git cmake ninja-build build-essential python3 zip unzip curl pkg-config tar ccache > /dev/null
 export GEN=ninja DATAZOO_DISABLE_TELEMETRY=1 CCACHE_DIR=$W/ccache

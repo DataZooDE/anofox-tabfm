@@ -1366,7 +1366,9 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 	// The plugin's model name is "<model>-<task>": it picks mitra's hand-ported fast path, and a task/weights mismatch is caught rather
 	// than computed.
 	TabFMPluginRequest request;
-	request.graph_path = graph_path;
+	// mitra always runs the plugin's hand-port, which reads the checkpoint by its state_dict names: give it the whole safetensors
+	// and no graph (with a graph, the weights would go by the graph's initializer names and the hand-port could not find them).
+	request.graph_path = resolved.manifest.model == "mitra" ? string() : graph_path;
 	request.weights_dir = weights_dir;
 	request.weights_path = resolved.weights_path;
 	request.model = resolved.manifest.model + "-" + task_name;

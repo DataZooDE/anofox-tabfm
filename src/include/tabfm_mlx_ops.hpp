@@ -25,11 +25,11 @@ namespace anofox {
 inline const std::set<std::string> &MlxImplementedOps() {
 	static const std::set<std::string> ops = {
 	    "Abs", "Add", "And", "Cast", "CastLike", "Ceil", "Clip", "Concat", "Constant", "ConstantOfShape", "Cos", "CumSum", "Div",
-	    "Einsum", "Equal", "Erf", "Exp", "Expand", "Floor", "Gather", "GatherElements", "GatherND", "Gemm",
+	    "Einsum", "Equal", "Erf", "Exp", "Expand", "Flatten", "Floor", "Gather", "GatherElements", "GatherND", "Gemm",
 	    "Greater", "GreaterOrEqual", "Identity", "IsInf", "IsNaN", "LayerNormalization", "Less", "LessOrEqual",
 	    "Log", "MatMul", "Max", "Min", "Mod", "Mul", "Neg", "Not", "Or", "Pad", "Pow", "Range", "Reciprocal",
 	    "ReduceMax", "ReduceMean", "ReduceMin", "ReduceProd", "ReduceSum", "Relu", "Reshape", "Round", "ScatterElements", "ScatterND",
-	    "SequenceAt", "Shape", "Sigmoid", "Sign", "Sin", "Size", "Slice", "Softmax", "Softplus",
+	    "SequenceAt", "Shape", "Sigmoid", "Sign", "Sin", "Size", "Slice", "Softmax", "Softplus", "Split",
 	    "SplitToSequence", "Sqrt", "Squeeze", "Sub", "Tanh", "TopK", "Transpose", "Unsqueeze", "Where"};
 	return ops;
 }
