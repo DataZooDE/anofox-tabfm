@@ -964,40 +964,91 @@ SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM 
 true
 
 # ---------------------------------------------------------------------------
-# exaone-tabular and nori-30m ship no ext graph, so mlx refuses them: an explicit request errors
-# rather than serving the CPU.
+# exaone-tabular and nori-30m: since their ext graphs ship (resources/, 2026-11-22) mlx serves them too, and must agree with
+# the CPU like every other model (this block used to expect mlx to refuse them for want of a graph).
 
 statement ok
 CALL tabfm_unload();
 
 statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE exaone_cc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'exaone-tabular') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
 SET anofox_tabfm_device = 'mlx';
 
-statement error
-SELECT count(*) FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'exaone-tabular')
-----
-no runnable graph for task 'classification'
+statement ok
+CREATE TABLE exaone_gc AS SELECT rid, yhat FROM tabfm_classify('gc', 'label', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'exaone-tabular') JOIN gc USING (f1, f2, f3, f4, f5, f6, f7, f8);
 
-statement error
-SELECT count(*) FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'exaone-tabular')
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'exaone-tabular' AND task = 'classification'
 ----
-no runnable graph for task 'regression'
+true
 
-statement error
-SELECT count(*) FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'nori-30m')
+query I
+SELECT count(*) FILTER (WHERE c.yhat <> g.yhat) FROM exaone_cc c JOIN exaone_gc g USING (rid)
 ----
-no runnable graph for task 'regression'
+0
 
-# The whole catalogue in one relation: with every model's weights present, these three pairs are the
-# only ones mlx does not serve, and nothing is refused as known wrong.
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE exaone_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'exaone-tabular') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE exaone_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'exaone-tabular') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'exaone-tabular' AND task = 'regression'
+----
+true
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM exaone_cr c JOIN exaone_gr g USING (rid)
+----
+true
+
+statement ok
+CALL tabfm_unload();
+
+statement ok
+SET anofox_tabfm_device = 'cpu';
+
+statement ok
+CREATE TABLE nori30m_cr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'nori-30m') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+statement ok
+SET anofox_tabfm_device = 'mlx';
+
+statement ok
+CREATE TABLE nori30m_gr AS SELECT rid, yhat FROM tabfm_regress('gr', 'target', features := ['f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8'], model := 'nori-30m') JOIN gr USING (f1, f2, f3, f4, f5, f6, f7, f8);
+
+query T
+SELECT bool_or(device = 'mlx:0') FROM tabfm_models() WHERE loaded AND model = 'nori-30m' AND task = 'regression'
+----
+true
+
+query I
+SELECT max(abs(c.yhat - g.yhat)) < 1e-2 AND corr(c.yhat, g.yhat) > 0.99999 FROM nori30m_cr c JOIN nori30m_gr g USING (rid)
+----
+true
+
+# The whole catalogue in one relation: with every model's weights present, mlx serves every pair, and nothing is refused as
+# known wrong.
 query TTT
 SELECT model, task, supported FROM tabfm_backends() WHERE backend = 'mlx' AND supported IS DISTINCT FROM true ORDER BY model, task
 ----
-exaone-tabular	classification	false
-exaone-tabular	regression	false
-nori-30m	regression	false
 
 query I
 SELECT count(*) FROM tabfm_backends() WHERE backend = 'mlx' AND supported
 ----
-41
+44
