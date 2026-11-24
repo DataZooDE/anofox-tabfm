@@ -83,8 +83,8 @@ run weights_decide bash -c "cd $W/decide && ./build/release/duckdb -c \"CALL dec
 cd $W/tabfm/vendor/anofox-ggml-adapter
 run adapter_plugin_tests env ANOFOX_GGML_TEST_PLUGIN=$EP/libanofox_ggml-cuda_plugin.so $W/adapter-build/adapter_tests "[plugin]"
 # with the GPU hidden the same plugin must refuse at create: the passing run above was served by the GPU
-# (the test binary must exist: a missing one would "fail" too and pass this check)
-run adapter_gpu_hidden_refuses bash -c "test -x $W/adapter-build/adapter_tests && ! env CUDA_VISIBLE_DEVICES= ANOFOX_GGML_TEST_PLUGIN=$EP/libanofox_ggml-cuda_plugin.so $W/adapter-build/adapter_tests 'plugin_ggml: the generic plugin runs*'"
+# (a failing exit is not enough: a missing binary, a renamed test or a crash fail too. The plugin's own refusal must be there.)
+run adapter_gpu_hidden_refuses bash -c "env CUDA_VISIBLE_DEVICES= ANOFOX_GGML_TEST_PLUGIN=$EP/libanofox_ggml-cuda_plugin.so $W/adapter-build/adapter_tests 'plugin_ggml: the generic plugin runs*' 2>&1 | grep -q 'was requested but'"
 
 cd $W/tabfm
 for t in tabfm_gpu_use_cases tabfm_gpu_registered_model; do
@@ -100,6 +100,7 @@ run decide_local_e2e_gpu env DECIDE_REAL_WEIGHTS=1 DECIDE_CACHE_DIR=$HOME/.cache
 
 # Phase 4's GPU check: the 200-ticket evaluation on cuda and on the CPU (ggml), when the sample was uploaded as tickets.csv
 if [ -f $W/tickets.csv ]; then
+	mkdir -p $HOME/.cache/anofox-decide/plugins && cp $EP/libanofox_ggml-cuda_plugin.so $HOME/.cache/anofox-decide/plugins/ # run_eval uses the default
 	run eval_cuda env ANOFOX_DECIDE_LOCAL_ENGINE=ggml python3 tools/eval/run_eval.py --tickets $W/tickets.csv --out $W/eval_cuda --device cuda \
 		--models julia-1,laya-multilingual,laya-typed-decisions
 	run eval_cpu env ANOFOX_DECIDE_LOCAL_ENGINE=ggml python3 tools/eval/run_eval.py --tickets $W/tickets.csv --out $W/eval_cpu --device cpu \
@@ -109,6 +110,9 @@ if [ -f $W/tickets.csv ]; then
 fi
 
 echo "=== SUMMARY"
+failed=0
 for k in build_tabfm build_decide build_adapter weights_tabfm weights_decide adapter_plugin_tests adapter_gpu_hidden_refuses tabfm_gpu_use_cases tabfm_gpu_registered_model decide_local_e2e_gpu eval_cuda eval_cpu; do
 	echo "RESULT $k: ${RESULT[$k]:-not run}"
+	case "${RESULT[$k]:-not run}" in PASS | "not run") ;; *) failed=1 ;; esac
 done
+exit $failed # the runner returns it: a run with a failing suite is not a success

@@ -188,7 +188,36 @@ unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const Tab
 			}
 			const size_t offset = static_cast<size_t>(std::stoull(off->second));
 			const int64_t count = ElementCount(t.dims);
-			const size_t element = t.data_type == ANOFOX_GGML_DTYPE_INT64 || t.data_type == 11 ? 8 : t.data_type == ANOFOX_GGML_DTYPE_FLOAT16 || t.data_type == ANOFOX_GGML_DTYPE_BFLOAT16 ? 2 : t.data_type == ANOFOX_GGML_DTYPE_UINT8 || t.data_type == ANOFOX_GGML_DTYPE_BOOL ? 1 : 4;
+			// The ONNX element size of each initializer, for the bounds check below; a type with no fixed size (string, complex) is
+			// refused by name rather than handed over with a guessed size.
+			size_t element = 0;
+			switch (t.data_type) {
+			case 2:  // uint8
+			case 3:  // int8
+			case 9:  // bool
+				element = 1;
+				break;
+			case 4:  // uint16
+			case 5:  // int16
+			case 10: // float16
+			case 16: // bfloat16
+				element = 2;
+				break;
+			case 1:  // float
+			case 6:  // int32
+			case 12: // uint32
+				element = 4;
+				break;
+			case 7:  // int64
+			case 11: // double
+			case 13: // uint64
+				element = 8;
+				break;
+			default:
+				throw IOException("anofox_tabfm: the GPU graph '%s' stores the weight '%s' as ONNX element type %d, which has no fixed "
+				                  "size the GPU plugins can take. SET anofox_tabfm_device='cpu'.",
+				                  request.graph_path, t.name, t.data_type);
+			}
 			if (offset + static_cast<size_t>(count) * element > file->second->size()) {
 				throw IOException("anofox_tabfm: the weight '%s' does not fit the checkpoint '%s' (is the graph for another checkpoint, or the "
 				                  "file truncated?). Download the model again: CALL tabfm_download(<model>);",

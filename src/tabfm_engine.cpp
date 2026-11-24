@@ -1298,7 +1298,10 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
 	string graph_path;
 	string weights_dir = DirName(resolved.weights_path);
-	switch (SelectGpuGraph(!resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
+	// mitra always runs the plugin's hand-port, which reads the checkpoint by its state_dict names: no graph is staged or checked
+	// for it (an op gap in its graph must not refuse a model the hand-port serves), and the plugin gets the whole safetensors.
+	const bool hand_port = resolved.manifest.model == "mitra";
+	switch (hand_port ? GpuGraphSource::NONE : SelectGpuGraph(!resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
 	case GpuGraphSource::MODEL_PROVIDED:
 		graph_path = resolved.ext_graph_path;
 		weights_dir = DirName(graph_path); // external data sits beside the graph
@@ -1366,9 +1369,7 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 	// The plugin's model name is "<model>-<task>": it picks mitra's hand-ported fast path, and a task/weights mismatch is caught rather
 	// than computed.
 	TabFMPluginRequest request;
-	// mitra always runs the plugin's hand-port, which reads the checkpoint by its state_dict names: give it the whole safetensors
-	// and no graph (with a graph, the weights would go by the graph's initializer names and the hand-port could not find them).
-	request.graph_path = resolved.manifest.model == "mitra" ? string() : graph_path;
+	request.graph_path = graph_path; // empty for mitra: see hand_port above
 	request.weights_dir = weights_dir;
 	request.weights_path = resolved.weights_path;
 	request.model = resolved.manifest.model + "-" + task_name;
