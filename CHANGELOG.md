@@ -5,6 +5,12 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **The CPU extension binaries are release assets** (#114): every GitHub release carries
+  `anofox_tabfm-<duckdb version>-<platform>.duckdb_extension.gz` for DuckDB 1.5.6 and 2.0 on linux_amd64, linux_arm64, osx_arm64
+  and windows_amd64, with `SHA256SUMS`. Unsigned (`duckdb -unsigned`, then `LOAD` the unpacked file); signed builds still come from
+  `INSTALL anofox_tabfm FROM community`. The README says why an older DuckDB can get an old community build.
+
 ### Changed
 - **The ggml engine is a shared component now**, `vendor/anofox-ggml-adapter` (github.com/DataZooDE/anofox-ggml-adapter), which
   anofox-decide uses too. Nothing changes for users: the same engine, the same answers. For builds: the submodules are fetched with
