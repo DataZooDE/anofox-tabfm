@@ -98,7 +98,17 @@ run decide_local_e2e_gpu env DECIDE_REAL_WEIGHTS=1 DECIDE_CACHE_DIR=$HOME/.cache
 	./build/release/test/unittest test/sql/decide_local_e2e_gpu.test
 ./build/release/duckdb -c "SET anofox_decide_ep_path='$EP'; SET anofox_decide_device='cuda'; SELECT decide_probability('Refund me, please.', 'A refund is requested.', model := 'julia-1') AS p; SELECT model, engine, runs FROM __anofox_decide_local_sessions();" 2>&1 | tail -8
 
+# Phase 4's GPU check: the 200-ticket evaluation on cuda and on the CPU (ggml), when the sample was uploaded as tickets.csv
+if [ -f $W/tickets.csv ]; then
+	run eval_cuda env ANOFOX_DECIDE_LOCAL_ENGINE=ggml python3 tools/eval/run_eval.py --tickets $W/tickets.csv --out $W/eval_cuda --device cuda \
+		--models julia-1,laya-multilingual,laya-typed-decisions
+	run eval_cpu env ANOFOX_DECIDE_LOCAL_ENGINE=ggml python3 tools/eval/run_eval.py --tickets $W/tickets.csv --out $W/eval_cpu --device cpu \
+		--models julia-1,laya-multilingual,laya-typed-decisions
+	grep -h "^ok" $W/eval_cuda.log $W/eval_cpu.log
+	python3 tools/eval/compare_runs.py --models julia-1,laya-multilingual,laya-typed-decisions $W/eval_cpu $W/eval_cuda 2>&1 | tail -4
+fi
+
 echo "=== SUMMARY"
-for k in build_tabfm build_decide build_adapter weights_tabfm weights_decide adapter_plugin_tests adapter_gpu_hidden_refuses tabfm_gpu_use_cases tabfm_gpu_registered_model decide_local_e2e_gpu; do
+for k in build_tabfm build_decide build_adapter weights_tabfm weights_decide adapter_plugin_tests adapter_gpu_hidden_refuses tabfm_gpu_use_cases tabfm_gpu_registered_model decide_local_e2e_gpu eval_cuda eval_cpu; do
 	echo "RESULT $k: ${RESULT[$k]:-not run}"
 done
