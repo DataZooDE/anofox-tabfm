@@ -16,6 +16,8 @@
 
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_plugin_artifacts.hpp"
+#include "anofox_ggml_adapter/plugin_abi.h"
+#include "duckdb/common/string_util.hpp"
 #include "tabfm_weights.hpp"
 
 #include <filesystem>
@@ -31,16 +33,17 @@ bool FileExists(const string &path) {
 	return stream.good();
 }
 
-TabFMPluginCreateParams FakeParams(const char *arch = "gfx1201") {
-	TabFMPluginCreateParams params {};
-	params.graph_path = "graph.onnx";
-	params.weights_dir = "weights";
-	params.cache_dir = "cache";
-	params.arch = arch;
-	params.precision = "bf16";
-	params.mxr_source = ""; // an ABI slot with no effect since MIGraphX was removed
-	params.device_ordinal = 0;
-	return params;
+//! The fixture's external-data graph: its 323 weights point into test/fixtures/model.safetensors, which tabfm maps and hands over by name.
+TabFMPluginRequest FakeParams(const char *arch = "gfx1201") {
+	TabFMPluginRequest request;
+	request.graph_path = "test/fixtures/graph_ext_fixture.onnx";
+	request.weights_dir = "test/fixtures";
+	request.weights_path = "test/fixtures/model.safetensors";
+	request.model = "tabfm-v1";
+	request.cache_dir = "cache";
+	request.arch = arch;
+	request.precision = "fp32";
+	return request;
 }
 
 } // namespace
@@ -85,10 +88,10 @@ TEST_CASE("plugin_backend: loads a plugin and round-trips a forward pass", "[tab
 	REQUIRE(output.shape[2] == 3);
 	REQUIRE(output.logits.size() == (size_t)(t * 3));
 
-	// logits[row][c] = x[row][0] + 100 (cat_mask[0] set) + c + train_size
+	// logits[row][c] = x[row][0] + 100 (cat_mask[0] set) + c + train_size + 1000 (the graph's weights were mapped and handed over)
 	for (int64_t row = 0; row < t; row++) {
 		for (int64_t c = 0; c < 3; c++) {
-			const float expected = x[(size_t)(row * h)] + 100.0f + (float)c + (float)train_size;
+			const float expected = x[(size_t)(row * h)] + 100.0f + (float)c + (float)train_size + 1000.0f;
 			REQUIRE(output.logits[(size_t)(row * 3 + c)] == Approx(expected));
 		}
 	}
@@ -141,24 +144,22 @@ TEST_CASE("plugin_backend: a library that is not a plugin is refused", "[tabfm][
 		} catch (std::exception &error) {
 			string message = error.what();
 			REQUIRE(message.find("is not an anofox backend plugin") != string::npos);
-			REQUIRE(message.find("TabFMGetPluginApi") != string::npos);
+			REQUIRE(message.find("AnofoxGgmlGetPluginApi") != string::npos);
 		}
 	}
 #endif
 }
 
-// A graph declaring an input the plugin does not bind must be refused by the HOST, before the plugin runs
-// anything. A plugin that predates an input skips it, and then the runtime fails inside its own run call,
-// where it cannot be reported this clearly (the removed MIGraphX plugin crashed unittest that way).
-TEST_CASE("plugin_backend: a graph input the plugin does not bind is refused before create", "[tabfm][plugin]") {
+// A graph declaring an input tabfm does not feed must be refused by the HOST, before the plugin runs anything: an unfed input fails
+// inside the runtime's own run call, where it cannot be reported this clearly (the removed MIGraphX plugin crashed unittest that way).
+TEST_CASE("plugin_backend: a graph input tabfm does not feed is refused before create", "[tabfm][plugin]") {
 	const string path = TABFM_FAKE_PLUGIN_PATH;
 	if (!FileExists(path)) {
 		SUCCEED("fixture plugin not built, skipping");
 		return;
 	}
-	// the fake binds x, y, cat_mask, train_size and d -- every input of the classic contract
+	// tabfm feeds x, y, cat_mask, train_size and d -- every input of the classic contract
 	auto params = FakeParams();
-	params.graph_path = "test/fixtures/graph_ext_fixture.onnx";
 	REQUIRE(LoadPluginBackend(path, params) != nullptr);
 
 	// a graph that also declares an input the plugin does not know: a minimal ModelProto written by hand, ir_version + a graph whose
@@ -183,14 +184,14 @@ TEST_CASE("plugin_backend: a graph input the plugin does not bind is refused bef
 		std::ofstream out(extra_input_graph, std::ios::binary);
 		out << model_proto;
 	}
-	params.graph_path = extra_input_graph.c_str();
+	params.graph_path = extra_input_graph;
 	try {
 		LoadPluginBackend(path, params);
 		FAIL("expected an exception");
 	} catch (std::exception &error) {
 		const string message = error.what();
 		REQUIRE(message.find("'n_rows'") != string::npos);
-		REQUIRE(message.find("tabfm_accelerate") != string::npos);
+		REQUIRE(message.find("UPDATE EXTENSIONS") != string::npos);
 		REQUIRE(message.find("anofox_tabfm_graph_with_n_rows.onnx") != string::npos);
 	}
 }
@@ -214,7 +215,7 @@ TEST_CASE("plugin_backend: an ABI mismatch is refused before anything is read", 
 	} catch (std::exception &error) {
 		string message = error.what();
 		REQUIRE(message.find("plugin ABI version") != string::npos);
-		REQUIRE(message.find(std::to_string(TABFM_PLUGIN_ABI_VERSION)) != string::npos);
+		REQUIRE(message.find(std::to_string(ANOFOX_GGML_PLUGIN_ABI_VERSION)) != string::npos);
 	}
 }
 
@@ -226,13 +227,13 @@ TEST_CASE("plugin_backend: an ABI mismatch is refused before anything is read", 
 
 TEST_CASE("plugin_artifacts: filenames follow each platform's convention", "[tabfm][plugin_artifacts]") {
 	// cuda and rocm are both served by the ggml GPU plugin, one file per vendor
-	REQUIRE(PluginFileNameFor("cuda", "linux") == "libanofox_tabfm_ggml-cuda_plugin.so");
-	REQUIRE(PluginFileNameFor("mlx", "osx") == "libanofox_tabfm_mlx_plugin.dylib");
+	REQUIRE(PluginFileNameFor("cuda", "linux") == "libanofox_ggml-cuda_plugin.so");
+	REQUIRE(PluginFileNameFor("mlx", "osx") == "libanofox_mlx_plugin.dylib");
 	// Windows DLLs carry no 'lib' prefix — that is what CMake emits there, so
 	// guessing otherwise would look for a file the build never produces.
-	REQUIRE(PluginFileNameFor("cuda", "windows") == "anofox_tabfm_ggml-cuda_plugin.dll");
+	REQUIRE(PluginFileNameFor("cuda", "windows") == "anofox_ggml-cuda_plugin.dll");
 
-	REQUIRE(PluginFileNameFor("rocm", "linux") == "libanofox_tabfm_ggml-rocm_plugin.so");
+	REQUIRE(PluginFileNameFor("rocm", "linux") == "libanofox_ggml-rocm_plugin.so");
 	// tabfm_download_runtime normalizes its argument once: the deprecated 'migraphx' fetches the ROCm plugin
 	REQUIRE(NormalizeRuntimeBackend("migraphx") == "rocm");
 	REQUIRE(NormalizeRuntimeBackend("MIGraphX") == "rocm"); // deprecated spelling
@@ -336,10 +337,10 @@ TEST_CASE("plugin_artifacts: release asset urls are built from the single pinned
 	// One definition of the tag; a stale one is caught by the loader's ABI
 	// check rather than by anyone remembering to bump it.
 	REQUIRE(string(TABFM_PLUGIN_RELEASE_TAG).find("v20") == 0);
-	auto url = PluginReleaseAssetUrl("libanofox_tabfm_ggml-cuda_plugin.so", TABFM_PLUGIN_RELEASE_TAG);
-	REQUIRE(url.find("https://github.com/DataZooDE/anofox-tabfm/releases/download/") == 0);
+	auto url = PluginReleaseAssetUrl("libanofox_ggml-cuda_plugin.so", TABFM_PLUGIN_RELEASE_TAG);
+	REQUIRE(url.find("https://github.com/DataZooDE/anofox-ggml-adapter/releases/download/") == 0); // the shared plugins' release
 	REQUIRE(url.find(TABFM_PLUGIN_RELEASE_TAG) != string::npos);
-	REQUIRE(StringUtil::EndsWith(url, "libanofox_tabfm_ggml-cuda_plugin.so"));
+	REQUIRE(StringUtil::EndsWith(url, "libanofox_ggml-cuda_plugin.so"));
 	// An empty tag yields no url at all rather than a 404-shaped one.
 	REQUIRE(PluginReleaseAssetUrl("x.so", "").empty());
 }
@@ -369,9 +370,9 @@ TEST_CASE("plugin_artifacts: a digest is matched by FILENAME, not by position",
 	// plugin against another file's digest and always fail — or, worse with the
 	// operands swapped, pass on the wrong file.
 	const string sidecar =
-	    "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  libanofox_tabfm_ggml-cuda_plugin.so\n"
+	    "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111  libanofox_ggml-cuda_plugin.so\n"
 	    "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222  libanofox_tabfm_other_plugin.so\n";
-	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_ggml-cuda_plugin.so") ==
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_ggml-cuda_plugin.so") ==
 	        "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111");
 	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_other_plugin.so") ==
 	        "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222");
@@ -384,8 +385,8 @@ TEST_CASE("plugin_artifacts: a sidecar that does not mention the file vouches fo
 	// some other file and the verification silently passes.
 	const string sidecar =
 	    "cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333cccc3333  some_other_file.so\n";
-	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_tabfm_ggml-cuda_plugin.so").empty());
-	REQUIRE(Sha256FromSidecar("", "libanofox_tabfm_ggml-cuda_plugin.so").empty());
+	REQUIRE(Sha256FromSidecar(sidecar, "libanofox_ggml-cuda_plugin.so").empty());
+	REQUIRE(Sha256FromSidecar("", "libanofox_ggml-cuda_plugin.so").empty());
 	REQUIRE(Sha256FromSidecar("not a sidecar at all\n", "x.so").empty());
 }
 

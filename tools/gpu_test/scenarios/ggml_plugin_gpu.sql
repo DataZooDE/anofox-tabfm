@@ -1,5 +1,6 @@
 -- The ggml GPU plugin through the SQL surface (docs/GGML_PLAN.md "P8 result"): Nori 1.5 regression, real weights, plain external-data graph.
--- Run with the plugin built by tools/ggml_plugin placed alone in EP_DIR (libanofox_tabfm_ggml-rocm_plugin.so or ggml-cuda), and
+-- Run with the plugin built by anofox-ggml-adapter's tools/ggml_plugin placed alone in EP_DIR (libanofox_ggml-rocm_plugin.so or
+-- libanofox_ggml-cuda_plugin.so), and
 --   DEVICE=rocm|cuda  NORI_DIR=<dir holding graph_ext_nori15_regression.onnx + model.safetensors>  EP_DIR=<plugin dir>
 -- substituted below. Never trust "cpu and gpu agree": the SERVED_BY row must name the GPU.
 LOAD 'build/release/extension/anofox_tabfm/anofox_tabfm.duckdb_extension';

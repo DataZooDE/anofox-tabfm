@@ -26,8 +26,9 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 #
 # The CPU device runs on the ggml engine shared with anofox-decide: vendor/anofox-ggml-adapter (a git submodule with ggml as its own
 # submodule; a checkout without them does not configure). The adapter's module builds ggml as static archives with hidden visibility
-# and gives the engine sources and the anofox_ggml link target. GPUs are served by plugins (tools/ggml_plugin for CUDA and ROCm, the
-# MLX plugin below for Apple); nothing links ONNX Runtime. ANOFOX_GGML_NATIVE compiles ggml for this machine's CPU (default OFF).
+# and gives the engine sources and the anofox_ggml link target. GPUs are served by the adapter's plugins (its tools/ggml_plugin for
+# CUDA and ROCm, tools/mlx_plugin for Apple; released by the adapter, not built here except the MLX test build below); nothing links
+# ONNX Runtime. ANOFOX_GGML_NATIVE compiles ggml for this machine's CPU (default OFF).
 # The option's name before the adapter, honoured only when the new one is not set, and dropped so a cached value cannot override it.
 if(DEFINED TABFM_GGML_NATIVE AND NOT DEFINED CACHE{ANOFOX_GGML_NATIVE})
     set(ANOFOX_GGML_NATIVE ${TABFM_GGML_NATIVE} CACHE BOOL "Compile ggml for this machine's CPU")
@@ -127,11 +128,12 @@ if(UNIX AND NOT APPLE)
     target_link_options(${LOADABLE_EXTENSION_NAME} PRIVATE -Wl,--allow-multiple-definition)
 endif()
 
-# --- Apple MLX backend plugin (docs/MLX_PLAN.md, spikes in docs/MLX_SPIKE_RESULTS.md) ---
+# --- Apple MLX backend plugin (anofox-ggml-adapter's src/plugin_mlx.cpp; docs/MLX_PLAN.md) ---
 #
-# A plugin the extension dlopens, like the ggml GPU plugin (tools/ggml_plugin). MLX has no ONNX importer, so the
-# plugin runs the model's ONNX graph through its own interpreter (src/tabfm_mlx_graph.cpp + the adapter's ONNX reader);
-# mitra also has a forward transcribed from mitra_model_patched.py, kept as its fast path.
+# The plugin is the adapter's (shared with anofox-decide, released there). It is built here only so the MLX tests
+# (test_tabfm_mlx_plugin.cpp: tabfm's models, CPU vs MLX) run on a Mac with MLX installed. MLX has no ONNX importer, so the
+# plugin runs the model's ONNX graph through its own interpreter (the adapter's src/mlxgraph); mitra also has a forward
+# transcribed from mitra_model_patched.py, kept as its fast path.
 #
 # Optional and silent when absent, like the others: Linux and Intel-Mac CI
 # runners carry no MLX and must not fail configure over a plugin they cannot
@@ -147,11 +149,11 @@ if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64")
         # small .dylib to protobuf's ABI (and to whatever abseil the extension
         # built against) buys nothing it needs. See the adapter's onnx_reader.hpp.
         add_library(anofox_tabfm_mlx_plugin SHARED
-            src/tabfm_mlx_plugin.cpp
-            src/tabfm_mlx_graph.cpp
+            vendor/anofox-ggml-adapter/src/plugin_mlx.cpp
+            vendor/anofox-ggml-adapter/src/mlxgraph/mlx_graph.cpp
             vendor/anofox-ggml-adapter/src/onnx_reader.cpp)
         target_include_directories(anofox_tabfm_mlx_plugin PRIVATE
-            ${CMAKE_CURRENT_SOURCE_DIR}/src/include
+            ${CMAKE_CURRENT_SOURCE_DIR}/vendor/anofox-ggml-adapter/src
             "${ANOFOX_GGML_ADAPTER_INCLUDE_DIR}"
             "${TABFM_MLX_DIR}/include")
         target_link_libraries(anofox_tabfm_mlx_plugin PRIVATE "${TABFM_MLX_C_LIB}" "${TABFM_MLX_LIB}")
@@ -173,9 +175,10 @@ int main() {
         unset(CMAKE_REQUIRED_INCLUDES)
         unset(CMAKE_REQUIRED_LIBRARIES)
         if(TABFM_MLX_C_HAS_CUMSUM_AXIS)
-            target_compile_definitions(anofox_tabfm_mlx_plugin PRIVATE TABFM_MLX_C_07=1)
+            target_compile_definitions(anofox_tabfm_mlx_plugin PRIVATE ANOFOX_MLX_C_07=1)
         endif()
-        set_target_properties(anofox_tabfm_mlx_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        # named as the loader looks for it (libanofox_mlx_plugin.dylib), so this build can also be pointed at with anofox_tabfm_ep_path
+        set_target_properties(anofox_tabfm_mlx_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON OUTPUT_NAME anofox_mlx_plugin)
         set(TABFM_MLX_PLUGIN_BUILT TRUE)
     else()
         message(STATUS "anofox_tabfm: no MLX/mlx-c install found at ${TABFM_MLX_DIR}, skipping the mlx backend plugin")
@@ -220,12 +223,12 @@ if(NOT CLANG_TIDY AND NOT EMSCRIPTEN AND CMAKE_VERSION VERSION_GREATER_EQUAL "3.
     # untested. These stand in for it: real shared libraries, one correct and
     # one built with a deliberately wrong ABI version.
     add_library(anofox_tabfm_fake_plugin SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
-    target_include_directories(anofox_tabfm_fake_plugin PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_include_directories(anofox_tabfm_fake_plugin PRIVATE "${ANOFOX_GGML_ADAPTER_INCLUDE_DIR}")
     target_compile_features(anofox_tabfm_fake_plugin PRIVATE cxx_std_17)
     set_target_properties(anofox_tabfm_fake_plugin PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
     add_library(anofox_tabfm_fake_plugin_bad_abi SHARED test/cpp/plugin_fixture/fake_plugin.cpp)
-    target_include_directories(anofox_tabfm_fake_plugin_bad_abi PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src/include)
+    target_include_directories(anofox_tabfm_fake_plugin_bad_abi PRIVATE "${ANOFOX_GGML_ADAPTER_INCLUDE_DIR}")
     target_compile_features(anofox_tabfm_fake_plugin_bad_abi PRIVATE cxx_std_17)
     target_compile_definitions(anofox_tabfm_fake_plugin_bad_abi PRIVATE TABFM_FAKE_PLUGIN_BAD_ABI=1)
     set_target_properties(anofox_tabfm_fake_plugin_bad_abi PROPERTIES POSITION_INDEPENDENT_CODE ON)

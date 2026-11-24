@@ -1,30 +1,25 @@
 /*===----------------------------------------------------------------------===
- * A backend plugin that computes nothing, so the LOADER can be tested.
+ * A backend plugin that computes nothing real, so tabfm's side of the plugin boundary can be tested without a GPU.
  *
- * The real backend behind this ABI needs a GPU, which CI does not have. That
- * would leave the loader — the trust boundary, where an ABI mismatch is
- * undefined behaviour rather than a wrong answer — exercised only by hand on
- * one developer's machine. This stands in for it: a deterministic function of
- * the inputs, so the test can assert the result actually made the round trip
- * rather than merely that nothing threw.
+ * It speaks anofox-ggml-adapter's plugin ABI v3 like the real plugins, and returns a deterministic function of the named inputs, so a
+ * test asserts the data made the round trip (including the weights tabfm mapped and handed over) rather than that nothing threw:
  *
- * Built twice, with TABFM_FAKE_PLUGIN_BAD_ABI toggling the version, so the
- * refusal path is tested with a genuinely mismatched library rather than a
- * mocked one.
+ *   logits[0][row][c] = x[row][0] + 100 * cat_mask[0] + c + train_size + (number of weights supplied > 0 ? 1000 : 0)
+ *
+ * arch "refuse" makes create fail. Built twice; TABFM_FAKE_PLUGIN_BAD_ABI builds it against another ABI version.
  *===----------------------------------------------------------------------===*/
 
-#include "tabfm_plugin_abi.h"
+#include "anofox_ggml_adapter/plugin_abi.h"
 
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace {
 
 struct FakeBackend {
-	std::string precision;
-	int64_t precompiled_rows = 0;
-	int64_t precompiled_features = 0;
+	size_t weights = 0;
 };
 
 void SetError(char *err, size_t err_len, const char *message) {
@@ -38,106 +33,99 @@ const char *PluginName(void) {
 	return "fake";
 }
 
-void *PluginCreate(const TabFMPluginCreateParams *params, char *err, size_t err_len) {
-	if (!params || !params->graph_path) {
-		SetError(err, err_len, "no graph path supplied");
+void *PluginCreate(const AnofoxGgmlCreateParams *params, char *err, size_t err_len) {
+	if (!params) {
+		SetError(err, err_len, "no params");
 		return nullptr;
 	}
-	// A create failure has to be testable too: this arch is the trigger.
 	if (params->arch && std::strcmp(params->arch, "refuse") == 0) {
 		SetError(err, err_len, "no device matching arch 'refuse'");
 		return nullptr;
 	}
-	auto *backend = new FakeBackend();
-	backend->precision = params->precision ? params->precision : "";
-	return backend;
+	auto *b = new FakeBackend();
+	b->weights = params->weight_count;
+	return b;
 }
 
-TabFMPluginStatus PluginRun(void *handle, const TabFMPluginRunInput *input, TabFMPluginRunOutput *output, char *err,
-                            size_t err_len) {
-	auto *backend = static_cast<FakeBackend *>(handle);
-	if (!backend || !input || !output) {
-		SetError(err, err_len, "null argument");
-		return TABFM_PLUGIN_ERROR;
-	}
-	if (input->t <= 0 || input->h <= 0) {
-		SetError(err, err_len, "non-positive t or h");
-		return TABFM_PLUGIN_ERROR;
-	}
+const char *const *PluginGraphInputs(void *) {
+	static const char *const inputs[] = {"x", "y", "cat_mask", "train_size", "d", nullptr};
+	return inputs;
+}
 
-	// logits[1, t, 3], a deterministic function of the inputs so the test can
-	// tell a real round trip from a zero-filled buffer.
-	const int64_t classes = 3;
-	const int64_t count = input->t * classes;
-	output->logits = static_cast<float *>(std::malloc(sizeof(float) * (size_t)count));
-	output->logits_len = count;
-	output->shape = static_cast<int64_t *>(std::malloc(sizeof(int64_t) * 3));
-	output->shape_len = 3;
-	if (!output->logits || !output->shape) {
-		SetError(err, err_len, "allocation failed");
-		return TABFM_PLUGIN_ERROR;
-	}
-	output->shape[0] = 1;
-	output->shape[1] = input->t;
-	output->shape[2] = classes;
-
-	for (int64_t row = 0; row < input->t; row++) {
-		// Reads x and the cat_mask so a mis-marshalled pointer shows up as a
-		// wrong number rather than passing unnoticed.
-		const float first_feature = input->x ? input->x[row * input->h] : 0.0f;
-		const float mask_bias = (input->cat_mask && input->cat_mask[0]) ? 100.0f : 0.0f;
-		for (int64_t c = 0; c < classes; c++) {
-			output->logits[row * classes + c] = first_feature + mask_bias + (float)c + (float)input->train_size;
+const AnofoxGgmlTensorIn *Find(const AnofoxGgmlTensorIn *inputs, size_t n, const char *name) {
+	for (size_t i = 0; i < n; i++) {
+		if (std::strcmp(inputs[i].name, name) == 0) {
+			return &inputs[i];
 		}
 	}
-	return TABFM_PLUGIN_OK;
+	return nullptr;
 }
 
-TabFMPluginStatus PluginPrecompile(void *handle, int64_t rows, int64_t features, char *err, size_t err_len) {
-	auto *backend = static_cast<FakeBackend *>(handle);
-	if (!backend) {
-		SetError(err, err_len, "null handle");
-		return TABFM_PLUGIN_ERROR;
+AnofoxGgmlPluginStatus PluginRun(void *handle, const AnofoxGgmlTensorIn *inputs, size_t input_count, const char *const *outputs,
+                                 size_t output_count, AnofoxGgmlRunOutput *result, char *err, size_t err_len) {
+	auto *b = static_cast<FakeBackend *>(handle);
+	result->tensors = nullptr;
+	result->count = 0;
+	const auto *x = Find(inputs, input_count, "x");
+	const auto *mask = Find(inputs, input_count, "cat_mask");
+	const auto *ts = Find(inputs, input_count, "train_size");
+	if (!x || x->rank != 3 || !mask || mask->dtype != ANOFOX_GGML_DTYPE_BOOL || !ts || !ts->fold || output_count != 1) {
+		SetError(err, err_len, "expected x [1,t,h], a bool cat_mask, a folded train_size and one output");
+		return ANOFOX_GGML_PLUGIN_ERROR;
 	}
-	backend->precompiled_rows = rows;
-	backend->precompiled_features = features;
-	return TABFM_PLUGIN_OK;
+	const int64_t t = x->shape[1], h = x->shape[2];
+	const auto *xv = static_cast<const float *>(x->data);
+	const float cat = static_cast<const uint8_t *>(mask->data)[0] ? 100.0f : 0.0f;
+	const float train_size = static_cast<float>(*static_cast<const int64_t *>(ts->data));
+	const float weights = b->weights > 0 ? 1000.0f : 0.0f;
+	result->tensors = static_cast<AnofoxGgmlTensorOut *>(std::calloc(1, sizeof(AnofoxGgmlTensorOut)));
+	auto &out = result->tensors[0];
+	out.name = static_cast<char *>(std::malloc(std::strlen(outputs[0]) + 1));
+	std::strcpy(out.name, outputs[0]);
+	out.rank = 3;
+	out.shape = static_cast<int64_t *>(std::malloc(3 * sizeof(int64_t)));
+	out.shape[0] = 1;
+	out.shape[1] = t;
+	out.shape[2] = 3;
+	out.count = t * 3;
+	out.data = static_cast<float *>(std::malloc(static_cast<size_t>(out.count) * sizeof(float)));
+	for (int64_t row = 0; row < t; row++) {
+		for (int64_t c = 0; c < 3; c++) {
+			out.data[row * 3 + c] = xv[row * h] + cat + static_cast<float>(c) + train_size + weights;
+		}
+	}
+	result->count = 1;
+	return ANOFOX_GGML_PLUGIN_OK;
 }
 
-void PluginFreeOutput(TabFMPluginRunOutput *output) {
-	if (!output) {
+void PluginFreeOutput(AnofoxGgmlRunOutput *result) {
+	if (!result || !result->tensors) {
 		return;
 	}
-	std::free(output->logits);
-	std::free(output->shape);
-	output->logits = nullptr;
-	output->shape = nullptr;
-	output->logits_len = 0;
-	output->shape_len = 0;
+	for (size_t i = 0; i < result->count; i++) {
+		std::free(result->tensors[i].name);
+		std::free(result->tensors[i].shape);
+		std::free(result->tensors[i].data);
+	}
+	std::free(result->tensors);
+	result->tensors = nullptr;
+	result->count = 0;
 }
 
 void PluginDestroy(void *handle) {
 	delete static_cast<FakeBackend *>(handle);
 }
 
-//! Every graph input PluginRun binds (tabfm_plugin_abi.h graph_inputs).
-const char *const *PluginGraphInputs(void) {
-	static const char *const inputs[] = {"x", "y", "cat_mask", "train_size", "d", nullptr};
-	return inputs;
-}
-
-const TabFMPluginApi kApi = {
 #ifdef TABFM_FAKE_PLUGIN_BAD_ABI
-    TABFM_PLUGIN_ABI_VERSION + 1000,
+constexpr int kAbi = ANOFOX_GGML_PLUGIN_ABI_VERSION + 1;
 #else
-    TABFM_PLUGIN_ABI_VERSION,
+constexpr int kAbi = ANOFOX_GGML_PLUGIN_ABI_VERSION;
 #endif
-    PluginName, PluginCreate, PluginRun, PluginPrecompile, PluginFreeOutput, PluginDestroy,
-    PluginGraphInputs,
-};
+
+const AnofoxGgmlPluginApi kApi = {kAbi, ANOFOX_GGML_PLUGIN_LAYOUT, PluginName, PluginCreate, PluginGraphInputs, PluginRun, PluginFreeOutput, PluginDestroy};
 
 } // namespace
 
-extern "C" TABFM_PLUGIN_EXPORT const TabFMPluginApi *TabFMGetPluginApi(void) {
+extern "C" ANOFOX_GGML_PLUGIN_EXPORT const AnofoxGgmlPluginApi *AnofoxGgmlGetPluginApi(void) {
 	return &kApi;
 }

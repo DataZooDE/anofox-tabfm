@@ -1,49 +1,35 @@
 //===----------------------------------------------------------------------===//
 //                         anofox-tabfm
 //
-// tabfm_plugin_backend.cpp — load a backend from a shared library.
+// tabfm_plugin_backend.cpp — a GPU backend from a plugin (anofox-ggml-adapter, plugin ABI v3).
 //
-// Every GPU backend (the ggml CUDA/ROCm plugin, MLX) is a library the extension
-// dlopens on demand; a GPU is never a build. This is the loader side of
-// tabfm_plugin_abi.h — it adapts the C function table back onto the
-// TabFMBackend interface the engine already speaks.
-//
-// The loader is the trust boundary, so every failure it can meet has a message
-// naming what to do about it: a missing file, a library that is not a plugin,
-// and — the one that would otherwise corrupt memory silently — a plugin built
-// against a different ABI version.
+// The adapter's loader (plugin_host) checks the ABI before touching anything else and reports each failure by kind; this file supplies
+// what is TabFM-specific: the weights the graph reads, mapped from the checkpoint and passed by name; the input contract (x, y, cat_mask,
+// train_size, d; a graph without train_size reads the split from y's length, so it gets only the context rows of y); the logits output;
+// and tabfm's wording of every refusal.
 //===----------------------------------------------------------------------===//
 
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_ggml.hpp"
+#include "tabfm_safetensors.hpp"
+
+#include "anofox_ggml_adapter/onnx_reader.hpp"
+#include "anofox_ggml_adapter/plugin_host.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/string_util.hpp"
 
-#include <cstring>
+#include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <map>
 #include <set>
 
-// Is this translation unit built with AddressSanitizer? GCC defines the macro
-// directly; Clang answers through __has_feature. Used only to drop
-// RTLD_DEEPBIND below, which the sanitizer runtime cannot tolerate.
-#if defined(__SANITIZE_ADDRESS__)
-#define TABFM_SANITIZER_BUILD 1
-#elif defined(__has_feature)
-#if __has_feature(address_sanitizer)
-#define TABFM_SANITIZER_BUILD 1
-#endif
-#endif
-
 #ifndef _WIN32
-#include <dlfcn.h>
-#else
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace duckdb {
@@ -51,254 +37,240 @@ namespace anofox {
 
 namespace {
 
-#ifndef _WIN32
-using LibraryHandle = void *;
-LibraryHandle OpenLibrary(const string &path) {
-	// RTLD_DEEPBIND: the plugin prefers its OWN symbols and dependencies over
-	// those the host process already exports. The host and the ggml GPU plugin
-	// both carry a copy of ggml (and of the engine sources built on it), with
-	// the same symbol names but different builds: the plugin's has the CUDA or
-	// HIP backend compiled in, the host's does not. Wherever the host's copy is
-	// globally visible (the unittest binary links the extension statically; a
-	// host may load the extension RTLD_GLOBAL), the plugin's own calls would
-	// otherwise bind to it (ELF interposition: the first definition loaded wins).
-	// (GPU_HARDENING_PLAN S2 measured the same failure for the earlier ORT
-	// plugins.) Safe for this ABI: no allocation crosses the boundary (outputs
-	// are plugin-malloc'd and plugin-freed via free_output), which is the
-	// classic DEEPBIND hazard.
-	// glibc-only: macOS has no RTLD_DEEPBIND (and needs none — Mach-O
-	// two-level namespaces bind each image to the library it linked against).
-	//
-	// Exception, sanitizer builds only: RTLD_DEEPBIND is incompatible with the
-	// ASan/LSan runtime, which aborts the process on the dlopen rather than
-	// failing it (google/sanitizers#611). That abort killed the whole `make
-	// test_debug` C++ stage at the first plugin test, taking every later case
-	// with it — so a debug build could not run the plugin tests at all, which
-	// is exactly where plugin changes need testing. Dropping the flag under a
-	// sanitizer costs nothing real: DEEPBIND isolates a plugin's own ggml and
-	// GPU runtime from the host's, and the sanitizer build loads the weight-free
-	// fixture plugin, which has neither.
-	int flags = RTLD_NOW | RTLD_LOCAL;
-#if defined(RTLD_DEEPBIND) && !defined(TABFM_SANITIZER_BUILD)
-	flags |= RTLD_DEEPBIND;
-#endif
-	return dlopen(path.c_str(), flags);
-}
-void *LibrarySymbol(LibraryHandle lib, const char *symbol) {
-	return dlsym(lib, symbol);
-}
-void CloseLibrary(LibraryHandle lib) {
-	dlclose(lib);
-}
-string LibraryError() {
-	const char *err = dlerror();
-	return err ? string(err) : string("unknown dynamic-loader error");
-}
-#else
-using LibraryHandle = HMODULE;
-LibraryHandle OpenLibrary(const string &path) {
-	return LoadLibraryA(path.c_str());
-}
-void *LibrarySymbol(LibraryHandle lib, const char *symbol) {
-	return reinterpret_cast<void *>(GetProcAddress(lib, symbol));
-}
-void CloseLibrary(LibraryHandle lib) {
-	FreeLibrary(lib);
-}
-string LibraryError() {
-	return "LoadLibrary/GetProcAddress failed (error " + std::to_string(GetLastError()) + ")";
-}
-#endif
+namespace ga = ::anofox::ggml_adapter;
 
-//! Adapts the C plugin table onto the engine's C++ backend interface.
-class PluginBackend : public TabFMBackend {
+//! A read-only view of one checkpoint file: mmapped (the pages stay the page cache's), or read whole where mmap is unavailable.
+class WeightFile {
 public:
-	PluginBackend(const TabFMPluginApi *api, void *handle) : api(api), handle(handle) {
-	}
-
-	~PluginBackend() override {
-		if (api && handle) {
-			api->destroy(handle);
+	explicit WeightFile(const string &path) {
+#ifndef _WIN32
+		const int fd = ::open(path.c_str(), O_RDONLY);
+		if (fd >= 0) {
+			struct stat st {};
+			if (::fstat(fd, &st) == 0 && st.st_size > 0) {
+				void *p = ::mmap(nullptr, static_cast<size_t>(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
+				if (p != MAP_FAILED) {
+					base_ = p;
+					size_ = static_cast<size_t>(st.st_size);
+				}
+			}
+			::close(fd);
 		}
-		// The library is intentionally NOT closed: the CUDA/HIP/Metal context
-		// and any thread-locals the plugin registered outlive this object, and
-		// unloading underneath them is how a clean shutdown turns into a
-		// segfault in someone else's destructor.
-	}
-
-	TabFMRunOutput Run(const TabFMRunInput &input) override {
-		TabFMPluginRunInput in {};
-		in.x = input.x;
-		in.y = input.y;
-		// TabFMRunInput carries `const bool *`; the ABI uses uint8_t because
-		// _Bool's size is implementation-defined and this crosses a compiler
-		// boundary. They are layout-compatible everywhere we build, but the
-		// cast is explicit so the assumption is visible.
-		in.cat_mask = reinterpret_cast<const uint8_t *>(input.cat_mask);
-		in.t = input.t;
-		in.h = input.h;
-		in.train_size = input.train_size;
-		in.d = input.d;
-
-		TabFMPluginRunOutput out {};
-		char err[512] = {0};
-		if (api->run(handle, &in, &out, err, sizeof(err)) != TABFM_PLUGIN_OK) {
-			api->free_output(&out);
-			throw InvalidInputException("anofox_tabfm: the '%s' backend failed: %s", api->name(), err);
+#endif
+		if (!base_) {
+			std::ifstream in(path, std::ios::binary);
+			if (!in) {
+				throw IOException("anofox_tabfm: cannot open the weights file '%s' for the GPU backend. Download the model again: CALL "
+				                  "tabfm_download(<model>);",
+				                  path);
+			}
+			copy_.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+			size_ = copy_.size();
 		}
-
-		TabFMRunOutput result;
-		result.logits.assign(out.logits, out.logits + out.logits_len);
-		result.shape.assign(out.shape, out.shape + out.shape_len);
-		api->free_output(&out);
-		return result;
+	}
+	~WeightFile() {
+#ifndef _WIN32
+		if (base_) {
+			::munmap(base_, size_);
+		}
+#endif
+	}
+	WeightFile(const WeightFile &) = delete;
+	WeightFile &operator=(const WeightFile &) = delete;
+	const char *data() const {
+		return base_ ? static_cast<const char *>(base_) : copy_.data();
+	}
+	size_t size() const {
+		return size_;
 	}
 
 private:
-	const TabFMPluginApi *api;
-	void *handle;
+	void *base_ = nullptr;
+	size_t size_ = 0;
+	string copy_;
+};
+
+int64_t ElementCount(const std::vector<int64_t> &dims) {
+	int64_t n = 1;
+	for (auto d : dims) {
+		n *= d;
+	}
+	return n;
+}
+
+//! The plugin session plus the checkpoint it reads. `files` is declared FIRST so it is destroyed LAST, after the session (the plugin
+//! reads the mapped weights for the session's whole life).
+class PluginBackend : public TabFMBackend {
+public:
+	vector<unique_ptr<WeightFile>> files;
+	string output_name;
+	bool graph_has_train_size = true;
+	std::set<string> inputs; // the inputs the graph declares
+	std::unique_ptr<ga::PluginSession> session;
+
+	TabFMRunOutput Run(const TabFMRunInput &input) override {
+		// Same contract as the CPU engines: a graph without a train_size input derives the split from y's length, so it gets the prefix.
+		const int64_t y_len = graph_has_train_size ? input.t : input.train_size;
+		vector<uint8_t> mask;
+		vector<ga::PluginTensor> in;
+		const int64_t train_size = input.train_size;
+		const int64_t d = input.d;
+		in.push_back({"x", ANOFOX_GGML_DTYPE_FLOAT, {1, input.t, input.h}, input.x});
+		in.push_back({"y", ANOFOX_GGML_DTYPE_FLOAT, {1, y_len}, input.y});
+		if (inputs.count("cat_mask")) {
+			mask.resize(static_cast<size_t>(input.h));
+			for (int64_t i = 0; i < input.h; i++) {
+				mask[static_cast<size_t>(i)] = input.cat_mask && input.cat_mask[i] ? 1 : 0;
+			}
+			in.push_back({"cat_mask", ANOFOX_GGML_DTYPE_BOOL, {1, input.h}, mask.data()});
+		}
+		if (inputs.count("train_size")) {
+			in.push_back({"train_size", ANOFOX_GGML_DTYPE_INT64, {1}, &train_size, true});
+		}
+		if (inputs.count("d")) {
+			in.push_back({"d", ANOFOX_GGML_DTYPE_INT64, {1}, &d, true});
+		}
+		ga::HostTensors out;
+		try {
+			out = session->Run(in, {output_name});
+		} catch (const ga::PluginError &e) {
+			if (e.kind == ga::PluginError::Kind::OUT_OF_MEMORY) {
+				throw OutOfMemoryException("anofox_tabfm: the '%s' backend ran out of device memory: %s", e.backend, e.detail);
+			}
+			throw InvalidInputException("anofox_tabfm: the '%s' backend failed: %s", e.backend, e.detail);
+		}
+		TabFMRunOutput result;
+		auto &logits = out.at(output_name);
+		result.logits = std::move(logits.data);
+		result.shape = std::move(logits.shape);
+		return result;
+	}
 };
 
 } // namespace
 
+const vector<string> &TabFMPluginInputs() {
+	static const vector<string> inputs = {"x", "y", "cat_mask", "train_size", "d"};
+	return inputs;
+}
+
 bool PluginLoadable(const string &library_path, string *error) {
-	auto set_error = [&](string message) {
-		if (error) {
-			*error = std::move(message);
-		}
-	};
-	auto library = OpenLibrary(library_path);
-	if (!library) {
-		// The loader's own text is the useful part and is usually specific:
-		// a plugin present but unloadable almost always names the dependency
-		// that is missing (libcuda.so.1, the ROCm libraries, libmlx), which is a
-		// different problem from the file not being there and has a different
-		// fix. Reporting only "not loadable" would hide it.
-		set_error(LibraryError());
-		return false;
-	}
-	auto entry = reinterpret_cast<TabFMGetPluginApiFn>(LibrarySymbol(library, TABFM_PLUGIN_ENTRY_SYMBOL));
-	if (!entry) {
-		CloseLibrary(library);
-		set_error("the library exports no " + string(TABFM_PLUGIN_ENTRY_SYMBOL) +
-		          " — a file with the right name but the wrong contents");
-		return false;
-	}
-	const TabFMPluginApi *api = entry();
-	if (api && api->abi_version != TABFM_PLUGIN_ABI_VERSION) {
-		set_error("built against plugin ABI version " + std::to_string(api->abi_version) + ", but this build speaks " +
-		          std::to_string(TABFM_PLUGIN_ABI_VERSION));
-	}
-	// Same ordering rule as LoadPluginBackend: abi_version is the only field
-	// safe to read before it has been checked.
-	const bool ok = api && api->abi_version == TABFM_PLUGIN_ABI_VERSION;
-	// Deliberately NOT unloaded on success: this library is about to be opened
-	// for real by LoadPluginBackend, and a GPU plugin that has been mapped once
-	// must not be unmapped underneath the driver context it may already have
-	// registered. On failure nothing was initialised, so closing is safe and
-	// keeps a probe of a wrong file from pinning it.
-	if (!ok) {
-		CloseLibrary(library);
-	}
-	return ok;
+	return ga::PluginLoadable(library_path, error);
 }
 
-namespace {
-
-//! The inputs `graph_path` declares (initializers excluded) that `bound` does not name. Empty when the
-//! graph cannot be read here; the plugin then reports that itself, with more context.
-vector<string> UnboundGraphInputs(const string &graph_path, const char *const *bound) {
-	vector<string> missing;
-	::anofox::onnxread::Graph graph;
+unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const TabFMPluginRequest &request) {
+	auto backend = make_uniq<PluginBackend>();
+	ga::PluginCreate params;
+	if (!request.graph_path.empty()) {
+		// The graph's external initializers point into a file beside it, by location and byte offset: map it and hand the plugin each one.
+		::anofox::onnxread::Graph graph;
+		try {
+			graph = ::anofox::onnxread::ParseModelFile(request.graph_path);
+		} catch (const std::exception &e) {
+			throw IOException("anofox_tabfm: cannot read the GPU graph '%s': %s", request.graph_path, e.what());
+		}
+		std::set<string> initializers;
+		std::map<string, WeightFile *> by_location;
+		for (const auto &t : graph.initializers) {
+			initializers.insert(t.name);
+			if (t.location != ::anofox::onnxread::DataLocation::EXTERNAL) {
+				continue;
+			}
+			const auto loc = t.external.find("location");
+			const auto off = t.external.find("offset");
+			if (loc == t.external.end() || off == t.external.end()) {
+				throw IOException("anofox_tabfm: the GPU graph '%s' names no location/offset for the weight '%s'", request.graph_path, t.name);
+			}
+			auto file = by_location.find(loc->second);
+			if (file == by_location.end()) {
+				backend->files.push_back(make_uniq<WeightFile>(request.weights_dir + "/" + loc->second));
+				file = by_location.emplace(loc->second, backend->files.back().get()).first;
+			}
+			const size_t offset = static_cast<size_t>(std::stoull(off->second));
+			const int64_t count = ElementCount(t.dims);
+			const size_t element = t.data_type == ANOFOX_GGML_DTYPE_INT64 || t.data_type == 11 ? 8 : t.data_type == ANOFOX_GGML_DTYPE_FLOAT16 || t.data_type == ANOFOX_GGML_DTYPE_BFLOAT16 ? 2 : t.data_type == ANOFOX_GGML_DTYPE_UINT8 || t.data_type == ANOFOX_GGML_DTYPE_BOOL ? 1 : 4;
+			if (offset + static_cast<size_t>(count) * element > file->second->size()) {
+				throw IOException("anofox_tabfm: the weight '%s' does not fit the checkpoint '%s' (is the graph for another checkpoint, or the "
+				                  "file truncated?). Download the model again: CALL tabfm_download(<model>);",
+				                  t.name, loc->second);
+			}
+			params.weights.push_back({t.name, t.data_type, file->second->data() + offset, count, t.dims});
+		}
+		vector<string> unknown;
+		for (const auto &name : graph.inputs) {
+			if (initializers.count(name)) {
+				continue;
+			}
+			const auto &known = TabFMPluginInputs();
+			if (std::find(known.begin(), known.end(), name) == known.end()) {
+				unknown.push_back(name);
+			}
+			backend->inputs.insert(name);
+		}
+		if (!unknown.empty()) {
+			// Refused before the plugin runs anything: an unfed input would fail inside the runtime's own run call.
+			throw IOException("anofox_tabfm: the GPU graph '%s' declares the input(s) '%s', which this build of anofox_tabfm does not feed; "
+			                  "it is newer than the extension. Update the extension (INSTALL anofox_tabfm FROM community; UPDATE EXTENSIONS;) "
+			                  "or SET anofox_tabfm_device='cpu'.",
+			                  request.graph_path, StringUtil::Join(unknown, "', '"));
+		}
+		backend->graph_has_train_size = backend->inputs.count("train_size") > 0;
+		backend->output_name = graph.outputs.empty() ? string("logits") : graph.outputs.front();
+		for (const auto &o : graph.outputs) {
+			if (o == "logits") {
+				backend->output_name = o;
+			}
+		}
+		params.graph_path = request.graph_path;
+	} else {
+		if (!StringUtil::StartsWith(request.model, "mitra")) {
+			throw InvalidInputException("anofox_tabfm: the GPU backend was given no graph for '%s', and only mitra has a forward without one. "
+			                            "Register the model with its ext graph, or SET anofox_tabfm_device='cpu' to run it on the CPU.",
+			                            request.model);
+		}
+		// No graph (mitra's MLX hand-port): every tensor of the checkpoint, by its state_dict name.
+		backend->files.push_back(make_uniq<WeightFile>(request.weights_path));
+		const auto &file = *backend->files.back();
+		auto view = ParseSafetensors(reinterpret_cast<const_data_ptr_t>(file.data()), file.size(), request.weights_path);
+		for (const auto &kv : view.tensors) {
+			const auto &t = kv.second;
+			if (t.dtype == SafetensorsDtype::I64) {
+				continue; // not a weight
+			}
+			params.weights.push_back({kv.first, t.dtype == SafetensorsDtype::BF16 ? ANOFOX_GGML_DTYPE_BFLOAT16 : ANOFOX_GGML_DTYPE_FLOAT,
+			                          t.data, static_cast<int64_t>(t.ElementCount()), t.shape});
+		}
+		backend->inputs = {"x", "y", "train_size", "d"};
+		backend->output_name = "logits";
+	}
+	params.model = request.model;
+	params.arch = request.arch;
+	params.precision = request.precision;
+	params.cache_dir = request.cache_dir;
+	params.device_ordinal = request.device_ordinal;
+	params.out_of_memory_remedy = request.out_of_memory_remedy;
 	try {
-		graph = ::anofox::onnxread::ParseModelFile(graph_path);
-	} catch (const std::exception &) {
-		return missing;
-	}
-	std::set<std::string> initializers;
-	for (auto &t : graph.initializers) {
-		initializers.insert(t.name);
-	}
-	std::set<std::string> provided;
-	for (auto *name = bound; name && *name; name++) {
-		provided.insert(*name);
-	}
-	for (auto &input : graph.inputs) {
-		if (!initializers.count(input) && !provided.count(input)) {
-			missing.push_back(input);
+		backend->session = ga::PluginSession::Open(library_path, params);
+	} catch (const ga::PluginError &e) {
+		switch (e.kind) {
+		case ga::PluginError::Kind::NOT_LOADABLE:
+			throw IOException("anofox_tabfm: cannot load the backend plugin '%s': %s. Fetch it with CALL tabfm_download_runtime(...), or point "
+			                  "anofox_tabfm_ep_path at the directory holding it.",
+			                  library_path, e.detail);
+		case ga::PluginError::Kind::NOT_A_PLUGIN:
+			throw IOException("anofox_tabfm: '%s' is not an anofox backend plugin: %s.", library_path, e.detail);
+		case ga::PluginError::Kind::ABI_MISMATCH:
+			throw IOException("anofox_tabfm: the backend plugin '%s' was built against plugin ABI version %d, but this build speaks version %d. "
+			                  "Update the plugin: CALL tabfm_accelerate() fetches the one built for this release (or point anofox_tabfm_ep_path "
+			                  "at a matching build).",
+			                  library_path, e.plugin_abi, ANOFOX_GGML_PLUGIN_ABI_VERSION);
+		default:
+			throw InvalidInputException("anofox_tabfm: the '%s' backend could not be initialised: %s. SET anofox_tabfm_device='cpu' to run on "
+			                            "the CPU.",
+			                            e.backend, e.detail);
 		}
 	}
-	return missing;
-}
-
-} // namespace
-
-unique_ptr<TabFMBackend> LoadPluginBackend(const string &library_path, const TabFMPluginCreateParams &params) {
-	auto library = OpenLibrary(library_path);
-	if (!library) {
-		throw IOException("anofox_tabfm: cannot load the backend plugin '%s': %s. Fetch it with CALL "
-		                  "tabfm_download_runtime(...), or point anofox_tabfm_ep_path at the directory holding it.",
-		                  library_path, LibraryError());
-	}
-
-	auto entry = reinterpret_cast<TabFMGetPluginApiFn>(LibrarySymbol(library, TABFM_PLUGIN_ENTRY_SYMBOL));
-	if (!entry) {
-		CloseLibrary(library);
-		throw IOException("anofox_tabfm: '%s' is not an anofox backend plugin — it exports no %s. A file with the "
-		                  "right name but the wrong contents is the usual cause.",
-		                  library_path, TABFM_PLUGIN_ENTRY_SYMBOL);
-	}
-
-	const TabFMPluginApi *api = entry();
-	if (!api) {
-		CloseLibrary(library);
-		throw IOException("anofox_tabfm: the backend plugin '%s' returned no API table", library_path);
-	}
-	// Before touching anything else in the struct: a plugin built against a
-	// different layout would have every later field at the wrong offset, and
-	// reading those is undefined behaviour rather than a wrong answer.
-	if (api->abi_version != TABFM_PLUGIN_ABI_VERSION) {
-		// Read it BEFORE unloading: `api` points into the library's own memory,
-		// so dlclose unmaps it and the message would be built from freed pages.
-		const int plugin_abi = api->abi_version;
-		CloseLibrary(library);
-		throw IOException("anofox_tabfm: the backend plugin '%s' was built against plugin ABI version %d, but this "
-		                  "build speaks version %d. Update the plugin: CALL tabfm_accelerate() fetches the one built for "
-		                  "this release (or point anofox_tabfm_ep_path at a matching build).",
-		                  library_path, plugin_abi, TABFM_PLUGIN_ABI_VERSION);
-	}
-
-	// Before create, which is the first call that does real work: a graph input the plugin would leave
-	// unbound fails inside the runtime's own run call, where it cannot be reported this clearly (the
-	// removed MIGraphX plugin crashed the host that way).
-	if (params.graph_path && *params.graph_path) {
-		auto unbound = UnboundGraphInputs(params.graph_path, api->graph_inputs ? api->graph_inputs() : nullptr);
-		if (!unbound.empty()) {
-			const string backend_name = api->name();
-			CloseLibrary(library); // only name() and graph_inputs() ran, both static tables
-			throw IOException("anofox_tabfm: the '%s' backend plugin at '%s' does not bind the graph input(s) '%s' "
-			                  "that '%s' declares, so it is older than the graph. Update it: CALL "
-			                  "tabfm_accelerate(), or point anofox_tabfm_ep_path at a plugin built from this "
-			                  "release.",
-			                  backend_name, library_path, StringUtil::Join(unbound, "', '"), params.graph_path);
-		}
-	}
-
-	char err[512] = {0};
-	void *handle = api->create(&params, err, sizeof(err));
-	if (!handle) {
-		const string backend_name = api->name();
-		// Deliberately NOT CloseLibrary here (review finding): create has
-		// already executed plugin code — a GPU plugin initialises its
-		// runtime and probes the driver before it can fail, leaving TLS and
-		// atexit registrations pointing into the library. Unmapping it turns
-		// a clean "could not be initialised" into a crash at shutdown or on
-		// retry. The pre-create failure paths above ran no plugin code and
-		// may keep closing; this path leaks the handle exactly like the
-		// destructor does, for the same reason.
-		throw InvalidInputException("anofox_tabfm: the '%s' backend could not be initialised: %s", backend_name, err);
-	}
-	return make_uniq<PluginBackend>(api, handle);
+	return std::move(backend);
 }
 
 } // namespace anofox

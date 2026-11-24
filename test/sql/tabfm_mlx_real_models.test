@@ -3,7 +3,7 @@
 #              and agrees with the CPU (ONNX Runtime) on every row.
 #
 #              MLX has no ONNX importer, so the plugin interprets each model's ext graph op by op
-#              (src/tabfm_mlx_graph_ops.inc) and refuses a graph that needs an op it lacks. This file is
+#              (anofox-ggml-adapter's src/mlxgraph/mlx_graph_ops.inc) and refuses a graph that needs an op it lacks. This file is
 #              the check that every model the catalogue says is mlx-servable really runs there: it asks
 #              for device 'mlx' explicitly (a silent CPU fallback would also "agree with the CPU") and
 #              reads the serving device from tabfm_models().

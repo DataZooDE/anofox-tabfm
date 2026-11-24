@@ -8,7 +8,7 @@ files to it, runs a command, streams the output back and terminates the pod.
 NOT part of CI: it costs money and needs a key CI does not have. Run it by hand
 when a change touches a GPU path.
 
-    tools/gpu_test/runpod_run.py --upload build/ggml-cuda/libanofox_tabfm_ggml-cuda_plugin.so \\
+    tools/gpu_test/runpod_run.py --upload vendor/anofox-ggml-adapter/build/ggml-cuda/libanofox_ggml-cuda_plugin.so \\
         --command 'nvidia-smi && ls -l /workspace'
 
 The API key comes from RUNPOD_API_KEY, or from ~/.bashrc — which exports it but

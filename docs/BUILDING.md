@@ -58,35 +58,43 @@ the project's rules are in [`CLAUDE.md`](../CLAUDE.md); end-to-end examples are 
 
 ## GPU plugins from source
 
-GPUs are served by plugins, not by builds of the extension ([GPU](api/04-gpu.md)). The plugins are
-published as release assets (`.github/workflows/gpu_plugins.yml`), so you rarely need to build one.
+GPUs are served by plugins, not by builds of the extension ([GPU](api/04-gpu.md)). The plugins belong to
+the shared engine, [anofox-ggml-adapter](https://github.com/DataZooDE/anofox-ggml-adapter) (`vendor/anofox-ggml-adapter`,
+also used by anofox-decide): it builds them, on its generic plugin ABI v3, and publishes them with sha256 sidecars as
+assets of its own GitHub release (its `.github/workflows/plugins.yml`), which is where `tabfm_download_runtime` fetches
+them. tabfm builds no plugin itself, so you rarely need to build one.
 
-**The ggml GPU plugin** (CUDA and ROCm) is `src/tabfm_ggml_plugin.cpp` plus the engine sources, built by its
-own CMake project in `tools/ggml_plugin`. It needs `vendor/anofox-ggml-adapter` and the vendor's toolkit (the CUDA toolkit,
-or ROCm's HIP SDK), not ONNX Runtime:
+**The ggml GPU plugin** (CUDA and ROCm) is the adapter's `src/plugin_ggml.cpp` plus the engine sources, built by
+the adapter's own CMake project in `tools/ggml_plugin`. It needs the vendor's toolkit (the CUDA toolkit, or ROCm's
+HIP SDK), not ONNX Runtime. Run it inside the submodule:
 
 ```bash
-# CUDA: libanofox_tabfm_ggml-cuda_plugin.so (the CUDA runtime and cuBLAS are linked statically)
-cmake -S tools/ggml_plugin -B build/ggml-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DTABFM_GGML_GPU=cuda \
+cd vendor/anofox-ggml-adapter
+# CUDA: libanofox_ggml-cuda_plugin.so (the CUDA runtime and cuBLAS are linked statically)
+cmake -S tools/ggml_plugin -B build/ggml-cuda -G Ninja -DCMAKE_BUILD_TYPE=Release -DANOFOX_GGML_GPU=cuda \
       -DCMAKE_CUDA_ARCHITECTURES=89          # your card; the release builds 75-real;80-real;86-real;89-real;90-real;100-real;120
 cmake --build build/ggml-cuda
 
-# ROCm: libanofox_tabfm_ggml-rocm_plugin.so (links the ROCm install's HIP, hipBLAS, rocBLAS)
-cmake -S tools/ggml_plugin -B build/ggml-rocm -G Ninja -DCMAKE_BUILD_TYPE=Release -DTABFM_GGML_GPU=hip \
+# ROCm: libanofox_ggml-rocm_plugin.so (links the ROCm install's HIP, hipBLAS, rocBLAS)
+cmake -S tools/ggml_plugin -B build/ggml-rocm -G Ninja -DCMAKE_BUILD_TYPE=Release -DANOFOX_GGML_GPU=hip \
       -DAMDGPU_TARGETS=gfx1201               # your arch; the release builds gfx1030;1100;1101;1102;1150;1151;1200;1201;90a;942
 cmake --build build/ggml-rocm
 ```
 
 Copy the library into the directory `anofox_tabfm_ep_path` names (by default the `runtime` subdirectory of
 `anofox_tabfm_cache_dir`) and `SET anofox_tabfm_device = 'cuda'` (or `'rocm'`); `SELECT model, device FROM
-tabfm_models()` confirms it served. `TABFM_GGML_CUDA_STATIC` (default `ON`) selects the static CUDA runtime, and
-`scripts/check_plugin_deps.sh` fails on a plugin that still needs a shared one. On Windows the CUDA plugin
-builds as `anofox_tabfm_ggml-cuda_plugin.dll` with a shared CUDA runtime (there is no static cuBLAS there);
-it is not published. `tools/ggml_plugin/abi_check.cpp` loads a built plugin through the plugin ABI and
-compares one reference case with ONNX Runtime's output.
+tabfm_models()` confirms it served. `ANOFOX_GGML_CUDA_STATIC` (default `ON`) selects the static CUDA runtime, and
+the adapter's `scripts/check_plugin_deps.sh` fails on a plugin that still needs a shared one. On Windows the CUDA
+plugin builds as `anofox_ggml-cuda_plugin.dll` with a shared CUDA runtime (there is no static cuBLAS there); it is
+not published. The adapter's `tools/gpu_test/plugin_load_check.c` proves a built plugin loads and refuses cleanly
+without a GPU. The loader refuses a plugin built against another ABI version, including tabfm's own earlier
+ABI v2 plugins (`libanofox_tabfm_*_plugin`, removed).
 
-**The MLX plugin** (`src/tabfm_mlx_plugin.cpp`, Apple Silicon) needs `brew install mlx mlx-c` and builds
-via the `anofox_tabfm_mlx_plugin` CMake target of the main build ([MLX_PLAN.md](MLX_PLAN.md)).
+**The MLX plugin** (the adapter's `src/plugin_mlx.cpp` + `src/mlxgraph/`, Apple Silicon) needs
+`brew install mlx mlx-c` and builds as `libanofox_mlx_plugin.dylib` with
+`cmake -S tools/mlx_plugin -B build/mlx -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build/mlx` inside
+`vendor/anofox-ggml-adapter`. tabfm's main build also compiles it (the `anofox_tabfm_mlx_plugin` target, on an arm64
+Mac with MLX installed) only to run its MLX tests ([MLX_PLAN.md](MLX_PLAN.md)).
 
 The design notes of the removed ONNX Runtime and MIGraphX backends are in [archive/](archive/README.md).
 

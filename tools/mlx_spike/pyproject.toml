@@ -6,7 +6,8 @@
 #   uv run sm4_bench      # warm per-predict latency, MLX vs ORT CPU
 #
 # This is Python only and never ships: it de-risks the math and the runtime
-# before src/tabfm_mlx_plugin.cpp exists. torch is here as a *third* opinion
+# before the MLX plugin existed (it is now anofox-ggml-adapter's src/plugin_mlx.cpp; sm3_abi targets the removed
+# tabfm plugin ABI and is kept as history). torch is here as a *third* opinion
 # when MLX and ORT disagree -- mitra_model_patched.py is the authority on what
 # the forward is supposed to compute, and it is a torch module.
 [project]

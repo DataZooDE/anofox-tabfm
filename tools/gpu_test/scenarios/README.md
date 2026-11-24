@@ -4,7 +4,7 @@ Each file is SQL you run against a build with a GPU backend plugin available. Pr
 `SET anofox_tabfm_ep_path=...` line each script names, then:
 
 ```bash
-{ echo "SET anofox_tabfm_ep_path='$PWD/build/ggml-rocm';"; \
+{ echo "SET anofox_tabfm_ep_path='$PWD/vendor/anofox-ggml-adapter/build/ggml-rocm';"; \
   cat tools/gpu_test/scenarios/<file>.sql; } | ./build/release/duckdb
 ```
 

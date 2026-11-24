@@ -11,6 +11,19 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   `git submodule update --init --recursive` (ggml is the adapter's submodule), the CMake option is `ANOFOX_GGML_NATIVE` (the old
   `TABFM_GGML_NATIVE` still works) and the profiling switches are `ANOFOX_GGML_PROFILE*` / `ANOFOX_GGML_NO_POOL` (the `TABFM_GGML_*`
   names still work). New ONNX ops are added in the adapter.
+- **The GPU plugins come from anofox-ggml-adapter**, on its generic plugin ABI v3 (named input tensors, host-supplied weights by name
+  and shape, outputs by name, a layout fingerprint), shared with anofox-decide. The files are renamed: `libanofox_ggml-cuda_plugin.so`,
+  `libanofox_ggml-rocm_plugin.so` and `libanofox_mlx_plugin.dylib` (were `libanofox_tabfm_ggml-cuda_plugin.so`,
+  `libanofox_tabfm_ggml-rocm_plugin.so`, `libanofox_tabfm_mlx_plugin.dylib`; on Windows no `lib` prefix and `.dll`); the sha256
+  sidecars keep their names. `tabfm_download_runtime` / `tabfm_accelerate` download them from the adapter's GitHub release
+  (`github.com/DataZooDE/anofox-ggml-adapter/releases`, tag pinned by the adapter). The SQL surface is unchanged (`anofox_tabfm_device`,
+  `anofox_tabfm_ep_path`, `tabfm_devices()`, `tabfm_backends()`). A plugin built against another ABI version, including the ABI v2
+  plugins of v2026.11.23, is refused by the loader: run `CALL tabfm_accelerate()` again. Device discovery (NVML, KFD, Apple) is the
+  adapter's too.
+- **tabfm's own plugin sources and their CI are removed** (no user-visible effect): `src/tabfm_ggml_plugin.cpp`,
+  `src/tabfm_mlx_plugin.cpp`, `src/tabfm_mlx_graph*`, `src/include/tabfm_plugin_abi.h`, `tools/ggml_plugin`, the
+  `gpu_plugins.yml` workflow, `scripts/check_plugin_deps.sh`, `scripts/check_plugin_release_assets.py` and
+  `tools/gpu_test/plugin_load_check.c`; the adapter builds, checks and publishes the plugins (docs/BUILDING.md).
 
 ## [v2026.11.23] - 2026-11-23
 

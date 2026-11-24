@@ -269,7 +269,7 @@ struct PredictContext {
 	//! SET anofox_tabfm_context_cache_admit = 'first': keep a context on its first
 	//! sighting. Default ('second'): keep it the second time its key is seen.
 	bool context_cache_admit_first = false;
-	//! SET anofox_tabfm_ep_path — directory holding the backend plugins (libanofox_tabfm_ggml-{cuda,rocm}_plugin, the MLX plugin). A GPU
+	//! SET anofox_tabfm_ep_path — directory holding the backend plugins (libanofox_ggml-{cuda,rocm}_plugin, the MLX plugin). A GPU
 	//! that was asked for by name and whose plugin is not there throws rather than silently running on the CPU (tier 4: a requested device
 	//! that cannot actually be driven must error, never fall back quietly).
 	string ep_path;

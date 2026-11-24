@@ -23,20 +23,23 @@ This file records how we comply; it is not legal advice.
 
 ## ggml (`vendor/ggml`)
 
-Copyright (c) 2023-2026 The ggml authors. MIT License; the full text is in [`vendor/ggml/LICENSE`](vendor/ggml/LICENSE).
+Copyright (c) 2023-2026 The ggml authors. MIT License; the full text is in [`vendor/anofox-ggml-adapter/vendor/ggml/LICENSE`](vendor/anofox-ggml-adapter/vendor/ggml/LICENSE).
 ggml is compiled into the extension as the CPU inference engine (static, CPU backend only). Its source is a pinned
-git submodule; no model weights or graphs come from it.
+git submodule of anofox-ggml-adapter (`vendor/anofox-ggml-adapter`, MIT, Copyright (c) 2026 DataZoo GmbH), whose engine
+sources are compiled in with it; no model weights or graphs come from either.
 
-## GPU backend plugins (release assets, not part of the extension binary)
+## GPU backend plugins (not part of the extension binary, not distributed by this repository)
 
-No build of the extension or of any plugin links ONNX Runtime or MIGraphX any more.
+The GPU plugins are built and published by anofox-ggml-adapter, as assets of its own GitHub release, and that release is
+their distributor; `tabfm_download_runtime` / `tabfm_accelerate` fetch them from there. What they contain is summarised here for
+tabfm's users. No build of the extension or of any plugin links ONNX Runtime or MIGraphX any more.
 
-- **ggml CUDA plugin** (`libanofox_tabfm_ggml-cuda_plugin.so`): ggml (above) with its CUDA backend, plus the
+- **ggml CUDA plugin** (`libanofox_ggml-cuda_plugin.so`): ggml (above) with its CUDA backend, plus the
   NVIDIA CUDA runtime (`cudart`) and cuBLAS / cuBLASLt from CUDA Toolkit 12.8, **linked statically**. These
   are components NVIDIA lets applications redistribute under the CUDA Toolkit End User License Agreement
   (Attachment A). The plugin loads the NVIDIA driver (`libcuda.so.1`) from the user's system and ships no
   driver code.
-- **ggml ROCm plugin** (`libanofox_tabfm_ggml-rocm_plugin.so`): ggml with its HIP backend. It links HIP,
+- **ggml ROCm plugin** (`libanofox_ggml-rocm_plugin.so`): ggml with its HIP backend. It links HIP,
   hipBLAS and rocBLAS dynamically from the user's ROCm installation and bundles none of them.
-- **MLX plugin** (`libanofox_tabfm_mlx_plugin.dylib`): links Apple's `libmlx` / `libmlxc` (MIT) dynamically
+- **MLX plugin** (`libanofox_mlx_plugin.dylib`): links Apple's `libmlx` / `libmlxc` (MIT) dynamically
   from the user's installation (`brew install mlx mlx-c`) and bundles neither.
