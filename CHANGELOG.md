@@ -12,6 +12,10 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
   `INSTALL anofox_tabfm FROM community`. The README says why an older DuckDB can get an old community build.
 
 ### Changed
+- **Attention is fused on the CPU**: the engine lowers the exported scaled-dot-product attention of most bundled graphs (TabPFN
+  family, TabDPT, TabICL, LimiX, Nori, Orion-BiX, causilo, and part of TabFM/Kumo/Orion-MSP) to one flash-attention op instead of
+  materialising the attention scores. Every graph still matches ONNX Runtime (`tools/ggml_parity/graphs_parity.py`); GPU plugins
+  are unchanged.
 - **The ggml engine is a shared component now**, `vendor/anofox-ggml-adapter` (github.com/DataZooDE/anofox-ggml-adapter), which
   anofox-decide uses too. Nothing changes for users: the same engine, the same answers. For builds: the submodules are fetched with
   `git submodule update --init --recursive` (ggml is the adapter's submodule), the CMake option is `ANOFOX_GGML_NATIVE` (the old
