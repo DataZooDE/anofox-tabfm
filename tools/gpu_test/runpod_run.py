@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -218,8 +219,43 @@ def ssh_base(priv: Path, ip: str, port: int):
         "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10",
+        # keepalives: a long silent step (a build logging to a file) otherwise lets a NAT drop the session
+        "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=6",
         f"root@{ip}",
     ]
+
+
+def run_detached(priv: Path, ip: str, port: int, command: str, poll: int = 30) -> int:
+    """Runs `command` on the pod detached from this ssh session (nohup; output in /workspace/run.log, exit code in
+    /workspace/run.exit) and streams the log by reconnecting every `poll` seconds. An hour-long build no longer dies
+    with the connection: a dropped poll is retried, and only the exit file ends the run."""
+    launch = (f"cd /workspace && rm -f run.exit && nohup bash -c {shlex.quote('(' + command + '); echo $? > /workspace/run.exit')} "
+              "> /workspace/run.log 2>&1 < /dev/null &")
+    subprocess.run(ssh_base(priv, ip, port) + [launch], check=True)
+    shown = 0
+    failures = 0
+    while True:
+        time.sleep(poll)
+        probe = subprocess.run(
+            ssh_base(priv, ip, port) + [f"tail -c +{shown + 1} /workspace/run.log; echo; echo __EXIT__$(cat /workspace/run.exit 2>/dev/null)"],
+            capture_output=True)
+        if probe.returncode != 0:
+            failures += 1
+            if failures > 20:
+                print("lost the pod: 20 polls in a row failed")
+                return 255
+            continue
+        failures = 0
+        out = probe.stdout.decode("utf-8", "replace")
+        body, _, tail = out.rpartition("__EXIT__")
+        body = body[:-1] if body.endswith("\n") else body  # the echo before the marker
+        if body:
+            sys.stdout.write(body)
+            sys.stdout.flush()
+            shown += len(body.encode("utf-8"))
+        code = tail.strip()
+        if code:
+            return int(code)
 
 
 def wait_for_sshd(priv: Path, ip: str, port: int, timeout: int = 900):
@@ -424,8 +460,7 @@ def main() -> int:
         print(f"\n--- nvidia-smi ---")
         subprocess.run(ssh_base(priv, ip, port) + ["nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader"])
         print(f"\n--- running ---\n{command}\n")
-        result = subprocess.run(ssh_base(priv, ip, port) + [command])
-        return result.returncode
+        return run_detached(priv, ip, port, command)
     finally:
         cleanup()
 
