@@ -43,9 +43,20 @@ JOBS=$((MEM_GB / 3))
 export CMAKE_BUILD_PARALLEL_LEVEL=$JOBS
 echo "cores $(nproc), memory ${MEM_GB} GB, build jobs $JOBS"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq && apt-get install -y -qq git cmake ninja-build build-essential python3 zip unzip curl pkg-config tar ccache software-properties-common > /dev/null
-add-apt-repository -y ppa:ubuntu-toolchain-r/test > /dev/null 2>&1 && apt-get update -qq && apt-get install -y -qq gcc-13 g++-13 > /dev/null
-export CC=gcc-13 CXX=g++-13
+# apt's output goes to a log; a failure prints its tail (a silent failed install once left the pod without ninja or a compiler)
+apt_get() { apt-get "$@" >> $W/apt.log 2>&1 || { echo "apt-get $* failed:"; tail -20 $W/apt.log; return 1; }; }
+apt_get update -q && apt_get install -y -q git cmake ninja-build build-essential python3 zip unzip curl pkg-config tar ccache \
+	software-properties-common gpg-agent
+# GCC 13 from the toolchain PPA, else GCC 12 from Ubuntu's own archive (Launchpad has timed out on pods)
+if add-apt-repository -y ppa:ubuntu-toolchain-r/test >> $W/apt.log 2>&1 && apt_get update -q && apt_get install -y -q gcc-13 g++-13; then
+	export CC=gcc-13 CXX=g++-13
+elif apt_get install -y -q gcc-12 g++-12; then
+	export CC=gcc-12 CXX=g++-12
+else
+	echo "neither GCC 13 nor 12 installed: building with $(gcc --version | head -1)"
+fi
+echo "compiler: $(${CXX:-g++} --version | head -1)"
+command -v ninja > /dev/null || { echo "ninja is missing: cannot build"; exit 1; }
 export GEN=ninja DATAZOO_DISABLE_TELEMETRY=1 CCACHE_DIR=$W/ccache
 # both builds take their dependencies from vcpkg (decide's release build still compiles ONNX Runtime through it, until Phase 5)
 git clone -q https://github.com/microsoft/vcpkg.git $W/vcpkg && $W/vcpkg/bootstrap-vcpkg.sh -disableMetrics > /dev/null
@@ -72,7 +83,8 @@ run weights_decide bash -c "cd $W/decide && ./build/release/duckdb -c \"CALL dec
 cd $W/tabfm/vendor/anofox-ggml-adapter
 run adapter_plugin_tests env ANOFOX_GGML_TEST_PLUGIN=$EP/libanofox_ggml-cuda_plugin.so $W/adapter-build/adapter_tests "[plugin]"
 # with the GPU hidden the same plugin must refuse at create: the passing run above was served by the GPU
-run adapter_gpu_hidden_refuses bash -c "! env CUDA_VISIBLE_DEVICES= ANOFOX_GGML_TEST_PLUGIN=$EP/libanofox_ggml-cuda_plugin.so $W/adapter-build/adapter_tests 'plugin_ggml: the generic plugin runs*'"
+# (the test binary must exist: a missing one would "fail" too and pass this check)
+run adapter_gpu_hidden_refuses bash -c "test -x $W/adapter-build/adapter_tests && ! env CUDA_VISIBLE_DEVICES= ANOFOX_GGML_TEST_PLUGIN=$EP/libanofox_ggml-cuda_plugin.so $W/adapter-build/adapter_tests 'plugin_ggml: the generic plugin runs*'"
 
 cd $W/tabfm
 for t in tabfm_gpu_use_cases tabfm_gpu_registered_model; do
