@@ -269,7 +269,7 @@ def pod_spec(args, gpu_id, cloud, pub, volume=None):
         "image": args.image,
         "gpu": {"id": gpu_id, "count": 1},
         "cloud": cloud,
-        "disk": 30,
+        "disk": args.disk,
         "ports": ["22/tcp"],
         "env": {"PUBLIC_KEY": pub},
     }
@@ -296,6 +296,7 @@ def main() -> int:
     ap.add_argument("--upload", nargs="*", type=Path, default=[], help="files to copy to /workspace")
     ap.add_argument("--command", help="command to run on the pod")
     ap.add_argument("--timeout", type=int, default=900, help="seconds to wait for the pod")
+    ap.add_argument("--disk", type=int, default=30, help="container disk in GB (two extension builds plus weights need ~80)")
     ap.add_argument("--keep", action="store_true", help="do NOT terminate the pod (debugging; costs money)")
     ap.add_argument("--secure", action="store_true",
                     help="rent only from RunPod's own datacenters, never the COMMUNITY tier. Community hosts are "

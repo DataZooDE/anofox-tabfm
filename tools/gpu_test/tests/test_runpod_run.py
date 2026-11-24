@@ -133,7 +133,7 @@ class Pods(unittest.TestCase):
 
 
 class PodSpec(unittest.TestCase):
-    ARGS = type("A", (), {"image": "img:1"})()
+    ARGS = type("A", (), {"image": "img:1", "disk": 30})()
 
     # the v2 CreatePodRequest has unevaluatedProperties:false: every key must be one it documents
     V2_KEYS = {"name", "image", "cloud", "gpu", "cpu", "dataCenterIds", "globalNetworking", "mounts",
