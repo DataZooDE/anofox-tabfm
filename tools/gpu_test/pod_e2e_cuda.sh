@@ -9,7 +9,11 @@
 #   runpod_run.py --secure --gpu "NVIDIA GeForce RTX 4090" --disk 90 \
 #       --upload <libanofox_ggml-cuda_plugin.so> tools/gpu_test/pod_e2e_cuda.sh --command 'bash /workspace/pod_e2e_cuda.sh'
 #
-# Env: TABFM_BRANCH, DECIDE_BRANCH (default: the Phase 3 branches). Prints one RESULT line per suite at the end.
+# Env: TABFM_BRANCH, DECIDE_BRANCH (default: the Phase 3 branches); SKIP_TABFM=1 runs only the adapter and decide parts.
+# ONNX Runtime 1.29.0 is gone from GitHub (decide's vcpkg port and its prebuilt archive both 404) and decide still links it
+# until Phase 5: upload onnxruntime-linux-x64-1.29.0.tgz (the PyPI wheel's library + the headers) next to this script and
+# decide builds against it. Ubuntu 22.04's GCC 11 cannot build decide: GCC 13 from the toolchain PPA does.
+# Prints one RESULT line per suite at the end.
 set -uo pipefail
 TABFM_BRANCH=${TABFM_BRANCH:-feat/ggml-adapter}
 DECIDE_BRANCH=${DECIDE_BRANCH:-feat/ggml-gpu}
@@ -39,21 +43,30 @@ JOBS=$((MEM_GB / 3))
 export CMAKE_BUILD_PARALLEL_LEVEL=$JOBS
 echo "cores $(nproc), memory ${MEM_GB} GB, build jobs $JOBS"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq && apt-get install -y -qq git cmake ninja-build build-essential python3 zip unzip curl pkg-config tar ccache > /dev/null
+apt-get update -qq && apt-get install -y -qq git cmake ninja-build build-essential python3 zip unzip curl pkg-config tar ccache software-properties-common > /dev/null
+add-apt-repository -y ppa:ubuntu-toolchain-r/test > /dev/null 2>&1 && apt-get update -qq && apt-get install -y -qq gcc-13 g++-13 > /dev/null
+export CC=gcc-13 CXX=g++-13
 export GEN=ninja DATAZOO_DISABLE_TELEMETRY=1 CCACHE_DIR=$W/ccache
 # both builds take their dependencies from vcpkg (decide's release build still compiles ONNX Runtime through it, until Phase 5)
 git clone -q https://github.com/microsoft/vcpkg.git $W/vcpkg && $W/vcpkg/bootstrap-vcpkg.sh -disableMetrics > /dev/null
 export VCPKG_ROOT=$W/vcpkg VCPKG_TOOLCHAIN_PATH=$W/vcpkg/scripts/buildsystems/vcpkg.cmake
 
-cd $W && git clone -q --recursive --depth 1 -b "$TABFM_BRANCH" https://github.com/DataZooDE/anofox-tabfm.git tabfm &
+cd $W && git clone -q --recursive --depth 1 -b "$TABFM_BRANCH" https://github.com/DataZooDE/anofox-tabfm.git tabfm & # the adapter tests build from its copy
 cd $W && git clone -q --recursive --depth 1 -b "$DECIDE_BRANCH" https://github.com/DataZooDE/anofox-decide.git decide &
 wait
-run build_tabfm make -C $W/tabfm release
-run build_decide make -C $W/decide release
+[ "${SKIP_TABFM:-0}" = 1 ] || run build_tabfm make -C $W/tabfm release
+ORT_TGZ=$W/onnxruntime-linux-x64-1.29.0.tgz
+if [ -f "$ORT_TGZ" ]; then
+	mkdir -p $W/ort && tar -xzf "$ORT_TGZ" -C $W/ort --strip-components=1
+	export LD_LIBRARY_PATH=$W/ort/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+	run build_decide make -C $W/decide release DECIDE_ORT_VCPKG=0 EXT_FLAGS="-DDECIDE_ORT_URL=file://$ORT_TGZ"
+else
+	run build_decide make -C $W/decide release
+fi
 run build_adapter bash -c "cmake -S $W/tabfm/vendor/anofox-ggml-adapter -B $W/adapter-build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build $W/adapter-build"
 
 # the real weights (the unittest has no httpfs): through each extension's own CLI
-run weights_tabfm bash -c "cd $W/tabfm && ./build/release/duckdb -c \"INSTALL httpfs; LOAD httpfs; CALL tabfm_download('classification', model := 'tabicl-v2'); CALL tabfm_download('regression', model := 'mitra');\""
+[ "${SKIP_TABFM:-0}" = 1 ] || run weights_tabfm bash -c "cd $W/tabfm && ./build/release/duckdb -c \"INSTALL httpfs; LOAD httpfs; CALL tabfm_download('classification', model := 'tabicl-v2'); CALL tabfm_download('regression', model := 'mitra');\""
 run weights_decide bash -c "cd $W/decide && ./build/release/duckdb -c \"CALL decide_download('julia-1'); CALL decide_download('laya-multilingual'); CALL decide_download('laya-typed-decisions');\""
 
 cd $W/tabfm/vendor/anofox-ggml-adapter
@@ -63,6 +76,7 @@ run adapter_gpu_hidden_refuses bash -c "! env CUDA_VISIBLE_DEVICES= ANOFOX_GGML_
 
 cd $W/tabfm
 for t in tabfm_gpu_use_cases tabfm_gpu_registered_model; do
+	[ "${SKIP_TABFM:-0}" = 1 ] && break
 	run "$t" env TABFM_REAL_WEIGHTS=1 TABFM_GPU_DEVICE=cuda TABFM_GPU_EP_PATH=$EP ./build/release/test/unittest "test/sql/$t.test"
 done
 ./build/release/duckdb -c "SET anofox_tabfm_ep_path='$EP'; SELECT * FROM tabfm_devices();" 2>&1 | tail -6
