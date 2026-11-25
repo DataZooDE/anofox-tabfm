@@ -10,6 +10,10 @@
 #       --upload <libanofox_ggml-cuda_plugin.so> tools/gpu_test/pod_e2e_cuda.sh --command 'bash /workspace/pod_e2e_cuda.sh'
 #
 # Env: TABFM_BRANCH, DECIDE_BRANCH (default: the Phase 3 branches); SKIP_TABFM=1 runs only the adapter and decide parts.
+# PLUGIN_RELEASE=vYYYY.MM.DD: no plugin uploaded, the CUDA plugin comes from that adapter release (checked against its sha256 sidecar).
+# ORT_CUDA_BASELINE=1 (with tickets.csv): also the 200-ticket evaluation on ONNX Runtime CUDA as users last had it (the community
+# anofox_decide build on the official DuckDB 2.0.1 CLI, with decide v2026.11.13's CUDA plugin and the runtime decide_download_runtime
+# fetches), cold and warm, against ggml-CUDA warm: speed, memory and answers.
 # ONNX Runtime 1.29.0 is gone from GitHub (decide's vcpkg port and its prebuilt archive both 404) and decide still links it
 # until Phase 5: upload onnxruntime-linux-x64-1.29.0.tgz (the PyPI wheel's library + the headers) next to this script and
 # decide builds against it. Ubuntu 22.04's GCC 11 cannot build decide: GCC 13 from the toolchain PPA does.
@@ -19,7 +23,14 @@ TABFM_BRANCH=${TABFM_BRANCH:-feat/ggml-adapter}
 DECIDE_BRANCH=${DECIDE_BRANCH:-feat/ggml-gpu}
 W=/workspace
 EP=$W/ep
-mkdir -p "$EP" && cp "$W/libanofox_ggml-cuda_plugin.so" "$EP/"
+mkdir -p "$EP"
+if [ -f "$W/libanofox_ggml-cuda_plugin.so" ]; then
+	cp "$W/libanofox_ggml-cuda_plugin.so" "$EP/"
+elif [ -n "${PLUGIN_RELEASE:-}" ]; then
+	U=https://github.com/DataZooDE/anofox-ggml-adapter/releases/download/$PLUGIN_RELEASE
+	curl -sSfL -o "$EP/libanofox_ggml-cuda_plugin.so" "$U/libanofox_ggml-cuda_plugin.so" && curl -sSfL -o "$EP/ggml-cuda_plugin.sha256" "$U/ggml-cuda_plugin.sha256" &&
+		(cd "$EP" && sha256sum -c ggml-cuda_plugin.sha256) || { echo "the $PLUGIN_RELEASE CUDA plugin could not be fetched or verified"; exit 2; }
+fi
 declare -A RESULT
 run() { # name, command...: runs it, keeps the tail of its output, records PASS/FAIL
 	local name=$1
@@ -107,11 +118,27 @@ if [ -f $W/tickets.csv ]; then
 		--models julia-1,laya-multilingual,laya-typed-decisions
 	grep -h "^ok" $W/eval_cuda.log $W/eval_cpu.log
 	python3 tools/eval/compare_runs.py --models julia-1,laya-multilingual,laya-typed-decisions $W/eval_cpu $W/eval_cuda 2>&1 | tail -4
+	if [ "${ORT_CUDA_BASELINE:-0}" = 1 ]; then
+		B=$W/ort-baseline P=$HOME/.cache/anofox-decide/plugins M=julia-1,laya-multilingual,laya-typed-decisions
+		mkdir -p $B/cli && (cd $B && curl -sSfL -o cli.tgz https://github.com/duckdb/duckdb/releases/download/v2.0.1/duckdb-cli-linux-amd64.tar.gz && tar -xzf cli.tgz -C cli)
+		DU=https://github.com/DataZooDE/anofox-decide/releases/download/v2026.11.13
+		curl -sSfL -o $P/libanofox_decide_cuda_plugin.so $DU/libanofox_decide_cuda_plugin.so && curl -sSfL -o $P/cuda_plugin.sha256 $DU/cuda_plugin.sha256
+		printf "SET extension_directory='%s/ext';\nINSTALL anofox_decide FROM community;\nLOAD anofox_decide;\nSELECT extension_version FROM duckdb_extensions() WHERE extension_name='anofox_decide';\nCALL decide_download_runtime('cuda');\n" $B > $B/setup.sql
+		run ort_cuda_setup bash -c "$B/cli/duckdb -no-agent -list < $B/setup.sql"
+		tail -6 $W/ort_cuda_setup.log
+		EXT=$(find $B/ext -name anofox_decide.duckdb_extension | head -1)
+		for t in cold warm; do
+			run ort_cuda_$t python3 tools/eval/run_eval.py --duckdb $B/cli/duckdb --extension $EXT --tickets $W/tickets.csv --out $W/eval_ort_cuda_$t --device cuda --models $M
+		done
+		run eval_cuda_warm env ANOFOX_DECIDE_LOCAL_ENGINE=ggml python3 tools/eval/run_eval.py --tickets $W/tickets.csv --out $W/eval_cuda_warm --device cuda --models $M
+		grep -h "^ok\|^FAIL\|REFUSED" $W/ort_cuda_cold.log $W/ort_cuda_warm.log $W/eval_cuda_warm.log | sed 's/^/gate /'
+		python3 tools/eval/compare_runs.py --models $M --ref-engine none --cand-engine plugin:cuda $W/eval_ort_cuda_warm $W/eval_cuda_warm 2>&1 | grep -E 'answers|flips' | sed 's/^/gate /'
+	fi
 fi
 
 echo "=== SUMMARY"
 failed=0
-for k in build_tabfm build_decide build_adapter weights_tabfm weights_decide adapter_plugin_tests adapter_gpu_hidden_refuses tabfm_gpu_use_cases tabfm_gpu_registered_model decide_local_e2e_gpu eval_cuda eval_cpu; do
+for k in build_tabfm build_decide build_adapter weights_tabfm weights_decide adapter_plugin_tests adapter_gpu_hidden_refuses tabfm_gpu_use_cases tabfm_gpu_registered_model decide_local_e2e_gpu eval_cuda eval_cpu ort_cuda_setup ort_cuda_cold ort_cuda_warm eval_cuda_warm; do
 	echo "RESULT $k: ${RESULT[$k]:-not run}"
 	case "${RESULT[$k]:-not run}" in PASS | "not run") ;; *) failed=1 ;; esac
 done
