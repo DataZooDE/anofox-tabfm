@@ -24,7 +24,9 @@ allowed='deprecated|removed|no-op|no effect|ignored'
 code_paths=(src CMakeLists.txt cmake Makefile extension_config.cmake test/cpp test/sql test/fixtures .github/workflows tools/gpu_test tools/bench scripts resources)
 # -I: skip binary files (the committed graphs). Self-excluded: this script names every pattern. The fixture generators under test/fixtures
 # are Python dev tooling that uses onnxruntime as the oracle, like tools/ggml_parity.
-code_grep() { grep -rnIE "$1" "${code_paths[@]}" 2>/dev/null | grep -vE '^scripts/check_no_ort\.sh:|^test/fixtures/[^:]*\.py:'; }
+# tools/gpu_test/pod_e2e_cuda.sh also builds anofox-decide on the GPU pod, which links ONNX Runtime until its own ORT removal (decide's
+# Phase 5): the script uploads decide's ORT bundle, and the ORT-CUDA baseline it can run is decide's. Nothing of tabfm uses it.
+code_grep() { grep -rnIE "$1" "${code_paths[@]}" 2>/dev/null | grep -vE '^scripts/check_no_ort\.sh:|^test/fixtures/[^:]*\.py:|^tools/gpu_test/pod_e2e_cuda\.sh:'; }
 # Drop hits whose CONTENT (not path) carries an allowed word.
 not_allowed() { awk -v re="$allowed" 'BEGIN { IGNORECASE = 1 } { line = $0; sub(/^[^:]*:[0-9]+:/, "", line); if (tolower(line) !~ re) print }'; }
 
