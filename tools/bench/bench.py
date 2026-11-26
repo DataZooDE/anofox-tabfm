@@ -34,13 +34,26 @@ import sys
 import time
 
 
+LAST_USAGE = {}  # the last session's peak RSS and CPU time
+
+# Runs the CLI as its only child, so RUSAGE_CHILDREN is that one process: its peak RSS and CPU time, printed last on stderr.
+WRAPPER = (
+    "import resource, subprocess, sys\n"
+    "p = subprocess.run(sys.argv[1:], stdin=sys.stdin)\n"
+    "u = resource.getrusage(resource.RUSAGE_CHILDREN)\n"
+    "print(f'@@usage {u.ru_maxrss} {u.ru_utime + u.ru_stime:.1f}', file=sys.stderr)\n"
+    "sys.exit(p.returncode)\n"
+)
+
+
 def run_sql(duckdb_bin, sql, timeout):
-    """Run SQL through the DuckDB CLI, returning (stdout, stderr, ok)."""
+    """Run SQL through the DuckDB CLI, returning (stdout, stderr, ok); LAST_USAGE gets the session's peak RSS and CPU time."""
     env = dict(os.environ)
     env.setdefault("DATAZOO_DISABLE_TELEMETRY", "1")
+    LAST_USAGE.clear()
     try:
         proc = subprocess.run(
-            [duckdb_bin, "-unsigned", "-init", "/dev/null", "-csv", "-noheader"],
+            [sys.executable, "-I", "-c", WRAPPER, duckdb_bin, "-unsigned", "-init", "/dev/null", "-csv", "-noheader"],
             input=sql,
             capture_output=True,
             text=True,
@@ -49,7 +62,16 @@ def run_sql(duckdb_bin, sql, timeout):
         )
     except subprocess.TimeoutExpired:
         return "", f"timed out after {timeout}s", False
-    return proc.stdout.strip(), proc.stderr.strip(), proc.returncode == 0
+    err_lines = []
+    for line in proc.stderr.splitlines():
+        if line.startswith("@@usage "):
+            _, maxrss, cpu = line.split()
+            # ru_maxrss is KiB on Linux, bytes on macOS
+            LAST_USAGE.update(peak_rss_gb=round(int(maxrss) / (1024 ** 3 if sys.platform == "darwin" else 1024 ** 2), 3),
+                              cpu_s=float(cpu))
+        else:
+            err_lines.append(line)
+    return proc.stdout.strip(), "\n".join(err_lines).strip(), proc.returncode == 0
 
 
 def build_sql(model, device, ep_path, precision, n_rows, n_features, n_context, repeats, setup_sql=None):
@@ -122,6 +144,7 @@ def measure(args, model, device, n_rows, n_features):
     if ok:
         full_ms, out, err, full_ok = session(args.repeats)
         ok = full_ok and "__TIMED_DONE__" in out
+    usage = dict(LAST_USAGE)  # of the session with the timed repeats
 
     served_by = "NONE"
     for line in out.splitlines():
@@ -150,6 +173,8 @@ def measure(args, model, device, n_rows, n_features):
         "metric": "warm_per_inference_ms_by_session_differencing",
         "session_ms_with_repeats": round(full_ms, 1),
         "session_ms_baseline": round(base_ms, 1),
+        "peak_rss_gb": usage.get("peak_rss_gb"),
+        "cpu_s": usage.get("cpu_s"),
         "host": platform.node(),
         "arch": platform.machine(),
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
