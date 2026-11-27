@@ -143,6 +143,9 @@ std::unique_ptr<GgmlSessionState> CreateGgmlSessionState(::anofox::onnxread::Gra
 	state->graph = std::move(graph);
 	GgmlExecutorConfig executor_config;
 	executor_config.threads = static_cast<int>(std::max<int64_t>(1, config.threads));
+	// A row's answer must not depend on how the rows are batched (query_batch, the context cache): no path whose blocking depends on the
+	// row count (Accelerate's SGEMM on Apple builds; tabfm_context_cache_kv.test).
+	executor_config.batch_invariant = true;
 	executor_config.weights = MakeLookup(*state);
 	state->executor = std::make_unique<GgmlExecutor>(state->graph, std::move(executor_config));
 	return state;
