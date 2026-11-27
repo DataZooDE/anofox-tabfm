@@ -5,6 +5,8 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+## [v2026.11.27] - 2026-11-27
+
 ### Fixed
 - kumo-tabular failed on the CPU and the ggml GPU plugin for tables above ~5000 cells ("ConstantOfShape: op is not implemented"):
   an output too large to fold on the host is now filled on the device.
