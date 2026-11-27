@@ -1,5 +1,13 @@
 # Apple MLX backend — implementation plan
 
+> **Status (2026-11-24): the GPU plugins moved to the adapter too.** tabfm builds and ships no plugin any more:
+> `src/tabfm_ggml_plugin.cpp`, `src/tabfm_mlx_plugin.cpp`, `src/tabfm_mlx_graph*`, `src/include/tabfm_plugin_abi.h` (ABI v2),
+> `tools/ggml_plugin`, `tools/gpu_test/plugin_load_check.c`, `.github/workflows/gpu_plugins.yml` and the plugin scripts were removed.
+> The plugins are anofox-ggml-adapter's (`src/plugin_ggml.cpp`, `src/plugin_mlx.cpp` + `src/mlxgraph/`, built by its
+> `tools/ggml_plugin` (`-DANOFOX_GGML_GPU=cuda|hip`) and `tools/mlx_plugin`, released by its `plugins.yml`) on the generic plugin
+> ABI v3 (`include/anofox_ggml_adapter/plugin_abi.h`), named `libanofox_ggml-cuda_plugin.so`, `libanofox_ggml-rocm_plugin.so`
+> and `libanofox_mlx_plugin.dylib`. `src/tabfm_plugin_backend.cpp` is tabfm's glue. The plan below is kept as history; its file names are the ones of the time.
+
 Goal: run tabfm inference on Apple-Silicon Macs through
 [MLX](https://github.com/ml-explore/mlx) (Metal-backed, unified memory), as a
 **backend plugin** behind the existing `tabfm_plugin_abi.h` — the same shape

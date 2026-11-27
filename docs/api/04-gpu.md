@@ -16,22 +16,25 @@ The steps (set up, check the device, place models yourself) are in the
 
 **A GPU is not a build.** There is one extension build per platform, and the CPU device runs on the
 vendored [ggml](https://github.com/ggml-org/ggml) engine; no build links ONNX Runtime. Each accelerator
-is a plugin the extension `dlopen`s at runtime:
+is a plugin the extension `dlopen`s at runtime. The plugins come from the shared engine,
+[anofox-ggml-adapter](https://github.com/DataZooDE/anofox-ggml-adapter) (also used by anofox-decide), and are
+published as assets of its GitHub release; on Windows the names drop the `lib` prefix and end in `.dll`:
 
 | device | plugin file | what it is |
 |---|---|---|
-| `cuda` | `libanofox_tabfm_ggml-cuda_plugin.so` | the **ggml GPU plugin**: the same ggml engine as the CPU, on an NVIDIA GPU. The CUDA runtime and cuBLAS are linked into it statically, so it needs only the NVIDIA driver (`libcuda.so.1`), no CUDA toolkit |
-| `rocm` | `libanofox_tabfm_ggml-rocm_plugin.so` | the ggml GPU plugin on an AMD GPU (HIP). It uses the system's ROCm (6.4 or newer) runtime libraries: HIP, hipBLAS and rocBLAS |
-| `mlx` | `libanofox_tabfm_mlx_plugin.dylib` | Apple MLX on Apple Silicon, running the shipped ONNX graph itself; links Apple's `libmlx` / `libmlxc` (`brew install mlx mlx-c`) |
+| `cuda` | `libanofox_ggml-cuda_plugin.so` | the **ggml GPU plugin**: the same ggml engine as the CPU, on an NVIDIA GPU. The CUDA runtime and cuBLAS are linked into it statically, so it needs only the NVIDIA driver (`libcuda.so.1`), no CUDA toolkit |
+| `rocm` | `libanofox_ggml-rocm_plugin.so` | the ggml GPU plugin on an AMD GPU (HIP). It uses the system's ROCm (6.4 or newer) runtime libraries: HIP, hipBLAS and rocBLAS |
+| `mlx` | `libanofox_mlx_plugin.dylib` | Apple MLX on Apple Silicon, running the shipped ONNX graph itself; links Apple's `libmlx` / `libmlxc` (`brew install mlx mlx-c`) |
 
 `CALL tabfm_accelerate()` fetches the right one; `CALL tabfm_download_runtime('cuda' | 'rocm' | 'mlx')`
-fetches one by name. Each plugin is a release asset with a sha256 sidecar (`ggml-cuda_plugin.sha256`,
+fetches one by name, from the anofox-ggml-adapter release this build pins. Each plugin is a release asset with a sha256 sidecar (`ggml-cuda_plugin.sha256`,
 `ggml-rocm_plugin.sha256`, `mlx_plugin.sha256`); the download is checked against it and a plugin whose
 checksum does not match is not used. A plugin is also checked against the extension's plugin ABI version
 on load, so a mismatched pair refuses rather than misbehaves. A plugin also lists the graph inputs it binds,
-and the extension refuses a graph that declares one it does not (plugin ABI 2: a plugin left over from
-an older release is refused under `anofox_tabfm_device = 'auto'`, which then uses the CPU, and `tabfm_backends()` names
-the file and `CALL tabfm_accelerate()` as the fix). They land in the `runtime` subdirectory of
+and the extension refuses a graph that declares one it does not (plugin ABI 3: a plugin built against another
+ABI version is refused; under `anofox_tabfm_device = 'auto'` the CPU then runs, and `tabfm_backends()` names the file and
+`CALL tabfm_accelerate()` as the fix). The `libanofox_tabfm_*_plugin` files of earlier releases (ABI 2, removed) are not
+looked for any more; delete them and run `CALL tabfm_accelerate()`. They land in the `runtime` subdirectory of
 `anofox_tabfm_cache_dir`, unless `anofox_tabfm_ep_path` points elsewhere. Building a plugin from source:
 [BUILDING.md](../BUILDING.md#gpu-plugins-from-source).
 
@@ -71,7 +74,7 @@ Which cards count as usable in `tabfm_devices()`:
   unsupported iGPU in front of a supported discrete card, say), and `SET anofox_tabfm_device = 'rocm'` with only
   such a card names it and the supported list. The list is compiled into the extension; a plugin you build for
   another arch ([BUILDING.md](../BUILDING.md#gpu-plugins-from-source)) also needs that arch added to
-  `GgmlRocmPluginArchs` in `src/tabfm_devices.cpp`.
+  `GgmlRocmPluginArchs` in anofox-ggml-adapter's `src/devices.cpp`.
 - **MLX:** Apple Silicon running an arm64 process (under Rosetta the row is `usable = false`).
 
 ## Backend support matrix
@@ -120,7 +123,7 @@ not been verified there).
 
 The CUDA and ROCm plugins are published for Linux x64 only; asking `tabfm_download_runtime` for one on
 another platform is refused up front, naming what is available there. Windows artifacts are CPU-only (the
-plugin builds as `anofox_tabfm_ggml-cuda_plugin.dll` from source, but is not published or verified). On
+plugin builds as `anofox_ggml-cuda_plugin.dll` from source, but is not published or verified). On
 Apple Silicon the MLX plugin is the accelerator; ggml's Metal backend is not used, because its matmul is
 half-precision internally and was 3 logit units off.
 

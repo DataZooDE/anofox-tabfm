@@ -9,7 +9,7 @@
 
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_mlx_ops.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 
 #include <fstream>
 #include <regex>
@@ -22,7 +22,7 @@ using namespace duckdb;
 using namespace duckdb::anofox;
 
 TEST_CASE("mlx ops: the extension's op list is the plugin's handler table", "[tabfm][mlx_ops]") {
-	std::ifstream f("src/tabfm_mlx_graph_ops.inc");
+	std::ifstream f("vendor/anofox-ggml-adapter/src/mlxgraph/mlx_graph_ops.inc"); // the MLX plugin is anofox-ggml-adapter's
 	REQUIRE(f.good());
 	std::stringstream ss;
 	ss << f.rdbuf();

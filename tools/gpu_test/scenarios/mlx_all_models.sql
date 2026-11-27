@@ -1,6 +1,7 @@
 -- Every registered model on MLX, checked against the CPU path (docs/MLX_PLAN.md).
 --
--- The MLX backend runs the model's own ONNX graph (src/tabfm_mlx_graph.cpp), so
+-- The MLX backend runs the model's own ONNX graph (anofox-ggml-adapter's
+-- src/mlxgraph/mlx_graph.cpp), so
 -- coverage is a property of the interpreter's op table rather than of a
 -- per-model list. That is exactly why this file exists: an op-table change can
 -- break one model and no other, and nothing else in the suite would notice.

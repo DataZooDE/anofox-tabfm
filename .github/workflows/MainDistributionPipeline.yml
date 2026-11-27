@@ -34,8 +34,9 @@ jobs:
       duckdb_version: v1.5.6
       ci_tools_version: v1.5-variegata
       extension_name: anofox_tabfm
-      # Inference runs on the vendored ggml engine (vendor/ggml, a git submodule: checked out with the others, no
-      # third-party download at build time; see docs/GGML_PLAN.md). GPUs are served by the plugins built in gpu_plugins.yml.
+      # Inference runs on the shared ggml engine (vendor/anofox-ggml-adapter, a git submodule with ggml inside: checked out with the others, no
+      # third-party download at build time; see docs/GGML_PLAN.md). GPUs are served by the adapter's plugins (built and released by
+      # anofox-ggml-adapter's own plugins.yml).
       # Exclude WASM/musl (NFR-C1: explicitly out - multi-GB inference) and MinGW (vcpkg OpenSSL build issues, house
       # pattern). osx_amd64 is excluded: the ggml engine has not been built or verified on Intel macOS.
       exclude_archs: wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64
@@ -121,3 +122,40 @@ jobs:
       duckdb_version: v2.0.0
       extension_name: anofox_tabfm
       exclude_archs: ${{ github.event_name == 'pull_request' && 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64;osx_arm64' || 'wasm_mvp;wasm_eh;wasm_threads;windows_amd64_mingw;linux_amd64_musl;osx_amd64' }}
+
+  # The CPU extension binaries on the GitHub release (issue #114): every platform, for DuckDB 1.5.6 and 2.0, gzipped, with
+  # SHA256SUMS. Unsigned (signed builds come only from `INSTALL ... FROM community`), for users on a DuckDB the community
+  # registry no longer builds for, or who want a tag's exact build. Packaged on main too, so a broken packaging step shows
+  # before a tag; attached only on a v* tag, after both smoke tests passed. The GPU plugins are anofox-ggml-adapter's
+  # release assets.
+  release-cpu-assets:
+    name: Release assets (CPU extension binaries)
+    needs: [duckdb-v1_5_6-build, duckdb-v1_5_6-smoke-test, duckdb-next-build, duckdb-next-smoke-test]
+    if: success() && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: anofox_tabfm-v*-extension-*
+          path: artifacts
+      - name: Package
+        run: scripts/package_release_assets.sh artifacts dist anofox_tabfm
+      - name: Every platform of both DuckDB lines is there
+        run: |
+          for v in v1.5.6 v2.0.0; do
+            for p in linux_amd64 linux_arm64 osx_arm64 windows_amd64; do
+              test -f "dist/anofox_tabfm-$v-$p.duckdb_extension.gz" || { echo "::error::missing $v $p"; exit 1; }
+            done
+          done
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" > /dev/null 2>&1 || gh release create "$TAG" --verify-tag --title "$TAG" --notes "See CHANGELOG.md."
+          gh release upload "$TAG" dist/* --clobber

@@ -5,6 +5,48 @@ All notable changes to `anofox_tabfm` are documented here. The format follows
 
 ## [Unreleased]
 
+## [v2026.11.27] - 2026-11-27
+
+### Fixed
+- kumo-tabular failed on the CPU and the ggml GPU plugin for tables above ~5000 cells ("ConstantOfShape: op is not implemented"):
+  an output too large to fold on the host is now filled on the device.
+
+### Added
+- **The CPU extension binaries are release assets** (#114): every GitHub release carries
+  `anofox_tabfm-<duckdb version>-<platform>.duckdb_extension.gz` for DuckDB 1.5.6 and 2.0 on linux_amd64, linux_arm64, osx_arm64
+  and windows_amd64, with `SHA256SUMS`. Unsigned (`duckdb -unsigned`, then `LOAD` the unpacked file); signed builds still come from
+  `INSTALL anofox_tabfm FROM community`. The README says why an older DuckDB can get an old community build.
+
+### Changed
+- **Faster on the CPU, with less memory than the ONNX Runtime build** (anofox-ggml-adapter v2026.11.27): the attention of
+  exaone-tabular (rank 5) and tabfm-v1-1 (PyTorch's NaN guard, a host-known mask) fuses too, exported RMSNorm and kumo's GELU spelling
+  lower to one op each, and a 2-D weight against a batched activation is one matmul. Per call, 1000 rows of 10 features on a 12-core
+  CPU, against v2026.11.01 (ONNX Runtime): kumo-tabular-small 0.9-1.1 s (1.1-1.2), causilo 0.8-0.9 s (1.3-1.4), exaone-tabular
+  3.9-4.2 s (4.4-4.7), limix-2m 0.8-0.9 s (1.3-1.4), tabfm-v1-1 4.6-4.7 s (4.5-4.7), at 0.3-2.7 GB instead of 1.0-4.8 GB; against
+  v2026.11.23 every bundled model is faster (tabpfn-v2 1.1 s instead of 1.7 s, with ~80 MB more for the batch-invariant attention).
+- **Attention is fused on the CPU**: the engine lowers the exported scaled-dot-product attention of most bundled graphs (TabPFN
+  family, TabDPT, TabICL, LimiX, Nori, Orion-BiX, causilo, and part of TabFM/Kumo/Orion-MSP) to one flash-attention op instead of
+  materialising the attention scores. Every graph still matches ONNX Runtime (`tools/ggml_parity/graphs_parity.py`); GPU plugins
+  are unchanged.
+- **The ggml engine is a shared component now**, `vendor/anofox-ggml-adapter` (github.com/DataZooDE/anofox-ggml-adapter), which
+  anofox-decide uses too. Nothing changes for users: the same engine, the same answers. For builds: the submodules are fetched with
+  `git submodule update --init --recursive` (ggml is the adapter's submodule), the CMake option is `ANOFOX_GGML_NATIVE` (the old
+  `TABFM_GGML_NATIVE` still works) and the profiling switches are `ANOFOX_GGML_PROFILE*` / `ANOFOX_GGML_NO_POOL` (the `TABFM_GGML_*`
+  names still work). New ONNX ops are added in the adapter.
+- **The GPU plugins come from anofox-ggml-adapter**, on its generic plugin ABI v3 (named input tensors, host-supplied weights by name
+  and shape, outputs by name, a layout fingerprint), shared with anofox-decide. The files are renamed: `libanofox_ggml-cuda_plugin.so`,
+  `libanofox_ggml-rocm_plugin.so` and `libanofox_mlx_plugin.dylib` (were `libanofox_tabfm_ggml-cuda_plugin.so`,
+  `libanofox_tabfm_ggml-rocm_plugin.so`, `libanofox_tabfm_mlx_plugin.dylib`; on Windows no `lib` prefix and `.dll`); the sha256
+  sidecars keep their names. `tabfm_download_runtime` / `tabfm_accelerate` download them from the adapter's GitHub release
+  (`github.com/DataZooDE/anofox-ggml-adapter/releases`, tag pinned by the adapter). The SQL surface is unchanged (`anofox_tabfm_device`,
+  `anofox_tabfm_ep_path`, `tabfm_devices()`, `tabfm_backends()`). A plugin built against another ABI version, including the ABI v2
+  plugins of v2026.11.23, is refused by the loader: run `CALL tabfm_accelerate()` again. Device discovery (NVML, KFD, Apple) is the
+  adapter's too.
+- **tabfm's own plugin sources and their CI are removed** (no user-visible effect): `src/tabfm_ggml_plugin.cpp`,
+  `src/tabfm_mlx_plugin.cpp`, `src/tabfm_mlx_graph*`, `src/include/tabfm_plugin_abi.h`, `tools/ggml_plugin`, the
+  `gpu_plugins.yml` workflow, `scripts/check_plugin_deps.sh`, `scripts/check_plugin_release_assets.py` and
+  `tools/gpu_test/plugin_load_check.c`; the adapter builds, checks and publishes the plugins (docs/BUILDING.md).
+
 ## [v2026.11.23] - 2026-11-23
 
 ### Removed (breaking)

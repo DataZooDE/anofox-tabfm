@@ -84,8 +84,8 @@ def apply() -> None:
     _prediction.Head.forward = head_forward
 
     # --- Patch 3: TargetEmbedding builds one-hot with F.one_hot -------------------------
-    # ONNX OneHot is not in the MLX interpreter's op table (src/tabfm_mlx_graph_ops.inc),
-    # and an equality against arange is the same tensor.
+    # ONNX OneHot is not in the MLX interpreter's op table (anofox-ggml-adapter's
+    # src/mlxgraph/mlx_graph_ops.inc), and an equality against arange is the same tensor.
     def target_forward(self, targets):
         if self.classes:
             ids = torch.arange(self.classes, device=targets.device)

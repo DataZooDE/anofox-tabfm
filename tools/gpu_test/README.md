@@ -1,13 +1,15 @@
 # tools/gpu_test — exercising GPU code paths
 
-CUDA, ROCm and MLX are served by plugins the extension `dlopen`s (`libanofox_tabfm_ggml-cuda_plugin.so`,
-`libanofox_tabfm_ggml-rocm_plugin.so`, `libanofox_tabfm_mlx_plugin.dylib`). The scripts here run the SQL
-surface against a built extension and plugin on a machine with the GPU, and rent a CUDA GPU by the minute when
-there is none at hand.
+CUDA, ROCm and MLX are served by plugins the extension `dlopen`s (`libanofox_ggml-cuda_plugin.so`,
+`libanofox_ggml-rocm_plugin.so`, `libanofox_mlx_plugin.dylib`). The plugins are anofox-ggml-adapter's: build
+them inside `vendor/anofox-ggml-adapter` (its `tools/ggml_plugin` and `tools/mlx_plugin`, see
+[docs/BUILDING.md](../../docs/BUILDING.md#gpu-plugins-from-source)), or fetch the released ones with
+`CALL tabfm_download_runtime(...)`. The scripts here run the SQL surface against a built extension and plugin
+on a machine with the GPU, and rent a CUDA GPU by the minute when there is none at hand.
 
 **Not wired into CI.** They need a GPU (and `runpod_run.py` spends money and needs a key CI does not have).
-Run them by hand when a change touches a GPU path. CI covers the plugin build, its dependency check and
-`plugin_load_check.c`; the device-aware SQL tests (`test/sql/tabfm_gpu_use_cases.test`,
+Run them by hand when a change touches a GPU path. The adapter's CI covers the plugin build, its dependency
+check and its `tools/gpu_test/plugin_load_check.c`; the device-aware SQL tests (`test/sql/tabfm_gpu_use_cases.test`,
 `tabfm_gpu_registered_model.test`) run wherever `TABFM_GPU_DEVICE` / `TABFM_GPU_EP_PATH` are set.
 
 **Read `*_served_by` before believing any number.** "cpu and gpu agree" is also what a silent CPU fallback
@@ -22,9 +24,9 @@ DuckDB process (a crash costs its own row), through `scenarios/cuda_catalog*.sql
 qualities, a repeat check and the timings.
 
 ```bash
-GPU=rocm EP=build/ggml-rocm tools/gpu_test/gpu_catalog.sh
+GPU=rocm EP=vendor/anofox-ggml-adapter/build/ggml-rocm tools/gpu_test/gpu_catalog.sh
 GPU=cuda EP=/workspace/ep MODELS="mitra:cr tabicl-v2:c" tools/gpu_test/gpu_catalog.sh
-GPU=mlx  EP=build/release/extension/anofox_tabfm ACCEPT_LICENSES=1 tools/gpu_test/gpu_catalog.sh
+GPU=mlx  EP=vendor/anofox-ggml-adapter/build/mlx ACCEPT_LICENSES=1 tools/gpu_test/gpu_catalog.sh
 ```
 
 Weights come from `CACHE` (default `~/.cache/anofox-tabfm`); missing ones are fetched with `tabfm_download`
@@ -38,7 +40,7 @@ predicted labels row for row and printing both class distributions (so a degener
 cannot hide behind a high agreement).
 
 ```bash
-{ echo "SET anofox_tabfm_ep_path='$PWD/build/ggml-rocm';"; \
+{ echo "SET anofox_tabfm_ep_path='$PWD/vendor/anofox-ggml-adapter/build/ggml-rocm';"; \
   cat tools/gpu_test/usecase_equivalence.sql; } | ./build/release/duckdb
 ```
 
@@ -60,7 +62,7 @@ Talks to RunPod's **REST API v2** (`https://api.runpod.io/v2`). The request and 
 
 ```bash
 tools/gpu_test/runpod_run.py --secure --gpu "NVIDIA GeForce RTX 4090" \
-    --upload build/ggml-cuda/libanofox_tabfm_ggml-cuda_plugin.so tools/gpu_test/gpu_catalog.sh \
+    --upload vendor/anofox-ggml-adapter/build/ggml-cuda/libanofox_ggml-cuda_plugin.so tools/gpu_test/gpu_catalog.sh \
     --command 'nvidia-smi && ls -l /workspace'
 
 tools/gpu_test/runpod_run.py --list                 # pods still running

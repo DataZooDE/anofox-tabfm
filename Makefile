@@ -11,8 +11,8 @@ endif
 EXT_NAME=anofox_tabfm
 EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 
-# The CPU runs on the vendored ggml (vendor/ggml); GPUs are served by plugins built separately (tools/ggml_plugin for CUDA and ROCm, the
-# anofox_tabfm_mlx_plugin target on Apple Silicon). Nothing here links ONNX Runtime.
+# The CPU runs on the shared ggml engine (vendor/anofox-ggml-adapter); GPUs are served by the adapter's plugins, built and released by
+# the adapter (its tools/ggml_plugin for CUDA and ROCm, tools/mlx_plugin for Apple Silicon). Nothing here links ONNX Runtime.
 
 # Include the Makefile from extension-ci-tools
 include extension-ci-tools/makefiles/duckdb_extension.Makefile

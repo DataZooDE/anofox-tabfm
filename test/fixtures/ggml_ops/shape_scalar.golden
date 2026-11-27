@@ -1,3 +1,0 @@
-# op Shape
-in x f32 - 3f800000
-out y i64 0

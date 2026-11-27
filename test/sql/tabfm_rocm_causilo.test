@@ -5,10 +5,10 @@
 #              This file asks for device 'rocm' explicitly (a silent CPU fallback would also "agree with the
 #              CPU") and reads the serving device from tabfm_models(). Needs an AMD GPU the plugin carries kernels
 #              for, the ggml-rocm plugin (TABFM_GPU_EP_PATH: the directory holding
-#              libanofox_tabfm_ggml-rocm_plugin.so) and the weights downloaded
+#              libanofox_ggml-rocm_plugin.so) and the weights downloaded
 #              (CALL tabfm_download('causilo', task := ...)):
 #
-#                TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1 TABFM_GPU_EP_PATH=build/ggml-rocm ./build/release/test/unittest test/sql/tabfm_rocm_causilo.test
+#                TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1 TABFM_GPU_EP_PATH=vendor/anofox-ggml-adapter/build/ggml-rocm ./build/release/test/unittest test/sql/tabfm_rocm_causilo.test
 # group: [anofox_tabfm]
 
 require anofox_tabfm

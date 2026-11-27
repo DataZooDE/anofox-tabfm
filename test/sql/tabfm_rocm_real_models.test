@@ -8,7 +8,7 @@
 #              (CALL tabfm_download('classification'|'regression', model := 'tabicl-v2'|'limix-2m'); for LimiX
 #              the download also writes the model.safetensors beside model.ckpt that the GPU reads):
 #
-#                TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1 TABFM_GPU_EP_PATH=build/ggml-rocm ./build/release/test/unittest test/sql/tabfm_rocm_real_models.test
+#                TABFM_REAL_WEIGHTS=1 TABFM_ROCM=1 TABFM_GPU_EP_PATH=vendor/anofox-ggml-adapter/build/ggml-rocm ./build/release/test/unittest test/sql/tabfm_rocm_real_models.test
 # group: [anofox_tabfm]
 
 require anofox_tabfm

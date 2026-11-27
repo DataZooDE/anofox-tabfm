@@ -10,19 +10,20 @@ description: >
   setting `anofox_tabfm_device`, `anofox_tabfm_gpu_precision` or
   `anofox_tabfm_ep_path`, checking which device actually served a query, or
   troubleshooting a GPU that is not used.
-version: 2026.11.23
+version: 2026.11.27
 user-invocable: false
 ---
 
 # Anofox TabFM — GPU Cheat Sheet
 
-**Extension:** anofox_tabfm v2026.11.23 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
+**Extension:** anofox_tabfm v2026.11.27 | **DuckDB:** v1.5.6 / v2.0 | **Dual naming:** `tabfm_*` and `anofox_tabfm_*` (identical)
 
 A GPU is not a separate build. There is one build per platform; the CPU runs on the vendored ggml engine and
 no build contains ONNX Runtime. Each accelerator is a plugin loaded at runtime: `cuda` (NVIDIA, Linux x64) and
-`rocm` (AMD, Linux x64) are both the **ggml GPU plugin** (`libanofox_tabfm_ggml-cuda_plugin.so`,
-`libanofox_tabfm_ggml-rocm_plugin.so`), the same engine as the CPU on the GPU; `mlx` (Apple Silicon, macOS
-arm64) is the MLX plugin. The CUDA plugin links the CUDA runtime statically and needs only the NVIDIA driver;
+`rocm` (AMD, Linux x64) are both the **ggml GPU plugin** (`libanofox_ggml-cuda_plugin.so`,
+`libanofox_ggml-rocm_plugin.so`), the same engine as the CPU on the GPU; `mlx` (Apple Silicon, macOS
+arm64) is the MLX plugin (`libanofox_mlx_plugin.dylib`). The plugins come from the shared engine,
+anofox-ggml-adapter, and download from its GitHub release. The CUDA plugin links the CUDA runtime statically and needs only the NVIDIA driver;
 the ROCm plugin uses the system's ROCm 6.4+ (HIP, hipBLAS, rocBLAS); MLX needs `brew install mlx mlx-c`.
 
 ## Critical gotchas
@@ -67,8 +68,9 @@ SET anofox_tabfm_device = 'cuda';
 
 Plugins land in the `runtime` subdirectory of `anofox_tabfm_cache_dir`, verified against a published sha256;
 `SET anofox_tabfm_ep_path = '<dir>'` only to point somewhere else. A plugin is checked against the extension's
-plugin ABI on load, so a plugin left over from an older release is refused (and `auto` uses the CPU);
-`CALL tabfm_accelerate()` fetches the matching one.
+plugin ABI (version 3) on load, so a plugin built for another version is refused (and `auto` uses the CPU);
+`CALL tabfm_accelerate()` fetches the matching one. The `libanofox_tabfm_*_plugin` files of earlier releases
+(ABI 2, removed) are no longer looked for and can be deleted.
 
 ## Inspect
 

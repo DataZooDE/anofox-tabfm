@@ -7,8 +7,7 @@
 
 #include "catch.hpp"
 
-#include "tabfm_ggml_ops.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 
 #include <algorithm>
 #include <filesystem>
@@ -65,13 +64,12 @@ TEST_CASE("ggml lowering: every op in every bundled CPU graph is classified", "[
 	CHECK(unclassified == std::vector<std::string> {});
 }
 
-TEST_CASE("ggml lowering: the table has no dead rows and every row says how", "[tabfm][ggml][ggml_lowering]") {
-	int n_graphs = 0;
-	const auto uses = BundledCpuGraphOps(&n_graphs);
+// The table is shared with anofox-decide (vendor/anofox-ggml-adapter), so a row tabfm's graphs do not use may serve decide's; the adapter
+// keeps the table free of dead rows by requiring a golden for every supported op.
+TEST_CASE("ggml lowering: every row of the shared table says how", "[tabfm][ggml][ggml_lowering]") {
 	REQUIRE(!GgmlLoweringTable().empty());
 	for (const auto &kv : GgmlLoweringTable()) {
 		INFO(kv.first);
-		CHECK(uses.count(kv.first) == 1); // an op no bundled graph uses does not belong in the matrix
 		CHECK(std::string(kv.second.how).size() >= 5);
 	}
 }

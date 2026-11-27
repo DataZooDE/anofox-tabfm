@@ -5,7 +5,7 @@
 #              the CPU's answer, and tabfm_gpu_precompile is a warm-up that compiles nothing.
 #
 #              Weight-free (the committed fixture), but it needs a GPU and the plugin:
-#                TABFM_GPU_DEVICE=cuda|rocm TABFM_GPU_EP_PATH=<dir with libanofox_tabfm_ggml-<vendor>_plugin.so> \
+#                TABFM_GPU_DEVICE=cuda|rocm TABFM_GPU_EP_PATH=<dir with libanofox_ggml-<vendor>_plugin.so> \
 #                  build/release/test/unittest test/sql/tabfm_gpu_registered_model.test
 # group: [anofox_tabfm]
 

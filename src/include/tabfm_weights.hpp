@@ -25,7 +25,7 @@ namespace anofox {
 //! MissingExtensionException must keep their own remediation.
 string HttpAuthRemediation(const string &error, const string &url);
 
-//! What tabfm_download_runtime fetches for a backend: its plugin, from this repo's release assets (built by .github/workflows/gpu_plugins.yml).
+//! What tabfm_download_runtime fetches for a backend: its plugin, from anofox-ggml-adapter's release assets (built by its plugins.yml).
 struct RuntimeArtifact {
 	string plugin_name;
 	string plugin_url;

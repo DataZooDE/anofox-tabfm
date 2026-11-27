@@ -54,6 +54,8 @@ It is therefore:
   magnitude.
 - **end-to-end through SQL**, including preprocessing and decode, not a bare
   forward pass. That is the number a user experiences.
+- **with its resources**: `peak_rss_gb` and `cpu_s` are the peak resident set and the CPU time of the session with the timed
+  repeats (the whole process: load, table build, warm-up and repeats), read from the one child a small wrapper runs.
 - **null when unmeasurable** — if the difference is not positive the inference
   is lost in startup noise at that size, and the field is `null` rather than a
   suspiciously small number.

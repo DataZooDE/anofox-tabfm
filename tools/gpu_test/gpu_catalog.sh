@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # The whole model catalog on a GPU through the ggml GPU plugin, against the CPU, through the SQL surface (the real-weights quality loop of
-# docs/GGML_PLAN.md). Uses a BUILT tree (build/release/duckdb + the extension) and a built plugin, so it runs on any box with the GPU:
+# docs/GGML_PLAN.md). Uses a BUILT tree (build/release/duckdb + the extension) and a built plugin (anofox-ggml-adapter's, built in
+# vendor/anofox-ggml-adapter by its tools/ggml_plugin, or fetched by tabfm_download_runtime), so it runs on any box with the GPU:
 #
 #   GPU=rocm EP=~/ep tools/gpu_test/gpu_catalog.sh                      # every (model, task) the catalog lists
 #   GPU=cuda EP=/work/ep MODELS="mitra:cr tabicl-v2:c" tools/gpu_test/gpu_catalog.sh
@@ -11,8 +12,8 @@
 # served_by is the column that matters: anything but $GPU:N means the "GPU" side ran on the CPU.
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
-GPU=${GPU:?GPU=cuda|rocm}
-EP=${EP:?EP=<dir with libanofox_tabfm_ggml-$GPU_plugin.so>}
+GPU=${GPU:?GPU=cuda|rocm|mlx}
+EP=${EP:?EP=<dir with the plugin: libanofox_ggml-cuda_plugin.so, libanofox_ggml-rocm_plugin.so or libanofox_mlx_plugin.dylib>}
 CACHE=${CACHE:-$HOME/.cache/anofox-tabfm}
 OUT=${OUT:-$PWD/gpu_catalog_$GPU}
 PER_MODEL_TIMEOUT=${PER_MODEL_TIMEOUT:-1500}

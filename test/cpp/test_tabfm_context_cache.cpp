@@ -14,7 +14,7 @@
 #include "tabfm_bundled_resources.hpp"
 #include "tabfm_context_cache.hpp"
 #include "tabfm_state.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 #include "tabfm_predict.hpp"
 
 #include <atomic>

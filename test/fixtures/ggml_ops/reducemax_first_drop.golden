@@ -1,3 +1,0 @@
-# op ReduceMax
-in x f32 3,5 bf02d7fa 3f13db1e be6775e0 3ee26d2e bf37ed0a 3f054acd 3f76b4fc 3e7f6df9 3f202ce7 bf4c1cf4 c02ecea8 bfe2c6a2 3ead5b8b bf26feac 3fa56524
-out y f32 5 3f054acd 3f76b4fc 3ead5b8b 3f202ce7 3fa56524

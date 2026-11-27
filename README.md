@@ -98,6 +98,17 @@ Check which build you got:
 SELECT extension_version FROM duckdb_extensions() WHERE extension_name = 'anofox_tabfm';
 ```
 
+**Your DuckDB version decides the build.** The community registry builds each release only for the DuckDB versions
+current at the time, and a DuckDB it no longer builds for keeps the last build it got. On an older DuckDB, `INSTALL ...
+FROM community` can therefore hand you a months-old release (DuckDB 1.5.5, for example, gets the August 2026 build,
+without the Kumo-Tabular models). Use DuckDB 1.5.6 or 2.0 and `FORCE INSTALL anofox_tabfm FROM community`.
+
+**Release assets:** every [GitHub release](https://github.com/DataZooDE/anofox-tabfm/releases) carries the CPU extension
+for each platform and DuckDB line, `anofox_tabfm-<duckdb version>-<platform>.duckdb_extension.gz`, with `SHA256SUMS`.
+They are unsigned: unpack one, start DuckDB with `duckdb -unsigned`, and `LOAD '/path/to/anofox_tabfm.duckdb_extension'`.
+The GPU plugins are released by [anofox-ggml-adapter](https://github.com/DataZooDE/anofox-ggml-adapter/releases) and
+fetched by `tabfm_download_runtime`.
+
 ## Quick Start
 
 ```sql

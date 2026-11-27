@@ -8,7 +8,7 @@ files to it, runs a command, streams the output back and terminates the pod.
 NOT part of CI: it costs money and needs a key CI does not have. Run it by hand
 when a change touches a GPU path.
 
-    tools/gpu_test/runpod_run.py --upload build/ggml-cuda/libanofox_tabfm_ggml-cuda_plugin.so \\
+    tools/gpu_test/runpod_run.py --upload vendor/anofox-ggml-adapter/build/ggml-cuda/libanofox_ggml-cuda_plugin.so \\
         --command 'nvidia-smi && ls -l /workspace'
 
 The API key comes from RUNPOD_API_KEY, or from ~/.bashrc — which exports it but
@@ -26,6 +26,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -218,8 +219,67 @@ def ssh_base(priv: Path, ip: str, port: int):
         "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=10",
+        # keepalives: a long silent step (a build logging to a file) otherwise lets a NAT drop the session
+        "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=6",
         f"root@{ip}",
     ]
+
+
+def run_detached(priv: Path, ip: str, port: int, command: str, poll: int = 30, run_timeout: int = 4 * 3600) -> int:
+    """Runs `command` on the pod detached from this ssh session (nohup; output in /workspace/run.log, exit code in
+    /workspace/run.exit, its pid in /workspace/run.pid) and streams the log by reconnecting every `poll` seconds. An
+    hour-long build no longer dies with the connection: a dropped poll is retried. The run ends when the exit file
+    appears, when the process is gone without one (killed: OOM, container restart), or after `run_timeout` seconds,
+    so a lost command can never keep a pod billing."""
+    # rm first, then start and record the pid: `a && b && c & d` would background the rm too and race the pid file
+    launch = (f"cd /workspace && rm -f run.exit run.pid && {{ nohup bash -c "
+              f"{shlex.quote('(' + command + '); echo $? > /workspace/run.exit')} > /workspace/run.log 2>&1 < /dev/null & "
+              "echo $! > /workspace/run.pid; }")
+    subprocess.run(ssh_base(priv, ip, port) + [launch], check=True)
+    shown = 0  # bytes of run.log already printed (counted on the raw bytes: a split UTF-8 character must not shift it)
+    failures = 0
+    deadline = time.time() + run_timeout
+
+    def fetch():
+        probe = subprocess.run(
+            ssh_base(priv, ip, port) + [
+                "code=$(cat /workspace/run.exit 2>/dev/null); "
+                "alive=$(kill -0 $(cat /workspace/run.pid 2>/dev/null) 2>/dev/null && echo 1 || echo 0); "
+                f"tail -c +{shown + 1} /workspace/run.log; printf '\\n__EXIT__%s__ALIVE__%s' \"$code\" \"$alive\""],
+            capture_output=True)
+        if probe.returncode != 0:
+            return None
+        body, _, status = probe.stdout.rpartition(b"\n__EXIT__")
+        code, _, alive = status.decode().partition("__ALIVE__")
+        return body, code.strip(), alive.strip() == "1"
+
+    while True:
+        time.sleep(poll)
+        got = fetch()
+        if got is None:
+            failures += 1
+            if failures > 20:
+                print("lost the pod: 20 polls in a row failed")
+                return 255
+            continue
+        failures = 0
+        body, code, alive = got
+        if body:
+            sys.stdout.write(body.decode("utf-8", "replace"))
+            sys.stdout.flush()
+            shown += len(body)
+        if code:
+            last = fetch()  # the output written between the tail and the exit file
+            if last and last[0]:
+                sys.stdout.write(last[0].decode("utf-8", "replace"))
+                sys.stdout.flush()
+            return int(code)
+        if not alive:
+            print("\nthe command died without an exit code (killed: out of memory, or the container restarted)")
+            return 254
+        if time.time() > deadline:
+            print(f"\nthe command ran past --run-timeout ({run_timeout} s): stopping")
+            return 253
 
 
 def wait_for_sshd(priv: Path, ip: str, port: int, timeout: int = 900):
@@ -269,7 +329,7 @@ def pod_spec(args, gpu_id, cloud, pub, volume=None):
         "image": args.image,
         "gpu": {"id": gpu_id, "count": 1},
         "cloud": cloud,
-        "disk": 30,
+        "disk": args.disk,
         "ports": ["22/tcp"],
         "env": {"PUBLIC_KEY": pub},
     }
@@ -296,6 +356,8 @@ def main() -> int:
     ap.add_argument("--upload", nargs="*", type=Path, default=[], help="files to copy to /workspace")
     ap.add_argument("--command", help="command to run on the pod")
     ap.add_argument("--timeout", type=int, default=900, help="seconds to wait for the pod")
+    ap.add_argument("--run-timeout", type=int, default=4 * 3600, help="seconds the command may run before the pod is stopped")
+    ap.add_argument("--disk", type=int, default=30, help="container disk in GB (two extension builds plus weights need ~80)")
     ap.add_argument("--keep", action="store_true", help="do NOT terminate the pod (debugging; costs money)")
     ap.add_argument("--secure", action="store_true",
                     help="rent only from RunPod's own datacenters, never the COMMUNITY tier. Community hosts are "
@@ -423,8 +485,7 @@ def main() -> int:
         print(f"\n--- nvidia-smi ---")
         subprocess.run(ssh_base(priv, ip, port) + ["nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader"])
         print(f"\n--- running ---\n{command}\n")
-        result = subprocess.run(ssh_base(priv, ip, port) + [command])
-        return result.returncode
+        return run_detached(priv, ip, port, command, run_timeout=args.run_timeout)
     finally:
         cleanup()
 

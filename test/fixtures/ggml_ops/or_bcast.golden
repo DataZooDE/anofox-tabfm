@@ -1,4 +1,0 @@
-# op Or
-in a bool 4 1 0 1 0
-in b bool 3,4 1 0 1 1 0 0 0 0 0 1 0 1
-out y bool 3,4 1 0 1 1 1 0 1 0 1 1 1 1

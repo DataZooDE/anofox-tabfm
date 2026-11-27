@@ -1,5 +1,13 @@
 """S-M3 -- drive the built plugin through the real C ABI and check its answers.
 
+HISTORICAL: this targets the removed tabfm plugin ABI (version 1 here, later 2, in the deleted
+src/include/tabfm_plugin_abi.h) and will not load a current plugin. The MLX plugin now lives in
+anofox-ggml-adapter (vendor/anofox-ggml-adapter: src/plugin_mlx.cpp, src/mlxgraph/, tools/mlx_plugin) on
+its generic plugin ABI v3 (include/anofox_ggml_adapter/plugin_abi.h: named tensors, weights by name),
+which the loader checks and refuses on mismatch. The load check is the adapter's
+tools/gpu_test/plugin_load_check.c; the CPU-vs-MLX answer check is test/cpp/test_tabfm_mlx_plugin.cpp.
+Kept as the record of spike S-M3 (docs/MLX_SPIKE_RESULTS.md).
+
 `tools/gpu_test/plugin_load_check.c` already proves the artifact *loads* on this
 machine (and it compiled on macOS unchanged, as the plan predicted). Loading is
 not the interesting part: a plugin that loads and returns wrong logits passes

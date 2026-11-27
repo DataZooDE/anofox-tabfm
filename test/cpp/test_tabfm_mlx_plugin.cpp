@@ -4,7 +4,7 @@
 // docs/MLX_PLAN.md; spike verdicts and the tolerance argument in
 // docs/MLX_SPIKE_RESULTS.md. The MLX plugin runs the model's ONNX graph through
 // its own interpreter, and mitra also through a forward TRANSCRIBED from
-// mitra_model_patched.py into src/tabfm_mlx_plugin.cpp. That makes this test the
+// mitra_model_patched.py into anofox-ggml-adapter's src/plugin_mlx.cpp. That makes this test the
 // thing standing between a hand-written second implementation (and a second
 // ONNX interpreter) and silent drift from the graph the CPU runs.
 //
@@ -22,7 +22,7 @@
 
 #include "tabfm_session.hpp"
 #include "tabfm_plugin_backend.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 #include <iterator>
 
 #include <cmath>
@@ -71,18 +71,14 @@ vector<double> Softmax(const float *row, int64_t c) {
 	return out;
 }
 
-//! The returned params point INTO `weights_dir`: pass a string that outlives them (a temporary, e.g. a string literal converted at the call,
-//! dangles at the end of the statement; ASAN reported it on macOS).
-TabFMPluginCreateParams MlxParams(const string &weights_dir, const char *arch) {
-	TabFMPluginCreateParams params {};
-	params.graph_path = ""; // deliberately unused: the forward is transcribed
-	params.weights_dir = weights_dir.c_str();
-	params.cache_dir = "";
-	params.arch = arch;
-	params.precision = "fp32";
-	params.mxr_source = "";
-	params.device_ordinal = 0;
-	return params;
+//! No graph by default (mitra's forward is transcribed); `model` is the plugin's model name ("<model>-<task>" selects mitra's hand-port).
+TabFMPluginRequest MlxParams(const string &weights_dir, const char *model) {
+	TabFMPluginRequest request;
+	request.weights_dir = weights_dir;
+	request.weights_path = weights_dir + "/model.safetensors";
+	request.model = model;
+	request.precision = "fp32";
+	return request;
 }
 
 } // namespace
@@ -301,10 +297,10 @@ TEST_CASE("mlx_plugin: a graph whose output is a strided view returns it in inde
 	auto session = CreateSessionFromPath(graph, {}, config);
 	auto cpu_output = Run(*session, input);
 
-	const string params_dir = "test/fixtures/mlx"; // must outlive params: MlxParams stores its c_str()
+	const string params_dir = "test/fixtures/mlx";
 
 	auto params = MlxParams(params_dir, "tabdpt-classification");
-	params.graph_path = graph.c_str();
+	params.graph_path = graph;
 	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
 	auto mlx_output = backend->Run(input);
 
@@ -343,10 +339,10 @@ TEST_CASE("mlx_plugin: integer Div truncates, as ONNX Runtime's does", "[tabfm][
 	auto session = CreateSessionFromPath(graph, {}, config);
 	auto cpu_output = Run(*session, input);
 
-	const string params_dir = "test/fixtures/mlx"; // must outlive params: MlxParams stores its c_str()
+	const string params_dir = "test/fixtures/mlx";
 
 	auto params = MlxParams(params_dir, "limix-2m-classification");
-	params.graph_path = graph.c_str();
+	params.graph_path = graph;
 	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
 	auto mlx_output = backend->Run(input);
 
@@ -384,10 +380,10 @@ TEST_CASE("mlx_plugin: float64 initializers and constants are narrowed, not rein
 	auto session = CreateSessionFromPath(graph, {}, config);
 	auto cpu_output = Run(*session, input);
 
-	const string params_dir = "test/fixtures/mlx"; // must outlive params: MlxParams stores its c_str()
+	const string params_dir = "test/fixtures/mlx";
 
 	auto params = MlxParams(params_dir, "limix-2m-regression");
-	params.graph_path = graph.c_str();
+	params.graph_path = graph;
 	auto backend = LoadPluginBackend(TABFM_MLX_PLUGIN_PATH, params);
 	auto mlx_output = backend->Run(input);
 

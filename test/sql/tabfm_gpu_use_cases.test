@@ -147,4 +147,4 @@ statement error
 SELECT count(*) FROM tabfm_classify('history', 'status', test := '(SELECT * EXCLUDE (true_status) FROM prospects)',
   features := ['tenure_months', 'monthly_charge', 'support_tickets', 'contract'], model := 'tabicl-v2');
 ----
-<REGEX>:.*libanofox_tabfm_(ggml-[a-z]+|mlx)_plugin.*tabfm_download_runtime.*
+<REGEX>:.*libanofox_(ggml-[a-z]+|mlx)_plugin.*tabfm_download_runtime.*

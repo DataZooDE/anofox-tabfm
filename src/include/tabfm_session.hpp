@@ -64,8 +64,8 @@ vector<TabFMDeviceInfo> DiscoverRocmDevicesFrom(const string &nodes_path, const 
 //! Whether the ggml CUDA plugin ships kernels for a card of this compute capability (it is built for 7.5 and newer).
 bool CudaComputeCapabilityUsable(int major, int minor);
 
-//! The gfx architectures the released ggml ROCm plugin carries code objects for (AMDGPU_TARGETS in .github/workflows/gpu_plugins.yml; the
-//! release-asset check keeps the two equal). HIP code objects do not run on another architecture, so a device outside this list is reported
+//! The gfx architectures the released ggml ROCm plugin carries code objects for (the adapter's devices.hpp, mirroring AMDGPU_TARGETS in
+//! anofox-ggml-adapter's .github/workflows/plugins.yml). HIP code objects do not run on another architecture, so a device outside this list is reported
 //! unusable rather than chosen and failing at its first query.
 const vector<string> &GgmlRocmPluginArchs();
 bool RocmArchUsable(const string &arch);

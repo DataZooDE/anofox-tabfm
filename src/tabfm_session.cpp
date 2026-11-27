@@ -7,7 +7,7 @@
 
 #include "tabfm_session.hpp"
 #include "tabfm_ggml_session.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 
 #include "duckdb/common/exception.hpp"
 #include "duckdb/common/numeric_utils.hpp"

@@ -31,7 +31,7 @@
 #include "tabfm_plugin_backend.hpp"
 #include "tabfm_plugin_artifacts.hpp"
 #include "tabfm_mlx_ops.hpp"
-#include "tabfm_onnx_reader.hpp"
+#include "tabfm_ggml.hpp"
 #include "tabfm_state.hpp"
 #include "tabfm_context_cache.hpp"
 
@@ -1200,8 +1200,8 @@ bool GgmlPluginAvailable(const string &ep_path, const string &backend) {
 	return !ep_path.empty() && PluginAvailableCached(ep_path, backend);
 }
 
-// The CUDA and ROCm GPU lane (src/tabfm_ggml_plugin.cpp, tools/ggml_plugin; docs/GGML_PLAN.md): the same ggml engine as the CPU, on a CUDA or HIP device,
-// loaded from libanofox_tabfm_ggml-{cuda,rocm}_plugin in anofox_tabfm_ep_path. It is the only plugin for those devices and reads the plain external-data
+// The CUDA and ROCm GPU lane (anofox-ggml-adapter's src/plugin_ggml.cpp and tools/ggml_plugin; docs/GGML_PLAN.md): the same ggml engine as the CPU, on a CUDA or HIP device,
+// loaded from libanofox_ggml-{cuda,rocm}_plugin in anofox_tabfm_ep_path. It is the only plugin for those devices and reads the plain external-data
 // ("ext") graph, so one graph serves both vendors. Reached only when the resolved device is a cuda or rocm GPU: once it is, this must succeed or throw,
 // because quietly running on the CPU after the user asked for a GPU is the failure the equivalence suite exists to catch.
 shared_ptr<LoadedModel> TryGgmlGpuBackend(FileSystem &fs, TabFMState &state, const ResolvedModel &resolved, const PredictContext &ctx) {
@@ -1244,21 +1244,24 @@ shared_ptr<LoadedModel> TryGgmlGpuBackend(FileSystem &fs, TabFMState &state, con
 			                                       "Make that directory writable."));
 		}
 	}
-	TabFMPluginCreateParams params {};
-	params.graph_path = graph_path.c_str();
-	params.weights_dir = weights_dir.c_str();
-	params.cache_dir = ctx.cache_dir.c_str();
-	params.arch = device.arch.c_str();
-	params.precision = ctx.gpu_precision.c_str();
-	params.mxr_source = ""; // an ABI slot with no effect since MIGraphX was removed
-	params.device_ordinal = device.device_ordinal;
-	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
+	TabFMPluginRequest request;
+	request.graph_path = graph_path;
+	request.weights_dir = weights_dir;
+	request.weights_path = resolved.weights_path;
+	request.model = resolved.manifest.model;
+	request.cache_dir = ctx.cache_dir;
+	request.arch = device.arch;
+	request.precision = ctx.gpu_precision;
+	request.device_ordinal = device.device_ordinal;
+	request.out_of_memory_remedy = "Free the device (CALL tabfm_unload() for a model you no longer use, or SET anofox_tabfm_max_sessions = 1 so "
+	                               "fewer models stay loaded), use a smaller model, or SET anofox_tabfm_device='cpu'.";
+	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, request);
 	return RegisterBackend(state, resolved.cache_key, std::move(backend), device.device_id, 0, false, ctx.gpu_precision,
 	                       NumericCast<idx_t>(ctx.max_sessions));
 }
 
 // Apple MLX backend (docs/MLX_PLAN.md; spike verdicts in docs/MLX_SPIKE_RESULTS.md). The plugin runs the same "ext" graph the
-// ggml GPU plugin reads through its own ONNX interpreter (tabfm_mlx_graph.cpp); mitra also has a hand-ported forward, kept as its fast path.
+// ggml GPU plugin reads through its own ONNX interpreter (anofox-ggml-adapter's src/mlxgraph/mlx_graph.cpp); mitra also has a hand-ported forward, kept as its fast path.
 // A model whose graph uses an op the interpreter lacks, or that has no GPU graph at all, is refused with the reason rather than falling
 // through to the CPU (the "requested device quietly becomes CPU" failure).
 //
@@ -1295,7 +1298,10 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 	    graph.data && WeightsHeaderMatches(fs, resolved.weights_path, resolved.manifest.model, resolved.manifest.task);
 	string graph_path;
 	string weights_dir = DirName(resolved.weights_path);
-	switch (SelectGpuGraph(!resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
+	// mitra always runs the plugin's hand-port, which reads the checkpoint by its state_dict names: no graph is staged or checked
+	// for it (an op gap in its graph must not refuse a model the hand-port serves), and the plugin gets the whole safetensors.
+	const bool hand_port = resolved.manifest.model == "mitra";
+	switch (hand_port ? GpuGraphSource::NONE : SelectGpuGraph(!resolved.ext_graph_path.empty(), graph.data != nullptr, bundled_matches)) {
 	case GpuGraphSource::MODEL_PROVIDED:
 		graph_path = resolved.ext_graph_path;
 		weights_dir = DirName(graph_path); // external data sits beside the graph
@@ -1355,26 +1361,24 @@ shared_ptr<LoadedModel> TryMlxBackend(FileSystem &fs, TabFMState &state, const R
 	if (ctx.ep_path.empty()) {
 		throw InvalidInputException(
 		    "anofox_tabfm: device 'mlx' was resolved but no backend plugin directory is configured. SET "
-		    "anofox_tabfm_ep_path to the directory holding libanofox_tabfm_mlx_plugin.dylib (CALL "
+		    "anofox_tabfm_ep_path to the directory holding libanofox_mlx_plugin.dylib (CALL "
 		    "tabfm_download_runtime('mlx') to fetch it).");
 	}
 	const auto plugin_path = fs.JoinPath(ctx.ep_path, PluginFileName("mlx"));
 
-	// `arch` is backend-defined (see tabfm_plugin_abi.h): the GPU plugins read a
-	// compute architecture there, but MLX's hardware needs no such selector. It
-	// carries "<model>-<task>" so the plugin can pick mitra's hand-ported fast
-	// path, and so a task/weights mismatch is caught rather than computed.
-	const string arch = resolved.manifest.model + "-" + task_name;
-
-	TabFMPluginCreateParams params {};
-	params.graph_path = graph_path.c_str();
-	params.weights_dir = weights_dir.c_str();
-	params.cache_dir = ctx.cache_dir.c_str();
-	params.arch = arch.c_str();
-	params.precision = ctx.gpu_precision.c_str();
-	params.mxr_source = ""; // an ABI slot with no effect since MIGraphX was removed
-	params.device_ordinal = device.device_ordinal;
-	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, params);
+	// The plugin's model name is "<model>-<task>": it picks mitra's hand-ported fast path, and a task/weights mismatch is caught rather
+	// than computed.
+	TabFMPluginRequest request;
+	request.graph_path = graph_path; // empty for mitra: see hand_port above
+	request.weights_dir = weights_dir;
+	request.weights_path = resolved.weights_path;
+	request.model = resolved.manifest.model + "-" + task_name;
+	request.cache_dir = ctx.cache_dir;
+	request.arch = device.arch;
+	request.precision = ctx.gpu_precision;
+	request.device_ordinal = device.device_ordinal;
+	request.out_of_memory_remedy = "Close other GPU work, use a smaller model, or SET anofox_tabfm_device='cpu'.";
+	shared_ptr<TabFMBackend> backend = LoadPluginBackend(plugin_path, request);
 
 	// Unlike the CUDA and ROCm registrations above, which report 0 bytes because
 	// their weights live in VRAM the host never counts, Apple Silicon's memory is

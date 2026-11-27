@@ -1,5 +1,18 @@
 # Plan: move the CPU engine from ONNX Runtime to ggml (correctness first, ORT as oracle, then optimise to ORT parity)
 
+> **Status (2026-11-24): the GPU plugins moved to the adapter too.** tabfm builds and ships no plugin any more:
+> `src/tabfm_ggml_plugin.cpp`, `src/tabfm_mlx_plugin.cpp`, `src/tabfm_mlx_graph*`, `src/include/tabfm_plugin_abi.h` (ABI v2),
+> `tools/ggml_plugin`, `tools/gpu_test/plugin_load_check.c`, `.github/workflows/gpu_plugins.yml` and the plugin scripts were removed.
+> The plugins are anofox-ggml-adapter's (`src/plugin_ggml.cpp`, `src/plugin_mlx.cpp` + `src/mlxgraph/`, built by its
+> `tools/ggml_plugin` (`-DANOFOX_GGML_GPU=cuda|hip`) and `tools/mlx_plugin`, released by its `plugins.yml`) on the generic plugin
+> ABI v3 (`include/anofox_ggml_adapter/plugin_abi.h`), named `libanofox_ggml-cuda_plugin.so`, `libanofox_ggml-rocm_plugin.so`
+> and `libanofox_mlx_plugin.dylib`. `src/tabfm_plugin_backend.cpp` is tabfm's glue. The file and option names below are history.
+>
+> **Status (2026-11-23): the engine moved to its own repo.** The sources named below as `src/tabfm_ggml_lower.cpp`, `tabfm_shape_eval.cpp`,
+> `tabfm_onnx_reader.cpp`, `tabfm_ggml_engine.cpp`, `tabfm_ggml_ops.hpp`, `tabfm_rank_reduce.hpp`, the per-op goldens and
+> `tools/ggml_parity/gen_op_goldens.py` / `ggml_driver.cpp` now live in **anofox-ggml-adapter** (`vendor/anofox-ggml-adapter`, shared with
+> anofox-decide) as `src/ggml_lower.cpp`, `src/shape_eval.cpp` and so on; `vendor/ggml` is its submodule. This page keeps the history.
+>
 > **Status (2026-11-21): done and superseded in places.** The CPU device is always ggml and the ORT CPU engine, the `TABFM_CPU_ENGINE` option and the vcpkg ORT port are removed
 > (see "P6 follow-up" and "P8 result" below). Mentions of `TABFM_CPU_ENGINE`, `TabFMSessionConfig::cpu_engine` and an ORT oracle build in the sections written before that describe the migration path, not the current build.
 
